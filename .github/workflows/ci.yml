@@ -1,8 +1,19 @@
 name: CI
 
+# Default: read-only token for jobs that do not declare their own permissions.
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [main, dev]
+    branches:
+      - main
+      - dev
+      # Same-repo feature work: CI on push without widening to arbitrary branch names.
+      - 'fix/**'
+      - 'feat/**'
+      - 'chore/**'
+      - 'docs/**'
     tags: ['v*']
   pull_request:
     branches: [main, dev]
