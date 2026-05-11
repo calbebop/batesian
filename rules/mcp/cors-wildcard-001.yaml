@@ -1,0 +1,67 @@
+id: mcp-cors-wildcard-001
+info:
+  name: MCP CORS Wildcard Origin with Credentials
+  author: batesian
+  severity: high
+  description: |
+    Tests whether the MCP server's CORS policy allows cross-origin authenticated
+    requests from attacker-controlled domains. Two distinct misconfigurations are
+    checked:
+
+    1. Origin reflection with credentials: the server echoes back any Origin value
+       in Access-Control-Allow-Origin AND sets Access-Control-Allow-Credentials: true.
+       This allows a browser running JavaScript from any domain to make authenticated
+       requests (with cookies or bearer tokens) to the MCP server.
+
+    2. Wildcard origin: Access-Control-Allow-Origin: * is returned in response to a
+       cross-origin POST. While browsers block wildcard with credentials, the * policy
+       enables unauthenticated cross-origin reads of any response the server emits.
+
+    In both cases, a malicious web page could invoke MCP tools, read resources, or
+    enumerate prompt templates on behalf of a victim whose browser is authenticated
+    to the MCP server.
+
+  references:
+    - https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+    - https://portswigger.net/web-security/cors
+    - https://owasp.org/www-community/attacks/CORS_OriginHeaderScrutiny
+    - https://cwe.mitre.org/data/definitions/942.html
+    - https://cwe.mitre.org/data/definitions/346.html
+
+  tags:
+    - mcp
+    - cors
+    - misconfiguration
+    - browser-attack
+    - cwe-942
+    - cwe-346
+
+attack:
+  protocol: mcp
+  type: mcp-cors-wildcard
+
+assert:
+  - condition: reflects_origin_with_credentials
+    description: "Server reflects attacker Origin in ACAO and sets ACAC: true"
+    severity: high
+
+  - condition: wildcard_with_credentials
+    description: "Server returns ACAO: * and ACAC: true (browsers block but misconfigured)"
+    severity: high
+
+  - condition: reflects_origin_no_credentials
+    description: "Server reflects attacker Origin in ACAO (no credentials header)"
+    severity: medium
+
+  - condition: wildcard_no_credentials
+    description: "Server returns ACAO: * — unauthenticated cross-origin reads possible"
+    severity: low
+
+remediation: |
+  1. Maintain an explicit allowlist of permitted origins; never reflect the request
+     Origin header verbatim in Access-Control-Allow-Origin.
+  2. Do not combine Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true.
+  3. If credentialed cross-origin requests are required, use an explicit origin
+     allowlist and validate it server-side before each response.
+  4. Return Vary: Origin when the CORS response depends on the request Origin, so
+     caches do not serve one client's credentialed response to another client.

@@ -1,0 +1,89 @@
+id: a2a-jws-algconf-001
+info:
+  name: A2A AgentCard JWS Algorithm Confusion / Signature Bypass
+  author: batesian
+  severity: critical
+  description: |
+    Inspects the JWS signatures field of the A2A Agent Card for algorithm
+    confusion vulnerabilities and structural weaknesses that enable card forgery.
+
+    The A2A v0.3.0 spec added an optional signatures field (RFC 7515 JWS) to
+    AgentCards for cryptographic integrity verification. Common implementation
+    mistakes make these signatures bypassable:
+
+    1. alg:none — any verifier that reads alg from the token header and dispatches
+       to a "none" handler will accept a completely forged card with no signature
+       material whatsoever.
+
+    2. Symmetric algorithms (HS256/384/512) — wrong key type for public card
+       verification; enables key confusion attacks using the exposed public key.
+
+    3. Empty signature value — passes broken implementations that skip the bytes
+       check while failing correct ones.
+
+    4. jku in unprotected header — the key URL is outside signature coverage;
+       attackers can substitute it post-signing without breaking the signature.
+
+    5. Cross-domain jku — if the JWKS is on a different domain than the agent,
+       compromising that domain enables key substitution.
+
+  references:
+    - https://a2aprotocol.ai/docs/specification#agent-card-signature
+    - https://portswigger.net/web-security/jwt/algorithm-confusion
+    - https://www.rfc-editor.org/rfc/rfc7515
+    - https://www.rfc-editor.org/rfc/rfc8785
+    - https://cwe.mitre.org/data/definitions/327.html
+
+  tags:
+    - a2a
+    - jws
+    - algorithm-confusion
+    - agent-card
+    - integrity
+    - cryptography
+    - cwe-327
+
+attack:
+  protocol: a2a
+  type: agent-card-jws-algconf
+
+  discover:
+    endpoint: "{{BaseURL}}/.well-known/agent-card.json"
+    method: GET
+    assert_field: "signatures"
+    extract: ["signatures"]
+
+assert:
+  - condition: alg_none_in_protected_header
+    description: "signatures[*].protected decodes to alg:none or missing alg — trivially forgeable"
+    severity: critical
+
+  - condition: symmetric_alg_used
+    description: "signatures[*].protected uses HS256/384/512 — symmetric key unsuitable for public card verification"
+    severity: high
+
+  - condition: empty_signature_value
+    description: "signatures[*].signature is empty string with non-none alg"
+    severity: critical
+
+  - condition: jku_in_unprotected_header
+    description: "jku is in unprotected header — attacker can swap key reference without breaking signature"
+    severity: high
+
+  - condition: jku_cross_domain
+    description: "jku references a JWKS on a different domain than the agent origin"
+    severity: medium
+
+  - condition: jku_plaintext_http
+    description: "jku uses plaintext HTTP — network attacker can substitute malicious keys"
+    severity: high
+
+remediation: |
+  1. Always place jku, kid, and alg in the JWS protected header (never in header).
+  2. In your verification code, pin the expected algorithm — never read alg from
+     the token to decide the verification function. Reject any alg that is not
+     in your explicit allowlist (ES256, RS256, EdDSA).
+  3. Reject any AgentCard signature where alg is "none" or empty.
+  4. Use only asymmetric algorithms for public agent cards.
+  5. Serve your JWKS from the same origin as your agent, over HTTPS only.
+  6. Consider using sigstore/sigstore-a2a rather than implementing JWS directly.

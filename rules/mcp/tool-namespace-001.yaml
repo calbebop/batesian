@@ -1,0 +1,71 @@
+id: mcp-tool-namespace-001
+info:
+  name: MCP Tool Name Collision Across Sessions
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server returns different tool definitions across
+    independent client sessions, which can enable tool namespace collision
+    attacks in multi-server or multi-session client environments.
+
+    In deployments where an MCP client connects to multiple servers, tool
+    names are the primary identifier used by the LLM to dispatch calls.
+    If two servers expose a tool with the same name but different descriptions
+    or behaviors, the LLM cannot distinguish between them. An attacker who
+    controls a second MCP server can register a tool with the same name as a
+    trusted tool on a legitimate server, causing the LLM to call the
+    attacker's implementation instead.
+
+    This rule also detects within-server namespace instability: if the same
+    server returns different tool definitions on separate connections (a form
+    of rug pull), this indicates the server's tool registry is mutable and
+    potentially exploitable.
+
+    Detection:
+    1. Connect and call tools/list (Session A).
+    2. Connect again with a new session and call tools/list (Session B).
+    3. Compare the two tool lists. Differences in names, descriptions, or
+       schemas indicate namespace instability.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/tools
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+    - https://cwe.mitre.org/data/definitions/20.html
+    - https://cwe.mitre.org/data/definitions/829.html
+
+  tags:
+    - mcp
+    - tool
+    - namespace
+    - rug-pull
+    - multi-session
+    - cwe-20
+    - cwe-829
+
+attack:
+  protocol: mcp
+  type: mcp-tool-namespace
+
+assert:
+  - condition: tool_list_differs_across_sessions
+    description: "tools/list returned different tools on two independent connections"
+    severity: high
+
+  - condition: tool_description_differs_across_sessions
+    description: "Same tool name has different descriptions across sessions"
+    severity: high
+
+  - condition: tool_schema_differs_across_sessions
+    description: "Same tool name has different inputSchema across sessions"
+    severity: medium
+
+remediation: |
+  1. Ensure tool definitions are immutable across the server's lifetime; do
+     not allow runtime modification of tool names, descriptions, or schemas.
+  2. Expose a stable, versioned tool registry. If tools must change, increment
+     the server version and require clients to re-initialize.
+  3. When operating in a multi-server environment, namespace all tool names
+     with a server-specific prefix (e.g., "payments.charge" not "charge") to
+     prevent cross-server collision.
+  4. Implement tools.listChanged notifications so clients can detect when the
+     tool registry changes rather than discovering it silently.

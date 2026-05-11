@@ -1,0 +1,55 @@
+id: mcp-ratelimit-absent-001
+info:
+  name: MCP Server Missing Rate Limiting
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server enforces rate limiting on tool call requests.
+    A configurable burst of requests is sent in rapid succession; the rule
+    checks whether the server returns HTTP 429 (Too Many Requests) or
+    equivalent JSON-RPC errors that indicate throttling.
+
+    MCP servers without rate limiting are vulnerable to:
+    1. Resource exhaustion: a single client can monopolize server CPU, memory,
+       or downstream API quota by flooding tool calls.
+    2. Amplification attacks: each tool call may trigger expensive downstream
+       operations (database queries, LLM inference, external API calls).
+    3. Context flooding amplification: rate-limit absence enables context flood
+       attacks to be sustained over time rather than limited to a single burst.
+
+    Detection: send 25 tool call requests as fast as the connection allows and
+    measure the ratio of 429 responses to 2xx responses. A server with no
+    rate limiting will return 2xx (or any non-429) for all requests.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/tools
+    - https://owasp.org/www-project-api-security/ (API4:2023 Unrestricted Resource Consumption)
+    - https://cwe.mitre.org/data/definitions/770.html
+    - https://cwe.mitre.org/data/definitions/400.html
+
+  tags:
+    - mcp
+    - rate-limiting
+    - dos
+    - resource-exhaustion
+    - cwe-770
+    - cwe-400
+
+attack:
+  protocol: mcp
+  type: mcp-ratelimit-absent
+
+assert:
+  - condition: no_rate_limiting_enforced
+    description: "Server accepted all burst requests without any 429 or throttle response"
+    severity: medium
+
+remediation: |
+  1. Implement per-session and per-IP rate limiting on all tool call endpoints.
+     A reasonable default is 60 requests per minute per authenticated session.
+  2. Return HTTP 429 with a Retry-After header when limits are exceeded,
+     rather than silently dropping or queuing requests.
+  3. Apply tighter per-tool limits for expensive operations (LLM inference,
+     database writes, external API calls).
+  4. Use token bucket or sliding window algorithms for smooth rate enforcement
+     rather than hard per-second cutoffs that create burst windows.

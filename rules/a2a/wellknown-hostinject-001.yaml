@@ -1,0 +1,61 @@
+id: a2a-wellknown-hostinject-001
+info:
+  name: A2A Agent Card Host Header Injection
+  author: batesian
+  severity: high
+  description: |
+    Tests whether the A2A agent card endpoint reflects attacker-controlled
+    Host, X-Forwarded-Host, or X-Original-Host header values into the `url`
+    field of the returned Agent Card JSON.
+
+    The A2A spec requires that the Agent Card's `url` field contain the canonical
+    service URL. When a server constructs this field dynamically from request
+    headers (a common pattern in reverse-proxied deployments), an attacker who
+    controls those headers can poison the value that gets returned.
+
+    Downstream agents or registries that cache and trust the Agent Card will
+    believe the agent's RPC endpoint is the attacker's server. This enables:
+    - Request hijacking: other agents send their tasks to the attacker
+    - Credential theft: bearer tokens sent in task requests go to the attacker
+    - Cache poisoning: if the agent card is cached by a registry or CDN
+
+  references:
+    - https://portswigger.net/web-security/host-header
+    - https://google.github.io/A2A/specification/
+    - https://cwe.mitre.org/data/definitions/601.html
+    - https://cwe.mitre.org/data/definitions/16.html
+
+  tags:
+    - a2a
+    - host-header
+    - cache-poisoning
+    - agent-card
+    - cwe-601
+    - cwe-16
+
+attack:
+  protocol: a2a
+  type: a2a-wellknown-hostinject
+
+assert:
+  - condition: host_header_reflected
+    description: "Host header value appears in Agent Card url field"
+    severity: high
+
+  - condition: forwarded_host_reflected
+    description: "X-Forwarded-Host value appears in Agent Card url field"
+    severity: high
+
+  - condition: original_host_reflected
+    description: "X-Original-Host value appears in Agent Card url field"
+    severity: high
+
+remediation: |
+  1. Never construct the Agent Card `url` field from user-supplied HTTP headers
+     (Host, X-Forwarded-Host, X-Original-Host, X-Real-IP, etc.).
+  2. Hard-code or configure the canonical service URL from a trusted source
+     (environment variable, configuration file) and return it unconditionally.
+  3. If the service is behind a reverse proxy, configure the proxy to strip or
+     validate forwarding headers rather than trusting them blindly.
+  4. Add the Agent Card endpoint to your integration test suite with an automated
+     assertion that the returned `url` matches the expected canonical value.

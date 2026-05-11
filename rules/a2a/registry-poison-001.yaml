@@ -1,0 +1,65 @@
+id: a2a-registry-poison-001
+info:
+  name: A2A Unauthenticated Agent Registry Poisoning
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A agent registry endpoint accepts agent card
+    registration requests without authentication, allowing an attacker
+    to register a malicious agent or overwrite an existing agent's entry.
+
+    Some A2A deployments expose a registry service where agents can
+    register their capabilities (agent cards) for discovery by other agents.
+    If this registration endpoint does not require authentication, any
+    client can:
+
+    1. Register a new agent claiming any identity, including the name of
+       a trusted internal agent.
+    2. Overwrite an existing agent's card with a poisoned version containing
+       injected skill descriptions, attacker-controlled callback URLs, or
+       falsely elevated capabilities.
+    3. Redirect other agents' task requests to an attacker-controlled endpoint
+       by changing the registered agent URL.
+
+    Discovery: Batesian probes common registry paths using unauthenticated
+    POST requests containing a minimal but structurally valid agent card.
+    A 2xx response that does not contain an authentication challenge
+    indicates the registry accepts unauthenticated registration.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+    - https://cwe.mitre.org/data/definitions/290.html
+
+  tags:
+    - a2a
+    - registry
+    - authentication
+    - authorization
+    - agent-card
+    - cwe-290
+
+attack:
+  protocol: a2a
+  type: a2a-registry-poison
+
+assert:
+  - condition: unauthenticated_registration_accepted
+    description: "Agent registry accepted unauthenticated agent card registration"
+    severity: high
+
+  - condition: overwrite_accepted
+    description: "Agent registry accepted overwrite of an existing agent card without authentication"
+    severity: high
+
+remediation: |
+  1. Require authentication (e.g. mTLS, bearer token, or API key) for all
+     agent card registration and update endpoints.
+  2. Validate that the registering client is authorized to claim the agent
+     identity (name, URL) being registered. Do not allow arbitrary name claims.
+  3. Implement a registration allowlist: only pre-approved agent identities
+     may be registered, and only by their designated service accounts.
+  4. Log all registration and update events with the caller identity for
+     incident detection.
+  5. Return HTTP 401 or 403 (with a WWW-Authenticate header) for any
+     unauthenticated registration attempt.

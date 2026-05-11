@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "batesian"
+version = "0.3.0"
+description = "Python SDK for the Batesian adversarial red-team framework"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Calvin McDowell", email = "calvin@batesian.dev" }]
+requires-python = ">=3.9"
+keywords = ["security", "a2a", "mcp", "red-team", "adversarial", "ai-security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://github.com/calbebop/batesian"
+Repository = "https://github.com/calbebop/batesian"
+Issues = "https://github.com/calbebop/batesian/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["batesian*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

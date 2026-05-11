@@ -1,0 +1,63 @@
+id: mcp-security-headers-001
+info:
+  name: MCP Endpoint Missing HTTP Security Headers
+  author: batesian
+  severity: low
+  description: |
+    Checks whether MCP server endpoints return the expected HTTP security
+    response headers. While MCP is a machine-to-machine protocol, many
+    MCP servers expose management UIs, documentation, or SSE streams that
+    are consumed by browsers, making header hygiene relevant.
+
+    Missing headers enable:
+
+    Strict-Transport-Security: TLS stripping attacks on the initial request
+    before the browser learns that the server requires HTTPS.
+
+    X-Content-Type-Options: MIME confusion attacks where a browser
+    interprets a JSON error response as executable HTML or script.
+
+    X-Frame-Options / CSP frame-ancestors: clickjacking attacks against
+    any browser-rendered MCP management interface.
+
+    Referrer-Policy: leakage of MCP session IDs or tool names in the
+    Referer header to third-party analytics or CDN providers.
+
+  references:
+    - https://owasp.org/www-project-secure-headers/
+    - https://modelcontextprotocol.io/docs/concepts/servers
+    - https://cwe.mitre.org/data/definitions/16.html
+    - https://cwe.mitre.org/data/definitions/693.html
+
+  tags:
+    - mcp
+    - security-headers
+    - hardening
+    - cwe-16
+    - cwe-693
+
+attack:
+  protocol: mcp
+  type: mcp-security-headers
+
+assert:
+  - condition: missing_hsts
+    description: "Strict-Transport-Security header absent on MCP HTTPS endpoint"
+    severity: low
+
+  - condition: missing_xcto
+    description: "X-Content-Type-Options: nosniff header absent"
+    severity: low
+
+  - condition: missing_frame_protection
+    description: "Neither X-Frame-Options nor Content-Security-Policy frame-ancestors present"
+    severity: low
+
+remediation: |
+  Add the following headers to all MCP endpoint responses:
+
+    Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    Referrer-Policy: strict-origin-when-cross-origin
+    Permissions-Policy: camera=(), microphone=(), geolocation=()

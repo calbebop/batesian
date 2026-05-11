@@ -1,0 +1,61 @@
+id: mcp-sampling-inject-001
+info:
+  name: MCP Sampling Capability - Unguarded LLM Invocation Surface
+  author: batesian
+  severity: high
+  description: |
+    The MCP spec allows servers to invoke the client's LLM directly via
+    sampling/createMessage requests. If a server advertises the sampling
+    capability, any content it places in the systemPrompt or messages fields
+    will be processed by the connecting client's LLM without the end user
+    seeing or approving it. This creates a server-controlled prompt injection
+    surface that bypasses the user's system prompt and all client-side
+    guardrails.
+
+    Unlike tool description poisoning (mcp-tool-poison-001), sampling injection
+    is a protocol-level attack: the server does not need to embed injections in
+    static text. It can craft fresh sampling requests at runtime, tailored to
+    the specific LLM and conversation context. This executor detects whether the
+    server advertises sampling support and whether any tool invocation triggers
+    a sampling/createMessage request with suspicious content.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-03-26/client/sampling
+    - https://modelcontextprotocol.io/specification/2025-03-26/basic/capabilities
+    - https://owasp.org/www-project-top-ten/2021/A03_2021-Injection
+    - https://cwe.mitre.org/data/definitions/20.html
+    - https://cwe.mitre.org/data/definitions/77.html
+
+  tags:
+    - mcp
+    - sampling
+    - prompt-injection
+    - llm
+    - owasp-agentic-top10
+    - cwe-20
+    - cwe-77
+
+attack:
+  protocol: mcp
+  type: mcp-sampling-inject
+
+  probe:
+    endpoint: "{{BaseURL}}/mcp"
+    method: POST
+
+assert:
+  - condition: server_advertises_sampling
+    description: "Server advertises sampling capability in its initialize response"
+    severity: medium
+
+  - condition: sampling_request_contains_injection
+    description: "A tool call triggered a sampling/createMessage request containing prompt injection patterns"
+    severity: high
+
+remediation: |
+  Do not use server-initiated sampling unless strictly necessary. If sampling is
+  required, implement an allowlist of permitted systemPrompt templates and reject
+  any dynamically constructed prompts. Require explicit user approval before
+  sampling/createMessage requests are sent. Log all sampling requests for audit.
+  Consider disabling the sampling capability entirely in the server's published
+  capabilities if it is not needed.

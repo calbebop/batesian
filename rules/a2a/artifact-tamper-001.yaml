@@ -1,0 +1,63 @@
+id: a2a-artifact-tamper-001
+info:
+  name: A2A Task Artifact Tampering via Task ID Reuse
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server allows a client to overwrite or alter the content
+    of a completed task by re-submitting a tasks/send request with the same task ID
+    but different message content.
+
+    In the A2A protocol, task IDs are client-generated. If the server does not
+    enforce immutability on completed tasks, an attacker who knows a task ID (or
+    can guess it, see a2a-task-idor-001) can:
+    - Replace the original task input with a poisoned prompt
+    - Cause the agent to re-execute with attacker-controlled content
+    - Overwrite task artifacts that downstream systems trust as authoritative output
+
+    This is particularly severe in multi-agent pipelines where Agent B reads the
+    output of Agent A's tasks. If Agent A's task artifacts can be tampered with,
+    the attacker gains indirect control over Agent B's behavior without interacting
+    with Agent B directly.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+    - https://cwe.mitre.org/data/definitions/284.html
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - a2a
+    - task
+    - artifact
+    - tampering
+    - integrity
+    - cwe-284
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-artifact-tamper
+
+assert:
+  - condition: task_overwritten
+    description: "Server accepted re-submitted task with same ID and replaced content"
+    severity: high
+
+  - condition: task_echoes_tampered_content
+    description: "tasks/get returns the tampered message content after re-submission"
+    severity: high
+
+  - condition: task_input_mutable
+    description: "Task message content changed between two tasks/get calls with same ID"
+    severity: critical
+
+remediation: |
+  1. Treat task IDs as immutable keys: once a task is created (any status other than
+     "unknown"), reject subsequent tasks/send requests that use the same task ID with
+     a JSON-RPC error indicating the ID is already in use.
+  2. Validate task ID uniqueness at ingestion time, not only at completion.
+  3. If task re-submission is an intentional feature, version task artifacts and
+     require explicit authorization to overwrite a completed task.
+  4. Sign task artifacts with the server's private key (as specified in the A2A JWS
+     extension) so downstream consumers can detect tampering.

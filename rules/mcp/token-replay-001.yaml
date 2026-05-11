@@ -1,0 +1,95 @@
+id: mcp-token-replay-001
+info:
+  name: MCP OAuth Token Audience Validation Bypass
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server validates the `aud` (audience) claim on incoming
+    OAuth 2.1 bearer tokens. A compliant OAuth 2.1 resource server must reject
+    tokens whose `aud` claim is missing, empty, or does not match the resource
+    server's own identifier (RFC 9068 Section 4, RFC 8707).
+
+    A server that skips audience validation allows tokens issued for any other
+    resource server to be replayed against it. An attacker who obtains a token
+    for an unrelated service can present it to the MCP server and gain access.
+
+    Alg-none tokens are a special case: some JWT libraries that do not enforce
+    algorithm restrictions will accept a forged JWT with no signature at all,
+    completely bypassing cryptographic token verification.
+
+  references:
+    - https://www.rfc-editor.org/rfc/rfc9068
+    - https://www.rfc-editor.org/rfc/rfc8707
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/294.html
+    - https://cwe.mitre.org/data/definitions/347.html
+
+  tags:
+    - mcp
+    - oauth
+    - jwt
+    - token-replay
+    - audience-validation
+    - rfc9068
+    - cwe-294
+    - cwe-347
+
+attack:
+  protocol: mcp
+  type: mcp-token-replay
+
+  discover:
+    well_known_endpoints:
+      - "{{BaseURL}}/.well-known/oauth-authorization-server"
+    extract:
+      - issuer
+      - token_endpoint
+
+  probes:
+    - name: no-aud
+      description: "JWT with no aud claim"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{NoAudToken}}"
+        Content-Type: "application/json"
+
+    - name: wrong-aud
+      description: "JWT with aud pointing to a different server"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{WrongAudToken}}"
+        Content-Type: "application/json"
+
+    - name: alg-none
+      description: "JWT with alg:none and no signature"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{AlgNoneToken}}"
+        Content-Type: "application/json"
+
+assert:
+  - condition: no_aud_accepted
+    description: "Server accepted a JWT with no aud claim"
+    severity: high
+
+  - condition: wrong_aud_accepted
+    description: "Server accepted a JWT with an aud claim for a different resource server"
+    severity: high
+
+  - condition: alg_none_accepted
+    description: "Server accepted a JWT with alg:none (unsigned token)"
+    severity: critical
+
+remediation: |
+  1. Validate the `aud` claim on every incoming bearer token; reject tokens where
+     `aud` is absent or does not contain the MCP server's own resource identifier.
+  2. Reject JWTs where `alg` is "none" or any symmetric algorithm (HS256/HS384/HS512)
+     when the server expects asymmetric RS256/ES256 tokens.
+  3. Use a well-tested JWT validation library that enforces algorithm allowlists
+     by default; never call a permissive "decode without verify" path on live traffic.
+  4. Register the MCP server as a resource server with the authorization server and
+     use RFC 8707 Resource Indicators so tokens are always audience-bound at issuance.

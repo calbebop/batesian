@@ -1,0 +1,52 @@
+id: a2a-task-idor-001
+info:
+  name: A2A Task IDOR via Unauthenticated tasks/get
+  author: batesian
+  severity: high
+  description: |
+    Creates an A2A task and then attempts to retrieve its full history via
+    tasks/get using a new unauthenticated connection. If the server returns
+    task data (including conversation history) without verifying that the
+    requesting caller owns the task, it is vulnerable to Insecure Direct Object
+    Reference (IDOR).
+
+    A2A task IDs are UUIDs, but the spec does not mandate servers bind task
+    lookup to the session that created the task. Tutorial-grade implementations
+    that skip authentication will return full task history including any LLM
+    conversation content to any caller with the task UUID.
+
+  references:
+    - https://a2aprotocol.ai/docs/specification#tasks
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - a2a
+    - idor
+    - authorization
+    - task
+    - owasp-agentic-top10
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-task-idor
+
+  probe:
+    endpoint: "{{BaseURL}}/"
+    method: POST
+
+assert:
+  - condition: task_history_accessible_without_auth
+    description: "tasks/get returned task history from a new unauthenticated connection"
+    severity: high
+
+  - condition: tasks_list_accessible_without_auth
+    description: "Server exposes a tasks/list endpoint returning all tasks without authentication"
+    severity: critical
+
+remediation: |
+  Bind every task and contextId to the authenticated session identity at creation
+  time. Verify ownership on every tasks/get, tasks/cancel, and tasks/list request.
+  Return JSON-RPC error -32001 (TaskNotFoundError) for any task that does not
+  belong to the requesting caller — do not reveal whether the task exists.

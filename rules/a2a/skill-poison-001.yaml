@@ -1,0 +1,66 @@
+id: a2a-skill-poison-001
+info:
+  name: A2A Agent Card Skill Description Injection
+  author: batesian
+  severity: high
+  description: |
+    Scans the skills array of an A2A Agent Card for prompt injection patterns
+    in the description, examples, and tags fields.
+
+    A2A agent skills are advertised in the Agent Card that orchestrators and
+    other agents fetch before deciding how to route tasks. If a skill description
+    contains injection directives, an orchestrator LLM that reads the card to
+    decide routing may be manipulated into sending tasks to the wrong agent,
+    leaking context, or executing attacker-controlled instructions before a
+    task is even submitted.
+
+    This is the A2A equivalent of MCP tool description poisoning
+    (mcp-tool-poison-001). The attack surface is the Agent Card rather than
+    a tools/list response, but the injection mechanism and impact are identical:
+    the malicious content is read by an LLM that uses it to make trust decisions.
+
+    Detection uses the same heuristic scoring model as mcp-tool-poison-001.
+    Findings are emitted as RiskIndicator because exploitability depends on
+    whether an orchestrator LLM reads skill descriptions directly.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+    - https://github.com/calbebop/batesian/blob/main/rules/mcp/tool-poison-001.yaml
+    - https://cwe.mitre.org/data/definitions/20.html
+    - https://cwe.mitre.org/data/definitions/79.html
+
+  tags:
+    - a2a
+    - agent-card
+    - prompt-injection
+    - skill
+    - cwe-20
+    - cwe-79
+
+attack:
+  protocol: a2a
+  type: a2a-skill-poison
+
+assert:
+  - condition: skill_description_injection
+    description: "Skill description contains prompt injection patterns"
+    severity: high
+
+  - condition: skill_examples_injection
+    description: "Skill examples field contains prompt injection patterns"
+    severity: high
+
+  - condition: skill_tags_injection
+    description: "Skill tags contain prompt injection patterns"
+    severity: medium
+
+remediation: |
+  1. Treat all Agent Card skill descriptions as untrusted input when displaying
+     them to operators or passing them to an LLM for routing decisions.
+  2. Validate skill descriptions at card publish time against an injection
+     pattern allowlist.
+  3. Use separate, out-of-band operator configuration to define routing logic
+     rather than relying on LLM interpretation of skill descriptions.
+  4. Implement AgentCard signature verification (JWS) so tampered cards are
+     rejected before their content reaches an orchestrator LLM.

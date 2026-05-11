@@ -1,0 +1,59 @@
+id: mcp-context-flood-001
+info:
+  name: MCP Missing Request Size Limits (Context Window Flooding)
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server enforces size limits on incoming JSON-RPC
+    request payloads. Servers without size limits are vulnerable to context
+    window flooding: an attacker submits an extremely large tool call argument
+    or sampling/createMessage payload that fills the LLM's context window,
+    pushing out legitimate system prompt and instruction content.
+
+    The effect is not a crash (the server accepts the request) but a behavioral
+    attack: the LLM processes the oversized content but can no longer "see" its
+    original system prompt because the context window is full. This can cause
+    the model to ignore safety guardrails, forget its persona, or follow
+    attacker instructions embedded in the flood content.
+
+    Additionally, servers that accept unbounded payloads may be vulnerable to
+    resource exhaustion (memory, CPU) if many large requests are submitted
+    simultaneously.
+
+    Detection: send a tools/call request with a string argument padded to 1MB,
+    then to 5MB, and check whether the server accepts them or returns an error.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/tools
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+    - https://cwe.mitre.org/data/definitions/400.html
+
+  tags:
+    - mcp
+    - dos
+    - context-window
+    - size-limit
+    - cwe-400
+
+attack:
+  protocol: mcp
+  type: mcp-context-flood
+
+assert:
+  - condition: accepts_1mb_payload
+    description: "Server accepted a 1MB tool call argument without error"
+    severity: medium
+
+  - condition: accepts_5mb_payload
+    description: "Server accepted a 5MB tool call argument without error"
+    severity: high
+
+remediation: |
+  1. Enforce a server-side maximum request body size (recommended: 64KB for
+     most tool arguments, 256KB for document processing tools).
+  2. Return a JSON-RPC error (code -32600, "Request too large") for payloads
+     that exceed the limit rather than silently truncating or processing them.
+  3. Apply per-field limits in addition to total body limits: individual string
+     arguments should not exceed a documented maximum length.
+  4. Rate-limit requests from individual sessions to prevent resource exhaustion
+     from repeated large-payload submissions.

@@ -1,0 +1,59 @@
+id: mcp-homoglyph-tool-001
+info:
+  name: MCP Tool Name Unicode Homoglyph Attack
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server normalizes tool names before lookup, or
+    whether it processes Unicode homoglyph substitutions as if they were
+    the legitimate tool name.
+
+    A homoglyph attack replaces ASCII characters in a tool name with
+    visually identical Unicode codepoints. For example, the Cyrillic
+    letter 'а' (U+0430) is indistinguishable from the ASCII 'a' (U+0061)
+    in most fonts. An attacker who can influence the tool name used in a
+    tools/call request (e.g., via a prompt that causes an LLM to emit a
+    crafted tool name) can attempt to call a tool that doesn't exist under
+    the homoglyphic name, or in multi-server environments, to redirect the
+    call to a different server's tool with the same visual name.
+
+    Batesian substitutes common Cyrillic homoglyphs for ASCII characters
+    in the names of the first two discovered tools, then calls tools/call
+    with the substituted names. It checks:
+    - Whether the server accepts the homoglyphic name (processing it as the
+      legitimate tool) -- indicates missing identity normalization.
+    - Whether the server returns a "method not found" or validation error.
+
+  references:
+    - https://unicode.org/reports/tr36/#visual_spoofing
+    - https://spec.modelcontextprotocol.io/specification/2025-03-26/
+    - https://cwe.mitre.org/data/definitions/20.html
+    - https://cwe.mitre.org/data/definitions/922.html
+
+  tags:
+    - mcp
+    - unicode
+    - homoglyph
+    - tool
+    - identity-confusion
+    - cwe-20
+    - cwe-922
+
+attack:
+  protocol: mcp
+  type: mcp-homoglyph-tool
+
+assert:
+  - condition: homoglyph_name_accepted
+    description: "Server accepted tools/call with Unicode homoglyph tool name (no identity normalization)"
+    severity: medium
+
+remediation: |
+  1. Normalize all tool names to NFC Unicode form and strip non-ASCII
+     characters before performing tool lookup.
+  2. Reject tools/call requests whose name field contains non-ASCII
+     codepoints unless your tool registry explicitly registers non-ASCII names.
+  3. Use strict equality comparison (byte-for-byte) when looking up tools by
+     name; do not use case-insensitive or Unicode-equivalence comparisons.
+  4. Log and alert on requests that contain Unicode characters outside the
+     Basic Latin block (U+0000 to U+007F) in tool name fields.

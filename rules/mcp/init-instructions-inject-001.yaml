@@ -1,0 +1,58 @@
+id: mcp-init-instructions-inject-001
+info:
+  name: MCP Server Instructions Contain Prompt Injection
+  author: batesian
+  severity: high
+  description: |
+    Reads the serverInfo.instructions field from a live MCP initialize
+    response and scores it for prompt injection patterns using the same
+    heuristic model used by mcp-tool-poison-001.
+
+    The MCP specification allows servers to embed arbitrary natural-language
+    instructions in the initialize response under serverInfo.instructions.
+    MCP clients are expected to pass this text to the connected LLM as
+    context for how to use the server. A malicious or compromised server
+    can use this field to issue injection directives that execute before any
+    tool is called -- effectively giving the server control over the LLM's
+    behavior from the moment the connection is established.
+
+    Unlike mcp-tool-poison-001 (which targets tool descriptions), this rule
+    targets the initialization channel: the attack executes at session
+    establishment, not at tool invocation.
+
+    Because the field is read directly from a live server response, findings
+    are confirmed against real server data rather than configuration files.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/servers
+    - https://spec.modelcontextprotocol.io/specification/2025-03-26/
+    - https://cwe.mitre.org/data/definitions/20.html
+    - https://cwe.mitre.org/data/definitions/77.html
+
+  tags:
+    - mcp
+    - prompt-injection
+    - initialize
+    - server-instructions
+    - cwe-20
+    - cwe-77
+
+attack:
+  protocol: mcp
+  type: mcp-init-instructions-inject
+
+assert:
+  - condition: instructions_injection_detected
+    description: "serverInfo.instructions contains prompt injection patterns"
+    severity: high
+
+remediation: |
+  1. Never embed instruction-override directives, exfiltration commands, or
+     LLM behavioral directives in the serverInfo.instructions field.
+  2. Treat serverInfo.instructions as a trusted system-level field. MCP
+     clients should validate or sanitize instructions before passing them
+     to an LLM if the server is not fully trusted.
+  3. Audit the instructions value in your server's initialize handler and
+     restrict it to human-readable usage documentation only.
+  4. If you operate an MCP proxy or aggregator, validate instructions from
+     upstream servers against an allowlist before forwarding to clients.

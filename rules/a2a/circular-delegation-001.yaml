@@ -1,0 +1,69 @@
+id: a2a-circular-delegation-001
+info:
+  name: A2A Circular Task Delegation (Infinite Delegation Loop)
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an A2A agent enforces a delegation depth limit or loop
+    detection when forwarding tasks to other agents.
+
+    The A2A protocol allows an agent to delegate a received task to another
+    agent by calling that agent's tasks/send endpoint. Without loop detection
+    or a maximum delegation depth, a circular delegation chain can be created:
+
+      Attacker -> Agent A -> Agent B -> Agent A -> ... (infinite loop)
+
+    This attack has two consequences:
+
+    1. Resource exhaustion: each delegation creates a new task, consumes
+       HTTP connections, and increments in-memory state on both agents.
+       A tight loop can exhaust file descriptors, memory, or thread pools.
+
+    2. Billing amplification: if the agents call LLM APIs on each delegation,
+       a single attacker request can trigger unbounded downstream API calls.
+
+    Detection: Batesian simulates the circular delegation signal by sending
+    a task with a crafted `forwardTask` configuration pointing back to a
+    local OOB listener, then measuring whether the server initiates an
+    outbound call to that address (indicating it attempted to delegate).
+    It also checks whether the server exposes a delegation depth limit in
+    error responses or JSON-RPC error codes.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-api-security/ (API4:2023 Unrestricted Resource Consumption)
+    - https://cwe.mitre.org/data/definitions/674.html
+    - https://cwe.mitre.org/data/definitions/400.html
+
+  tags:
+    - a2a
+    - delegation
+    - dos
+    - resource-exhaustion
+    - loop-detection
+    - cwe-674
+    - cwe-400
+
+attack:
+  protocol: a2a
+  type: a2a-circular-delegation
+
+assert:
+  - condition: delegation_initiated_to_oob
+    description: "Agent attempted to delegate task to attacker-controlled URL (no loop detection)"
+    severity: medium
+
+  - condition: no_depth_limit_in_error
+    description: "Agent accepted nested delegation configuration with no depth limit or loop-detection error"
+    severity: medium
+
+remediation: |
+  1. Enforce a maximum delegation depth (recommended: 5 hops). Return a
+     JSON-RPC error (-32600 or a custom code) when the limit is exceeded.
+  2. Track a delegation chain ID or visited-agent set in the task context.
+     Reject any delegation request that would revisit an agent already in
+     the chain.
+  3. Validate the target URL of any outgoing delegation against an allowlist
+     of trusted agent endpoints. Never delegate to caller-supplied URLs.
+  4. Apply per-task and per-session delegation budgets to limit the total
+     number of outbound agent calls a single task can trigger.

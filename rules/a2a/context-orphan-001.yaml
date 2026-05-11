@@ -1,0 +1,62 @@
+id: a2a-context-orphan-001
+info:
+  name: A2A Cross-Session Context Injection via contextId Reuse
+  author: batesian
+  severity: high
+  description: |
+    The A2A spec groups related tasks under a contextId. A server that does not
+    validate contextId ownership allows an attacker who knows a victim's contextId
+    to inject new messages into the victim's ongoing conversation. Unlike task IDOR
+    (which reads an existing task by taskId), context orphan injection WRITES into
+    an existing context from a completely separate session. The injected messages
+    become part of the victim's conversation history and may influence the agent's
+    future responses to the original user.
+
+    This executor creates Task A to obtain a contextId, then opens a new
+    unauthenticated session and sends a SendMessage request that supplies the
+    victim's contextId in the configuration block. If the server assigns the new
+    task to the same contextId, context injection is confirmed. A further GetTask
+    probe checks whether the injected session can also read Task A's conversation
+    history, which would constitute both injection and cross-session data disclosure.
+
+  references:
+    - https://a2aprotocol.ai/docs/specification#tasks
+    - https://a2aprotocol.ai/docs/specification#context
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://cwe.mitre.org/data/definitions/200.html
+    - https://cwe.mitre.org/data/definitions/284.html
+
+  tags:
+    - a2a
+    - context
+    - injection
+    - authorization
+    - session-isolation
+    - owasp-agentic-top10
+    - cwe-200
+    - cwe-284
+
+attack:
+  protocol: a2a
+  type: a2a-context-orphan
+
+  probe:
+    endpoint: "{{BaseURL}}/"
+    method: POST
+
+assert:
+  - condition: context_injection_accepted
+    description: "Server assigned new-session task to an existing contextId owned by a different session"
+    severity: high
+
+  - condition: cross_context_history_accessible
+    description: "Injected session can read conversation history from the original context owner's messages"
+    severity: critical
+
+remediation: |
+  Bind every contextId to the authenticated session identity that created it.
+  When a SendMessage request supplies a contextId, verify that the requesting
+  session owns that context before attaching the new task. Return JSON-RPC error
+  -32001 (TaskNotFoundError or ContextNotFound) if the context does not belong to
+  the requesting caller -- do not reveal whether the context exists. Treat contextId
+  as a secret scoped to the creating session, not a shareable namespace.

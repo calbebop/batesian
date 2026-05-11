@@ -1,0 +1,73 @@
+id: a2a-extcard-unauth-001
+info:
+  name: Extended Agent Card Unauthenticated Disclosure
+  author: batesian
+  severity: high
+  description: |
+    Tests whether the A2A Extended Agent Card endpoint is accessible without
+    authentication. The extended agent card contains privileged capability listings
+    (tools, skills, and resource access scopes) intended only for authenticated,
+    authorized callers. If reachable without credentials, an attacker can enumerate
+    the full capability surface of the agent before launching targeted attacks.
+
+    This is a confirmed bug in Google's official a2a-samples reference implementation.
+    Every developer who followed the official A2A getting-started tutorial is likely
+    affected.
+
+  references:
+    - https://github.com/google-a2a/a2a-samples/issues/340
+    - https://a2aprotocol.ai/docs/specification#extended-agent-card
+    - https://a2aprotocol.ai/docs/specification#agent-capabilities
+    - https://cwe.mitre.org/data/definitions/862.html
+    - https://cwe.mitre.org/data/definitions/200.html
+
+  tags:
+    - a2a
+    - authentication
+    - information-disclosure
+    - extended-agent-card
+    - owasp-agentic-top10
+    - cwe-862
+    - cwe-200
+
+attack:
+  protocol: a2a
+  type: extcard-unauth-disclosure
+
+  discover:
+    endpoint: "{{BaseURL}}/.well-known/agent-card.json"
+    method: GET
+    assert_field: "capabilities.extendedAgentCard"
+
+  probe:
+    endpoint: "{{BaseURL}}/extendedAgentCard"
+    method: GET
+    headers: {}
+
+  probe_invalid_auth:
+    endpoint: "{{BaseURL}}/extendedAgentCard"
+    method: GET
+    headers:
+      Authorization: "Bearer batesian-invalid-token-{{RandID}}"
+
+assert:
+  - condition: status_200_without_auth
+    description: "Extended agent card returned HTTP 200 without any Authorization header"
+    evidence: "{{ProbeResponse}}"
+    severity: high
+
+  - condition: capabilities_disclosed
+    description: "Response body contains agent capability listings without authentication"
+    severity: high
+
+  - condition: status_200_with_invalid_token
+    description: "Extended agent card returned HTTP 200 with an invalid/fabricated Bearer token"
+    evidence: "{{ProbeInvalidAuthResponse}}"
+    severity: critical
+
+remediation: |
+  Gate the /extendedAgentCard endpoint behind the same authentication mechanism
+  as other privileged endpoints (OAuth 2.1 Bearer token, JWS assertion, or API key).
+  Return HTTP 401 with a WWW-Authenticate header for unauthenticated requests.
+  The public /.well-known/agent-card.json may advertise that an extended card exists
+  (capabilities.extendedAgentCard: true) without disclosing its contents.

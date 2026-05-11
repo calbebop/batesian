@@ -1,0 +1,54 @@
+id: mcp-init-downgrade-001
+info:
+  name: MCP Protocol Version Downgrade Auth Bypass
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server accepts a protocol version that predates the
+    mandatory OAuth 2.1 authorization framework (specifically "2024-11-05",
+    which was published before the MCP authorization specification).
+
+    If a server accepts the older protocol version AND returns capabilities or
+    data that would require authentication under the current version, the server
+    may be bypassing its own auth enforcement via version negotiation. An attacker
+    can exploit this by advertising an old protocol version in the initialize
+    handshake, causing the server to skip auth checks it applies to newer clients.
+
+    A well-implemented server should either:
+    a) Reject unsupported protocol versions, or
+    b) Apply identical security controls regardless of the negotiated version.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://spec.modelcontextprotocol.io/specification/2025-03-26/
+    - https://spec.modelcontextprotocol.io/specification/2024-11-05/
+    - https://cwe.mitre.org/data/definitions/757.html
+
+  tags:
+    - mcp
+    - auth-bypass
+    - version-downgrade
+    - protocol
+    - cwe-757
+
+attack:
+  protocol: mcp
+  type: mcp-init-downgrade
+
+assert:
+  - condition: old_version_accepted
+    description: "Server accepted protocol version 2024-11-05 and returned capabilities"
+    severity: high
+
+  - condition: resources_accessible_after_downgrade
+    description: "Server returned resources without auth after version downgrade"
+    severity: critical
+
+remediation: |
+  1. Maintain a server-side allowlist of supported protocol versions; reject
+     initialize requests with unknown or unsupported versions with a JSON-RPC
+     error (code -32600, "Invalid Request").
+  2. Apply identical authentication and authorization checks regardless of the
+     negotiated protocol version. Do not branch security logic on protocol version.
+  3. If older versions must be supported for compatibility, document which versions
+     are accepted and ensure security controls are backported to all of them.

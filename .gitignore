@@ -1,0 +1,71 @@
+# Compiled binaries (root-level only, not source directories)
+/batesian
+/batesian.exe
+/dist/
+/build/
+/bin/
+*.dll
+*.so
+*.dylib
+
+# Go test/build artifacts
+*.test
+*.out
+/vendor/
+
+# go.sum is intentionally tracked (ensures reproducible builds)
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+*.egg
+.pytest_cache/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+secrets.yaml
+secrets.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Cursor IDE
+.cursor/
+
+# Internal planning (keep local only)
+ROADMAP.md
+
+# Test artifacts
+/test/output/
+*.sarif.tmp
+coverage.out
+coverage.html
+
+# Go profiling and benchmark output
+*.prof
+cpu.out
+mem.out
+trace.out
+
+# Test server logs generated at runtime
+*.log
+*_err.log
+
+# Scan output artifacts generated during dev/validation
+testdata/*.sarif
+testdata/*.json
+*.sarif

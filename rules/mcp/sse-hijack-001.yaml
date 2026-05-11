@@ -1,0 +1,66 @@
+id: mcp-sse-hijack-001
+info:
+  name: MCP SSE Endpoint Accessible Without Authentication
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's Server-Sent Events (SSE) stream can be
+    connected to without any authentication credentials. SSE endpoints that
+    accept unauthenticated connections allow any party on the network to
+    subscribe to the server's real-time event stream.
+
+    In MCP's streamable HTTP transport, the SSE channel carries JSON-RPC
+    responses to tool calls, sampling results, resource updates, and other
+    sensitive protocol messages. An unauthenticated attacker who can connect
+    to the SSE endpoint may:
+
+    1. Passively receive responses intended for other clients (if the server
+       does not properly isolate sessions).
+    2. Confirm server existence and capabilities for follow-on attacks.
+    3. Detect when tool calls are dispatched and correlate timing of responses
+       with other side channels.
+
+    This rule is analogous to mcp-resources-unauth-001 but targets the
+    streaming transport layer rather than individual resource endpoints.
+
+    Detection:
+    1. Send a GET request to the MCP endpoint with "Accept: text/event-stream"
+       and no authorization header.
+    2. Also probe common SSE-specific paths: /sse, /events, /stream.
+    3. Check if the server returns a 200 with "Content-Type: text/event-stream"
+       or if it returns an auth challenge (401/403).
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/transports
+    - https://spec.modelcontextprotocol.io/specification/2025-03-26/
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - mcp
+    - sse
+    - authentication
+    - information-disclosure
+    - cwe-862
+
+attack:
+  protocol: mcp
+  type: mcp-sse-hijack
+
+assert:
+  - condition: sse_stream_without_auth
+    description: "SSE stream accepted without any authentication header"
+    severity: high
+
+  - condition: sse_data_received_without_auth
+    description: "SSE stream returned data events without authentication"
+    severity: high
+
+remediation: |
+  1. Require a valid OAuth 2.1 bearer token (or equivalent session credential)
+     before accepting any SSE connection.
+  2. Validate the session ID on the initial SSE GET request, not just on
+     subsequent POST requests.
+  3. Isolate SSE streams per session: never broadcast events intended for
+     one client to another client's stream.
+  4. Return 401 with a WWW-Authenticate header for unauthenticated SSE
+     connection attempts.

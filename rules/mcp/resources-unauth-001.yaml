@@ -1,0 +1,56 @@
+id: mcp-resources-unauth-001
+info:
+  name: MCP Resources Unauthenticated Read
+  author: batesian
+  severity: critical
+  description: |
+    Attempts to list and read MCP resources without authentication. The MCP
+    protocol exposes resources/list and resources/read endpoints alongside
+    tools/list. These resources can contain file system contents, database
+    records, environment variables, API keys, or other sensitive data.
+
+    Unlike tool poisoning (which is LLM-mediated), resource disclosure is
+    immediate: the attacker retrieves the data directly without LLM processing.
+    Unauthenticated resource access is functionally equivalent to an open
+    file server on the network.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/resources
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - mcp
+    - resources
+    - authorization
+    - disclosure
+    - unauthenticated
+    - cwe-862
+
+attack:
+  protocol: mcp
+  type: mcp-resources-unauth
+
+  probe:
+    endpoint: "{{BaseURL}}/mcp"
+    method: POST
+
+assert:
+  - condition: resources_listed_without_auth
+    description: "resources/list returned resource listing without authentication"
+    severity: high
+
+  - condition: resource_content_read_without_auth
+    description: "resources/read returned file or data content without authentication"
+    severity: critical
+
+  - condition: sensitive_content_in_resource
+    description: "Resource content contains patterns matching API keys, credentials, or private keys"
+    severity: critical
+
+remediation: |
+  Require authentication for all MCP endpoints including resources/list and
+  resources/read. Apply the principle of least privilege: only expose resources
+  that the authenticated client is explicitly authorized to access. Do not
+  expose file system paths, environment variables, or credential stores as
+  MCP resources in production deployments.

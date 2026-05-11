@@ -1,0 +1,69 @@
+id: a2a-security-headers-001
+info:
+  name: A2A Endpoint Missing HTTP Security Headers
+  author: batesian
+  severity: low
+  description: |
+    Checks whether A2A Agent Card and JSON-RPC endpoints return the expected
+    HTTP security response headers that harden browser-facing attack surfaces.
+
+    Missing headers on an A2A endpoint enable the following attacks:
+
+    Strict-Transport-Security (HSTS): without it, browsers may connect over
+    HTTP before being redirected, enabling TLS stripping attacks.
+
+    X-Content-Type-Options: without "nosniff", a browser may interpret a
+    JSON response as HTML or JavaScript, enabling MIME confusion attacks.
+
+    X-Frame-Options / Content-Security-Policy (frame-ancestors): without
+    framing protection, an A2A management UI or agent card viewer can be
+    embedded in a malicious page for clickjacking attacks.
+
+    Referrer-Policy: without restriction, sensitive URL path information in
+    the A2A endpoint (e.g. task IDs) may leak in the HTTP Referer header
+    to third-party resources loaded by the client.
+
+    Permissions-Policy: without it, a page embedding an agent response has
+    unrestricted access to browser APIs (camera, microphone, geolocation).
+
+  references:
+    - https://owasp.org/www-project-secure-headers/
+    - https://google.github.io/A2A/specification/
+    - https://cwe.mitre.org/data/definitions/16.html
+    - https://cwe.mitre.org/data/definitions/693.html
+
+  tags:
+    - a2a
+    - security-headers
+    - hardening
+    - cwe-16
+    - cwe-693
+
+attack:
+  protocol: a2a
+  type: a2a-security-headers
+
+assert:
+  - condition: missing_hsts
+    description: "Strict-Transport-Security header absent on A2A HTTPS endpoint"
+    severity: low
+
+  - condition: missing_xcto
+    description: "X-Content-Type-Options: nosniff header absent"
+    severity: low
+
+  - condition: missing_frame_protection
+    description: "Neither X-Frame-Options nor Content-Security-Policy frame-ancestors present"
+    severity: low
+
+remediation: |
+  Add the following headers to all A2A endpoint responses:
+
+    Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    Referrer-Policy: strict-origin-when-cross-origin
+    Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+  For Content-Security-Policy, start with a restrictive default-src and
+  expand from there based on your actual resource needs.

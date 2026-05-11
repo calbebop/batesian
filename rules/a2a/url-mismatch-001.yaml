@@ -1,0 +1,60 @@
+id: a2a-url-mismatch-001
+info:
+  name: A2A Agent Card URL Disagrees with Origin Domain
+  author: batesian
+  severity: medium
+  description: |
+    Checks whether the `url` field in an A2A Agent Card points to a different
+    domain than the host from which the card was served.
+
+    The A2A specification requires the Agent Card `url` to be the canonical
+    service URL that other agents should use for JSON-RPC requests. When this
+    URL points to a different domain than the well-known endpoint's host,
+    it may indicate:
+
+    1. Typosquatting: a malicious actor registered a domain similar to a
+       legitimate agent and is serving a card that routes traffic to the
+       attacker's real RPC server.
+    2. Misconfiguration: the card was deployed without updating the `url`
+       field to match the production domain, routing agent traffic to a
+       stale or wrong endpoint.
+    3. Supply chain compromise: the card-hosting server was compromised but
+       the attacker left the card's `url` pointing to their own server
+       rather than the original.
+
+    Unlike a2a-wellknown-hostinject-001 (which tests active injection via
+    request headers), this rule checks the static mismatch in the served card.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://portswigger.net/research/practical-http-header-smuggling
+    - https://cwe.mitre.org/data/definitions/345.html
+
+  tags:
+    - a2a
+    - agent-card
+    - misconfiguration
+    - typosquatting
+    - cwe-345
+
+attack:
+  protocol: a2a
+  type: a2a-url-mismatch
+
+assert:
+  - condition: url_domain_mismatch
+    description: "Agent Card url field points to a different domain than the card host"
+    severity: medium
+
+  - condition: provider_url_mismatch
+    description: "Agent Card provider.url points to a different domain than the card host"
+    severity: low
+
+remediation: |
+  1. Ensure the `url` field in your Agent Card always matches the domain and
+     scheme of the endpoint that serves the well-known path.
+  2. Add an automated deployment check that compares the card's `url` value
+     against the expected canonical domain before publishing.
+  3. Sign the Agent Card with JWS so consumers can detect post-publish tampering.
+  4. Monitor your agent registry or service mesh for unexpected domain changes
+     in registered Agent Cards.

@@ -1,0 +1,131 @@
+id: mcp-oauth-audience-002
+info:
+  name: MCP OAuth Audience Matching Bug Probes
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's `aud` (audience) validation logic is robust to
+    common matching bugs that allow a clearly-mismatched token to be accepted.
+    This complements `mcp-token-replay-001`, which tests whether the server
+    enforces audience validation at all; this rule tests whether the matching
+    logic itself is correctly implemented when the operator's real audience
+    value is known or discoverable.
+
+    Three probes are constructed from the operator-supplied (or RFC 9728
+    auto-discovered) expected audience and submitted as forged HS256 JWTs:
+
+    - `aud-substring-trap`   — wraps the expected value in a clearly-different
+      string (e.g., `<expected>.canary-batesian-mismatch.invalid`). Catches
+      validators that use `strings.Contains` / `HasPrefix` / `HasSuffix`.
+    - `aud-case-canonicalization-trap` — submits the expected value lowercased
+      (or with default-port toggled when already lowercase). Catches validators
+      that lowercase or URL-canonicalize before comparing, contrary to RFC 7519's
+      strict StringOrURI compare semantics.
+    - `aud-array-canary-only` — submits `aud` as a JSON array of mismatched
+      canaries. Catches validators that only inspect string-form `aud` and skip
+      the array-shape branch entirely.
+
+    Honest scope: because probes are forged HS256 self-signed tokens, acceptance
+    indicates that **both** signature validation and audience matching are
+    inadequate. Catching servers that validate signatures correctly but still
+    mishandle `aud` matching (the Parse CVE-2026-30863 / RFC 7523-bis class)
+    requires a real validly-signed token from the same issuer with a different
+    audience and is tracked as a follow-up issue. If `mcp-token-replay-001` is
+    already firing on this target, fix those findings first; this rule's
+    results will likely be subsumed.
+
+    Audience input precedence:
+      1. `--audience-claim` flag / `audience_claim` config field
+      2. RFC 9728 auto-discovery via `WWW-Authenticate: resource_metadata=...`
+         on an unauth probe, then `/.well-known/oauth-protected-resource`
+      3. Otherwise the rule reports Inconclusive and skips.
+
+  references:
+    - https://www.rfc-editor.org/rfc/rfc7519
+    - https://www.rfc-editor.org/rfc/rfc9068
+    - https://www.rfc-editor.org/rfc/rfc8707
+    - https://www.rfc-editor.org/rfc/rfc9728
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1581
+    - https://nvd.nist.gov/vuln/detail/CVE-2026-30863
+    - https://eprint.iacr.org/2025/629
+    - https://cwe.mitre.org/data/definitions/863.html
+
+  tags:
+    - mcp
+    - oauth
+    - jwt
+    - audience-validation
+    - rfc7519
+    - rfc9068
+    - rfc9728
+    - cwe-863
+
+attack:
+  protocol: mcp
+  type: mcp-oauth-audience
+
+  discover:
+    well_known_endpoints:
+      - "{{BaseURL}}/.well-known/oauth-protected-resource"
+      - "{{BaseURL}}/.well-known/oauth-authorization-server"
+    extract:
+      - resource
+
+  probes:
+    - name: aud-substring-trap
+      description: "Forged JWT whose aud wraps the expected value in a mismatched substring"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{SubstringTrapToken}}"
+        Content-Type: "application/json"
+
+    - name: aud-case-canonicalization-trap
+      description: "Forged JWT whose aud is the expected value with case or default-port toggled"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{CaseTrapToken}}"
+        Content-Type: "application/json"
+
+    - name: aud-array-canary-only
+      description: "Forged JWT whose aud is a JSON array of mismatched canaries"
+      endpoint: "{{BaseURL}}/mcp"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ArrayCanaryToken}}"
+        Content-Type: "application/json"
+
+assert:
+  - condition: substring_trap_accepted
+    description: "Server accepted a JWT whose aud is a substring-wrapped mismatch of the expected audience"
+    severity: high
+
+  - condition: case_canonicalization_trap_accepted
+    description: "Server accepted a JWT whose aud differs from the expected audience only in case or default-port presence"
+    severity: high
+
+  - condition: array_canary_accepted
+    description: "Server accepted a JWT whose aud is a JSON array containing only mismatched canaries"
+    severity: high
+
+remediation: |
+  1. Compare the JWT `aud` claim to the resource server's identifier using a
+     strict, exact string compare per RFC 7519 §4.1.3 — no `Contains`,
+     `HasPrefix`, `HasSuffix`, lowercase, URL canonicalization, or other
+     normalization on either side of the comparison.
+  2. Handle both string-form and array-form `aud` claims: when `aud` is an
+     array, validation MUST require that the array contains the resource
+     server's identifier and reject otherwise. Do not branch out of the
+     validation path when the claim shape is an array.
+  3. Issue tokens audience-bound at the authorization server using RFC 8707
+     Resource Indicators so the resource server's expected `aud` value is the
+     concrete URI of the protected resource rather than a coarse API ID.
+  4. Reject JWTs where `alg` is "none" or any symmetric algorithm when the
+     server expects asymmetric tokens; use a vetted JWT library that enforces
+     algorithm allowlists by default.
+  5. Advertise a stable resource identifier via RFC 9728 protected resource
+     metadata (`/.well-known/oauth-protected-resource`) so clients and
+     scanners use the same audience value the server validates against.

@@ -1,0 +1,65 @@
+id: a2a-peer-impersonation-001
+info:
+  name: A2A Peer Agent Impersonation via Forged JWT
+  author: batesian
+  severity: critical
+  description: |
+    A2A servers are expected to validate the identity of calling agents using
+    bearer tokens with cryptographic signatures. An attacker can forge a JWT
+    claiming to be a trusted peer agent (via the "sub" claim) and test whether
+    the server grants elevated access or behaves differently from an
+    unauthenticated baseline.
+
+    This executor fetches the agent card to learn the target agent name, then
+    constructs a forged HS256 JWT signed with a random key unknown to the server.
+    The JWT claims sub=<agent-name>, iss=legitimate-orchestrator.example.com,
+    role=orchestrator, and aud=<target>. A SendMessage request is made with the
+    forged token, and the response is compared to an unauthenticated baseline.
+
+    If the forged JWT is accepted while the baseline is rejected, the server is
+    trusting JWT claims without verifying the signature -- a critical
+    authentication bypass. If both are accepted, the server has no authentication
+    at all, making peer impersonation trivial.
+
+  references:
+    - https://a2aprotocol.ai/docs/specification#authentication
+    - https://owasp.org/www-project-top-ten/2021/A07_2021-Identification_and_Authentication_Failures
+    - https://datatracker.ietf.org/doc/html/rfc7519
+    - https://cwe.mitre.org/data/definitions/290.html
+    - https://cwe.mitre.org/data/definitions/347.html
+
+  tags:
+    - a2a
+    - authentication
+    - jwt
+    - impersonation
+    - broken-auth
+    - owasp-agentic-top10
+    - cwe-290
+    - cwe-347
+
+attack:
+  protocol: a2a
+  type: a2a-peer-impersonation
+
+  probe:
+    endpoint: "{{BaseURL}}/"
+    method: POST
+
+assert:
+  - condition: forged_jwt_accepted_unauth_rejected
+    description: "Server accepted a forged peer JWT while rejecting unauthenticated requests -- JWT signature is not verified"
+    severity: critical
+
+  - condition: server_accepts_unauthenticated
+    description: "Server accepts unauthenticated requests; peer impersonation is possible without any token"
+    severity: medium
+
+remediation: |
+  Validate all incoming JWT bearer tokens against a published JWKS endpoint or a
+  known symmetric secret. Reject tokens where the signature cannot be verified,
+  the issuer (iss) is not on an allowlist, or the subject (sub) does not match a
+  registered peer agent identity. Do not grant elevated access based solely on
+  claims in an unverified token. Use asymmetric keys (RS256, ES256) so private
+  keys never leave the issuing orchestrator, and require the audience (aud) claim
+  to match the receiving agent's own identifier.

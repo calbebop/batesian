@@ -1,0 +1,95 @@
+id: a2a-json-rpc-fuzz-001
+info:
+  name: A2A JSON-RPC Input Fuzzing
+  author: batesian
+  severity: medium
+  description: |
+    Sends structurally malformed JSON-RPC 2.0 payloads to the A2A endpoint and
+    inspects responses for signs of server instability: HTTP 5xx status codes or
+    response bodies containing stack trace keywords (goroutine dumps, panic messages,
+    runtime errors, tracebacks).
+
+    A robust A2A server must return spec-compliant JSON-RPC error objects (-32600
+    Invalid Request, -32601 Method Not Found, etc.) for all invalid inputs. Servers
+    that crash or leak internal runtime details on malformed input are vulnerable to
+    denial-of-service and information-disclosure attacks.
+
+    Tested mutations:
+      - null method field
+      - integer method field (wrong type)
+      - missing id field
+      - oversized method string (10 KB)
+      - nested object id field
+      - wrong JSON-RPC version string
+      - empty JSON object
+      - params as array instead of object
+
+  references:
+    - https://www.jsonrpc.org/specification
+    - https://a2aprotocol.ai/docs/specification
+    - https://owasp.org/www-project-api-security/
+    - https://cwe.mitre.org/data/definitions/20.html
+
+  tags:
+    - a2a
+    - jsonrpc
+    - fuzzing
+    - crash
+    - stack-trace
+    - input-validation
+    - cwe-20
+
+attack:
+  protocol: a2a
+  type: a2a-json-rpc-fuzz
+
+  # Note: the probes block below is documentation only. The a2a-json-rpc-fuzz
+  # executor uses these probe descriptions to self-document its behavior, but
+  # it does not read them from YAML at runtime -- the payloads are hardcoded
+  # in the executor to guarantee correctness and allow the oversized-method
+  # probe to be generated dynamically.
+  probes:
+    - name: null-method
+      body: '{"jsonrpc":"2.0","method":null,"id":1}'
+
+    - name: integer-method
+      body: '{"jsonrpc":"2.0","method":12345,"id":1}'
+
+    - name: missing-id
+      body: '{"jsonrpc":"2.0","method":"SendMessage","params":{}}'
+
+    - name: oversized-method
+      body: '{"jsonrpc":"2.0","method":"<10KB>","id":1}'
+
+    - name: nested-object-id
+      body: '{"jsonrpc":"2.0","method":"SendMessage","id":{"nested":true}}'
+
+    - name: wrong-version
+      body: '{"jsonrpc":"1.0","method":"SendMessage","id":1}'
+
+    - name: empty-body
+      body: '{}'
+
+    - name: params-as-array
+      body: '{"jsonrpc":"2.0","method":"SendMessage","params":[],"id":1}'
+
+assert:
+  - condition: http_5xx
+    description: "Server returned HTTP 5xx on malformed JSON-RPC input (crash)"
+    severity: medium
+
+  - condition: stack_trace_in_body
+    description: "Response body contains stack trace or panic keywords"
+    severity: high
+
+remediation: |
+  1. Validate all incoming JSON-RPC fields before dispatching: verify that
+     `method` is a non-empty string, `id` is a string/number/null, and
+     `jsonrpc` is exactly "2.0".
+  2. Return a JSON-RPC -32600 (Invalid Request) error for any structurally
+     invalid payload instead of panicking or returning an HTTP error status.
+  3. Wrap all request handlers in a recovery middleware that catches panics,
+     logs the internal error, and returns a generic -32603 (Internal Error)
+     JSON-RPC response without stack trace details.
+  4. Enable Go production build flags and structured logging so that internal
+     errors are captured in observability tooling rather than HTTP responses.

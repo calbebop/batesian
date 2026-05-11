@@ -1,0 +1,54 @@
+id: mcp-prompt-unauth-001
+info:
+  name: MCP Prompt Templates Accessible Without Authentication
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server exposes its prompt templates via prompts/list
+    and prompts/get without requiring authentication.
+
+    MCP prompt templates are reusable message structures that often encode:
+    - System-level instructions that define the agent's behavior
+    - Hard-coded context that reveals internal architecture or data sources
+    - Default inputs that can be manipulated by an attacker who knows them
+
+    Unlike tool descriptions (which are visible to the LLM), system-level prompt
+    templates may contain operator-confidential instructions that were not intended
+    to be publicly readable. An unauthenticated attacker who can enumerate and
+    retrieve all prompt templates gains significant insight into the agent's
+    trust model, knowledge boundaries, and attack surface.
+
+    Combined with prompt injection (mcp-sampling-inject-001) or tool poisoning
+    (mcp-tool-poison-001), this information enables highly targeted attacks.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/prompts
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - mcp
+    - auth
+    - prompt
+    - information-disclosure
+    - cwe-862
+
+attack:
+  protocol: mcp
+  type: mcp-prompt-unauth
+
+assert:
+  - condition: prompts_listed_without_auth
+    description: "prompts/list returned templates without authentication"
+    severity: medium
+
+  - condition: prompt_content_readable
+    description: "prompts/get returned full prompt content without authentication"
+    severity: high
+
+remediation: |
+  1. Require authentication (OAuth 2.1 bearer token) before responding to
+     prompts/list and prompts/get requests.
+  2. Return a JSON-RPC error (code -32001) for unauthenticated prompts/* calls.
+  3. Treat prompt templates as potentially sensitive operator configuration;
+     apply the same access control as you would to internal API documentation.

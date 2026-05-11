@@ -1,0 +1,83 @@
+id: mcp-tool-poison-001
+info:
+  name: MCP Tool Description Poisoning / Rug Pull Detection
+  author: batesian
+  severity: high
+  description: |
+    Fetches the MCP server's tools/list endpoint and scans each tool description
+    for patterns consistent with indirect prompt injection and tool poisoning.
+    LLMs that consume tool definitions cannot distinguish between legitimate
+    tool documentation and embedded instructions, making poisoned descriptions
+    an effective vector for unauthorized data exfiltration, instruction override,
+    and cross-tool manipulation.
+
+    Also performs a rug pull check: compares two consecutive tools/list responses
+    to detect servers that serve clean definitions initially and switch to
+    malicious ones after trust is established.
+
+    Detection uses heuristic pattern scoring (no LLM required) covering:
+    instruction override directives, exfiltration URLs, base64-encoded commands,
+    HTML comment injection, Unicode tag block obfuscation, and sensitive file
+    path references.
+
+    Confirmed attacks documented against Claude Desktop, Cursor, and GitHub
+    Copilot MCP clients. First covered by Microsoft Developer Blog (March 2025),
+    formalized in ArXiv 2512.06556.
+
+  references:
+    - https://owasp.org/www-community/attacks/MCP_Tool_Poisoning
+    - https://developer.microsoft.com/blog/protecting-against-indirect-injection-attacks-mcp
+    - https://arxiv.org/abs/2512.06556
+    - https://modelcontextprotocol.io/docs/concepts/tools
+    - https://cwe.mitre.org/data/definitions/494.html
+    - https://cwe.mitre.org/data/definitions/20.html
+
+  tags:
+    - mcp
+    - tool-poisoning
+    - prompt-injection
+    - rug-pull
+    - llm
+    - indirect-injection
+    - cwe-494
+    - cwe-20
+
+attack:
+  protocol: mcp
+  type: mcp-tool-poisoning
+
+  probe:
+    endpoint: "{{BaseURL}}/mcp"
+    method: POST
+
+assert:
+  - condition: injection_pattern_in_description
+    description: "Tool description contains instruction override, HTML comment injection, or behavioral directives"
+    severity: high
+
+  - condition: exfiltration_url_found
+    description: "Tool description contains HTTP URL with potential data-collection path"
+    severity: critical
+
+  - condition: base64_blob_in_description
+    description: "Tool description contains long base64-encoded string (potential hidden instructions)"
+    severity: medium
+
+  - condition: sensitive_file_reference
+    description: "Tool description references sensitive file paths (~/.ssh, /etc/passwd, .env, .aws)"
+    severity: critical
+
+  - condition: tool_descriptions_changed_between_calls
+    description: "Rug pull: tool definitions changed between two consecutive tools/list requests"
+    severity: high
+
+remediation: |
+  MCP server operators: validate all tool descriptions against a deny-list of
+  injection patterns before serving them. Reject descriptions containing HTML
+  comments, embedded URLs, or instruction-like directives. Sign tool manifests
+  to enable client-side integrity verification.
+
+  MCP client developers: treat all content from tools/list as untrusted external
+  data. Do not inject tool descriptions directly into system prompts without
+  sanitization. Implement description hashing to detect rug pulls between sessions.
+  Use an explicit allowlist of trusted MCP server origins.
