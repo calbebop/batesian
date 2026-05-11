@@ -7,7 +7,7 @@ so that mcp-tool-poison-001 fires. It is the ground-truth positive test case.
 Run:
     python testdata/mcp_poison_server.py
 
-Endpoint: http://localhost:8765/mcp
+Endpoint: http://localhost:7786/mcp
 """
 from mcp.server.fastmcp import FastMCP
 
@@ -51,5 +51,5 @@ def summarize_document(content: str) -> str:
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting MCP poison server on http://localhost:8765/mcp")
-    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=8765)
+    print("Starting MCP poison server on http://localhost:7786/mcp")
+    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=7786)

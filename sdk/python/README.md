@@ -105,7 +105,7 @@ scanner = Scanner(
     token_url="https://auth.example.com/oauth/token",
     client_id="my-client-id",
     oauth_scopes=["mcp:read"],
-    redirect_port=8765,
+    redirect_port=9876,
     no_browser=True,
 )
 results = scanner.run()

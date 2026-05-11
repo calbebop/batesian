@@ -146,9 +146,10 @@ Add the routes that exercise the vulnerability to a Python server in
 [`testdata/README.md`](testdata/README.md) when the protocol and theme match;
 add a new file only if no existing server is a natural host. Either way:
 
-- Bind to a documented port. New Starlette/uvicorn servers should pick the next
-  free port in the `77xx` range, FastMCP servers in `87xx`, and "new style"
-  servers in `31xx` (see `testdata/README.md`).
+- Bind to a documented port. Pick the next free port documented in
+  [`testdata/README.md`](testdata/README.md); prefer `77xx` for uvicorn-bound
+  servers in `testdata/`, and use the `31xx` or `9998` bands only when matching
+  an existing convention there.
 - Print startup confirmation lines so the caller can wait for readiness.
 - Implement only the minimum routes needed to trigger the rule(s).
 - Stay within the project test-server dependency set:
