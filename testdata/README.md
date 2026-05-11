@@ -25,9 +25,9 @@ pip install starlette uvicorn httpx mcp
 | `a2a_skill_url_server.py` | 7780 | `a2a-skill-poison-001`, `a2a-url-mismatch-001` |
 | `a2a_tls_capinflation_server.py` | 7782 | `a2a-tls-downgrade-001`, `a2a-capability-inflation-001` |
 | `a2a_remaining_rules_server.py` | 7784 | `a2a-security-headers-001`, `a2a-registry-poison-001`, `a2a-circular-delegation-001` |
-| `mcp_poison_server.py` | 8765 | `mcp-tool-poison-001` |
-| `mcp_unauth_resources_server.py` | 8766 | `mcp-resources-unauth-001` |
-| `mcp_oauth_dcr_server.py` | 8767 | `mcp-oauth-dcr-001` |
+| `mcp_poison_server.py` | 7786 | `mcp-tool-poison-001` |
+| `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
+| `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_new_rules_server.py` | 3100 | `mcp-init-downgrade-001`, `mcp-cors-wildcard-001`, `mcp-prompt-unauth-001` |
 | `mcp_flood_namespace_sse_server.py` | 7781 | `mcp-context-flood-001`, `mcp-tool-namespace-001`, `mcp-sse-hijack-001` |
 | `mcp_injection_server.py` | 7783 | `mcp-init-instructions-inject-001`, `mcp-injection-params-001`, `mcp-ratelimit-absent-001`, `mcp-homoglyph-tool-001` |
@@ -70,9 +70,11 @@ batesian scan --target http://127.0.0.1:9998 --rule-ids a2a-push-ssrf-001 -v
 
 ## Port allocation
 
-When adding a new test server, use the next available port in the `77xx` range
-for Starlette/uvicorn servers. FastMCP servers use `87xx`. New-style servers may
-use `31xx`. Document the port in this table before merging.
+When adding a new test server, pick the next free port, document it in the
+Server Registry table above before merging. Prefer the `77xx` band for servers
+in this directory that bind with uvicorn (Starlette or FastMCP). The `31xx`
+band is used for selected multi-rule MCP/A2A servers; `9998` is reserved for
+the main A2A lab server. Do not reuse a port already listed in the registry.
 
 ---
 

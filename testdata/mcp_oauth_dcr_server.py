@@ -11,8 +11,8 @@ Run:
     python testdata/mcp_oauth_dcr_server.py
 
 Endpoints:
-    GET  http://localhost:8767/.well-known/oauth-authorization-server
-    POST http://localhost:8767/register
+    GET  http://localhost:7788/.well-known/oauth-authorization-server
+    POST http://localhost:7788/register
 """
 import json
 import secrets
@@ -24,7 +24,7 @@ from starlette.routing import Route
 
 
 async def oauth_metadata(request: Request) -> JSONResponse:
-    base = "http://localhost:8767"
+    base = "http://localhost:7788"
     return JSONResponse({
         "issuer": base,
         "authorization_endpoint": f"{base}/authorize",
@@ -64,7 +64,7 @@ routes = [
 app = Starlette(routes=routes)
 
 if __name__ == "__main__":
-    print("Starting vulnerable OAuth DCR server on http://localhost:8767")
+    print("Starting vulnerable OAuth DCR server on http://localhost:7788")
     print("  GET  /.well-known/oauth-authorization-server")
     print("  POST /register  (no auth, accepts any scopes and redirect URIs)")
-    uvicorn.run(app, host="127.0.0.1", port=8767)
+    uvicorn.run(app, host="127.0.0.1", port=7788)

@@ -7,7 +7,7 @@ returns a simulated database connection string containing credentials.
 Run:
     python testdata/mcp_unauth_resources_server.py
 
-Endpoint: http://localhost:8766/mcp
+Endpoint: http://localhost:7787/mcp
 """
 from mcp.server.fastmcp import FastMCP
 
@@ -47,5 +47,5 @@ def ping() -> str:
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting MCP unauthenticated resources server on http://localhost:8766/mcp")
-    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=8766)
+    print("Starting MCP unauthenticated resources server on http://localhost:7787/mcp")
+    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=7787)
