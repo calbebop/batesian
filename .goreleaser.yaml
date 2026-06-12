@@ -1,0 +1,143 @@
+version: 2
+
+project_name: batesian
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: batesian
+    main: ./cmd/batesian
+    binary: batesian
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Exclude windows/arm64 -- uncommon target, adds release size without benefit.
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CONTRIBUTING.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Generate a CycloneDX SBOM for each archive so users can audit dependencies.
+# Requires syft to be available on the runner; the release workflow installs it.
+sboms:
+  - artifacts: archive
+
+# Keyless cosign signing of the checksums file. Each tagged release is signed
+# with a short-lived certificate from Sigstore's Fulcio CA, anchored by the
+# GitHub Actions OIDC token. Verifiers can confirm the binary came from this
+# repo's release pipeline. Requires cosign on the runner and id-token: write
+# permission on the release job.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'merge conflict'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: New attack rules
+      regexp: '^.*?rule(\(.+\))??!?:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 1
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: calbebop
+    name: batesian
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## Batesian {{.Version}}
+
+    Adversarial red-team CLI for AI agent protocols (A2A and MCP).
+    25 bundled attack rules (14 A2A + 11 MCP). Single binary. No runtime dependencies.
+
+    ### Install
+
+    **Go:**
+    ```bash
+    go install github.com/calbebop/batesian/cmd/batesian@{{.Tag}}
+    ```
+
+    **Binary (Linux / macOS):**
+    ```bash
+    # Download the archive for your platform from the assets below, then:
+    tar -xzf batesian_*.tar.gz
+    chmod +x batesian
+    sudo mv batesian /usr/local/bin/
+    ```
+
+    **Binary (Windows):**
+    Download the `.zip` from assets below, extract, and place `batesian.exe` in a directory on your `PATH`.
+
+  footer: |
+    ---
+    {{ if .PreviousTag -}}
+    **Full changelog**: https://github.com/calbebop/batesian/compare/{{.PreviousTag}}...{{.Tag}}
+    {{- else -}}
+    **Full changelog**: https://github.com/calbebop/batesian/commits/{{.Tag}}
+    {{- end }}

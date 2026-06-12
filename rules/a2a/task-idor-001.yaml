@@ -1,0 +1,48 @@
+id: a2a-task-idor-001
+info:
+  name: A2A Task IDOR via Unauthenticated tasks/get
+  author: batesian
+  severity: high
+  description: |
+    Detects broken object-level authorization (IDOR / BOLA) on A2A task lookup:
+    a server that authenticates task creation but does not bind tasks/get to the
+    owning session, so any caller who learns a task UUID can read another
+    principal's conversation history.
+
+    To avoid mislabelling a server that simply has no authentication, the check
+    uses an auth-enforcement discriminator. It (1) creates a task as the
+    authenticated owner, (2) confirms the server REJECTS the same creation when
+    sent with no credentials, then (3) reads the owner's task from an
+    unauthenticated connection. A finding is raised only when creation was
+    auth-gated yet the unauthenticated read still returns the task. If anonymous
+    creation succeeds, the server enforces no auth at all and no IDOR finding is
+    raised. The rule additionally probes GET /v1/tasks and /tasks for
+    unauthenticated server-wide task disclosure.
+
+    Precondition: supply --token so the executor has an authenticated owner
+    identity to test against. Without a token, a properly auth-gated server
+    rejects the creation step and the IDOR check is skipped (the unauthenticated
+    tasks/list probe still runs).
+
+  references:
+    - https://a2aprotocol.ai/docs/specification#tasks
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - a2a
+    - idor
+    - authorization
+    - task
+    - owasp-agentic-top10
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-task-idor
+
+remediation: |
+  Bind every task and contextId to the authenticated session identity at creation
+  time. Verify ownership on every tasks/get, tasks/cancel, and tasks/list request.
+  Return JSON-RPC error -32001 (TaskNotFoundError) for any task that does not
+  belong to the requesting caller - do not reveal whether the task exists.

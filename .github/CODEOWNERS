@@ -1,0 +1,10 @@
+# Default owner for all files
+* @calbebop
+
+# Attack rules and executors
+/rules/ @calbebop
+/internal/attack/ @calbebop
+/internal/engine/ @calbebop
+
+# SDK
+/sdk/ @calbebop

@@ -1,0 +1,80 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+
+  settings:
+    revive:
+      rules:
+        # Execute methods satisfy the internal Executor interface; comments add no value.
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: var-naming
+        - name: unused-parameter
+          disabled: true
+
+    gosec:
+      # G104 is superseded by errcheck. G304/G102/G704 are intentional in a security scanner.
+      excludes:
+        - G104
+        - G304
+        - G102
+        - G704
+      severity: medium
+      confidence: medium
+
+  exclusions:
+    rules:
+      # Test files: relax gosec and errcheck
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+      # main entry point does not need package-level revive rules
+      - path: cmd/batesian/main\.go
+        linters:
+          - revive
+      # defer Close() on http.Response.Body, net.Conn, http.Server is idiomatic Go;
+      # ignoring the error is safe because the body has already been fully read.
+      - text: "Error return value of `.*\\.Close` is not checked"
+        linters:
+          - errcheck
+      # fmt.Fprintf / fmt.Fprintln to an io.Writer in CLI output: write errors
+      # propagate through the terminal and are not actionable here.
+      - text: "Error return value of `fmt\\.F(printf|println|print)` is not checked"
+        linters:
+          - errcheck
+      # tabwriter.Flush errors propagate to the underlying writer.
+      - text: "Error return value of `.*\\.Flush` is not checked"
+        linters:
+          - errcheck
+      # http.Server.Serve returns only after the listener is closed (shutdown path).
+      - text: "Error return value of `.*\\.Serve` is not checked"
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

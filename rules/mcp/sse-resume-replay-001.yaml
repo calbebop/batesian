@@ -1,0 +1,56 @@
+id: mcp-sse-resume-replay-001
+info:
+  name: MCP SSE Resumption Cross-Session Replay (Last-Event-ID)
+  author: batesian
+  severity: high
+  description: |
+    Tests the MCP Streamable HTTP resumption mechanism (2025-03-26 / 2025-06-18),
+    where a client reconnects an SSE stream by sending a Last-Event-ID header and
+    the server MAY replay events emitted after that id. The spec requires that a
+    server MUST NOT replay messages from a DIFFERENT stream/session. A server that
+    replays another session's buffered events to a resuming client leaks one
+    session's data into another (cross-session redelivery, CWE-488), and is also a
+    replay vector (CWE-294).
+
+    The check needs two distinct, server-minted sessions and only confirms a real
+    cross-session leak:
+
+      1. Initialize session A; open A's SSE stream (no Last-Event-ID) and capture
+         a checkpoint event id plus a session-A-specific data marker. If the
+         server does not mint distinct session ids or emits no id-bearing event,
+         the rule cannot test (no finding).
+      2. Initialize session B; confirm B's session id differs from A's.
+      3. As session B, resume from BEFORE A's checkpoint (Last-Event-ID below A's
+         id). A CONFIRMED finding is raised only when B's resumed stream delivers
+         A's exact data marker - i.e., the server replayed session A's event to
+         session B. A server that replays only the requester's own events, or that
+         ignores Last-Event-ID, produces no finding.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+    - https://cwe.mitre.org/data/definitions/488.html
+    - https://cwe.mitre.org/data/definitions/294.html
+
+  tags:
+    - mcp
+    - streamable-http
+    - sse
+    - resumption
+    - replay
+    - cwe-488
+
+attack:
+  protocol: mcp
+  type: mcp-sse-resume-replay
+
+remediation: |
+  1. Scope event ids and any replay buffer to the originating session/stream;
+     when resuming via Last-Event-ID, only replay events that belong to the same
+     session as the reconnecting request.
+  2. Bind the session to its credentials on resume - re-authorize the resuming
+     request and reject a Last-Event-ID that does not belong to the caller's
+     session.
+  3. Use unguessable, per-stream event ids so a resume cannot reference another
+     stream's events.
+  4. Ensure replay does not re-trigger side effects (idempotent delivery) and that
+     event ordering remains monotonic per stream.

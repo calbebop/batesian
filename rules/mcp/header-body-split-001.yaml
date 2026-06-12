@@ -1,0 +1,56 @@
+id: mcp-header-body-split-001
+info:
+  name: MCP Streamable HTTP Header/Body Routing Split-Brain (SEP-2243)
+  author: batesian
+  severity: high
+  description: |
+    Tests for the SEP-2243 "split-brain" class: an MCP Streamable HTTP server
+    that ENFORCES the presence of the Mcp-Method routing header (so intermediaries
+    route/police on it) but does NOT validate that the header value matches the
+    JSON-RPC body. SEP-2243 requires servers to reject a header/body mismatch with
+    400 Bad Request and JSON-RPC error -32001 (HeaderMismatch). A server that
+    requires the header but executes the body method regardless lets an attacker
+    label a sensitive operation with an innocuous Mcp-Method, bypassing any
+    gateway/rate-limiter that trusts the header - "policy on headers, execute on
+    body."
+
+    To avoid false positives on servers that simply don't implement SEP-2243, the
+    rule confirms only when a participation discriminator holds. Three probes, all
+    with body method = tools/list (a safe read):
+
+      1. OMIT Mcp-Method. If accepted, the server does not enforce the header (not
+         SEP-2243-aware) - no finding.
+      2. Mcp-Method: tools/list (matches body). Must be accepted (sanity).
+      3. Mcp-Method: tools/call (mismatch). A compliant server MUST reject (400 /
+         -32001). If it executes the body's tools/list anyway, the server enforces
+         header PRESENCE but not header/body CONSISTENCY - reported CONFIRMED.
+
+  references:
+    - https://modelcontextprotocol.io/seps/2243-http-standardization
+    - https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http
+    - https://cwe.mitre.org/data/definitions/444.html
+    - https://cwe.mitre.org/data/definitions/436.html
+
+  tags:
+    - mcp
+    - streamable-http
+    - sep-2243
+    - routing
+    - request-smuggling
+    - cwe-444
+
+attack:
+  protocol: mcp
+  type: mcp-header-body-split
+
+remediation: |
+  1. Per SEP-2243, validate that Mcp-Method (and Mcp-Name where applicable) match
+     the corresponding request-body values; reject any mismatch with 400 Bad
+     Request and JSON-RPC error code -32001 (HeaderMismatch).
+  2. Do not enforce header PRESENCE while ignoring header VALUE - partial
+     enforcement is worse than none, because intermediaries will trust a header
+     the origin does not validate.
+  3. Gate header trust on MCP-Protocol-Version: intermediaries must reject (not
+     trust) mirrored headers when the negotiated version predates SEP-2243.
+  4. Ensure routing/rate-limiting policy and execution agree on the same method -
+     never authorize on the header and dispatch on the body.

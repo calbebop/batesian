@@ -1,0 +1,55 @@
+id: mcp-oauth-dcr-001
+info:
+  name: MCP OAuth Dynamic Client Registration Scope Escalation
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's OAuth 2.1 dynamic client registration (DCR)
+    endpoint enforces a permitted-scope policy. Open/anonymous DCR is permitted by
+    RFC 7591 and encouraged by the MCP authorization spec, so it is NOT flagged on
+    its own. The rule sends a single UNAUTHENTICATED registration requesting
+    admin/write scopes and reports a finding only when the server returns a granted
+    scope set that still contains a privileged scope token - i.e. it registered an
+    anonymous client as authorized for administrative/write access.
+
+    Granted scopes are compared per whitespace-delimited token (RFC 6749 section 3.3),
+    not by substring, to avoid false positives. A server that rejects the
+    registration (auth required or scope policy) or reduces the granted scope to
+    read-only produces no finding. Redirect-URI shape is intentionally not judged
+    at registration time (loopback redirects are endorsed by RFC 8252, and a
+    client's own external callback cannot be deemed malicious by the server).
+
+    This is the primary authorization attack surface in the MCP 2025-11-05 spec,
+    which mandates OAuth 2.1 with PKCE and DCR for all remote MCP servers.
+
+  references:
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://www.rfc-editor.org/rfc/rfc7591
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://owasp.org/www-project-api-security/
+    - https://cwe.mitre.org/data/definitions/284.html
+    - https://cwe.mitre.org/data/definitions/269.html
+
+  tags:
+    - mcp
+    - oauth
+    - dcr
+    - scope-escalation
+    - authorization
+    - rfc7591
+    - cwe-284
+    - cwe-269
+
+attack:
+  protocol: mcp
+  type: oauth-dcr-scope-escalation
+
+remediation: |
+  1. Require authentication for DCR (Initial Access Token per RFC 7591 section 3.1),
+     or disable public DCR and use pre-registered clients.
+  2. Enforce a server-side permitted scope list; reject (or silently reduce)
+     scopes exceeding what an anonymously-registered client class may hold.
+  3. Enforce exact redirect_uri matching at authorization time per RFC 9700
+     (loopback redirects are permitted for native clients per RFC 8252).
+  4. Bind issued tokens to the resource server via the `aud` claim so tokens
+     cannot be replayed across different MCP endpoints.
