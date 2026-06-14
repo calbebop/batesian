@@ -17,8 +17,10 @@ import (
 // incoming OAuth 2.1 bearer tokens (rule mcp-token-replay-001).
 //
 // Attack sequence:
-//  1. Discover OAuth metadata via /.well-known/oauth-authorization-server.
-//     If absent, skip gracefully (the server does not use OAuth 2.1).
+//  1. Confirm the server participates in OAuth 2.1 / OIDC by probing the known
+//     discovery documents (RFC 9728 protected-resource-metadata, RFC 8414
+//     authorization-server metadata, and OIDC openid-configuration). If none is
+//     present, skip gracefully (the server does not appear to use OAuth).
 //  2. Forge three JWTs using stdlib only (no third-party JWT library):
 //     - no-aud: HS256 token with no aud claim
 //     - wrong-aud: HS256 token with aud pointing to a different server
@@ -49,10 +51,13 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	// Step 1: Discover OAuth metadata. Skip if the server does not use OAuth 2.1.
-	metaURL := vars.BaseURL + "/.well-known/oauth-authorization-server"
-	metaResp, err := client.GET(ctx, metaURL, nil)
-	if err != nil || !metaResp.IsSuccess() {
+	// Step 1: Confirm the server participates in OAuth 2.1 / OIDC before forging
+	// tokens against it. Probe every recognized discovery document, not just the
+	// RFC 8414 authorization-server path: an MCP resource server commonly exposes
+	// only RFC 9728 protected-resource-metadata (its authorization server may be a
+	// separate host), and OIDC deployments expose openid-configuration. Skip when
+	// none is present.
+	if !oauthMetadataPresent(ctx, client, vars.BaseURL) {
 		return nil, nil
 	}
 
@@ -168,6 +173,34 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	}
 
 	return findings, nil
+}
+
+// oauthWellKnownPaths are the discovery documents that signal a server
+// participates in OAuth 2.1 / OIDC. Ordered by MCP relevance: an MCP resource
+// server most often exposes RFC 9728 protected-resource-metadata first; the
+// RFC 8414 authorization-server document and the OIDC openid-configuration
+// document follow. Probing only the authorization-server path produced a silent
+// false negative on the (common) OIDC-first and PRM-only deployments.
+var oauthWellKnownPaths = []string{
+	"/.well-known/oauth-protected-resource",
+	"/.well-known/oauth-authorization-server",
+	"/.well-known/openid-configuration",
+}
+
+// oauthMetadataPresent reports whether the target exposes any recognized OAuth /
+// OIDC discovery document. This is only a gate to avoid forging tokens against
+// servers that plainly do not use OAuth; the document contents are not used.
+func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) bool {
+	for _, p := range oauthWellKnownPaths {
+		resp, err := client.GET(ctx, baseURL+p, nil)
+		if err != nil {
+			continue
+		}
+		if resp.IsSuccess() {
+			return true
+		}
+	}
+	return false
 }
 
 // forgeHS256JWT creates a signed JWT using a random HMAC-SHA256 secret.

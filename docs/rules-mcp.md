@@ -27,7 +27,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-token-replay-001` | [OAuth Token Audience Validation Bypass](#mcp-token-replay-001) | High | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
-| `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | High | confirmed | CWE-757 |
+| `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
@@ -127,17 +127,19 @@ the prompts capability, produces no finding.
 
 ### mcp-init-downgrade-001
 
-**Protocol Version Downgrade Auth Bypass** | Severity: High | CWE-757
+**Protocol Version Downgrade Auth Bypass** | Severity: Critical | CWE-757
 
 Negotiating an older protocol version (`2024-11-05`, which predates the mandatory
 OAuth 2.1 authorization framework) is, by itself, **spec-compliant** and is *not*
 a finding. The rule confirms a true downgrade bypass with a discriminator: it
 calls `resources/list` under both a modern-version session and a legacy-version
-session and compares outcomes. A **confirmed** critical-impact finding is reported
-only when the modern session is rejected (auth enforced) but the legacy session
-succeeds. If both succeed, the server simply has no auth (owned by
-`mcp-resources-unauth-001`); if both are rejected, the server is secure - neither
-produces a finding here.
+session and compares outcomes. The probe runs **unauthenticated** (it ignores any
+`--token`): the bypass is the ability to reach protected functionality without
+credentials, so attaching a token would let an auth-enforcing server grant the
+modern path and mask the bug. A **confirmed** finding is reported only when the
+modern session is rejected (auth enforced) but the legacy session succeeds. If
+both succeed, the server simply has no auth (owned by `mcp-resources-unauth-001`);
+if both are rejected, the server is secure - neither produces a finding here.
 
 ---
 

@@ -50,7 +50,14 @@ const (
 
 func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	client := attack.NewHTTPClient(opts, vars)
+	// Probe UNAUTHENTICATED. This rule detects a server that enforces
+	// authorization under the modern protocol version but not under the legacy
+	// one. If we attached opts.Token, a server that gates the modern path on a
+	// valid token would grant it, so the discriminator (modern REJECTED + legacy
+	// GRANTED) could never fire - silently masking the very bug we look for. A
+	// downgrade auth bypass is, by definition, reaching protected functionality
+	// WITHOUT proper credentials, so the probe must run with no bearer token.
+	client := attack.NewUnauthHTTPClient(opts, vars)
 
 	for _, ep := range endpointCandidates(vars.BaseURL) {
 		findings := e.probeEndpoint(ctx, client, ep)

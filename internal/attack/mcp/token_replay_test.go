@@ -181,6 +181,67 @@ func TestTokenReplay_JSONRPCErrorIsRejection(t *testing.T) {
 	}
 }
 
+// tokenServerWithDiscovery models a vulnerable MCP resource server that exposes
+// its OAuth discovery document at a single well-known path (other than the
+// RFC 8414 authorization-server path) and accepts any bearer token on /mcp.
+// Before the multi-path discovery fix the rule skipped these servers entirely.
+func tokenServerWithDiscovery(t *testing.T, discoveryPath string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + srv.Listener.Addr().String()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case discoveryPath:
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":         base,
+				"token_endpoint": base + "/token",
+			})
+		case "/mcp":
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]interface{}{
+						"protocolVersion": "2024-11-05",
+						"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
+					},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv
+}
+
+// TestTokenReplay_AlternateDiscoveryPaths is the regression guard for the
+// OIDC-only / PRM-only false negative: a vulnerable server that publishes its
+// discovery document at openid-configuration or oauth-protected-resource (but
+// not the RFC 8414 authorization-server path) must still be probed and flagged.
+func TestTokenReplay_AlternateDiscoveryPaths(t *testing.T) {
+	for _, path := range []string{
+		"/.well-known/openid-configuration",
+		"/.well-known/oauth-protected-resource",
+	} {
+		t.Run(path, func(t *testing.T) {
+			ts := tokenServerWithDiscovery(t, path)
+			defer ts.Close()
+
+			exec := mcpattack.NewTokenReplayExecutor(tokenReplayRC())
+			findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) == 0 {
+				t.Fatalf("expected findings when discovery is at %s, got none", path)
+			}
+		})
+	}
+}
+
 func TestTokenReplay_NoOAuthMetadata(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
