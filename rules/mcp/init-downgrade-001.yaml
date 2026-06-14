@@ -2,7 +2,7 @@ id: mcp-init-downgrade-001
 info:
   name: MCP Protocol Version Downgrade Auth Bypass
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Tests whether advertising a protocol version that predates the mandatory
     OAuth 2.1 authorization framework (specifically "2024-11-05", published
