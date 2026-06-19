@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +19,7 @@ func sseRuleCtx() attack.RuleContext {
 }
 
 type sseLogEntry struct {
-	eid  int
+	eid  string
 	sid  string
 	data string
 }
@@ -68,37 +67,54 @@ func resumeServer(mode string) *httptest.Server {
 		leid := r.Header.Get("Last-Event-ID")
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		writeEvent := func(eid int, data string) {
-			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", eid, data)
+		writeEvent := func(eid, data string) {
+			fmt.Fprintf(w, "id: %s\ndata: %s\n\n", eid, data)
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 
 		if leid == "" {
+			// Emit two session-specific events with OPAQUE (non-numeric) ids, so a
+			// resume from the first event's id can replay the second. Real MCP SDKs
+			// mint opaque ids; the spec does not guarantee numeric ones.
 			mu.Lock()
-			eventCounter++
-			eid := eventCounter
-			data := fmt.Sprintf(`{"sid":%q,"secret":"S-%s-%d"}`, sid, sid, eid)
-			log = append(log, sseLogEntry{eid: eid, sid: sid, data: data})
+			var fresh []sseLogEntry
+			for i := 0; i < 2; i++ {
+				eventCounter++
+				eid := fmt.Sprintf("evt-%s-%d", sid, eventCounter)
+				data := fmt.Sprintf(`{"sid":%q,"secret":"S-%s-%d"}`, sid, sid, eventCounter)
+				entry := sseLogEntry{eid: eid, sid: sid, data: data}
+				log = append(log, entry)
+				fresh = append(fresh, entry)
+			}
 			mu.Unlock()
-			writeEvent(eid, data)
+			for _, ev := range fresh {
+				writeEvent(ev.eid, ev.data)
+			}
 			return
 		}
 
-		L, err := strconv.Atoi(leid)
-		if err != nil {
-			L = -1
+		if mode == "ignore" {
+			return // never replays on resume
 		}
 		mu.Lock()
 		snapshot := append([]sseLogEntry(nil), log...)
 		mu.Unlock()
-		for _, ev := range snapshot {
-			if ev.eid <= L || mode == "ignore" {
-				continue
+		// Resume after the event whose opaque id matches Last-Event-ID.
+		start := -1
+		for i, ev := range snapshot {
+			if ev.eid == leid {
+				start = i
+				break
 			}
+		}
+		if start == -1 {
+			return // unknown checkpoint id: nothing to replay
+		}
+		for _, ev := range snapshot[start+1:] {
 			if mode == "secure" && ev.sid != sid {
-				continue
+				continue // compliant: only replay the requester's own events
 			}
 			writeEvent(ev.eid, ev.data)
 		}
@@ -128,6 +144,29 @@ func TestResume_Vulnerable(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Title, "cross-session") {
 		t.Errorf("expected cross-session in title, got %q", findings[0].Title)
+	}
+}
+
+// TestResume_OpaqueEventIDs locks in the opaque-id behaviour. The fixture mints
+// non-numeric event ids, so the executor must resume with the captured id
+// verbatim. The previous numeric-decrement approach resumed from "0", which an
+// opaque-id server does not recognise, so the cross-session replay went
+// undetected (false negative). This test fails against that old behaviour.
+func TestResume_OpaqueEventIDs(t *testing.T) {
+	ts := resumeServer("vulnerable")
+	defer ts.Close()
+
+	findings := runResume(t, ts)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding against opaque-id server, got %d: %+v", len(findings), findings)
+	}
+	// The evidence must show B resumed with A's opaque checkpoint id, not "0".
+	ev := findings[0].Evidence
+	if !strings.Contains(ev, "evt-sess-1-1") {
+		t.Errorf("expected evidence to reference opaque checkpoint id 'evt-sess-1-1', got:\n%s", ev)
+	}
+	if strings.Contains(ev, "Last-Event-ID: 0") {
+		t.Errorf("evidence shows a numeric '0' resume cursor; the opaque id was not used verbatim:\n%s", ev)
 	}
 }
 

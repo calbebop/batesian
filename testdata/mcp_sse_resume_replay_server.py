@@ -6,10 +6,10 @@ Deliberately vulnerable MCP Streamable HTTP test server for validating:
 
 Flow the scanner drives:
   - initialize (POST) -> server mints a distinct Mcp-Session-Id per session
-  - GET (Accept: text/event-stream) with no Last-Event-ID -> emits one
-    session-specific event (id + data) and records it in a GLOBAL log
-  - GET with Last-Event-ID=N -> VULNERABLE: replays every logged event with
-    id > N regardless of which session created it
+  - GET (Accept: text/event-stream) with no Last-Event-ID -> emits two
+    session-specific events with opaque ids and records them in a GLOBAL log
+  - GET with Last-Event-ID=<opaque id> -> VULNERABLE: replays every logged event
+    after that id regardless of which session created it
 
 A compliant server replays only the requesting session's own events.
 
@@ -57,24 +57,31 @@ async def mcp_get(request: Request) -> Response:
     leid = request.headers.get("last-event-id", "")
 
     if leid == "":
-        _events += 1
-        eid = _events
-        data = json.dumps({"sid": sid, "secret": f"S-{sid}-{eid}"})
-        LOG.append({"eid": eid, "sid": sid, "data": data})
+        # Emit two session-specific events with OPAQUE (non-numeric) ids, so a
+        # resume from the first event's id can replay the second. Real MCP SDKs
+        # mint opaque ids; the spec does not guarantee numeric ones.
+        fresh = []
+        for _ in range(2):
+            _events += 1
+            eid = f"evt-{sid}-{_events}"
+            data = json.dumps({"sid": sid, "secret": f"S-{sid}-{_events}"})
+            entry = {"eid": eid, "sid": sid, "data": data}
+            LOG.append(entry)
+            fresh.append(entry)
 
         def gen_new():
-            yield f"id: {eid}\ndata: {data}\n\n"
+            for ev in fresh:
+                yield f"id: {ev['eid']}\ndata: {ev['data']}\n\n"
         return StreamingResponse(gen_new(), media_type="text/event-stream")
 
-    try:
-        last = int(leid)
-    except ValueError:
-        last = -1
+    # Resume after the event whose opaque id matches Last-Event-ID.
+    snapshot = list(LOG)
+    start = next((i for i, ev in enumerate(snapshot) if ev["eid"] == leid), -1)
 
     def gen_resume():
-        # VULNERABLE: replay every buffered event after `last`, any session.
-        for ev in list(LOG):
-            if ev["eid"] > last:
+        # VULNERABLE: replay every buffered event after the checkpoint, any session.
+        if start != -1:
+            for ev in snapshot[start + 1:]:
                 yield f"id: {ev['eid']}\ndata: {ev['data']}\n\n"
     return StreamingResponse(gen_resume(), media_type="text/event-stream")
 

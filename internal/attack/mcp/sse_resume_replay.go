@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -60,10 +59,12 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil // not MCP here, or server mints no session ids (can't prove cross-session)
 	}
 
-	// A's checkpoint: open A's stream and capture an id-bearing, A-specific event.
+	// A's checkpoint: open A's stream and capture an id-bearing event plus the
+	// data of the events that follow it (the session-A-specific markers a resume
+	// from the checkpoint would replay).
 	aEvents := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
-	checkpointID, marker := firstIDAndMarker(aEvents)
-	if checkpointID == "" || marker == "" {
+	checkpointID, markers := resumeCheckpoint(aEvents)
+	if checkpointID == "" || len(markers) == 0 {
 		return nil // no resumable event surface to test
 	}
 
@@ -72,11 +73,13 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil // need a second, distinct server-minted session
 	}
 
-	// As B, resume from before A's checkpoint and see whether A's event is replayed.
-	resumeFrom := lowerEventID(checkpointID)
-	bEvents := e.sseCollect(ctx, raw, ep, tokenB, sessionB, resumeFrom, 3*time.Second)
+	// As B, resume from A's checkpoint id and see whether A's later events are
+	// replayed into B's session. MCP event ids are opaque (spec: Streamable HTTP
+	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
+	bEvents := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
 	for _, ev := range bEvents {
-		if ev.data == marker {
+		if markers[ev.data] {
+			marker := ev.data
 			return []attack.Finding{{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
@@ -89,11 +92,11 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 						"scoped to the originating session, so a client can replay another session's "+
 						"messages - leaking conversation data, tool outputs, or notifications across "+
 						"sessions. The spec requires that resumption MUST NOT replay a different stream's "+
-						"messages.", ep, resumeFrom, marker),
+						"messages.", ep, checkpointID, marker),
 				Evidence: fmt.Sprintf(
 					"endpoint: %s\nsession A: %s (checkpoint event id %s)\nsession B: %s\n"+
 						"B resumed Last-Event-ID: %s\nA's event marker delivered to B: %s",
-					ep, sessionA, checkpointID, sessionB, resumeFrom, marker),
+					ep, sessionA, checkpointID, sessionB, checkpointID, marker),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
 			}}
@@ -200,22 +203,29 @@ func rawSSEClient(opts attack.Options) *http.Client {
 	return &http.Client{Transport: tr}
 }
 
-// firstIDAndMarker returns the id of the first event and the data of the last
-// event (the session-specific marker the server buffered).
-func firstIDAndMarker(events []sseEvent) (id, marker string) {
-	if len(events) == 0 {
-		return "", ""
+// resumeCheckpoint selects the first id-bearing event as the resume cursor and
+// collects the data of every later event as session-specific markers. Resuming
+// from the cursor's exact id asks the server for the events after it, so a
+// vulnerable server replays those markers into a different session. MCP event
+// ids are opaque (spec: Streamable HTTP resumability), so the cursor id is used
+// verbatim with no arithmetic. It returns an empty id when no event carries an
+// id, or no markers when nothing follows the checkpoint (nothing to replay).
+func resumeCheckpoint(events []sseEvent) (checkpointID string, markers map[string]bool) {
+	markers = map[string]bool{}
+	idx := -1
+	for i, ev := range events {
+		if ev.id != "" {
+			idx = i
+			break
+		}
 	}
-	id = events[0].id
-	marker = events[len(events)-1].data
-	return id, marker
-}
-
-// lowerEventID returns an event id one below the given numeric id so a resume
-// asks for everything after it; non-numeric ids fall back to "0".
-func lowerEventID(id string) string {
-	if n, err := strconv.Atoi(id); err == nil && n > 0 {
-		return strconv.Itoa(n - 1)
+	if idx == -1 {
+		return "", markers
 	}
-	return "0"
+	for _, ev := range events[idx+1:] {
+		if ev.data != "" {
+			markers[ev.data] = true
+		}
+	}
+	return events[idx].id, markers
 }
