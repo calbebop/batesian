@@ -113,6 +113,52 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 	}
 }
 
+// TestTaskIDOR_Vulnerable_V03Only verifies the rule still fires against a server
+// that speaks only the v0.3 slash-method binding: it rejects the v1.0 PascalCase
+// methods (SendMessage, GetTask) with a JSON-RPC error over HTTP 200 and accepts
+// only message/send and tasks/get. This exercises the v1.0->v0.3 fallback on both
+// the create and the read path. Without the fallback the create guard short-
+// circuits on the 200+error and the rule never fires (false negative).
+func TestTaskIDOR_Vulnerable_V03Only(t *testing.T) {
+	const taskID, ctxID = "task-v03-abc", "ctx-v03-xyz"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		method, id := decodeRPC(r)
+		switch method {
+		case "message/send":
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required") // creation is auth-gated
+				return
+			}
+			taskResult(w, id, taskID, ctxID)
+		case "tasks/get":
+			taskWithHistory(w, id, taskID, ctxID) // BUG: no ownership check
+		default:
+			// v1.0 PascalCase methods are unknown to this v0.3-only server:
+			// HTTP 200 carrying a JSON-RPC method-not-found error.
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly one IDOR finding against v0.3-only server, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
+	}
+	if findings[0].Severity != "high" {
+		t.Errorf("want high severity, got %q", findings[0].Severity)
+	}
+}
+
 // TestTaskIDOR_Patched: creation is auth-gated AND tasks/get enforces ownership
 // (rejects unauthenticated reads). The rule MUST stay silent.
 func TestTaskIDOR_Patched(t *testing.T) {

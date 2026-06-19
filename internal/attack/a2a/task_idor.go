@@ -68,7 +68,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 				},
 			},
 		})
-		if err != nil || (!resp.IsSuccess() && isJSONRPCError(resp.Body)) {
+		if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
 			resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      "batesian-create-" + vars.RandID,
@@ -107,16 +107,24 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	_, anonAccepted := sendCreate(unauthClient)
 	authEnforcedOnCreate := !anonAccepted
 
-	// Step 3: Read the owner's task from an unauthenticated connection.
+	// Step 3: Read the owner's task from an unauthenticated connection, trying the
+	// v1.0 GetTask shape first and falling back to the v0.3 tasks/get shape so the
+	// read works against either protocol version (mirrors sendCreate above).
+	getParams := map[string]interface{}{"id": taskID, "historyLength": 10}
 	getResp, err := unauthClient.POST(ctx, endpoint, map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "batesian-get-" + vars.RandID,
 		"method":  "GetTask",
-		"params": map[string]interface{}{
-			"id":            taskID,
-			"historyLength": 10,
-		},
+		"params":  getParams,
 	})
+	if err != nil || !getResp.IsSuccess() || isJSONRPCError(getResp.Body) {
+		getResp, err = unauthClient.POST(ctx, endpoint, nil, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "batesian-get-" + vars.RandID,
+			"method":  "tasks/get",
+			"params":  getParams,
+		})
+	}
 	unauthReadSucceeded := err == nil && getResp.IsSuccess() && !isJSONRPCError(getResp.Body) &&
 		getResp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)
 
