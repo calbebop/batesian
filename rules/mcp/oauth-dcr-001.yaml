@@ -6,7 +6,7 @@ info:
   description: |
     Tests whether an MCP server's OAuth 2.1 dynamic client registration (DCR)
     endpoint enforces a permitted-scope policy. Open/anonymous DCR is permitted by
-    RFC 7591 and encouraged by the MCP authorization spec, so it is NOT flagged on
+    RFC 7591 and supported by the MCP authorization spec, so it is NOT flagged on
     its own. The rule sends a single UNAUTHENTICATED registration requesting
     admin/write scopes and reports a finding only when the server returns a granted
     scope set that still contains a privileged scope token - i.e. it registered an
@@ -19,11 +19,15 @@ info:
     at registration time (loopback redirects are endorsed by RFC 8252, and a
     client's own external callback cannot be deemed malicious by the server).
 
-    This is the primary authorization attack surface in the MCP 2025-11-05 spec,
-    which mandates OAuth 2.1 with PKCE and DCR for all remote MCP servers.
+    DCR is an optional part of MCP's OAuth 2.1 authorization model: the 2025-06-18
+    spec says clients and authorization servers SHOULD support RFC 7591, and the
+    2025-11-25 revision relaxes that to MAY (preferring Client ID Metadata
+    Documents). Where a server exposes open DCR, granting an anonymous client
+    privileged scopes is the attack surface this rule probes.
 
   references:
-    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
     - https://www.rfc-editor.org/rfc/rfc7591
     - https://www.rfc-editor.org/rfc/rfc9700
     - https://owasp.org/www-project-api-security/
