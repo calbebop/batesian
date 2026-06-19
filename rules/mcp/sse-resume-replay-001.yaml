@@ -16,13 +16,15 @@ info:
     cross-session leak:
 
       1. Initialize session A; open A's SSE stream (no Last-Event-ID) and capture
-         a checkpoint event id plus a session-A-specific data marker. If the
-         server does not mint distinct session ids or emits no id-bearing event,
-         the rule cannot test (no finding).
+         an id-bearing checkpoint event plus the data of a later session-A event
+         as a marker. If the server does not mint distinct session ids, or emits
+         no id-bearing event with a later event to replay, the rule cannot test
+         (no finding).
       2. Initialize session B; confirm B's session id differs from A's.
-      3. As session B, resume from BEFORE A's checkpoint (Last-Event-ID below A's
-         id). A CONFIRMED finding is raised only when B's resumed stream delivers
-         A's exact data marker - i.e., the server replayed session A's event to
+      3. As session B, resume with A's checkpoint id (Last-Event-ID set to A's
+         exact event id; the spec treats event ids as opaque, so no arithmetic is
+         applied). A CONFIRMED finding is raised only when B's resumed stream
+         delivers A's data marker - i.e., the server replayed session A's event to
          session B. A server that replays only the requester's own events, or that
          ignores Last-Event-ID, produces no finding.
 
