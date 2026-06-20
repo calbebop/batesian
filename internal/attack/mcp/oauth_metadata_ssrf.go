@@ -102,7 +102,7 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	}
 
 	// Local OOB: wait for the server to fetch one of the seeded URLs.
-	cb, received := listener.Wait(ctx, 10*time.Second)
+	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "batesian-"+vars.RandID)
 	if !received {
 		return nil, nil
 	}
