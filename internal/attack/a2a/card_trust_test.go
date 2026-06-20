@@ -83,14 +83,15 @@ func onlyFinding(t *testing.T, findings []attack.Finding) attack.Finding {
 }
 
 // TestCardTrust_SignatureStripping: signed on primary path, unsigned on legacy.
-// MUST fire confirmed/high.
+// MUST fire indicator/high (a read-only analyzer observes the unsigned path but
+// cannot prove a verifier is bypassed).
 func TestCardTrust_SignatureStripping(t *testing.T) {
 	ts := cardServer(signedCard("https://agent.example/", future()), unsignedCard("https://agent.example/"), "no-store")
 	defer ts.Close()
 
 	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
+		t.Errorf("want high/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
 	}
 }
 
@@ -145,15 +146,16 @@ func TestCardTrust_NoExpirySignature(t *testing.T) {
 }
 
 // TestCardTrust_ExpiredSignature: consistent signed card whose signature exp is
-// in the past. MUST fire confirmed/medium.
+// in the past. MUST fire indicator/medium (a compliant verifier rejects it; the
+// scanner cannot prove the target's verifier ignores exp).
 func TestCardTrust_ExpiredSignature(t *testing.T) {
 	card := signedCard("https://agent.example/", past())
 	ts := cardServer(card, card, "no-store")
 	defer ts.Close()
 
 	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "medium" {
-		t.Errorf("want medium/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
+		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
 	}
 }
 

@@ -80,9 +80,11 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 			// canary landing in an authority/URL field (url, endpoint, *.url, or
 			// any value that is itself a URL) - that is the agent's advertised
 			// service location which other agents and registries trust and cache.
-			// Reflection into a non-URL field (e.g. name, description) is a real
-			// injection primitive but far lower direct impact, so it is reported
-			// as a RiskIndicator rather than a confirmed host-injection exploit.
+			// Both cases are RiskIndicators: the scanner proves only that the
+			// server reflects the header into the card, not that an attacker can
+			// set that header for a victim or that a cache serves the poisoned
+			// card. A URL-field reflection carries higher severity because its
+			// impact, if the header is influenceable, is service-URL takeover.
 			var urlPaths, otherPaths []string
 			for _, rf := range reflections {
 				if isAuthorityField(rf.path) || strings.Contains(rf.value, "://") {
@@ -96,7 +98,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 			impact := "a non-URL field, which is a reflection primitive but not directly a " +
 				"service-URL takeover; verify whether any consumer trusts this field"
 			if len(urlPaths) > 0 {
-				severity, confidence, reflectedIn = "high", attack.ConfirmedExploit, urlPaths
+				severity, confidence, reflectedIn = "high", attack.RiskIndicator, urlPaths
 				impact = "an authority/URL field. An attacker who can influence this header " +
 					"(via a caching layer, HTTP request smuggling, or cache poisoning) can make " +
 					"other agents or registries that cache this card resolve the agent's service " +

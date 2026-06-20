@@ -25,9 +25,10 @@ const (
 // well-known paths, cache/TTL of the trust anchor, and signature freshness.
 //
 // It only reads what the server exposes (it does not forge or verify
-// signatures), so most findings are RiskIndicators; the cases it can demonstrate
-// outright - a signed-vs-unsigned path split, or an already-expired signature
-// still being served - are reported as ConfirmedExploit.
+// signatures), so every finding is a RiskIndicator: it observes a weak or
+// inconsistent trust posture (a signed-vs-unsigned path split, an already-expired
+// signature still being served, long-lived caching) but cannot demonstrate that
+// a verifier is actually bypassed. Each finding recommends manual verification.
 type CardTrustExecutor struct {
 	rule attack.RuleContext
 }
@@ -90,13 +91,14 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
 			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
+			Confidence: attack.RiskIndicator,
 			Title:      "A2A agent card is signed on one well-known path but unsigned on the other (signature stripping)",
 			Description: fmt.Sprintf(
 				"%s serves a card WITH JWS signatures while %s serves the same agent's card WITHOUT "+
-					"signatures. An attacker or MITM can steer a client to the unsigned path to bypass "+
-					"signature verification entirely, then substitute forged routing, capability, or "+
-					"security-scheme fields.", signedURL, unsignedURL),
+					"signatures. An attacker or MITM who can steer a client to the unsigned path could "+
+					"bypass signature verification entirely, then substitute forged routing, capability, or "+
+					"security-scheme fields. Manually verify whether clients resolve the unsigned path and "+
+					"skip signature verification.", signedURL, unsignedURL),
 			Evidence:    fmt.Sprintf("signed path: %s\nunsigned path: %s", signedURL, unsignedURL),
 			Remediation: e.rule.Remediation,
 			TargetURL:   unsignedURL,
@@ -210,12 +212,13 @@ func (e *CardTrustExecutor) checkSignatureFreshness(cardURL string, cardBody []b
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "medium",
-				Confidence: attack.ConfirmedExploit,
+				Confidence: attack.RiskIndicator,
 				Title:      fmt.Sprintf("A2A agent card signatures[%d] is expired but still served", i),
 				Description: fmt.Sprintf(
 					"The card signature's protected header declares exp=%d, which is in the past, yet the "+
-						"server still serves this signature as the live card. A verifier that ignores exp "+
-						"will trust a signature that should no longer be valid.", exp),
+						"server still serves this signature as the live card. A compliant verifier rejects an "+
+						"expired signature; this is exploitable only against a verifier that ignores exp. "+
+						"Manually verify whether the target's clients enforce signature expiry.", exp),
 				Evidence:    fmt.Sprintf("signatures[%d].protected exp=%d (now=%d, expired %ds ago)", i, exp, now, now-exp),
 				Remediation: e.rule.Remediation,
 				TargetURL:   cardURL,
