@@ -61,3 +61,20 @@ func TestUserAgent_IncludesVersion(t *testing.T) {
 		t.Errorf("expected User-Agent to contain batesian/0.99.0-test, got %q", seen)
 	}
 }
+
+// TestResponseContainsAny_SkipsEmptySubstring guards against the empty-needle
+// false positive: strings.Contains(body, "") is always true, so an optional,
+// absent value (e.g. a missing contextId) must not match any body.
+func TestResponseContainsAny_SkipsEmptySubstring(t *testing.T) {
+	r := &attack.Response{Body: []byte(`{"jsonrpc":"2.0","result":null}`)}
+
+	if r.ContainsAny("") {
+		t.Error(`ContainsAny("") matched; empty needle must be skipped`)
+	}
+	if r.ContainsAny("", "absent") {
+		t.Error(`ContainsAny("", "absent") matched; neither needle is present`)
+	}
+	if !r.ContainsAny("", "result") {
+		t.Error(`ContainsAny("", "result") did not match a present non-empty needle`)
+	}
+}
