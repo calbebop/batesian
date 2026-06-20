@@ -33,6 +33,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
 | `mcp-oauth-metadata-ssrf-001` | [OAuth Discovery / Metadata-Fetch SSRF](#mcp-oauth-metadata-ssrf-001) | High | confirmed / indicator | CWE-918 |
 | `mcp-secret-canary-001` | [Credential Canary Reflected in Responses](#mcp-secret-canary-001) | Medium | confirmed | CWE-522 |
+| `mcp-confused-deputy-001` | [OAuth Confused Deputy via redirect_uri](#mcp-confused-deputy-001) | High / Medium | confirmed / indicator | CWE-441 |
 
 ---
 
@@ -244,3 +245,27 @@ that rejects or errors without echoing the token produces no finding. The canary
 is unique per run, so a substring match cannot false-positive. This is the
 black-box-observable half of secret leakage; verifying secrets never reach
 external log/trace sinks additionally requires access to those sinks.
+
+---
+
+### mcp-confused-deputy-001
+
+**OAuth Confused Deputy via redirect_uri Validation** | Severity: High / Medium | CWE-441 / CWE-601
+
+An MCP server that proxies OAuth to a third-party authorization server with a
+static client_id, while forwarding a client-supplied redirect_uri, is open to a
+confused deputy attack: once the upstream consent screen is skipped (a consent
+cookie for the static client_id), an attacker who supplies their own redirect_uri
+harvests the authorization code. The MCP Security Best Practices require exact
+redirect_uri matching and per-client consent, and RFC 6749 Section 4.1.2.1
+requires the server to reject a mismatching redirect_uri and not redirect to it.
+The check registers a client via DCR with an off-origin redirect, then requests
+`/authorize` with a different, unregistered off-origin redirect (both on the
+reserved `.invalid` TLD, so they never resolve and no code is ever harvested). A
+**confirmed** finding is raised only when the server answers with a 3xx whose
+Location host is the unregistered redirect - a direct exact-match violation. If
+DCR instead accepted the arbitrary off-origin redirect but the authorize-time
+check could not be disproven, an **indicator** is raised for the precondition.
+Servers with no DCR endpoint (e.g. 2025-11-25 Client ID Metadata Document
+deployments) or no authorization endpoint are out of scope and produce no
+finding.
