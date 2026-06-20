@@ -41,8 +41,8 @@ func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 		if f.Severity != "high" {
 			t.Errorf("expected high severity, got %s", f.Severity)
 		}
-		if f.Confidence != attack.ConfirmedExploit {
-			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
+		if f.Confidence != attack.RiskIndicator {
+			t.Errorf("expected RiskIndicator, got %v", f.Confidence)
 		}
 	}
 }
@@ -72,7 +72,8 @@ func TestWellKnownHostInject_HardcodedURL(t *testing.T) {
 
 // TestWellKnownHostInject_HostHeaderReflected verifies the forged Host header
 // actually reaches the server (req.Host plumbing) and a reflection into the url
-// field is reported as a high/ConfirmedExploit.
+// field is reported as a high/RiskIndicator (reflection is proven; the
+// attacker-influences-header precondition is not).
 func TestWellKnownHostInject_HostHeaderReflected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only trusts the real Host header (not X-Forwarded-*).
@@ -94,8 +95,8 @@ func TestWellKnownHostInject_HostHeaderReflected(t *testing.T) {
 	if len(findings) == 0 {
 		t.Fatal("expected a finding when the forged Host header is reflected into url")
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("expected high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "high" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("expected high/RiskIndicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 }
 
