@@ -14,7 +14,7 @@ import (
 // authorized for high-privilege scopes (rule mcp-oauth-dcr-001).
 //
 // Scope is deliberately narrow. Open/anonymous DCR is permitted by RFC 7591 and
-// encouraged by the MCP authorization spec, so it is NOT reported on its own.
+// supported by the MCP authorization spec, so it is NOT reported on its own.
 // Redirect-URI shape is also not judged at registration time: loopback redirects
 // are endorsed by RFC 8252 and a client's own external callback cannot be deemed
 // malicious by the server. The single high-value, protocol-specific failure is
@@ -26,6 +26,11 @@ import (
 //  3. Fire only when the server returns a granted `scope` containing a
 //     privileged scope token - i.e. it registered an anonymous client as
 //     authorized for those scopes.
+//
+// This is registration-time evidence only: a permissive granted `scope` shows
+// the server did not restrict the requested scopes, but whether a privileged
+// token is actually issued depends on the grant/consent step. The finding is
+// therefore a RiskIndicator, not a demonstrated escalation.
 type OAuthDCRExecutor struct {
 	rule attack.RuleContext
 }
@@ -88,14 +93,15 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "critical",
-		Confidence: attack.ConfirmedExploit,
+		Severity:   e.rule.Severity,
+		Confidence: attack.RiskIndicator,
 		Title:      "MCP OAuth DCR registered an unauthenticated client with admin/write scopes",
 		Description: fmt.Sprintf("The dynamic client registration endpoint at %s accepted an unauthenticated "+
 			"registration and returned a granted scope set containing privileged scopes %v. The authorization "+
 			"server registered an anonymous client as authorized to request admin/write access; per RFC 7591 the "+
-			"server's registration policy must restrict the scopes it grants. (Whether a token is ultimately issued "+
-			"still depends on the grant/consent step, but the registration-time scope policy has demonstrably failed.)",
+			"server's registration policy should restrict the scopes it grants. Whether a privileged token is "+
+			"actually issued depends on the grant/consent step, so manually verify whether the authorization "+
+			"server issues a token with these scopes to the anonymous client.",
 			registrationEndpoint, granted),
 		Evidence:    fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\n%s", escalatedScope, grantedScope, granted, escalatedResp.StatusCode, registrationEndpoint, snippetMCP(escalatedResp.Body)),
 		Remediation: e.rule.Remediation,

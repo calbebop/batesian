@@ -148,8 +148,9 @@ func authGatedDCRServer(t *testing.T) *httptest.Server {
 }
 
 // TestOAuthDCR_VulnerableScopeEscalation: anonymous registration is accepted and
-// admin/write scopes are granted. The rule MUST fire with a single critical
-// confirmed finding.
+// admin/write scopes are granted. The rule MUST fire with a single finding at the
+// declared severity, as an indicator (registration-time evidence; token issuance
+// is not demonstrated).
 func TestOAuthDCR_VulnerableScopeEscalation(t *testing.T) {
 	ts := vulnerableOAuthServer(t)
 	defer ts.Close()
@@ -162,11 +163,11 @@ func TestOAuthDCR_VulnerableScopeEscalation(t *testing.T) {
 		t.Fatalf("expected exactly one finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Severity != "critical" {
-		t.Errorf("want critical severity, got %q", f.Severity)
+	if f.Severity != oauthRC().Severity {
+		t.Errorf("want declared severity %q, got %q", oauthRC().Severity, f.Severity)
 	}
-	if f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want ConfirmedExploit, got %q", f.Confidence)
+	if f.Confidence != attack.RiskIndicator {
+		t.Errorf("want RiskIndicator, got %q", f.Confidence)
 	}
 	if f.RuleID != oauthRC().ID {
 		t.Errorf("RuleID = %q, want %q", f.RuleID, oauthRC().ID)
