@@ -5,7 +5,7 @@ Integrating into CI takes two lines on top of the scan command.
 
 ## GitHub Actions
 
-### Basic scan -- fail on high+ findings
+### Basic scan (upload SARIF to Code Scanning)
 
 ```yaml
 # .github/workflows/agent-security.yml
@@ -106,25 +106,26 @@ Set these in **Settings > Secrets and variables > Actions**.
 
 ## OOB / SSRF detection in CI
 
-The push-notification SSRF rule (`a2a-push-ssrf-001`) requires an
-out-of-band callback listener. In CI, start the OOB listener with `--oob`:
+The push-notification SSRF rule (`a2a-push-ssrf-001`) and the OAuth metadata
+SSRF rule (`mcp-oauth-metadata-ssrf-001`) confirm findings via an out-of-band
+callback. Each rule starts a local HTTP listener automatically for the run, so
+no extra flag is needed:
 
 ```yaml
-      - name: Run scan with OOB listener
+      - name: Run scan (OOB SSRF detection is automatic)
         run: |
           batesian scan \
             --target ${{ vars.AGENT_TARGET_URL }} \
-            --oob \
             --output sarif \
             > results.sarif
 ```
 
-The `--oob` flag starts a local HTTP listener on a random port and derives the
-callback URL from the host's detected outbound interface IP (typically a private
-or RFC 1918 address). On GitHub Actions runners, this IP is not publicly
-routable, so the target agent must be on the same network as the runner to
-receive the callback. For production CI where the target is external, use
-`--oob-url` to point to a pre-configured externally reachable listener instead.
+The local listener binds a random port and derives the callback URL from the
+host's detected outbound interface IP (typically a private or RFC 1918 address).
+On GitHub Actions runners this IP is not publicly routable, so the target agent
+must be on the same network as the runner to deliver the callback. For
+production CI where the target is external, pass `--oob-url` to point at a
+pre-configured, externally reachable listener instead.
 
 ## GitLab CI
 
