@@ -61,9 +61,10 @@ func WithBearerToken(token string) ClientOption {
 func WithSkipTLSVerify() ClientOption {
 	return func(c *Client) {
 		if transport, ok := c.http.Transport.(*http.Transport); ok {
-			if transport.TLSClientConfig != nil {
-				transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
+			if transport.TLSClientConfig == nil {
+				transport.TLSClientConfig = &tls.Config{} //nolint:gosec
 			}
+			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
 		}
 	}
 }
