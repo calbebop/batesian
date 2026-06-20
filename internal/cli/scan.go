@@ -121,9 +121,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
-	if !skipTLS {
-		skipTLS = cfg.SkipTLS
-	}
+	skipTLS = effectiveSkipTLS(cmd.Flags().Changed("skip-tls"), skipTLS, cfg.SkipTLS)
 	if oobURL == "" {
 		oobURL = cfg.OOBURL
 	}
@@ -374,6 +372,17 @@ func effectiveTimeout(flagChanged bool, flagVal, cfgVal int) int {
 		return cfgVal
 	}
 	return flagVal
+}
+
+// effectiveSkipTLS resolves --skip-tls from the flag and config. An explicitly-set
+// flag always wins, so `--skip-tls=false` overrides a config `skipTLS: true`
+// instead of being masked by the false-is-default sentinel; otherwise the config
+// value is used.
+func effectiveSkipTLS(flagChanged, flagVal, cfgVal bool) bool {
+	if flagChanged {
+		return flagVal
+	}
+	return cfgVal
 }
 
 // fetchOAuthToken acquires a bearer token via client credentials grant.

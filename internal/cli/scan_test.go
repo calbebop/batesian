@@ -94,3 +94,27 @@ func TestEffectiveTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveSkipTLS(t *testing.T) {
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagVal     bool
+		cfgVal      bool
+		want        bool
+	}{
+		// The bug this guards: an explicit --skip-tls=false must override a config
+		// that sets skipTLS: true.
+		{"explicit false overrides config true", true, false, true, false},
+		{"explicit true used", true, true, false, true},
+		{"config used when flag not set", false, false, true, true},
+		{"both unset", false, false, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveSkipTLS(tc.flagChanged, tc.flagVal, tc.cfgVal); got != tc.want {
+				t.Errorf("effectiveSkipTLS(%v, %v, %v) = %v, want %v", tc.flagChanged, tc.flagVal, tc.cfgVal, got, tc.want)
+			}
+		})
+	}
+}
