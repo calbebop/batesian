@@ -69,3 +69,28 @@ func TestBuildPrincipals_Empty(t *testing.T) {
 		t.Errorf("expected no principals, got %d", len(got))
 	}
 }
+
+func TestEffectiveTimeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagVal     int
+		cfgVal      int
+		want        int
+	}{
+		// The bug this guards: an explicit --timeout 10 (equal to the default)
+		// must not be overridden by a config value.
+		{"explicit flag equal to default wins over config", true, 10, 30, 10},
+		{"explicit flag wins even when config is zero", true, 25, 0, 25},
+		{"config used when flag not set", false, 10, 30, 30},
+		{"flag default when neither set", false, 10, 0, 10},
+		{"non-positive config ignored", false, 10, -5, 10},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveTimeout(tc.flagChanged, tc.flagVal, tc.cfgVal); got != tc.want {
+				t.Errorf("effectiveTimeout(%v, %d, %d) = %d, want %d", tc.flagChanged, tc.flagVal, tc.cfgVal, got, tc.want)
+			}
+		})
+	}
+}
