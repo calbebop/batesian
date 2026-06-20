@@ -1,6 +1,9 @@
 # CI/CD Integration
 
-Batesian outputs SARIF, which GitHub natively ingests as Code Scanning alerts.
+Batesian outputs SARIF, consumed by SARIF tooling (DAST viewers, dashboards) and
+uploadable to GitHub Code Scanning. Note that Batesian findings are network
+targets, not files in the repository, so GitHub surfaces them as alerts without
+source-line annotations (it resolves SARIF locations as repository paths).
 Integrating into CI takes two lines on top of the scan command.
 
 ## GitHub Actions
