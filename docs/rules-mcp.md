@@ -34,6 +34,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-oauth-metadata-ssrf-001` | [OAuth Discovery / Metadata-Fetch SSRF](#mcp-oauth-metadata-ssrf-001) | High | confirmed / indicator | CWE-918 |
 | `mcp-secret-canary-001` | [Credential Canary Reflected in Responses](#mcp-secret-canary-001) | Medium | confirmed | CWE-522 |
 | `mcp-confused-deputy-001` | [OAuth Confused Deputy via redirect_uri](#mcp-confused-deputy-001) | High / Medium | confirmed / indicator | CWE-441 |
+| `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
 
 ---
 
@@ -274,3 +275,23 @@ check could not be disproven, an **indicator** is raised for the precondition.
 Servers with no DCR endpoint (e.g. 2025-11-25 Client ID Metadata Document
 deployments) or no authorization endpoint are out of scope and produce no
 finding.
+
+---
+
+### mcp-dns-rebind-origin-001
+
+**Origin Validation / DNS Rebinding** | Severity: High | CWE-350 / CWE-346
+
+The Streamable HTTP transport requires servers to validate the Origin header on
+every connection and respond `HTTP 403 Forbidden` to a present, invalid Origin,
+to prevent DNS rebinding. The rule first POSTs a normal `initialize` with no
+Origin (baseline: it must be accepted, confirming a responsive MCP endpoint),
+then POSTs the same `initialize` with a foreign Origin
+(`https://dns-rebind.batesian.invalid`, a non-resolving RFC 6761 host no server
+should allowlist) - the only difference is the Origin header. A **confirmed**
+finding is raised when the server still returns a JSON-RPC result for the
+foreign-Origin request instead of rejecting it with 403. DNS-rebinding
+exploitation additionally requires the server to be reachable from a victim's
+browser (a local or same-network bind), which the operator confirms for the
+deployment; this is the class behind the MCP Inspector RCE (CVE-2025-49596). A
+server that answers the foreign Origin with 403 produces no finding.
