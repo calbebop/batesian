@@ -13,8 +13,12 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TokenReplayExecutor tests whether an MCP server validates the `aud` claim on
-// incoming OAuth 2.1 bearer tokens (rule mcp-token-replay-001).
+// TokenReplayExecutor tests whether an MCP server accepts forged or unsigned
+// OAuth 2.1 bearer tokens (rule mcp-token-replay-001). The HS256 probes are
+// signed with a random secret the server cannot know, so acceptance proves the
+// server does not validate the token signature - which also defeats audience
+// binding and enables cross-audience replay. Audience-matching bugs on
+// signature-valid tokens are isolated separately by mcp-oauth-audience-002.
 //
 // Attack sequence:
 //  1. Confirm the server participates in OAuth 2.1 / OIDC by probing the known
@@ -107,20 +111,23 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			name:      "no-aud",
 			token:     noAudToken,
 			severity:  "high",
-			titleSufx: "accepted JWT with missing aud claim",
-			descSufx: "The server accepted a bearer token that carries no `aud` (audience) claim. " +
-				"Per RFC 9068, a resource server must reject tokens where the audience is absent " +
-				"or does not include the server's own identifier. Tokens issued for any other " +
-				"service can be replayed against this server.",
+			titleSufx: "accepted a forged-signature JWT with no aud claim",
+			descSufx: "The server accepted a bearer token whose HMAC signature was computed with a " +
+				"random key the server cannot know, and which carries no `aud` (audience) claim. " +
+				"Acceptance proves the server does not verify the token signature; with signature " +
+				"validation absent, audience binding (RFC 9068) cannot be enforced and a token forged " +
+				"or issued for any other service can be replayed against this server.",
 		},
 		{
 			name:      "wrong-aud",
 			token:     wrongAudToken,
 			severity:  "high",
-			titleSufx: "accepted JWT with wrong aud claim",
-			descSufx: "The server accepted a bearer token whose `aud` claim names a completely " +
-				"different resource server (https://wrong-server.example.com). This means tokens " +
-				"issued for unrelated services can be replayed against this MCP endpoint.",
+			titleSufx: "accepted a forged-signature JWT with a wrong aud claim",
+			descSufx: "The server accepted a bearer token whose HMAC signature was computed with a " +
+				"random key the server cannot know, and whose `aud` claim names a different resource " +
+				"server (https://wrong-server.example.com). Acceptance proves the server does not " +
+				"verify the token signature, so any forged token - including one minted for another " +
+				"audience - is accepted and cross-service token replay is possible.",
 		},
 		{
 			name:      "alg-none",
