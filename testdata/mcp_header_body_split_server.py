@@ -6,7 +6,8 @@ Deliberately vulnerable MCP Streamable HTTP test server for validating:
     Mcp-Method: tools/call and body method tools/list is still executed as
     tools/list - a header/body "split-brain" (CWE-444).
 
-A compliant server MUST reject a mismatch with 400 + JSON-RPC error -32001.
+A compliant server MUST reject a mismatch with 400 + JSON-RPC error -32020
+(-32001 in the original SEP-2243 draft).
 
 Validate against it:
   python testdata/mcp_header_body_split_server.py
@@ -43,7 +44,7 @@ async def mcp(request: Request) -> Response:
         if not mcp_method:
             return JSONResponse(status_code=400, content={
                 "jsonrpc": "2.0", "id": req_id,
-                "error": {"code": -32001, "message": "HeaderMismatch: missing Mcp-Method"}})
+                "error": {"code": -32020, "message": "HeaderMismatch: missing Mcp-Method"}})
         return JSONResponse({"jsonrpc": "2.0", "id": req_id,
                              "result": {"tools": [{"name": "echo", "description": "echo"}]}})
     return JSONResponse(status_code=400, content={"jsonrpc": "2.0", "id": req_id,

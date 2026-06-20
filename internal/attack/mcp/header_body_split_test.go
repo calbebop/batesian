@@ -19,7 +19,7 @@ func hbsRuleCtx() attack.RuleContext {
 // splitServer models a Streamable HTTP MCP server. mode selects header handling
 // for tools/list (initialize always succeeds):
 //   - "split":     requires Mcp-Method presence but ignores its VALUE (vulnerable)
-//   - "strict":    rejects missing OR mismatched Mcp-Method with 400/-32001
+//   - "strict":    rejects missing OR mismatched Mcp-Method with 400/-32020
 //   - "unaware":   ignores Mcp-Method entirely (not SEP-2243-aware)
 func splitServer(mode string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +40,7 @@ func splitServer(mode string) *httptest.Server {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"error": map[string]interface{}{"code": -32001, "message": "HeaderMismatch"},
+				"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
 			})
 		}
 

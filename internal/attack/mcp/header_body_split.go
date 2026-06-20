@@ -70,14 +70,15 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 			Description: fmt.Sprintf(
 				"At %s, a tools/list request was REJECTED when the Mcp-Method header was omitted (the "+
 					"server enforces header presence), but a tools/list request with a MISMATCHED "+
-					"Mcp-Method: tools/call header was still EXECUTED as tools/list. SEP-2243 requires "+
-					"rejecting such a mismatch with 400 / -32001. Because the header is enforced for "+
+					"Mcp-Method: tools/call header was still EXECUTED as tools/list. The MCP Streamable "+
+					"HTTP spec requires rejecting such a mismatch with 400 / -32020 (HeaderMismatch). "+
+					"Because the header is enforced for "+
 					"presence but not value, an intermediary that routes or rate-limits on Mcp-Method can "+
 					"be bypassed by labelling a sensitive body operation with an innocuous method.",
 				ep),
 			Evidence: fmt.Sprintf(
 				"endpoint: %s\nomit Mcp-Method: rejected (presence enforced)\nMcp-Method: tools/list (match): executed\n"+
-					"Mcp-Method: tools/call (mismatch) + body tools/list: EXECUTED body (should be 400/-32001)",
+					"Mcp-Method: tools/call (mismatch) + body tools/list: EXECUTED body (should be 400/-32020)",
 				ep),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,

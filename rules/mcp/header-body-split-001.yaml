@@ -7,8 +7,9 @@ info:
     Tests for the SEP-2243 "split-brain" class: an MCP Streamable HTTP server
     that ENFORCES the presence of the Mcp-Method routing header (so intermediaries
     route/police on it) but does NOT validate that the header value matches the
-    JSON-RPC body. SEP-2243 requires servers to reject a header/body mismatch with
-    400 Bad Request and JSON-RPC error -32001 (HeaderMismatch). A server that
+    JSON-RPC body. The MCP Streamable HTTP spec requires servers to reject a
+    header/body mismatch with 400 Bad Request and JSON-RPC error -32020
+    (HeaderMismatch; the original SEP-2243 draft used -32001). A server that
     requires the header but executes the body method regardless lets an attacker
     label a sensitive operation with an innocuous Mcp-Method, bypassing any
     gateway/rate-limiter that trusts the header - "policy on headers, execute on
@@ -22,7 +23,7 @@ info:
          SEP-2243-aware) - no finding.
       2. Mcp-Method: tools/list (matches body). Must be accepted (sanity).
       3. Mcp-Method: tools/call (mismatch). A compliant server MUST reject (400 /
-         -32001). If it executes the body's tools/list anyway, the server enforces
+         -32020). If it executes the body's tools/list anyway, the server enforces
          header PRESENCE but not header/body CONSISTENCY - reported CONFIRMED.
 
   references:
@@ -46,7 +47,8 @@ attack:
 remediation: |
   1. Per SEP-2243, validate that Mcp-Method (and Mcp-Name where applicable) match
      the corresponding request-body values; reject any mismatch with 400 Bad
-     Request and JSON-RPC error code -32001 (HeaderMismatch).
+     Request and JSON-RPC error code -32020 (HeaderMismatch; -32001 in the
+     original SEP-2243 draft).
   2. Do not enforce header PRESENCE while ignoring header VALUE - partial
      enforcement is worse than none, because intermediaries will trust a header
      the origin does not validate.
