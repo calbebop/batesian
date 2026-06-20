@@ -10,7 +10,10 @@ import (
 	"github.com/calbebop/batesian/internal/engine"
 )
 
-// SARIF v2.1.0 output for GitHub Security tab integration.
+// SARIF v2.1.0 output for SARIF consumers (DAST viewers, dashboards) and CI.
+// Findings are network targets (absolute URIs), not repository files, so when
+// uploaded to GitHub Code Scanning they appear as alerts without source-line
+// annotations - GitHub resolves SARIF locations as repository paths.
 // Spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 // GitHub docs: https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning
 
