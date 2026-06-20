@@ -226,6 +226,51 @@ func TestTaskIDOR_OpenServerIsNotIDOR(t *testing.T) {
 	}
 }
 
+// TestTaskIDOR_NoContextIdNullRead_NoFalsePositive guards the empty-substring
+// false positive. The server auth-gates creation but returns a task WITHOUT a
+// contextId (so the executor's contextID is ""), and answers the unauthenticated
+// read with a null result (HTTP 200, no JSON-RPC error) rather than denying it.
+// The unauth read returned none of the owner's data, so the rule MUST stay
+// silent. Before the ContainsAny empty-needle fix, the "" contextID matched any
+// body and this fired a false IDOR finding.
+func TestTaskIDOR_NoContextIdNullRead_NoFalsePositive(t *testing.T) {
+	const taskID = "task-nocontext-1"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		method, id := decodeRPC(r)
+		switch method {
+		case "SendMessage", "message/send":
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required") // creation is auth-gated
+				return
+			}
+			// Created task carries an id but no contextId.
+			writeJSON(w, map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"id": taskID, "status": "working"},
+			})
+		case "GetTask", "tasks/get":
+			// Secure: a task the caller cannot see comes back as a null result,
+			// not an error, and discloses none of the owner's data.
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": nil})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings (null read discloses nothing), got %d: %+v", len(findings), findings)
+	}
+}
+
 // TestTaskIDOR_UnauthTaskList: the server exposes GET /v1/tasks without auth,
 // disclosing all tasks server-wide. The rule MUST fire (critical).
 func TestTaskIDOR_UnauthTaskList(t *testing.T) {

@@ -116,10 +116,13 @@ func (r *Response) JSONField(path string) string {
 }
 
 // ContainsAny returns true if the body contains any of the given substrings.
+// Empty substrings are skipped: strings.Contains(body, "") is always true, so an
+// empty needle (e.g. an optional, absent value like a missing contextId) must not
+// be treated as a match against any body.
 func (r *Response) ContainsAny(substrings ...string) bool {
 	body := r.BodyString()
 	for _, s := range substrings {
-		if strings.Contains(body, s) {
+		if s != "" && strings.Contains(body, s) {
 			return true
 		}
 	}
