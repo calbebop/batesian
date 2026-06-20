@@ -120,9 +120,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if token == "" {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
-	if timeoutSecs == 10 && cfg.TimeoutSeconds > 0 {
-		timeoutSecs = cfg.TimeoutSeconds
-	}
+	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
 	if !skipTLS {
 		skipTLS = cfg.SkipTLS
 	}
@@ -365,6 +363,17 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// effectiveTimeout resolves the per-request timeout from the --timeout flag and
+// the config file. An explicitly-set flag always wins, even when it equals the
+// default, so `--timeout 10` is never silently overridden by a config value.
+// Otherwise a positive config value is used; otherwise the flag value (default).
+func effectiveTimeout(flagChanged bool, flagVal, cfgVal int) int {
+	if !flagChanged && cfgVal > 0 {
+		return cfgVal
+	}
+	return flagVal
 }
 
 // fetchOAuthToken acquires a bearer token via client credentials grant.
