@@ -262,15 +262,13 @@ func extractTaskContext(body []byte) (taskID, contextID string) {
 	return taskID, contextID
 }
 
-// containsAnyStr reports whether s contains any of the substrings.
+// containsAnyStr reports whether s contains any of the non-empty substrings.
+// Empty substrings are skipped: strings.Contains(s, "") is always true, which
+// would let an absent/optional value match any input.
 func containsAnyStr(s string, subs ...string) bool {
 	for _, sub := range subs {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
+		if sub != "" && strings.Contains(s, sub) {
+			return true
 		}
 	}
 	return false

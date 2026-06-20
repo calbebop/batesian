@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -227,19 +228,7 @@ func containsToken(cb *oob.Callback, token string) bool {
 	var m map[string]interface{}
 	if err := json.Unmarshal(cb.Body, &m); err == nil {
 		b, _ := json.Marshal(m)
-		return contains(string(b), token)
+		return strings.Contains(string(b), token)
 	}
-	return contains(string(cb.Body), token)
-}
-
-func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) >= len(substr) &&
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
+	return strings.Contains(string(cb.Body), token)
 }
