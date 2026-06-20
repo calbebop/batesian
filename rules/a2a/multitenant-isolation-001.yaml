@@ -1,0 +1,67 @@
+id: a2a-multitenant-isolation-001
+info:
+  name: A2A Multi-Tenant Task Isolation Breach
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server that authenticates callers still enforces a
+    TENANT boundary on task lookup - i.e. that a fully authenticated principal in
+    tenant A cannot read a task created by a principal in tenant B. This is the
+    cross-cutting multi-tenant isolation concern (distinct from a2a-task-idor-001,
+    which tests anonymous access): real deployments rely on tenant separation
+    while every caller holds a VALID token.
+
+    This is a stateful, multi-principal chained check and requires at least two
+    principals with valid, distinct credentials (configure them via the
+    `principals:` block in batesian.yaml or repeated --principal flags). Sequence:
+
+      1. Authenticate as principal A and create a task (TA); authenticate as
+         principal B and create a task (TB). Both creations must succeed, proving
+         A and B are two valid, distinct identities. If either fails, or the two
+         principals share a token, the check is skipped (cannot establish two
+         tenants).
+      2. Confirm the server is not simply open: an UNAUTHENTICATED tasks/get of
+         TA must be rejected. If the anonymous read succeeds, the server enforces
+         no auth at all - that is a2a-task-idor-001 / resources-unauth territory,
+         not a tenant-isolation breach - so no finding is raised here.
+      3. Cross-tenant read: as B, read TA; as A, read TB. A finding is confirmed
+         only when a principal successfully retrieves the OTHER tenant's task
+         content (history/context), proving task lookup is not bound to the
+         owning tenant.
+
+    Impact: in a multi-tenant A2A deployment a tenant can read another tenant's
+    conversation history, tool outputs, and embedded context using nothing but
+    its own valid credentials and a task ID.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://owasp.org/www-project-api-security/
+    - https://cwe.mitre.org/data/definitions/639.html
+    - https://cwe.mitre.org/data/definitions/284.html
+
+  tags:
+    - a2a
+    - multi-tenant
+    - isolation
+    - authorization
+    - idor
+    - chained
+    - owasp-agentic-top10
+    - cwe-639
+    - cwe-284
+
+attack:
+  protocol: a2a
+  type: a2a-multitenant-isolation
+
+remediation: |
+  1. Bind every task and contextId to the authenticated tenant at creation time,
+     and verify tenant ownership on every tasks/get, tasks/cancel, and tasks/list
+     request - authentication alone is not authorization.
+  2. Return JSON-RPC error -32001 (TaskNotFoundError) for any task that does not
+     belong to the requesting tenant; do not reveal whether the task exists.
+  3. Scope task storage per tenant (separate namespaces/partitions) so a lookup
+     cannot cross a tenant boundary even if an ID is guessed or leaked.
+  4. Include the tenant identifier in audit logs for every task access so
+     cross-tenant attempts are detectable.

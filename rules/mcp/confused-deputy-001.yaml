@@ -1,0 +1,71 @@
+id: mcp-confused-deputy-001
+info:
+  name: MCP OAuth Confused Deputy via redirect_uri Validation
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's OAuth authorization endpoint enforces exact
+    redirect_uri validation. An MCP server that proxies OAuth to a third-party
+    authorization server with a static client_id, while forwarding a client
+    supplied redirect_uri, is vulnerable to a confused deputy attack: once the
+    upstream consent screen is skipped (a consent cookie set for the static
+    client_id), an attacker who supplies their own redirect_uri harvests the
+    authorization code and can take over the account.
+
+    The MCP Security Best Practices require the proxy to validate that the
+    redirect_uri "exactly matches the registered URI" using exact string matching,
+    and to maintain per-client consent. RFC 6749 Section 4.1.2.1 requires the
+    authorization server to reject a missing, invalid, or mismatching redirect_uri
+    and to NOT redirect the user agent to it.
+
+    Detection (black-box, no browser, user, or consent cookie):
+
+      1. Discover the authorization and registration endpoints from the
+         authorization-server metadata. If there is no DCR registration endpoint
+         (e.g. a 2025-11-25 server that uses Client ID Metadata Documents) or no
+         authorization endpoint, the rule does not apply (no finding).
+      2. Register a client via DCR with an off-origin redirect R1.
+      3. Request /authorize with a DIFFERENT, unregistered off-origin redirect R2.
+         A CONFIRMED finding is raised only when the server answers with a 3xx
+         whose Location host is R2's host - it is redirecting to a redirect_uri
+         that was never registered for the client. If instead DCR accepted the
+         arbitrary off-origin R1 but the authorize check could not be disproven,
+         an INDICATOR is raised (confused deputy precondition).
+
+    Redirect targets use the reserved .invalid TLD (RFC 6761) with a per-run
+    marker, so they never resolve and the flow is never completed: the probe only
+    reads the server's redirect decision and never harvests a code.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+    - https://www.rfc-editor.org/rfc/rfc6749#section-4.1.2.1
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://cwe.mitre.org/data/definitions/441.html
+    - https://cwe.mitre.org/data/definitions/601.html
+
+  tags:
+    - mcp
+    - oauth
+    - confused-deputy
+    - redirect-uri
+    - authorization
+    - cwe-441
+    - cwe-601
+
+attack:
+  protocol: mcp
+  type: mcp-confused-deputy
+
+remediation: |
+  1. Validate that the redirect_uri in every authorization request exactly matches
+     a redirect URI registered for that client; use exact string matching, never
+     pattern or wildcard matching, and reject any mismatch with an error rather
+     than redirecting to the supplied URI (RFC 6749 Section 4.1.2.1).
+  2. For a proxy using a static upstream client_id, maintain a per-client consent
+     registry and obtain the user's consent for each dynamically registered client
+     before forwarding to the third-party authorization server; do not rely on the
+     upstream consent cookie.
+  3. Restrict the redirect URIs that dynamic client registration will accept to
+     those appropriate for the deployment rather than accepting arbitrary
+     off-origin hosts.

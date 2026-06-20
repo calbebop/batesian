@@ -1,0 +1,24 @@
+module github.com/calbebop/batesian
+
+go 1.25.11
+
+retract (
+	// Pre-release development versions, retained only for history.
+	[v0.1.0, v0.3.0]
+	// Superseded by v1.1.0.
+	v1.0.0
+)
+
+require (
+	github.com/fatih/color v1.19.0
+	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+)

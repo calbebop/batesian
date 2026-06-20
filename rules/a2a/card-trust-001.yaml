@@ -1,0 +1,68 @@
+id: a2a-card-trust-001
+info:
+  name: A2A Agent Card Trust Durability (Canonicalization, Cache, Signature Freshness)
+  author: batesian
+  severity: high
+  description: |
+    Inspects how durable and consistent an A2A agent card's TRUST properties are,
+    covering the gaps that a2a-jws-algconf-001 (signature ALGORITHM config),
+    a2a-wellknown-hostinject-001 (Host reflection), and a2a-extcard-unauth-001
+    (unauthenticated access) do not: canonicalization across well-known paths,
+    cache/TTL of the trust anchor, and signature freshness/expiry.
+
+    Because Batesian scans the SERVER (not a consuming client/verifier), it judges
+    only what the server itself exposes; client-side verifier acceptance is out of
+    scope. Three checks:
+
+      1. Canonicalization / multi-path consistency. The card is fetched from both
+         /.well-known/agent-card.json and the legacy /.well-known/agent.json. If
+         one path serves a SIGNED card and the other serves an UNSIGNED card, an
+         attacker (or MITM) can steer verification to the unsigned path to strip
+         the signature requirement - reported CONFIRMED. If both are signed but
+         their routing-critical `url` differs, reported as an INDICATOR (routing
+         ambiguity).
+
+      2. Stale-cache trust. The card response's Cache-Control is parsed. A long
+         max-age (>= 1h) or `immutable` without `no-cache`/`must-revalidate`
+         instructs clients/intermediaries to keep caching the trust anchor, so a
+         rotated or compromised card stays trusted until the cache expires
+         (INDICATOR). A missing Cache-Control on the trust anchor is a weaker
+         INDICATOR (heuristic caching). `no-store`/`no-cache`/`must-revalidate`/
+         `max-age=0` produce no finding.
+
+      3. Signature freshness. When the card carries JWS signatures, each protected
+         header is decoded: a signature with no `exp` never expires (a captured
+         card is valid forever - INDICATOR); a signature whose `exp` is already in
+         the past is still being served (CONFIRMED stale signature).
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://www.rfc-editor.org/rfc/rfc9111.html
+    - https://cwe.mitre.org/data/definitions/345.html
+    - https://cwe.mitre.org/data/definitions/347.html
+    - https://cwe.mitre.org/data/definitions/613.html
+
+  tags:
+    - a2a
+    - agent-card
+    - canonicalization
+    - cache
+    - signature-freshness
+    - cwe-345
+    - cwe-347
+
+attack:
+  protocol: a2a
+  type: a2a-card-trust
+
+remediation: |
+  1. Serve byte-identical, consistently-signed agent cards at every well-known
+     path; never expose an unsigned variant alongside a signed one.
+  2. Set Cache-Control on the agent card to require revalidation
+     (e.g. `no-cache` or a short `max-age` with `must-revalidate`) so clients
+     re-fetch after key rotation or card changes; avoid `immutable` / long TTLs
+     on a security-critical trust anchor.
+  3. Bind every card signature to a freshness window (`iat`/`exp`) and rotate it
+     before expiry; reject and stop serving signatures whose `exp` has passed.
+  4. Require clients to verify the signature and its freshness before trusting any
+     routing, capability, or security-scheme field from a card.

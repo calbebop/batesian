@@ -1,0 +1,55 @@
+id: mcp-token-replay-001
+info:
+  name: MCP OAuth Token Signature and Audience Validation Bypass
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server accepts forged or unsigned OAuth 2.1 bearer
+    tokens. The probes are JWTs the server cannot have validated: two signed with
+    a random HMAC key (one with no `aud` claim, one with a wrong `aud`) and one
+    unsigned (alg:none). A compliant OAuth 2.1 resource server verifies the token
+    signature and the `aud` claim (RFC 9068 Section 4, RFC 8707) and rejects all
+    three.
+
+    Accepting any of them proves the server does not validate the token
+    signature. Without signature validation, audience binding cannot be enforced
+    either, so a token forged for any audience, or issued for an unrelated
+    service, can be replayed against this endpoint. Audience-matching bugs on
+    signature-valid tokens are isolated separately by mcp-oauth-audience-002.
+
+    Acceptance is judged at the protocol layer: a probe counts as accepted only
+    when the server returns HTTP 200 with a JSON-RPC `result` envelope. A 200
+    carrying a JSON-RPC `error` (e.g. invalid_token) or any 4xx is a rejection
+    and produces no finding.
+
+  references:
+    - https://www.rfc-editor.org/rfc/rfc9068
+    - https://www.rfc-editor.org/rfc/rfc8707
+    - https://www.rfc-editor.org/rfc/rfc9700
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/294.html
+    - https://cwe.mitre.org/data/definitions/347.html
+
+  tags:
+    - mcp
+    - oauth
+    - jwt
+    - token-replay
+    - audience-validation
+    - rfc9068
+    - cwe-294
+    - cwe-347
+
+attack:
+  protocol: mcp
+  type: mcp-token-replay
+
+remediation: |
+  1. Validate the `aud` claim on every incoming bearer token; reject tokens where
+     `aud` is absent or does not contain the MCP server's own resource identifier.
+  2. Reject JWTs where `alg` is "none" or any symmetric algorithm (HS256/HS384/HS512)
+     when the server expects asymmetric RS256/ES256 tokens.
+  3. Use a well-tested JWT validation library that enforces algorithm allowlists
+     by default; never call a permissive "decode without verify" path on live traffic.
+  4. Register the MCP server as a resource server with the authorization server and
+     use RFC 8707 Resource Indicators so tokens are always audience-bound at issuance.

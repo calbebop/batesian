@@ -1,0 +1,69 @@
+id: a2a-delegation-integrity-001
+info:
+  name: A2A Delegation Chain-of-Custody Break (Wrong-Principal Continuation)
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server binds a multi-hop / delegated task to the
+    principal that owns it, so that only that principal (or an explicitly
+    authorized delegate) can drive the task forward. In a delegated flow a task
+    is created by one principal and later continued (a follow-up message
+    referencing the same taskId/contextId, e.g. resolving a
+    TASK_STATE_AUTH_REQUIRED step). Chain-of-custody requires each hop to be
+    re-bound to an authorized principal; a server that lets ANY authenticated
+    caller continue another principal's task has a broken delegation chain.
+
+    This is the first CHAINED CONSUMER rule: it declares Requires(task-id) and
+    will reuse a task-id another rule already created this scan (published to the
+    blackboard with its owning principal), exercising the engine's
+    producer->consumer ordering. Run standalone it falls back to creating its own
+    delegator task. It needs at least two principals with valid, distinct
+    credentials (a delegator A and a different principal B); configure them with
+    a `principals:` block or repeated --principal flags.
+
+    Sequence:
+      1. Obtain a task owned by delegator A - preferably an upstream task-id
+         artifact owned by A; otherwise create one as A.
+      2. Confirm the server enforces auth on continuation: an UNAUTHENTICATED
+         follow-up referencing A's task must be rejected. If it succeeds, the
+         server has no auth at all (a2a-task-idor territory), not a delegation
+         break - no finding.
+      3. Continue A's task as the WRONG principal B (a follow-up message carrying
+         A's taskId/contextId, presented with B's credentials). A finding is
+         confirmed only when B successfully drives A's task forward, proving the
+         delegated step is not re-bound to the owning principal.
+
+    Impact: a caller can hijack or advance another principal's delegated task -
+    injecting steps, resolving auth-required hops, or escalating within a
+    workflow that should have stayed bound to the original delegator.
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
+    - https://cwe.mitre.org/data/definitions/863.html
+    - https://cwe.mitre.org/data/definitions/269.html
+
+  tags:
+    - a2a
+    - delegation
+    - chain-of-custody
+    - authorization
+    - chained
+    - cwe-863
+    - cwe-269
+
+attack:
+  protocol: a2a
+  type: a2a-delegation-integrity
+
+remediation: |
+  1. Bind every task to its creating principal and re-verify, on each follow-up
+     message, that the caller is the owner or an explicitly authorized delegate
+     before advancing task state.
+  2. Reject a continuation that references a taskId/contextId the caller does not
+     own with JSON-RPC error -32001 (TaskNotFoundError); do not leak existence.
+  3. Model delegation explicitly: issue a scoped, audience-bound delegation
+     grant per hop and verify it on continuation, rather than trusting any
+     authenticated identity.
+  4. Record the acting principal for every hop in an audit trail so cross-
+     principal continuations are detectable and least-privilege is enforced.

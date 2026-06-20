@@ -1,0 +1,67 @@
+id: mcp-session-fixation-001
+info:
+  name: MCP Session ID Fixation (Client-Supplied Mcp-Session-Id)
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server lets a CLIENT pre-seed its own session
+    identifier instead of minting one server-side. Per the Streamable HTTP
+    transport, the server assigns the Mcp-Session-Id at initialize and clients
+    MUST echo it on every subsequent request; an unrecognized session id MUST be
+    rejected (HTTP 404). A server that instead ADOPTS a client-chosen session id
+    is vulnerable to session fixation (CWE-384): an attacker fixes a known id,
+    lures a victim onto it, and then rides the victim's authenticated session.
+
+    This is a stateful, chained check that confirms the failure with a control to
+    avoid false positives on servers that simply do not track sessions at all:
+
+      1. Send `initialize` carrying a client-chosen `Mcp-Session-Id` header. If
+         the server returns its OWN session id (different from the supplied one),
+         it mints server-side - secure - and no finding is raised.
+      2. Issue a follow-up call presenting the attacker-chosen id. If it is
+         rejected, the server did not adopt it - secure - no finding.
+      3. Control: issue the same call presenting a DIFFERENT, never-initialized
+         random id. A spec-compliant server rejects it (404). If this is ALSO
+         accepted, the server enforces no sessions at all (a different posture,
+         not fixation) and the finding is suppressed.
+      4. A finding is confirmed only when the attacker-chosen id is accepted as a
+         live session WHILE an un-initialized id is rejected - proving the server
+         does enforce sessions yet trusted a client-supplied identifier.
+
+    When two principals are configured, the rule additionally shows a second
+    principal borrowing the pre-seeded session, with hop-by-hop provenance.
+
+    Currency: the Mcp-Session-Id mechanism is normative in revisions 2025-03-26
+    through 2025-11-25; the 2026-07-28 revision removes protocol-level sessions, so
+    this rule applies to servers on the earlier revisions (the deployed majority as
+    of mid-2026).
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+    - https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+    - https://owasp.org/www-community/attacks/Session_fixation
+    - https://cwe.mitre.org/data/definitions/384.html
+
+  tags:
+    - mcp
+    - session-fixation
+    - session
+    - handoff
+    - chained
+    - cwe-384
+
+attack:
+  protocol: mcp
+  type: mcp-session-fixation
+
+remediation: |
+  1. Always generate the session identifier server-side at initialize using a
+     cryptographically secure random value; never adopt a client-supplied
+     Mcp-Session-Id.
+  2. Reject any request bearing an Mcp-Session-Id that the server did not issue
+     with HTTP 404, and require a fresh initialize handshake.
+  3. Bind each session to the authenticated principal established at initialize
+     and reject requests that present a session id created by a different
+     principal.
+  4. Rotate the session identifier on any privilege or identity transition
+     (login, delegation handoff) to prevent fixation across the boundary.

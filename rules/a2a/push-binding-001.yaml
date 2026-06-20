@@ -1,0 +1,57 @@
+id: a2a-push-binding-001
+info:
+  name: A2A Push/Webhook Control-Plane Not Bound to Task Owner
+  author: batesian
+  severity: high
+  description: |
+    Extends a2a-push-ssrf-001 (callback SSRF) to the push CONTROL PLANE: who may
+    attach or read a webhook on whose task. A2A push-notification configs
+    (CreateTaskPushNotificationConfig / GetTaskPushNotificationConfig and the
+    v0.3 tasks/pushNotificationConfig/{set,get}) tell the server where to deliver
+    a task's results. If those operations are authenticated but NOT bound to the
+    task's owning principal, any other valid principal can:
+
+      - WRITE: redirect a victim's task notifications to an attacker URL (results
+        exfiltration / SSRF channel hijack), or
+      - READ: read back the victim's configured callback URL and token (leaking a
+        secret webhook credential).
+
+    This is a stateful, multi-principal CHAINED rule (consumes an upstream
+    task-id when present, else creates its own). Flow:
+
+      1. As owner A, obtain a task and SET a push config with a unique marker URL
+         (control - must succeed or the feature is absent, so no finding).
+      2. Discriminator: an UNAUTHENTICATED set on A's task must be rejected; if it
+         succeeds the control plane has no auth at all (not a binding bug) - no
+         finding.
+      3. As a different valid principal B: SET a push config on A's task
+         (CONFIRMED write hijack if accepted) and GET A's push config (CONFIRMED
+         read leak if B's response echoes A's marker URL).
+
+  references:
+    - https://google.github.io/A2A/specification/
+    - https://cwe.mitre.org/data/definitions/639.html
+    - https://cwe.mitre.org/data/definitions/862.html
+    - https://cwe.mitre.org/data/definitions/441.html
+
+  tags:
+    - a2a
+    - push-notification
+    - webhook
+    - task-binding
+    - authorization
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-push-binding
+
+remediation: |
+  1. Bind every push-notification config operation to the task's owning
+     principal: reject create/get/list/delete of a push config for a task the
+     caller does not own, even with valid credentials.
+  2. Treat the configured callback URL and token as secrets - never return another
+     principal's callback URL/token from a get/list call.
+  3. Validate callback URLs against an allow-list / block internal ranges (see
+     a2a-push-ssrf-001) in addition to ownership binding.
+  4. Re-verify ownership on every webhook delivery, not just at registration time.

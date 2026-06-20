@@ -1,0 +1,58 @@
+id: mcp-oauth-metadata-ssrf-001
+info:
+  name: MCP OAuth Discovery / Metadata-Fetch SSRF
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP OAuth authorization server makes outbound requests to
+    attacker-controlled metadata URLs during the discovery / dynamic client
+    registration (DCR) chain. RFC 7591 DCR lets a registrant supply URL-valued
+    metadata (`jwks_uri`, `sector_identifier_uri`, `logo_uri`, `client_uri`,
+    `policy_uri`, `tos_uri`) that some servers FETCH server-side to validate or
+    render. If the server fetches a registrant-supplied URL without an allow-list,
+    a registrant can point it at internal services, cloud metadata endpoints, or
+    other private resources - a server-side request forgery in the OAuth
+    discovery chain. This complements mcp-oauth-dcr-001 (scope escalation), which
+    does not test the metadata-fetch SSRF surface.
+
+    The check is OOB-confirmed (no false positives from policy alone):
+
+      1. Discover the registration endpoint via
+         /.well-known/oauth-authorization-server (then openid-configuration).
+      2. Send an UNAUTHENTICATED DCR registration whose URL metadata fields all
+         point at the Batesian OOB listener, each carrying a unique marker path.
+      3. If the OOB listener receives an inbound request for one of those marker
+         URLs, the server fetched an attacker-controlled metadata URL - SSRF is
+         CONFIRMED, and the marker path identifies which field was fetched.
+
+    With an external OOB server (--oob-url) the registration is reported as an
+    INDICATOR (accepted) and the operator confirms via their own collaborator.
+
+  references:
+    - https://www.rfc-editor.org/rfc/rfc7591
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+    - https://cwe.mitre.org/data/definitions/918.html
+    - https://cwe.mitre.org/data/definitions/611.html
+
+  tags:
+    - mcp
+    - oauth
+    - dcr
+    - ssrf
+    - metadata
+    - cwe-918
+
+attack:
+  protocol: mcp
+  type: mcp-oauth-metadata-ssrf
+
+remediation: |
+  1. Do not fetch registrant-supplied URL metadata (`jwks_uri`,
+     `sector_identifier_uri`, `logo_uri`, etc.) at registration time; if a fetch
+     is required, defer it and gate it behind an allow-list of trusted hosts.
+  2. Block requests to loopback, link-local, RFC 1918 / private ranges, and cloud
+     metadata IPs (e.g. 169.254.169.254); re-resolve and re-validate after every
+     redirect to defeat DNS rebinding and redirect-to-private chains.
+  3. Restrict fetches to https with a bounded redirect-hop count, and reject
+     non-http(s) schemes (file:, gopher:, etc.).
+  4. Treat fetched metadata as untrusted input and apply strict size/time limits.
