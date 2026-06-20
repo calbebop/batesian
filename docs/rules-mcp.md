@@ -22,9 +22,9 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
-| `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | confirmed | CWE-284 |
+| `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | indicator | CWE-284 |
 | `mcp-oauth-audience-002` | [OAuth Audience Matching Bug Probes](#mcp-oauth-audience-002) | High | confirmed / indicator | CWE-863 |
-| `mcp-token-replay-001` | [OAuth Token Audience Validation Bypass](#mcp-token-replay-001) | High | confirmed | CWE-294 |
+| `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
@@ -45,12 +45,14 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 
 Sends a single **unauthenticated** dynamic client registration (DCR) requesting
 admin/write scopes, then inspects the *granted* scope set. Open/anonymous DCR is
-permitted by RFC 7591 and encouraged by the MCP spec, so it is **not** flagged on
+permitted by RFC 7591 and supported by the MCP spec, so it is **not** flagged on
 its own - and neither is redirect-URI shape (loopback redirects are endorsed by
-RFC 8252). The rule fires a **confirmed** critical-impact finding only when the
-granted scopes still contain a privileged token, compared per whitespace-delimited
-scope token (RFC 6749 section 3.3), not by substring. A server that rejects the
-registration or reduces the grant to read-only produces no finding.
+RFC 8252). The rule fires an **indicator** finding only when the granted scopes
+still contain a privileged token, compared per whitespace-delimited scope token
+(RFC 6749 section 3.3), not by substring. This is registration-time evidence: the
+scope policy is permissive, but whether a privileged token is actually issued
+depends on the grant/consent step, so manual verification is recommended. A server
+that rejects the registration or reduces the grant to read-only produces no finding.
 
 ---
 
@@ -85,15 +87,18 @@ token and is tracked as a follow-up.
 
 ### mcp-token-replay-001
 
-**OAuth Token Audience Validation Bypass** | Severity: High | CWE-294
+**OAuth Token Signature and Audience Validation Bypass** | Severity: High | CWE-294
 
-Crafts bearer tokens with a mismatched `aud` claim (and an `alg: none` variant)
-and submits them to the MCP endpoint. A compliant OAuth 2.1 resource server must
-reject tokens whose audience does not match its own identifier (RFC 9068, RFC
-8707). Acceptance is judged at the protocol layer - HTTP 200 + a JSON-RPC `result`
-- so a 200 carrying an `invalid_token` JSON-RPC error is correctly treated as a
-rejection. A **confirmed** finding means a token for an unrelated resource (or an
-unsigned token) was accepted, allowing replay.
+Submits forged bearer tokens the server cannot have validated: two HS256 tokens
+signed with a random key (one with no `aud`, one with a wrong `aud`) and one
+unsigned (`alg: none`). A compliant OAuth 2.1 resource server verifies the token
+signature and the `aud` claim (RFC 9068, RFC 8707) and rejects all three.
+Acceptance is judged at the protocol layer - HTTP 200 + a JSON-RPC `result` - so a
+200 carrying an `invalid_token` JSON-RPC error is correctly treated as a rejection.
+A **confirmed** finding means a forged or unsigned token was accepted: signature
+validation is absent, which also defeats audience binding and enables replay.
+Audience-matching bugs on signature-valid tokens are isolated by
+`mcp-oauth-audience-002`.
 
 ---
 
