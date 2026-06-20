@@ -1,21 +1,21 @@
 id: mcp-token-replay-001
 info:
-  name: MCP OAuth Token Audience Validation Bypass
+  name: MCP OAuth Token Signature and Audience Validation Bypass
   author: batesian
   severity: high
   description: |
-    Tests whether an MCP server validates the `aud` (audience) claim on incoming
-    OAuth 2.1 bearer tokens. A compliant OAuth 2.1 resource server must reject
-    tokens whose `aud` claim is missing, empty, or does not match the resource
-    server's own identifier (RFC 9068 Section 4, RFC 8707).
+    Tests whether an MCP server accepts forged or unsigned OAuth 2.1 bearer
+    tokens. The probes are JWTs the server cannot have validated: two signed with
+    a random HMAC key (one with no `aud` claim, one with a wrong `aud`) and one
+    unsigned (alg:none). A compliant OAuth 2.1 resource server verifies the token
+    signature and the `aud` claim (RFC 9068 Section 4, RFC 8707) and rejects all
+    three.
 
-    A server that skips audience validation allows tokens issued for any other
-    resource server to be replayed against it. An attacker who obtains a token
-    for an unrelated service can present it to the MCP server and gain access.
-
-    Alg-none tokens are a special case: some JWT libraries that do not enforce
-    algorithm restrictions will accept a forged JWT with no signature at all,
-    completely bypassing cryptographic token verification.
+    Accepting any of them proves the server does not validate the token
+    signature. Without signature validation, audience binding cannot be enforced
+    either, so a token forged for any audience, or issued for an unrelated
+    service, can be replayed against this endpoint. Audience-matching bugs on
+    signature-valid tokens are isolated separately by mcp-oauth-audience-002.
 
     Acceptance is judged at the protocol layer: a probe counts as accepted only
     when the server returns HTTP 200 with a JSON-RPC `result` envelope. A 200
