@@ -175,9 +175,11 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 		Locations: []sarifLocation{
 			{
 				PhysicalLocation: sarifPhysicalLocation{
+					// Batesian targets are network endpoints, so TargetURL is an
+					// absolute URI. Per SARIF 2.1.0 an absolute uri MUST NOT carry a
+					// uriBaseId (and %SRCROOT% would be an undefined base id anyway).
 					ArtifactLocation: sarifArtifactLocation{
-						URI:       f.TargetURL,
-						URIBaseID: "%SRCROOT%",
+						URI: f.TargetURL,
 					},
 				},
 			},
