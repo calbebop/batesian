@@ -15,8 +15,8 @@ import (
 // class), so this can only ever merge intentionally-overlapping rules.
 var vulnClass = map[string]string{
 	// A server that fails both JWT signature validation (token-replay) and
-	// audience binding (oauth-audience) is one broken token validator (roadmap
-	// #41 / #20), not two separate issues.
+	// audience binding (oauth-audience) is one broken token validator, not two
+	// separate issues.
 	"mcp-token-replay-001":   "mcp-token-validation",
 	"mcp-oauth-audience-002": "mcp-token-validation",
 }

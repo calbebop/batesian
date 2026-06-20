@@ -192,8 +192,8 @@ provenance trail attached to the finding.
 
 **Delegation Chain-of-Custody Break (Wrong-Principal Continuation)** | Severity: High | CWE-863
 
-A **chained CONSUMER** rule (roadmap #24) - the first rule that consumes another
-rule's blackboard output. It declares `Requires(task-id)`, so the engine runs it
+A **chained CONSUMER** rule - the first rule that consumes another rule's
+blackboard output. It declares `Requires(task-id)`, so the engine runs it
 after any task-id producer (e.g. `a2a-multitenant-isolation-001`) and it reuses
 that upstream task-id; run standalone it falls back to creating its own delegator
 task. Needs two principals with valid, distinct credentials.
@@ -215,8 +215,8 @@ the task was consumed from an upstream rule or created locally.
 
 **Context ID Fixation (Client-Supplied contextId Across Principals)** | Severity: High | CWE-384
 
-The A2A half of the session/task-ID fixation concern (roadmap #27; the MCP half
-is `mcp-session-fixation-001`). A2A groups a conversation by `contextId`; the
+The A2A half of the session/task-ID fixation concern (the MCP half is
+`mcp-session-fixation-001`). A2A groups a conversation by `contextId`; the
 server should mint it and scope each context to its participants. This **chained,
 multi-principal** rule confirms a server that adopts a client-chosen contextId
 **and** merges a different principal's messages under it. Needs two principals
