@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -80,7 +81,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	// Step 3: cross-principal control-plane access as B. Read FIRST (so B sees
 	// A's marker before any write overwrites it), then attempt the write hijack.
 	var findings []attack.Finding
-	if body, ok := e.getPush(ctx, clientB, endpoint, b.Headers, taskID, vars.RandID); ok && contains(body, markerURL) {
+	if body, ok := e.getPush(ctx, clientB, endpoint, b.Headers, taskID, vars.RandID); ok && strings.Contains(body, markerURL) {
 		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed))
 	}
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"

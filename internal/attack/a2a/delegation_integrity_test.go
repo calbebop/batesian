@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -211,20 +212,7 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding consuming the blackboard task-id, got %d: %+v", len(findings), findings)
 	}
-	if c := findings[0].Chain; len(c) != 2 || !containsSub(c[0].Action, preTask) || !containsSub(c[0].Action, "consumed from blackboard") {
+	if c := findings[0].Chain; len(c) != 2 || !strings.Contains(c[0].Action, preTask) || !strings.Contains(c[0].Action, "consumed from blackboard") {
 		t.Errorf("expected hop 1 to cite the consumed blackboard task, got %+v", c)
 	}
-}
-
-func containsSub(s, sub string) bool {
-	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
