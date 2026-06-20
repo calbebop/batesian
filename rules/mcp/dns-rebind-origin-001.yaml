@@ -1,0 +1,59 @@
+id: mcp-dns-rebind-origin-001
+info:
+  name: MCP Streamable HTTP Origin Validation (DNS Rebinding)
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP Streamable HTTP server validates the Origin header. The
+    transport spec requires: "Servers MUST validate the Origin header on all
+    incoming connections to prevent DNS rebinding attacks. If the Origin header is
+    present and invalid, servers MUST respond with HTTP 403 Forbidden." A server
+    that omits this check is reachable from a victim's browser when it is bound to
+    a local or private address: a malicious website rebinds DNS to the server and
+    drives its tools (the class behind the MCP Inspector RCE, CVE-2025-49596, and
+    the TypeScript/Python SDK DNS-rebinding advisories).
+
+    Detection (deterministic, black-box):
+
+      1. Baseline: POST a normal `initialize` with NO Origin header. It must be
+         accepted (HTTP 200 + a JSON-RPC result), confirming a responsive MCP
+         endpoint; otherwise the rule does not apply.
+      2. Probe: POST the same `initialize` with a foreign Origin
+         (`https://dns-rebind.batesian.invalid`, a non-resolving RFC 6761 host no
+         server should allowlist). The only difference from the baseline is the
+         Origin header.
+
+    A CONFIRMED finding is raised when the server still returns a JSON-RPC result
+    for the foreign-Origin request instead of rejecting it with HTTP 403, i.e. it
+    does not validate Origin. A server that answers the foreign Origin with 403
+    produces no finding. DNS-rebinding exploitation additionally requires the
+    server to be reachable from a victim's browser (a local or same-network bind),
+    which the operator should confirm for the deployment.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+    - https://www.oligo.security/blog/critical-rce-vulnerability-in-anthropic-mcp-inspector-cve-2025-49596
+    - https://nvd.nist.gov/vuln/detail/CVE-2025-49596
+    - https://cwe.mitre.org/data/definitions/350.html
+    - https://cwe.mitre.org/data/definitions/346.html
+
+  tags:
+    - mcp
+    - streamable-http
+    - dns-rebinding
+    - origin
+    - cwe-350
+    - cwe-346
+
+attack:
+  protocol: mcp
+  type: mcp-dns-rebind-origin
+
+remediation: |
+  1. Validate the Origin header on every incoming connection against an allowlist
+     of expected origins; reject a present, non-allowlisted Origin with HTTP 403
+     Forbidden before processing the request.
+  2. When running locally, bind the server to localhost (127.0.0.1) rather than
+     all interfaces (0.0.0.0) so it is not reachable from other hosts.
+  3. Require authentication on all connections; do not rely on network position
+     alone for access control.
