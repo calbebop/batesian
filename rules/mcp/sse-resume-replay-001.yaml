@@ -28,7 +28,13 @@ info:
          session B. A server that replays only the requester's own events, or that
          ignores Last-Event-ID, produces no finding.
 
+    Currency: GET-stream resumption via Last-Event-ID is normative in revisions
+    2025-03-26 through 2025-11-25; the 2026-07-28 revision removes the GET stream
+    and Last-Event-ID resumability, so this rule applies to servers on the earlier
+    revisions (the deployed majority as of mid-2026).
+
   references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
     - https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
     - https://cwe.mitre.org/data/definitions/488.html
     - https://cwe.mitre.org/data/definitions/294.html
