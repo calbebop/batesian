@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **14 rules** targeting the [Agent-to-Agent (A2A) protocol](https://google.github.io/A2A/).
+Batesian ships **14 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer

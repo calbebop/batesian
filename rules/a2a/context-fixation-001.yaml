@@ -35,7 +35,7 @@ info:
     the fixed context.
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://owasp.org/www-community/attacks/Session_fixation
     - https://cwe.mitre.org/data/definitions/384.html
 

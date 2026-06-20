@@ -38,7 +38,7 @@ info:
     workflow that should have stayed bound to the original delegator.
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
     - https://cwe.mitre.org/data/definitions/863.html
     - https://cwe.mitre.org/data/definitions/269.html

@@ -36,7 +36,7 @@ info:
          the past is still being served (CONFIRMED stale signature).
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://www.rfc-editor.org/rfc/rfc9111.html
     - https://cwe.mitre.org/data/definitions/345.html
     - https://cwe.mitre.org/data/definitions/347.html

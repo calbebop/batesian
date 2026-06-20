@@ -34,7 +34,7 @@ info:
     its own valid credentials and a task ID.
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
     - https://owasp.org/www-project-api-security/
     - https://cwe.mitre.org/data/definitions/639.html

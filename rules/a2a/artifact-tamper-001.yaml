@@ -21,7 +21,7 @@ info:
     with Agent B directly.
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://owasp.org/www-project-top-10-for-large-language-model-applications/
     - https://cwe.mitre.org/data/definitions/284.html
     - https://cwe.mitre.org/data/definitions/639.html
