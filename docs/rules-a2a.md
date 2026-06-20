@@ -19,14 +19,14 @@ Each finding carries a **confidence**:
 | `a2a-push-ssrf-001` | [Push Notification SSRF](#a2a-push-ssrf-001) | High | confirmed | CWE-918 |
 | `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High | confirmed | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed / indicator | CWE-384 |
-| `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | confirmed / indicator | CWE-601 |
+| `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Algorithm Confusion](#a2a-jws-algconf-001) | Critical | indicator | CWE-327 |
 | `a2a-peer-impersonation-001` | [Peer Agent Impersonation via Forged JWT](#a2a-peer-impersonation-001) | Critical | confirmed | CWE-290 |
 | `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | High | confirmed / indicator | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
-| `a2a-card-trust-001` | [Agent Card Trust Durability](#a2a-card-trust-001) | High / Medium | confirmed / indicator | CWE-345 |
+| `a2a-card-trust-001` | [Agent Card Trust Durability](#a2a-card-trust-001) | High / Medium | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 
@@ -114,7 +114,7 @@ Requests the agent card with a synthetic canary host (`evil.batesian.invalid`)
 injected via `Host`, `X-Forwarded-Host`, `X-Original-Host`, and `X-Forwarded-For`,
 then checks where the canary is reflected in the returned card. Severity is graded
 by **where** it lands: reflection into an authority/URL field (`url`, `endpoint`,
-any `*.url`/`*.uri`, or any value that is itself a URL) is **high / confirmed** -
+any `*.url`/`*.uri`, or any value that is itself a URL) is **high / indicator** -
 that is the advertised service location peers and registries trust. Reflection
 that only lands in a non-URL field (e.g. `description`) is a real injection
 primitive but lower direct impact, reported as **medium / indicator**.
@@ -251,7 +251,7 @@ checks:
   `/.well-known/agent-card.json` and the legacy `/.well-known/agent.json`. If one
   path serves a **signed** card and the other an **unsigned** one, an attacker can
   steer verification to the unsigned path to strip the signature requirement -
-  reported **confirmed (high)**. If both are signed but their `url` differs,
+  reported **indicator (high)**. If both are signed but their `url` differs,
   reported as an **indicator (medium)** (routing ambiguity).
 - **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
   `max-age` (>= 1h) or `immutable` without `no-cache`/`must-revalidate` keeps the
@@ -260,8 +260,8 @@ checks:
   `no-store`/`no-cache`/`must-revalidate`/`max-age=0` produce no finding.
 - **Signature freshness.** When the card carries signatures, each protected
   header is decoded: no `exp` means the signature never expires (**indicator,
-  medium**); an `exp` already in the past that is still served is a **confirmed**
-  stale signature.
+  medium**); an `exp` already in the past that is still served is an **indicator**
+  (a compliant verifier rejects an expired signature).
 
 ---
 
