@@ -450,12 +450,35 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 	fmt.Fprintln(p.w)
 }
 
-// printFinding renders a single finding to the terminal (evidence shown in verbose mode).
-
-func truncate(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
+// truncateRunes shortens s to at most max bytes without splitting a multibyte
+// UTF-8 rune, appending "..." when it truncates. Slicing a string at an
+// arbitrary byte index can cut a rune mid-sequence and yield invalid UTF-8 in
+// JSON/SARIF output, so the cut is moved back to the nearest rune boundary.
+func truncateRunes(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	budget := max
+	ellipsis := ""
+	if max >= 3 {
+		budget = max - 3
+		ellipsis = "..."
+	}
+	// range over a string yields the byte offset of each rune start; keep the
+	// largest offset that still fits the budget so s[:cut] ends on a boundary.
+	cut := 0
+	for i := range s {
+		if i > budget {
+			break
+		}
+		cut = i
+	}
+	return s[:cut] + ellipsis
+}
+
+// truncate collapses newlines to spaces (for single-line table cells) and then
+// rune-safely shortens s to at most max bytes.
+func truncate(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return truncateRunes(s, max)
 }

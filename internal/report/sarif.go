@@ -105,7 +105,7 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 				ID:               r.Rule.ID,
 				Name:             r.Rule.Info.Name,
 				ShortDescription: sarifMessage{Text: r.Rule.Info.Name},
-				FullDescription:  sarifMessage{Text: trimDescription(r.Rule.Info.Description)},
+				FullDescription:  sarifMessage{Text: truncateRunes(r.Rule.Info.Description, 500)},
 				Properties: sarifRuleProperties{
 					Tags:     tags,
 					Severity: severityScore(r.Rule.Info.Severity),
@@ -220,12 +220,4 @@ func severityScore(sev string) string {
 	default:
 		return "1.0"
 	}
-}
-
-// trimDescription strips leading/trailing whitespace from multi-line YAML descriptions.
-func trimDescription(s string) string {
-	if len(s) > 500 {
-		return s[:497] + "..."
-	}
-	return s
 }
