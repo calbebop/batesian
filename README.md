@@ -18,10 +18,10 @@ CLI for adversarial testing of [A2A](https://google.github.io/A2A/) and [MCP](ht
 
 ## What ships
 
-Bundled rules: **14 A2A, 11 MCP (25 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **14 A2A, 12 MCP (26 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
 - [A2A rules](docs/rules-a2a.md) (14)
-- [MCP rules](docs/rules-mcp.md) (11)
+- [MCP rules](docs/rules-mcp.md) (12)
 
 Coverage spans:
 
