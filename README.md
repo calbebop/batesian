@@ -4,7 +4,7 @@
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Build](https://github.com/calbebop/batesian/actions/workflows/ci.yml/badge.svg)](https://github.com/calbebop/batesian/actions)
 
-CLI for adversarial testing of [A2A](https://google.github.io/A2A/) and [MCP](https://modelcontextprotocol.io) stacks. It drives concrete protocol traffic (OAuth audience/scope/DCR, push-notification callbacks, JWS card signatures, session and task boundaries, agent-card handling) and records outcomes as `confirmed` or `indicator`, with optional SARIF for CI.
+CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https://modelcontextprotocol.io) stacks. It drives concrete protocol traffic (OAuth audience/scope/DCR, push-notification callbacks, JWS card signatures, session and task boundaries, agent-card handling) and records outcomes as `confirmed` or `indicator`, with optional SARIF for CI.
 
 ![Batesian demo](docs/demo.gif)
 
@@ -25,12 +25,12 @@ Bundled rules: **14 A2A, 13 MCP (27 total)**. The set is deliberately narrow - e
 
 Coverage spans:
 
-- **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance
+- **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance, redirect_uri confused deputy
 - **Agent-card trust (A2A)** - JWS signatures, canonicalization, cache/freshness, required-extension downgrade, host-header injection, unauthenticated extended card
 - **Request & task integrity** - task IDOR, agent-role injection, artifact tampering, SEP-2243 header/body routing, SSE resumption replay
 - **Multi-party isolation** - cross-tenant isolation, session/context fixation, delegation chain-of-custody
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
-- **Unauthenticated access** - exposed MCP resources and prompt templates
+- **Unauthenticated & cross-origin access** - exposed MCP resources and prompt templates, Streamable HTTP Origin validation (DNS rebinding)
 
 ### How findings are reported
 
@@ -91,9 +91,9 @@ Rules and code are welcome under [Apache 2.0](LICENSE). See [CONTRIBUTING.md](CO
 
 ## References
 
-- [A2A Protocol Specification](https://google.github.io/A2A/)
+- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
 - [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-- [MCP Security Best Practices](https://modelcontextprotocol.io/docs/tutorials/security/authorization)
+- [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices)
 - [Unit 42: Agent Session Smuggling in A2A Systems](https://unit42.paloaltonetworks.com/agent-session-smuggling-in-agent2agent-systems/)
 - [OWASP GenAI Security Project](https://genai.owasp.org)
 
