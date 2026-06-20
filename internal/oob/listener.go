@@ -8,6 +8,12 @@
 // the Batesian host (e.g., same network, or target is on the public internet with a
 // routable IP). For testing targets that cannot reach the scanning host, use an
 // external OOB server (--oob-url flag) instead.
+//
+// The listener binds all interfaces and accepts any inbound request, so callers
+// MUST correlate a callback to their own probe via the per-run marker embedded in
+// the callback path (see WaitForMarker). An unrelated inbound request on the port
+// (a port scanner, another host) is otherwise indistinguishable from a genuine
+// target callback and would produce a false positive.
 package oob
 
 import (
@@ -16,6 +22,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -85,18 +92,28 @@ func (l *Listener) URL() string {
 	return fmt.Sprintf("http://%s:%s", ip, port)
 }
 
-// Wait blocks until a callback arrives, the context is cancelled, or timeout elapses.
-func (l *Listener) Wait(ctx context.Context, timeout time.Duration) (*Callback, bool) {
+// WaitForMarker blocks until a callback whose request URI contains marker
+// arrives, the context is cancelled, or timeout elapses. Callbacks that do not
+// contain the marker (stray inbound requests from other hosts, port scanners,
+// and the like) are ignored, so an unrelated request cannot consume the wait or
+// be mistaken for this probe's own callback. An empty marker matches any
+// callback. The timeout bounds the whole wait, not each ignored callback.
+func (l *Listener) WaitForMarker(ctx context.Context, timeout time.Duration, marker string) (*Callback, bool) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case cb := <-l.callbacks:
-		return &cb, true
-	case <-timer.C:
-		return nil, false
-	case <-ctx.Done():
-		return nil, false
+	for {
+		select {
+		case cb := <-l.callbacks:
+			if marker == "" || strings.Contains(cb.URL, marker) {
+				return &cb, true
+			}
+			// Non-matching stray callback: keep waiting within the same window.
+		case <-timer.C:
+			return nil, false
+		case <-ctx.Done():
+			return nil, false
+		}
 	}
 }
 
@@ -121,7 +138,7 @@ func (l *Listener) handleCallback(w http.ResponseWriter, r *http.Request) {
 	select {
 	case l.callbacks <- cb:
 	default:
-		// Channel full - drop (shouldn't happen in practice with buffer=16)
+		// Channel full - drop (shouldn't happen in practice with buffer=64).
 	}
 	w.WriteHeader(http.StatusOK)
 }

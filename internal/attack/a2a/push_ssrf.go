@@ -128,7 +128,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// Wait for OOB callback.
 	var findings []attack.Finding
 	if listener != nil {
-		cb, received := listener.Wait(ctx, 10*time.Second)
+		cb, received := listener.WaitForMarker(ctx, 10*time.Second, token)
 		if received {
 			evidence := fmt.Sprintf(
 				"Target accepted task with pushNotificationConfig.url=%q (binding: %s)\n"+
