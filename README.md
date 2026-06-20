@@ -8,7 +8,7 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ![Batesian demo](docs/demo.gif)
 
-> **Authorized use only.** Run Batesian only against systems you own or targets covered by explicit written permission. The CLI issues attack-shaped traffic. Use outside that scope is your responsibility.
+> **Authorized use only.** Run Batesian only against systems you own or targets covered by explicit written permission. The CLI issues attack-shaped traffic. Use outside that scope is your responsibility. To review the traffic a scan would generate before authorizing it, run `scan --dry-run`: it records and prints every request and sends nothing.
 >
 > **Secrets and TLS.** Prefer `BATESIAN_TOKEN` or your secret manager over embedding long-lived bearer material in shared terminals, config repos, or CI logs. Use `--skip-tls` only when you must hit a host with intentionally broken TLS, such as a local lab on self-signed certificates.
 >
@@ -66,6 +66,8 @@ batesian scan --target https://mcp.example.com \
 batesian scan --target https://agent.example.com \
   --principal name=tenant-a,token="$TOKEN_A",tenant=A \
   --principal name=tenant-b,token="$TOKEN_B",tenant=B
+
+batesian scan --target https://agent.example.com --dry-run
 
 batesian init
 ```

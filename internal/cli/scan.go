@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	batesian "github.com/calbebop/batesian"
@@ -70,6 +73,7 @@ func init() {
 	// Repeatable; appended to any principals defined in the config file.
 	scanCmd.Flags().StringArray("principal", nil, "Extra identity as name=...,token=...,tenant=... (repeatable; for multi-tenant rules)")
 	scanCmd.Flags().Bool("no-coalesce", false, "Do not coalesce overlapping findings from rules in the same vulnerability class")
+	scanCmd.Flags().Bool("dry-run", false, "Print the requests each rule would send and exit without sending any traffic")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -95,6 +99,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	oobURL, _ := cmd.Flags().GetString("oob-url")
 	audienceClaim, _ := cmd.Flags().GetString("audience-claim")
 	principalFlags, _ := cmd.Flags().GetStringArray("principal")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 	if target == "" {
 		target = cfg.Target
@@ -138,7 +143,17 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--target is required")
 	}
 
-	if token == "" {
+	// A dry run must not reach the network at all, including the authorization
+	// server, so skip live OAuth token acquisition. Rules preview as unauthenticated.
+	if token == "" && dryRun {
+		tokenURL, _ := cmd.Flags().GetString("token-url")
+		authURL, _ := cmd.Flags().GetString("auth-url")
+		if tokenURL != "" || authURL != "" {
+			fmt.Fprintln(os.Stderr, "dry run: skipping OAuth token acquisition; rules preview as unauthenticated")
+		}
+	}
+
+	if token == "" && !dryRun {
 		tokenURL, _ := cmd.Flags().GetString("token-url")
 		authURL, _ := cmd.Flags().GetString("auth-url")
 		clientID, _ := cmd.Flags().GetString("client-id")
@@ -216,9 +231,22 @@ func runScan(cmd *cobra.Command, args []string) error {
 		Principals:     principals,
 	}
 
+	var recorder *attackpkg.Recorder
+	if dryRun {
+		recorder = &attackpkg.Recorder{}
+		opts.DryRun = true
+		opts.Recorder = recorder
+	}
+
 	eng := engine.New(opts)
 	ctx := context.Background()
 	results := eng.Run(ctx, target, filtered)
+
+	if dryRun {
+		// No traffic was sent; report the recorded request plan instead of findings.
+		printDryRunPlan(os.Stdout, target, recorder)
+		return nil
+	}
 
 	noCoalesce, _ := cmd.Flags().GetBool("no-coalesce")
 	if !noCoalesce {
@@ -421,6 +449,70 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 		return "", err
 	}
 	return tok.AccessToken, nil
+}
+
+// printDryRunPlan writes the request plan captured during a dry run. Nothing was
+// sent; this is the preview an operator reviews before authorizing a real scan.
+// Requests are grouped by the rule that issued them, in execution order.
+func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
+	reqs := rec.Requests()
+	fmt.Fprintf(out, "\nDry run: nothing was sent. The following %d request(s) would be issued against %s:\n\n", len(reqs), target)
+
+	hosts := map[string]bool{}
+	rulesSeen := map[string]bool{}
+	lastRule := "\x00" // sentinel so the first rule (even "") prints a header
+	for _, r := range reqs {
+		if r.RuleID != lastRule {
+			fmt.Fprintf(out, "[%s]\n", dryRunRuleLabel(r.RuleID))
+			lastRule = r.RuleID
+		}
+		rulesSeen[r.RuleID] = true
+		fmt.Fprintf(out, "  %s %s\n", r.Method, r.URL)
+		if u, err := url.Parse(r.URL); err == nil && u.Host != "" {
+			hosts[u.Host] = true
+		}
+		for _, k := range significantHeaderKeys(r.Headers) {
+			fmt.Fprintf(out, "      %s: %s\n", k, r.Headers[k])
+		}
+		if r.Body != "" {
+			fmt.Fprintf(out, "      body: %s\n", oneLine(r.Body, 300))
+		}
+	}
+
+	fmt.Fprintf(out, "\n%d request(s) across %d rule(s) to %d host(s). Nothing was sent.\n", len(reqs), len(rulesSeen), len(hosts))
+	fmt.Fprintln(out, "Note: requests built from live responses (chained follow-ups, acquired tokens, OOB callbacks) are not expanded in a dry run.")
+}
+
+// dryRunRuleLabel labels a recorded request's rule, naming the pre-rule setup
+// phase for requests captured before any rule was active.
+func dryRunRuleLabel(id string) string {
+	if id == "" {
+		return "setup"
+	}
+	return id
+}
+
+// significantHeaderKeys returns the request headers worth showing in a dry-run
+// plan, sorted. Constant headers (User-Agent, Accept) are omitted as noise.
+func significantHeaderKeys(h map[string]string) []string {
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		if k == "User-Agent" || k == "Accept" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// oneLine collapses whitespace runs and truncates s for single-line display.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 // buildScanJSON creates the JSON representation of scan results.

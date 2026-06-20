@@ -51,10 +51,19 @@ type Options struct {
 
 	// Principals are additional authenticated identities (each with its own token
 	// and optional tenant) that multi-step chained rules can act as. Cross-tenant
-	// and handoff rules (roadmap #27/#28) need at least two principals to prove
-	// that one identity cannot reach another's objects. Empty for single-principal
-	// scans, where Token is the only identity.
+	// and handoff rules need at least two principals to prove that one identity
+	// cannot reach another's objects. Empty for single-principal scans, where
+	// Token is the only identity.
 	Principals []Principal
+
+	// DryRun, when true, records every outbound request instead of sending it, so
+	// an operator can review the exact traffic a scan would generate before
+	// authorizing it. Every scan-path HTTP client honors this via Transport.
+	DryRun bool
+
+	// Recorder collects the requests captured during a dry run. It must be non-nil
+	// when DryRun is set; the engine stamps the active rule onto it per rule.
+	Recorder *Recorder
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant

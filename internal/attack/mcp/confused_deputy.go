@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -190,12 +189,8 @@ func authorizeRedirectProbe(ctx context.Context, opts attack.Options, authorizat
 	}
 	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
 
-	tr := &http.Transport{}
-	if opts.SkipTLS {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
 	hc := &http.Client{
-		Transport: tr,
+		Transport: attack.Transport(opts),
 		// Do not follow redirects: we need the first response's Location header.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
