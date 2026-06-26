@@ -104,6 +104,11 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 		}
 	}()
 
+	// In a dry run, label every request this rule records so the plan groups by rule.
+	if e.opts.Recorder != nil {
+		e.opts.Recorder.SetCurrentRule(r.ID)
+	}
+
 	var findings []attackpkg.Finding
 	var err error
 	if chained, ok := entry.executor.(attackpkg.ChainExecutor); ok {

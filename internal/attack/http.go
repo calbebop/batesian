@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,14 +43,10 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	transport := &http.Transport{}
-	if opts.SkipTLS {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
 	return &HTTPClient{
 		inner: &http.Client{
 			Timeout:   timeout,
-			Transport: transport,
+			Transport: Transport(opts),
 		},
 		vars:  vars,
 		token: opts.Token,

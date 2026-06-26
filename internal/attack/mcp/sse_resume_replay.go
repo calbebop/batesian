@@ -3,7 +3,6 @@ package mcp
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -196,11 +195,7 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 }
 
 func rawSSEClient(opts attack.Options) *http.Client {
-	tr := &http.Transport{}
-	if opts.SkipTLS {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
-	return &http.Client{Transport: tr}
+	return &http.Client{Transport: attack.Transport(opts)}
 }
 
 // resumeCheckpoint selects the first id-bearing event as the resume cursor and
