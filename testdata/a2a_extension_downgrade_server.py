@@ -2,7 +2,7 @@
 Deliberately vulnerable A2A test server for validating:
   - a2a-extension-downgrade-001: the agent card declares an extension as
     REQUIRED, but the server processes SendMessage requests that OMIT the
-    X-A2A-Extensions activation header (fail-open negotiation downgrade,
+    A2A-Extensions activation header (fail-open negotiation downgrade,
     CWE-636/757).
 
 The card advertises capabilities.extensions[] with required=true for
@@ -47,7 +47,7 @@ async def card(request: Request) -> JSONResponse:
 async def rpc(request: Request) -> Response:
     body = await request.json()
     req_id = body.get("id")
-    # VULNERABLE: never checks the X-A2A-Extensions header, so a request that
+    # VULNERABLE: never checks the A2A-Extensions header, so a request that
     # omits the required extension is processed exactly like one that activates it.
     result = {"id": "task-1", "contextId": "ctx-1", "status": "working"}
     return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": result})

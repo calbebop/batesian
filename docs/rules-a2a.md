@@ -271,13 +271,14 @@ checks:
 
 A2A agent cards advertise protocol extensions under `capabilities.extensions[]`,
 each with a `uri` and a `required` flag; clients activate one via the
-`X-A2A-Extensions` request header. A required extension is a capability the
-server states clients MUST activate, so the server must reject requests that do
-not. This rule is card-driven and confirms a fail-open downgrade only with a
+`A2A-Extensions` request header (the legacy `X-A2A-Extensions` name, used through
+v0.3.0, is also sent for older servers). A required extension is a capability the
+server states clients must activate, so the spec requires the server to reject
+requests that do not (`ExtensionSupportRequiredError`). This rule is card-driven and confirms a fail-open downgrade only with a
 control/test pair: it reads the card, and for each `required: true` extension it
 (1) sends a `SendMessage` that **activates** the extension (control - must be
 accepted or the rule can't test), then (2) sends an identical `SendMessage` with
-the `X-A2A-Extensions` header **omitted**. A **confirmed** finding is raised only
+the `A2A-Extensions` header **omitted**. A **confirmed** finding is raised only
 when the omission is also accepted - the server does not enforce its own required
 extension, so its policy/capability guarantees can be bypassed by simply not
 sending the header. A server that rejects the un-activated request fails closed
