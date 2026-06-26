@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Build](https://github.com/calbebop/batesian/actions/workflows/ci.yml/badge.svg)](https://github.com/calbebop/batesian/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/calbebop/batesian)](https://goreportcard.com/report/github.com/calbebop/batesian)
 
 CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https://modelcontextprotocol.io) stacks. It drives concrete protocol traffic (OAuth audience/scope/DCR, push-notification callbacks, JWS card signatures, session and task boundaries, agent-card handling) and records outcomes as `confirmed` or `indicator`, with optional SARIF for CI.
 
@@ -32,17 +33,25 @@ Coverage spans:
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
 - **Unauthenticated & cross-origin access** - exposed MCP resources and prompt templates, Streamable HTTP Origin validation (DNS rebinding)
 
-### How findings are reported
+## Install
 
-- **Confidence** - `confirmed` (the attack demonstrably succeeded) or `indicator` (a suspicious posture that needs manual verification).
-- **Coalescing** - overlapping findings from rules in the same vulnerability class are merged by default; disable with `--no-coalesce`.
-- **JSON output** - `scan --output json` writes JSON to stdout (status goes to stderr), so `batesian scan --output json | jq` works.
+Pre-built, signed binaries for Linux, macOS, and Windows (amd64/arm64) are attached to every [release](https://github.com/calbebop/batesian/releases):
+
+```bash
+# Download the archive for your platform from the Releases page, then:
+tar xzf batesian_<version>_linux_x86_64.tar.gz
+./batesian --help
+```
+
+Or build from source with Go 1.25+:
+
+```bash
+go install github.com/calbebop/batesian/cmd/batesian@latest
+```
 
 ## Quickstart
 
 ```bash
-go install github.com/calbebop/batesian/cmd/batesian@latest
-
 batesian probe --target https://agent.example.com --protocol a2a
 
 batesian scan --target https://agent.example.com --output sarif > results.sarif
@@ -72,20 +81,36 @@ batesian scan --target https://agent.example.com --dry-run
 batesian init
 ```
 
-`probe` is reconnaissance (table or JSON). It does not emit SARIF. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
+`probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
+
+## CI integration
+
+`scan --output sarif` writes SARIF 2.1.0 to stdout. Upload it to the GitHub Security tab with the standard action:
+
+```yaml
+name: batesian
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload SARIF to the Security tab
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go install github.com/calbebop/batesian/cmd/batesian@latest
+      - run: batesian scan --target https://agent.example.com --output sarif > results.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+```
+
+Findings surface as code-scanning alerts. `scan` exits non-zero only on an operational error, not on findings, so gating is handled by the Security tab (or by parsing `--output json`).
 
 ## Rule packs
 
 Rules are YAML. New checks can ship without recompiling the binary. Authoring, schema, and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Build and test
-
-```bash
-make build
-make test
-```
-
-Or: `go build -o bin/batesian ./cmd/batesian` and `go test -race ./...`.
 
 ## Contributing
 
