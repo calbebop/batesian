@@ -40,18 +40,24 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	listenerURL := opts.OOBListenerURL
 	var listener *oob.Listener
 	if listenerURL == "" {
-		// Spin up a local listener for this run.
-		listener = oob.New()
-		var err error
-		listenerURL, err = listener.Start()
-		if err != nil {
-			return nil, fmt.Errorf("push-ssrf: starting OOB listener: %w", err)
+		if opts.DryRun {
+			// A dry run must bind no socket; preview against a non-resolving
+			// placeholder so the recorded plan still shows a callback URL.
+			listenerURL = attack.DryRunOOBPlaceholderURL
+		} else {
+			// Spin up a local listener for this run.
+			listener = oob.New()
+			var err error
+			listenerURL, err = listener.Start()
+			if err != nil {
+				return nil, fmt.Errorf("push-ssrf: starting OOB listener: %w", err)
+			}
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = listener.Stop(stopCtx)
+			}()
 		}
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = listener.Stop(stopCtx)
-		}()
 		vars = attack.NewVars(target, listenerURL)
 	}
 

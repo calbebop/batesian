@@ -9,6 +9,13 @@ import (
 	"sync"
 )
 
+// DryRunOOBPlaceholderURL is the base callback URL substituted for a real OOB
+// listener during a dry run. SSRF executors normally bind a local listener to
+// catch callbacks; a dry run must bind no socket, so they use this non-resolving
+// placeholder instead. The .invalid TLD (RFC 6761) never resolves, and the
+// recorded plan still shows a representative callback URL.
+const DryRunOOBPlaceholderURL = "http://oob.batesian.invalid"
+
 // RecordedRequest is one outbound HTTP request captured during a dry run.
 type RecordedRequest struct {
 	RuleID  string

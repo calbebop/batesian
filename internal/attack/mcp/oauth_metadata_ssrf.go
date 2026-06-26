@@ -47,17 +47,23 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	listenerURL := opts.OOBListenerURL
 	var listener *oob.Listener
 	if listenerURL == "" {
-		listener = oob.New()
-		var err error
-		listenerURL, err = listener.Start()
-		if err != nil {
-			return nil, fmt.Errorf("oauth-metadata-ssrf: starting OOB listener: %w", err)
+		if opts.DryRun {
+			// A dry run must bind no socket; preview against a non-resolving
+			// placeholder so the recorded plan still shows the seeded URLs.
+			listenerURL = attack.DryRunOOBPlaceholderURL
+		} else {
+			listener = oob.New()
+			var err error
+			listenerURL, err = listener.Start()
+			if err != nil {
+				return nil, fmt.Errorf("oauth-metadata-ssrf: starting OOB listener: %w", err)
+			}
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = listener.Stop(stopCtx)
+			}()
 		}
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = listener.Stop(stopCtx)
-		}()
 	}
 
 	// Build a registration whose URL metadata fields all target the OOB listener,

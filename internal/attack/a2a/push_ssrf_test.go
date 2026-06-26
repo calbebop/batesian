@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"time"
 
 	"testing"
@@ -115,5 +116,38 @@ func TestPushSSRFExecutor_MethodNotFound(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestPushSSRF_DryRunBindsNoListener verifies that a dry run previews the SSRF
+// probe against the non-resolving placeholder callback instead of binding a local
+// OOB listener. A dry run must open no socket, so the recorded plan must carry the
+// placeholder host and never a real listener address.
+func TestPushSSRF_DryRunBindsNoListener(t *testing.T) {
+	rec := &attack.Recorder{}
+	rec.SetCurrentRule("a2a-push-ssrf-001")
+	opts := attack.Options{DryRun: true, Recorder: rec}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, "http://target.invalid", opts); err != nil {
+		t.Fatalf("dry-run Execute returned error: %v", err)
+	}
+
+	reqs := rec.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("dry run recorded no requests")
+	}
+	var sawPlaceholder bool
+	for _, r := range reqs {
+		if strings.Contains(r.Body, "oob.batesian.invalid") {
+			sawPlaceholder = true
+		}
+		if strings.Contains(r.Body, "127.0.0.1") || strings.Contains(r.Body, "0.0.0.0") {
+			t.Errorf("dry-run request body references a real listener address: %s", r.Body)
+		}
+	}
+	if !sawPlaceholder {
+		t.Error("dry-run plan never used the placeholder OOB callback URL")
 	}
 }
