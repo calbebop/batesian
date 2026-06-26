@@ -18,7 +18,7 @@ pip install starlette uvicorn httpx mcp
 
 ## Server Registry
 
-The bundled rule set is **14 A2A + 13 MCP = 27 rules**. Every rule's primary
+The bundled rule set is **14 A2A + 14 MCP = 28 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -37,7 +37,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` |
-| `mcp_new_rules_server.py` | 3100 | `mcp-init-downgrade-001`, `mcp-prompt-unauth-001` |
+| `mcp_new_rules_server.py` | 3100 | `mcp-init-downgrade-001`, `mcp-prompt-unauth-001`, `mcp-tools-unauth-001` |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
 | `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` |
 | `mcp_sse_resume_replay_server.py` | 7790 | `mcp-sse-resume-replay-001` |
@@ -46,7 +46,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_confused_deputy_server.py` | 7793 | `mcp-confused-deputy-001` |
 | `mcp_dns_rebind_origin_server.py` | 7794 | `mcp-dns-rebind-origin-001` |
 
-**Coverage.** 26 of the 27 rules have a standalone Python fixture above. The
+**Coverage.** 27 of the 28 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by

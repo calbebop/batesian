@@ -1,0 +1,49 @@
+id: mcp-tools-unauth-001
+info:
+  name: MCP Tools Accessible Without Authentication
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server exposes its tools without authentication, via
+    tools/list (enumeration) and tools/call (invocation dispatch).
+
+    Tools are the primary MCP attack surface: unlike resources (data) or prompts
+    (templates), a tool is a server-side function a caller can invoke - querying
+    databases, calling APIs, reading files, or running commands. The MCP spec
+    requires servers to implement proper access controls on tools.
+
+    The rule confirms two distinct failures:
+      1. tools/list returns the tool set (names plus input schemas) to an
+         unauthenticated caller - the executable surface is disclosed
+         (reported MEDIUM).
+      2. tools/call dispatch is reachable without authentication (reported HIGH).
+
+    SAFETY: the rule never invokes a real or advertised tool. It confirms the
+    invocation path is open by calling a guaranteed non-existent tool name, which
+    the spec answers with a -32602 "Unknown tool" protocol error and zero
+    execution. A server that requires authentication rejects with 401/403 or an
+    auth error before reaching tool dispatch, and produces no finding.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - mcp
+    - auth
+    - tools
+    - access-control
+    - cwe-862
+
+attack:
+  protocol: mcp
+  type: mcp-tools-unauth
+
+remediation: |
+  1. Require authentication (OAuth 2.1 bearer token) before responding to
+     tools/list and tools/call requests.
+  2. Return a JSON-RPC error (code -32001) for unauthenticated tools/* calls,
+     and enforce the auth check before tool lookup or dispatch.
+  3. Apply per-tool authorization: a valid token for one scope should not grant
+     invocation of every tool the server exposes.

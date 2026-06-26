@@ -1,11 +1,11 @@
 # MCP Attack Rules
 
-Batesian ships **13 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **14 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
-SSRF, protocol-version negotiation, prompts/resources access control, session-id
-handling, SEP-2243 Streamable HTTP header/body routing, SSE resumption,
+SSRF, protocol-version negotiation, tools/prompts/resources access control,
+session-id handling, SEP-2243 Streamable HTTP header/body routing, SSE resumption,
 credential leakage into responses) rather than generic web hygiene.
 
 Each finding carries a **confidence**:
@@ -27,6 +27,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
+| `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
@@ -129,6 +130,25 @@ public. The prompts capability is confirmed structurally from the captured
 body. A list-only disclosure is **medium**; retrieving template content as well is
 **high** - both **confirmed**. A server that requires auth, or does not advertise
 the prompts capability, produces no finding.
+
+---
+
+### mcp-tools-unauth-001
+
+**Tools Accessible Without Authentication** | Severity: High / Medium | CWE-862
+
+Tools are the primary MCP attack surface: a tool is a server-side function a
+caller can invoke, not just data or a template. The tools capability is confirmed
+structurally from the captured `initialize` result (`ServerSupports`). The rule
+confirms two failures: an unauthenticated `tools/list` discloses the executable
+surface and each tool's input schema (**medium**); and the `tools/call` dispatch
+path being reachable without auth (**high**) - both **confirmed**. To prove
+call-path reachability **without executing anything**, the rule calls a guaranteed
+non-existent tool name, which the spec answers with a `-32602` "Unknown tool"
+protocol error; reaching that error (or any result envelope) shows the call was
+dispatched without credentials. It **never invokes a real or advertised tool** -
+destructive tool-argument fuzzing is out of scope. A server that requires auth, or
+does not advertise the tools capability, produces no finding.
 
 ---
 
