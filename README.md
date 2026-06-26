@@ -33,35 +33,6 @@ Coverage spans:
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
 - **Unauthenticated & cross-origin access** - exposed MCP resources and prompt templates, Streamable HTTP Origin validation (DNS rebinding)
 
-### How findings are reported
-
-- **Confidence** - `confirmed` (the attack demonstrably succeeded) or `indicator` (a suspicious posture that needs manual verification).
-- **Coalescing** - overlapping findings from rules in the same vulnerability class are merged by default; disable with `--no-coalesce`.
-- **JSON output** - `scan --output json` writes JSON to stdout (status goes to stderr), so `batesian scan --output json | jq` works.
-
-### Example output
-
-```text
-  batesian  adversarial red-team for AI agent protocols
-  github.com/calbebop/batesian
-
->> Probing  https://agent.example.com
-   protocol: a2a + mcp
-
-[*] Running 27 rule(s) against https://agent.example.com
-
-Scan Results (2 finding(s))
-
-[!] HIGH  A2A server made outbound request to attacker-controlled push notification URL
-   rule: a2a-push-ssrf-001
-   target: https://agent.example.com
-
-[-] INFO  A2A agent card has no JWS signatures despite advertising authenticated extended card [indicator]
-   rule: a2a-jws-algconf-001
-   target: https://agent.example.com/.well-known/agent-card.json
-   note: pattern match only - manual verification recommended
-```
-
 ## Install
 
 Pre-built, signed binaries for Linux, macOS, and Windows (amd64/arm64) are attached to every [release](https://github.com/calbebop/batesian/releases):
@@ -70,18 +41,6 @@ Pre-built, signed binaries for Linux, macOS, and Windows (amd64/arm64) are attac
 # Download the archive for your platform from the Releases page, then:
 tar xzf batesian_<version>_linux_x86_64.tar.gz
 ./batesian --help
-```
-
-Each release also ships a CycloneDX SBOM per archive and a `checksums.txt` signed with keyless [cosign](https://docs.sigstore.dev/) (Sigstore Fulcio, anchored to this repo's GitHub Actions OIDC identity). Verify the signature and your download before running:
-
-```bash
-cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
-  --certificate-identity-regexp 'https://github.com/calbebop/batesian' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  checksums.txt
-sha256sum -c checksums.txt   # confirms the archive you downloaded
 ```
 
 Or build from source with Go 1.25+:
@@ -152,15 +111,6 @@ Findings surface as code-scanning alerts. `scan` exits non-zero only on an opera
 ## Rule packs
 
 Rules are YAML. New checks can ship without recompiling the binary. Authoring, schema, and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Build and test
-
-```bash
-make build
-make test
-```
-
-Or: `go build -o bin/batesian ./cmd/batesian` and `go test -race ./...`.
 
 ## Contributing
 
