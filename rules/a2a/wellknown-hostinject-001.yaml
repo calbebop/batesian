@@ -31,7 +31,7 @@ info:
 
   references:
     - https://portswigger.net/web-security/host-header
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://cwe.mitre.org/data/definitions/601.html
     - https://cwe.mitre.org/data/definitions/16.html
 

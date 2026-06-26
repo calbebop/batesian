@@ -62,8 +62,8 @@ type Config struct {
 	AudienceClaim string `yaml:"audience_claim"`
 
 	// Principals are additional authenticated identities for multi-tenant and
-	// handoff chained rules (roadmap #27/#28). Each needs a valid token; cross-
-	// tenant isolation rules use two or more to attempt access that must fail.
+	// handoff chained rules. Each needs a valid token; cross-tenant isolation
+	// rules use two or more to attempt access that must fail.
 	Principals []PrincipalConfig `yaml:"principals"`
 }
 

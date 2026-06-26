@@ -51,9 +51,9 @@ type Options struct {
 
 	// Principals are additional authenticated identities (each with its own token
 	// and optional tenant) that multi-step chained rules can act as. Cross-tenant
-	// and handoff rules (roadmap #27/#28) need at least two principals to prove
-	// that one identity cannot reach another's objects. Empty for single-principal
-	// scans, where Token is the only identity.
+	// and handoff rules need at least two principals to prove that one identity
+	// cannot reach another's objects. Empty for single-principal scans, where
+	// Token is the only identity.
 	Principals []Principal
 }
 

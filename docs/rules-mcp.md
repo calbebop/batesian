@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **11 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **13 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -154,8 +154,8 @@ if both are rejected, the server is secure - neither produces a finding here.
 
 **Session ID Fixation** | Severity: High | CWE-384
 
-A **stateful, chained** rule (roadmap #27, the MCP half of the session/task-ID
-fixation story). The Streamable HTTP transport requires the server to assign the
+A **stateful, chained** rule (the MCP half of the session/task-ID fixation
+story). The Streamable HTTP transport requires the server to assign the
 `Mcp-Session-Id` at initialize and to reject an unrecognized id with HTTP 404; a
 server that instead **adopts a client-chosen id** is vulnerable to session
 fixation. The rule confirms the failure with a control to avoid false positives
@@ -173,7 +173,7 @@ A **confirmed** finding is raised only when the pre-seeded id is accepted while
 the un-initialized id is rejected - proving sessions are enforced yet a
 client-supplied identifier was trusted. When two principals are configured, a
 fourth provenance hop shows the pre-seeded session being borrowed by a different
-principal. The A2A handoff variant of #27 is tracked separately.
+principal. The A2A counterpart is `a2a-context-fixation-001`.
 
 ---
 

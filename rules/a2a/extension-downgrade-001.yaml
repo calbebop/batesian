@@ -29,7 +29,7 @@ info:
          closed (secure) - no finding.
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://a2a-protocol.org/latest/topics/extensions/
     - https://cwe.mitre.org/data/definitions/636.html
     - https://cwe.mitre.org/data/definitions/757.html

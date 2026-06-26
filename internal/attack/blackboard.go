@@ -45,8 +45,7 @@ type Artifact struct {
 	Value string
 	// Principal names the identity/tenant this artifact belongs to. Empty means
 	// anonymous / the default principal. Multi-principal and multi-tenant rules
-	// (roadmap #27/#28) use this to keep one principal's artifacts distinct from
-	// another's.
+	// use this to keep one principal's artifacts distinct from another's.
 	Principal string
 	// Producer is the rule ID that published the artifact, for provenance.
 	Producer string

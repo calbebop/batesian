@@ -29,7 +29,7 @@ info:
          read leak if B's response echoes A's marker URL).
 
   references:
-    - https://google.github.io/A2A/specification/
+    - https://a2a-protocol.org/latest/specification/
     - https://cwe.mitre.org/data/definitions/639.html
     - https://cwe.mitre.org/data/definitions/862.html
     - https://cwe.mitre.org/data/definitions/441.html
