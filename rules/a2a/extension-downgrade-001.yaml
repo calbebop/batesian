@@ -7,11 +7,12 @@ info:
     Tests whether an A2A server fails OPEN on an extension it declares as
     REQUIRED. A2A agent cards advertise protocol extensions under
     capabilities.extensions[], each with a `uri` and a `required` flag. A
-    required extension is a capability the server states clients MUST activate
-    (via the X-A2A-Extensions request header); the server must reject requests
-    that do not activate it. If the server processes requests that omit its own
-    required extension, the extension's policy/capability guarantees can be
-    silently bypassed - a negotiation downgrade.
+    required extension is a capability the server states clients must activate
+    (via the A2A-Extensions request header); the spec requires the server to
+    reject requests that do not activate it (ExtensionSupportRequiredError). If
+    the server processes requests that omit its own required extension, the
+    extension's policy/capability guarantees can be silently bypassed - a
+    negotiation downgrade.
 
     The check is card-driven and skips cleanly when nothing can be proven:
 
@@ -19,10 +20,10 @@ info:
          the card declares no required extension, there is nothing to downgrade
          (no finding).
       2. Control: send a SendMessage that ACTIVATES the required extension
-         (X-A2A-Extensions: <uri>). If this is rejected too (e.g. messaging
+         (A2A-Extensions: <uri>). If this is rejected too (e.g. messaging
          needs credentials we do not hold), the rule cannot test and emits no
          finding.
-      3. Test: send the same SendMessage but OMIT the X-A2A-Extensions header.
+      3. Test: send the same SendMessage but OMIT the A2A-Extensions header.
          If the control succeeded and this request is also accepted, the server
          does not enforce its own required extension - reported CONFIRMED. If the
          omission is rejected with a required-extension error, the server fails
@@ -49,10 +50,10 @@ attack:
 remediation: |
   1. Enforce required extensions fail-closed: reject any request that does not
      activate an extension the agent card marks `required: true`, with a clear
-     error (e.g. the X-A2A-Extensions header must list the required URI).
+     error (e.g. the A2A-Extensions header must list the required URI).
   2. Do not treat a required extension as advisory - never process the request's
      side effects before confirming the required extension was activated.
-  3. Echo activated extensions in the X-A2A-Extensions response header so clients
+  3. Echo activated extensions in the A2A-Extensions response header so clients
      can detect silent downgrades.
   4. Keep the agent card's `required` flags in sync with actual enforcement; an
      extension advertised as required but not enforced is worse than not

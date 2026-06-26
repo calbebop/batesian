@@ -13,7 +13,9 @@ import (
 // a2a-extension-downgrade-001).
 //
 // A2A cards advertise capabilities.extensions[] with a `uri` and `required`
-// flag; clients activate an extension via the X-A2A-Extensions request header.
+// flag; clients activate an extension via the A2A-Extensions request header
+// (pre-1.0 servers, through v0.3.0, used X-A2A-Extensions; both are sent so the
+// activation control works across server versions).
 // A server that processes requests which omit its own required extension has
 // silently downgraded the negotiated capability set. The executor only reports a
 // CONFIRMED downgrade when an extension-activating control request is accepted
@@ -32,7 +34,23 @@ func NewExtensionDowngradeExecutor(r attack.RuleContext) *ExtensionDowngradeExec
 	return &ExtensionDowngradeExecutor{rule: r}
 }
 
-const a2aExtensionsHeader = "X-A2A-Extensions"
+// a2aExtensionsHeader is the v1.0+ extension-activation header. The pre-1.0 name
+// (a2aExtensionsHeaderLegacy, used through v0.3.0) is still sent alongside it so
+// the activation control request lands on servers of either era.
+const (
+	a2aExtensionsHeader       = "A2A-Extensions"
+	a2aExtensionsHeaderLegacy = "X-A2A-Extensions"
+)
+
+// activationHeaders returns the activation header set for the given extension
+// URI: both the v1.0 and legacy header names so the control works regardless of
+// which A2A version the target implements.
+func activationHeaders(uri string) map[string]string {
+	return map[string]string{
+		a2aExtensionsHeader:       uri,
+		a2aExtensionsHeaderLegacy: uri,
+	}
+}
 
 func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
@@ -47,7 +65,7 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 	for _, uri := range required {
 		// Control: activate the required extension. If even this is rejected we
 		// cannot exercise the rule (e.g. messaging needs creds we lack).
-		accepted, shape := e.sendMessage(ctx, client, endpoint, map[string]string{a2aExtensionsHeader: uri}, vars.RandID, "")
+		accepted, shape := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
 		if !accepted {
 			continue
 		}
@@ -143,12 +161,12 @@ func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack
 		Title:      "A2A server does not enforce its own required extension (negotiation downgrade)",
 		Description: fmt.Sprintf(
 			"The agent card marks extension %q as required, but the server accepted a SendMessage that "+
-				"OMITTED the X-A2A-Extensions activation header while rejecting nothing. A request that "+
-				"activates the extension and an identical request that does not are both processed, so the "+
-				"required extension's policy or capability guarantees can be bypassed simply by not "+
-				"sending the header.", uri),
+				"OMITTED the A2A-Extensions activation header. A request that activates the extension and an "+
+				"identical request that does not are both processed, so the required extension's policy or "+
+				"capability guarantees can be bypassed simply by not sending the header. The A2A spec requires "+
+				"a server to reject a request that does not activate a required extension (ExtensionSupportRequiredError).", uri),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s (shape %s)\nrequired extension: %s\nwith X-A2A-Extensions: accepted\nwithout X-A2A-Extensions: accepted (should be rejected)",
+			"endpoint: %s (shape %s)\nrequired extension: %s\nwith A2A-Extensions activation: accepted\nwithout activation header: accepted (spec requires rejection: ExtensionSupportRequiredError)",
 			endpoint, shape, uri),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
