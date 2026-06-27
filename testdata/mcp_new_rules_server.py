@@ -2,6 +2,7 @@
 Deliberately vulnerable MCP test server for validating:
   - mcp-init-downgrade-001: accepts legacy protocol version 2024-11-05
   - mcp-prompt-unauth-001: exposes prompt templates without auth
+  - mcp-tools-unauth-001: exposes tools/list and tools/call dispatch without auth
 
 (May still carry a legacy CORS route from a pruned rule; only the rules listed
 above are part of the current rule set.)
@@ -97,6 +98,17 @@ async def mcp_endpoint(request: Request) -> Response:
     # All subsequent methods: no auth check (vulnerable)
     if method == "tools/list":
         result = {"tools": TOOLS}
+    elif method == "tools/call":
+        # No auth check (vulnerable): the dispatch path is reachable anonymously.
+        # An unknown tool name returns a -32602 protocol error per the MCP spec
+        # (the scanner only ever calls a non-existent tool, so nothing executes).
+        name = params.get("name", "")
+        tool_names = {t["name"] for t in TOOLS}
+        if name not in tool_names:
+            return Response(json.dumps({"jsonrpc": "2.0", "id": req_id,
+                                        "error": {"code": -32602, "message": f"Unknown tool: {name}"}}),
+                            media_type="application/json", headers={**cors, "Content-Type": "application/json"})
+        result = {"content": [{"type": "text", "text": "simulated tool output"}], "isError": False}
     elif method == "resources/list":
         result = {"resources": RESOURCES}
     elif method == "resources/read":
@@ -125,5 +137,5 @@ app = Starlette(routes=[
 
 if __name__ == "__main__":
     print(f"[*] MCP new-rules vulnerable server on port {PORT}", flush=True)
-    print("[*] Vulnerabilities: protocol downgrade, CORS origin reflection, unauthenticated prompts", flush=True)
+    print("[*] Vulnerabilities: protocol downgrade, CORS origin reflection, unauthenticated prompts and tools", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)
