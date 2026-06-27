@@ -18,7 +18,7 @@ pip install starlette uvicorn httpx mcp
 
 ## Server Registry
 
-The bundled rule set is **14 A2A + 14 MCP = 28 rules**. Every rule's primary
+The bundled rule set is **14 A2A + 15 MCP = 29 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -45,8 +45,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_secret_canary_server.py` | 7792 | `mcp-secret-canary-001` |
 | `mcp_confused_deputy_server.py` | 7793 | `mcp-confused-deputy-001` |
 | `mcp_dns_rebind_origin_server.py` | 7794 | `mcp-dns-rebind-origin-001` |
+| `mcp_batch_bypass_server.py` | 7795 | `mcp-jsonrpc-batch-bypass-001` |
 
-**Coverage.** 27 of the 28 rules have a standalone Python fixture above. The
+**Coverage.** 28 of the 29 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by

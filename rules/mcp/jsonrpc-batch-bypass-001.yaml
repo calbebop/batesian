@@ -1,0 +1,66 @@
+id: mcp-jsonrpc-batch-bypass-001
+info:
+  name: MCP JSON-RPC Batch Authentication Bypass
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an MCP server's authentication can be bypassed by wrapping a
+    request in a JSON-RPC batch array.
+
+    The classic JSON-RPC batch bypass: an auth or method gate inspects the
+    top-level request object (for example "allow initialize, require auth for
+    everything else", keyed on body.method). A JSON-RPC batch is an array and has
+    no top-level method, so the gate's check does not fire and the array is handed
+    to the dispatcher, which executes each element. An attacker reaches a gated
+    method by array-wrapping it (CWE-288, authentication bypass via an alternate
+    channel).
+
+    Detection sends the IDENTICAL request twice, differing only in batch wrapping,
+    and confirms a bypass only when the wrapping is the deciding factor:
+
+      1. Control: the request as a plain JSON-RPC object, unauthenticated. The
+         server must REJECT it (HTTP 401/403 or a JSON-RPC auth error) for there
+         to be a gate to bypass.
+      2. Test: the same request as a one-element batch array, unauthenticated. A
+         CONFIRMED finding is raised only when the batch is PROCESSED and returns a
+         result while the single object was rejected.
+
+    Two gate shapes are probed: an auth gate on initialize itself, and a per-method
+    gate on tools/resources/prompts list when initialize is open. A server that
+    rejects the batch the same way, or rejects the array outright (the compliant
+    behaviour), produces no finding.
+
+    SAFETY: the rule only sends initialize and *list (enumeration) requests. It
+    never invokes a tool, sends a message, or mutates state.
+
+    Currency: JSON-RPC batching is normative in revisions 2024-11-05 and
+    2025-03-26; the 2025-06-18 revision REMOVED batch support, so a compliant
+    current server rejects batches outright (no finding). This rule therefore
+    targets servers on the earlier revisions and any later server that still
+    processes batches (non-compliant), where the bypass is exploitable.
+
+  references:
+    - https://www.jsonrpc.org/specification#batch
+    - https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+    - https://modelcontextprotocol.io/specification/2025-06-18/changelog
+    - https://cwe.mitre.org/data/definitions/288.html
+
+  tags:
+    - mcp
+    - auth
+    - json-rpc
+    - batch
+    - bypass
+    - cwe-288
+
+attack:
+  protocol: mcp
+  type: mcp-jsonrpc-batch-bypass
+
+remediation: |
+  1. Apply authentication and authorization to every element of a JSON-RPC batch,
+     not just the top-level request object; never gate on body.method alone.
+  2. On current revisions (2025-06-18 and later), reject JSON-RPC batch arrays
+     outright, since batching was removed from the spec.
+  3. Enforce the auth check in a layer that runs before request-shape parsing, so a
+     single object and a batch array are subject to the same gate.
