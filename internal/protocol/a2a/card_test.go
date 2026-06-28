@@ -151,6 +151,52 @@ func TestAgentCard_LegacyV03URL(t *testing.T) {
 	}
 }
 
+// TestGetServiceURL_SelectsJSONRPCNotFirstGRPC mirrors the official a2a-python
+// reference card: gRPC is listed first (scheme-less) and is the preferred/top-level
+// transport, but GetServiceURL must return the JSON-RPC interface, not the gRPC one.
+func TestGetServiceURL_SelectsJSONRPCNotFirstGRPC(t *testing.T) {
+	const cardJSON = `{
+		"name": "Sample Agent",
+		"supportedInterfaces": [
+			{"url": "127.0.0.1:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"},
+			{"url": "http://127.0.0.1:41241/a2a/jsonrpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
+		],
+		"additionalInterfaces": [
+			{"transport": "JSONRPC", "url": "http://127.0.0.1:41241/a2a/jsonrpc"}
+		],
+		"preferredTransport": "GRPC",
+		"url": "127.0.0.1:50052"
+	}`
+	var card AgentCard
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := card.GetServiceURL(); got != "http://127.0.0.1:41241/a2a/jsonrpc" {
+		t.Errorf("GetServiceURL() = %q, want the JSON-RPC interface (not the first/gRPC one)", got)
+	}
+}
+
+// TestGetServiceURL_V03AdditionalInterfaces selects the JSON-RPC entry from a v0.3
+// card's additionalInterfaces when no v1.0 supportedInterfaces JSON-RPC exists.
+func TestGetServiceURL_V03AdditionalInterfaces(t *testing.T) {
+	const cardJSON = `{
+		"name": "Legacy",
+		"additionalInterfaces": [
+			{"transport": "HTTP+JSON", "url": "http://h/rest"},
+			{"transport": "JSONRPC", "url": "http://h/jr"}
+		],
+		"preferredTransport": "GRPC",
+		"url": "h:50052"
+	}`
+	var card AgentCard
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := card.GetServiceURL(); got != "http://h/jr" {
+		t.Errorf("GetServiceURL() = %q, want http://h/jr", got)
+	}
+}
+
 func TestAgentCard_FullV1(t *testing.T) {
 	var card AgentCard
 	if err := json.Unmarshal([]byte(fullV1CardJSON), &card); err != nil {
