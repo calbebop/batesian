@@ -51,7 +51,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	}
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint := vars.BaseURL + "/"
+	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))

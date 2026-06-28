@@ -48,7 +48,7 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	client := attack.NewHTTPClient(opts, vars)
 	unauthClient := attack.NewUnauthHTTPClient(opts, vars)
 
-	endpoint := vars.BaseURL + "/"
+	endpoint, _ := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
 
 	// Step 1: Probe the agent card to find a plausible agent name to impersonate.
 	agentName := "trusted-orchestrator"

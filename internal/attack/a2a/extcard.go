@@ -54,7 +54,8 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	// JSON-RPC transport - the primary path in the current SDK. Both / and
 	// /v1/message:send are tried since the endpoint varies by binding type. One
 	// finding max, preferring the invalid-token (critical) signal.
-	for _, ep := range []string{vars.BaseURL + "/", vars.BaseURL + "/v1/message:send"} {
+	jsonrpcEP, _ := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
+	for _, ep := range []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"} {
 		if resp, ok := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID); ok {
 			findings = append(findings, e.finding("JSON-RPC", ep, invalidToken, resp))
 			break

