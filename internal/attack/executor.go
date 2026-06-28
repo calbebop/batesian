@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 )
 
@@ -14,6 +15,12 @@ type Executor interface {
 	// Execute runs the attack and returns a (possibly empty) list of findings.
 	Execute(ctx context.Context, target string, opts Options) ([]Finding, error)
 }
+
+// ErrInconclusive signals that a rule could not reach a testable endpoint, so it
+// was not exercised. The engine surfaces this as a skipped result (neither a
+// finding nor an error) so reporting can distinguish "tested, nothing found"
+// from "could not test". Wrap it with %w to attach detail.
+var ErrInconclusive = errors.New("rule could not reach a testable endpoint")
 
 // RuleContext carries the metadata from a rule that executors need to populate findings.
 // This avoids importing the rules package inside executor packages (preventing import cycles).

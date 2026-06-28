@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,16 +193,17 @@ func TestPeerImpersonation_ProperValidation(t *testing.T) {
 	}
 }
 
-// TestPeerImpersonation_NotA2AServer verifies no finding is emitted against a
-// server that returns 404 for all requests.
+// TestPeerImpersonation_NotA2AServer verifies that against a server that returns
+// 404 for all requests (no reachable A2A endpoint) the rule reports inconclusive
+// rather than a (misleading) clean result.
 func TestPeerImpersonation_NotA2AServer(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 
 	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
 	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive on non-A2A server, got err=%v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings on non-A2A server, got %d", len(findings))

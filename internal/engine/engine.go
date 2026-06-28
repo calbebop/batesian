@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
@@ -115,6 +116,15 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 		findings, err = chained.ExecuteChained(ctx, target, e.opts, bb)
 	} else {
 		findings, err = entry.executor.Execute(ctx, target, e.opts)
+	}
+	// A rule that could not reach a testable endpoint is recorded as skipped, not
+	// as a (misleading) clean result and not as an error.
+	if errors.Is(err, attackpkg.ErrInconclusive) {
+		return RunResult{
+			Rule:    r,
+			Skipped: true,
+			SkipMsg: "could not reach a testable endpoint",
+		}
 	}
 	return RunResult{
 		Rule:     r,

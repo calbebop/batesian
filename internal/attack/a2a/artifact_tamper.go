@@ -42,7 +42,10 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	endpoint, _ := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	if !ok {
+		return nil, attack.ErrInconclusive
+	}
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
 	// Use a stable, recognizable task ID so the test is reproducible.

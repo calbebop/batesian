@@ -63,6 +63,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 
 	client := attack.NewHTTPClient(opts, vars)
 	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	reached := false
 	callbackURL := listenerURL + "/batesian-" + vars.RandID
 	token := "batesian-" + vars.RandID
 
@@ -87,6 +88,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			},
 		},
 	})
+	if err == nil && sendResp.StatusCode != 404 {
+		reached = true
+	}
 	if err == nil && sendResp.IsSuccess() && !isJSONRPCError(sendResp.Body) {
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
@@ -111,6 +115,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// Attempt 2: Legacy JSONRPC v0.3 tasks/send with embedded pushNotification config
 	if !taskAccepted {
 		jsonrpcResp, err2 := client.POST(ctx, endpoint, map[string]string{}, buildJSONRPCRequest(callbackURL, token, vars.RandID))
+		if err2 == nil && jsonrpcResp.StatusCode != 404 {
+			reached = true
+		}
 		if err2 == nil && jsonrpcResp.IsSuccess() && !isJSONRPCError(jsonrpcResp.Body) &&
 			jsonrpcResp.ContainsAny(`"result"`) {
 			taskAccepted = true
@@ -121,6 +128,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// Attempt 3: HTTP+JSON binding (REST API style, some older deployments)
 	if !taskAccepted {
 		httpResp, err3 := client.POST(ctx, vars.BaseURL+"/tasks/send", map[string]string{}, buildHTTPTaskRequest(callbackURL, token, vars.RandID))
+		if err3 == nil && httpResp.StatusCode != 404 {
+			reached = true
+		}
 		if err3 == nil && httpResp.IsSuccess() {
 			taskAccepted = true
 			acceptedBinding = "HTTP+JSON"
@@ -128,7 +138,11 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	if !taskAccepted {
-		// Target doesn't accept A2A task requests - not a finding, just not applicable.
+		// Target doesn't accept A2A task requests. If nothing was reachable at all,
+		// the rule could not be exercised; otherwise it is simply not applicable.
+		if !reached {
+			return nil, attack.ErrInconclusive
+		}
 		return nil, nil
 	}
 

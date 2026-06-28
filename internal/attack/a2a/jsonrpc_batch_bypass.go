@@ -50,7 +50,10 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 	// Deliberately unauthenticated: the rule tests whether a batch slips past the
 	// server's auth gate. Injecting opts.Token would mask the bypass.
 	client := attack.NewUnauthHTTPClient(opts, vars)
-	endpoint, _ := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	if !ok {
+		return nil, attack.ErrInconclusive
+	}
 
 	bogusTask := "batesian-nonexistent-" + vars.RandID
 

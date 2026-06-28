@@ -132,26 +132,43 @@ func candidateEndpoints(baseURL string) []string {
 }
 
 // probeJSONRPCEndpoint reports whether a path answers JSON-RPC. It sends a
-// read-only GetTask for a non-existent task id and treats a JSON-RPC envelope
+// read-only task lookup for a non-existent id and treats a JSON-RPC envelope
 // (result or error) or an auth rejection (401/403) as a live endpoint; a 404 or
 // transport error means this is not the endpoint.
+//
+// It tries both the v0.3 (tasks/get) and v1.0 (GetTask) method names, because a
+// server that does not implement one may answer 404 for it while still being a
+// JSON-RPC endpoint that handles the other. Probing only one method would miss
+// such servers.
 func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoint string) bool {
-	resp, err := client.POST(ctx, endpoint, map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-a2a-discovery",
-		"method":  "GetTask",
-		"params":  map[string]interface{}{"id": "batesian-discovery-nonexistent", "historyLength": 1},
-	})
-	if err != nil {
-		return false
+	probes := []struct {
+		method  string
+		headers map[string]string
+	}{
+		{"tasks/get", nil},
+		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
 	}
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return true
+	for _, p := range probes {
+		resp, err := client.POST(ctx, endpoint, p.headers, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "batesian-a2a-discovery",
+			"method":  p.method,
+			"params":  map[string]interface{}{"id": "batesian-discovery-nonexistent", "historyLength": 1},
+		})
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			return true
+		}
+		if resp.StatusCode == 404 {
+			continue
+		}
+		if isJSONRPCError(resp.Body) || resp.ContainsAny(`"jsonrpc"`, `"result"`) {
+			return true
+		}
 	}
-	if resp.StatusCode == 404 {
-		return false
-	}
-	return isJSONRPCError(resp.Body) || resp.ContainsAny(`"jsonrpc"`, `"result"`)
+	return false
 }
 
 // hasHTTPScheme reports whether rawURL is an absolute http(s) URL.

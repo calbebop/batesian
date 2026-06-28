@@ -54,13 +54,22 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	// JSON-RPC transport - the primary path in the current SDK. Both / and
 	// /v1/message:send are tried since the endpoint varies by binding type. One
 	// finding max, preferring the invalid-token (critical) signal.
+	reached := false
 	jsonrpcEP, _ := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
 	for _, ep := range []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"} {
-		if resp, ok := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID); ok {
+		resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID)
+		if resp != nil && resp.StatusCode != 404 {
+			reached = true
+		}
+		if usable {
 			findings = append(findings, e.finding("JSON-RPC", ep, invalidToken, resp))
 			break
 		}
-		if resp, ok := e.probeJSONRPC(ctx, unauthClient, ep, "", vars.RandID); ok {
+		resp, usable = e.probeJSONRPC(ctx, unauthClient, ep, "", vars.RandID)
+		if resp != nil && resp.StatusCode != 404 {
+			reached = true
+		}
+		if usable {
 			findings = append(findings, e.finding("JSON-RPC", ep, "", resp))
 			break
 		}
@@ -68,12 +77,23 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 
 	// HTTP GET transport - legacy path (a2a-sdk < 1.0.0, a2a-samples reference impl).
 	extURL := vars.BaseURL + extCardHTTPPath
-	if resp, err := unauthClient.GET(ctx, extURL, map[string]string{"Authorization": "Bearer " + invalidToken}); err == nil && resp.IsSuccess() && !isJSONRPCError(resp.Body) {
-		findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, resp))
-	} else if resp, err := unauthClient.GET(ctx, extURL, nil); err == nil && resp.IsSuccess() && !isJSONRPCError(resp.Body) {
-		findings = append(findings, e.finding("HTTP GET", extURL, "", resp))
+	respA, errA := unauthClient.GET(ctx, extURL, map[string]string{"Authorization": "Bearer " + invalidToken})
+	if errA == nil && respA.StatusCode != 404 {
+		reached = true
+	}
+	if errA == nil && respA.IsSuccess() && !isJSONRPCError(respA.Body) {
+		findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, respA))
+	} else if respB, errB := unauthClient.GET(ctx, extURL, nil); errB == nil && respB.IsSuccess() && !isJSONRPCError(respB.Body) {
+		findings = append(findings, e.finding("HTTP GET", extURL, "", respB))
+	} else if errB == nil && respB.StatusCode != 404 {
+		reached = true
 	}
 
+	// No disclosure found. If nothing was even reachable, the rule could not be
+	// exercised against a testable endpoint.
+	if len(findings) == 0 && !reached {
+		return nil, attack.ErrInconclusive
+	}
 	return findings, nil
 }
 
@@ -129,8 +149,11 @@ func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPC
 		"method":  "GetExtendedAgentCard",
 		"params":  map[string]interface{}{},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil {
 		return nil, false
+	}
+	if !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+		return resp, false // reached the endpoint, but not a disclosure
 	}
 	return resp, true
 }
