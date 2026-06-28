@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **15 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **16 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -30,6 +30,7 @@ Each finding carries a **confidence**:
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
+| `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 
 ---
 
@@ -326,3 +327,30 @@ carries a result or a non-auth application error such as `TaskNotFound`). The
 probe is a read-only `GetTask` for a non-existent task id, so nothing is sent,
 created, or mutated. A2A does not define batching, so a correct server should
 reject the array rather than dispatch it unauthenticated (CWE-288).
+
+---
+
+### a2a-task-cancel-idor-001
+
+**Cross-Principal Task Cancellation** | Severity: High | CWE-639 / CWE-862
+
+Tests whether task cancellation (`CancelTask` / `tasks/cancel`) is bound to the
+task's owner. Cancellation is a distinct handler from reading a task
+(`a2a-task-idor-001`) or continuing it (`a2a-delegation-integrity-001`) and can be
+left unprotected on its own, giving an attacker a targeted way to terminate other
+principals' tasks. Needs two authenticated principals and reports two confirmed
+failures:
+
+- **Unauthenticated cancellation (CWE-862).** The rule creates a task as A, then
+  cancels it with no credentials. If that cancel is accepted (the task becomes
+  `canceled`), authentication is missing on a state-changing operation.
+- **Cross-principal cancellation (CWE-639).** If the unauthenticated cancel is
+  rejected (so auth is enforced), the rule cancels A's task as the wrong principal
+  B. A **confirmed** finding is raised only when B's cancel succeeds and a
+  read-back as owner A shows the task is now `canceled`.
+
+A server that rejects the wrong-principal cancel, or that cannot cancel the task
+(already terminal), produces no finding. The rule creates and cancels its own
+throwaway task; it never cancels a pre-existing one. Against a server that
+completes tasks almost immediately, the probe task may be terminal before it can
+be canceled, in which case the rule reports nothing.

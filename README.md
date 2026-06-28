@@ -19,9 +19,9 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ## What ships
 
-Bundled rules: **15 A2A, 15 MCP (30 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **16 A2A, 15 MCP (31 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
-- [A2A rules](docs/rules-a2a.md) (15)
+- [A2A rules](docs/rules-a2a.md) (16)
 - [MCP rules](docs/rules-mcp.md) (15)
 
 Coverage spans:
@@ -29,7 +29,7 @@ Coverage spans:
 - **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance, redirect_uri confused deputy
 - **Agent-card trust (A2A)** - JWS signatures, canonicalization, cache/freshness, required-extension downgrade, host-header injection, unauthenticated extended card
 - **Request & task integrity** - task IDOR, agent-role injection, artifact tampering, SEP-2243 header/body routing, SSE resumption replay
-- **Multi-party isolation** - cross-tenant isolation, session/context fixation, delegation chain-of-custody
+- **Multi-party isolation** - cross-tenant isolation, session/context fixation, delegation chain-of-custody, cross-principal task cancellation
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
 - **Unauthenticated & cross-origin access** - exposed MCP tools, resources, and prompt templates, Streamable HTTP Origin validation (DNS rebinding)
 
