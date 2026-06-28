@@ -2,6 +2,11 @@
 // Spec reference: https://a2a-protocol.org/latest/specification/
 package a2a
 
+import (
+	"net/url"
+	"strings"
+)
+
 // AgentCard is the agent's public identity document.
 // Served at GET /.well-known/agent-card.json (v1.0) or /.well-known/agent.json (v0.3 legacy).
 type AgentCard struct {
@@ -13,11 +18,20 @@ type AgentCard struct {
 	Skills       []AgentSkill      `json:"skills"`
 
 	// SupportedInterfaces lists the A2A service endpoints for this agent (v1.0).
-	// The first entry is the preferred endpoint.
+	// Order is not significant: the JSON-RPC interface is selected by binding, not
+	// by position (the first entry is frequently gRPC).
 	SupportedInterfaces []AgentInterface `json:"supportedInterfaces,omitempty"`
 
-	// URL is the v0.3 top-level service URL field. Still present in many deployed agents.
-	// Prefer SupportedInterfaces[0].URL when present.
+	// AdditionalInterfaces lists alternate-transport endpoints in v0.3 cards, each
+	// tagged with a transport rather than a protocolBinding.
+	AdditionalInterfaces []AgentInterface `json:"additionalInterfaces,omitempty"`
+
+	// PreferredTransport names the transport for the top-level URL in v0.3 cards
+	// (e.g. "JSONRPC", "GRPC").
+	PreferredTransport string `json:"preferredTransport,omitempty"`
+
+	// URL is the v0.3 top-level service URL field. Still present in many deployed
+	// agents; usable as the JSON-RPC endpoint only when PreferredTransport is JSONRPC.
 	URL string `json:"url,omitempty"`
 
 	// Required content-type defaults
@@ -37,19 +51,49 @@ type AgentCard struct {
 	Signatures []AgentCardSignature `json:"signatures,omitempty"`
 }
 
-// GetServiceURL returns the primary service URL, handling both v1.0 and v0.3 cards.
+// GetServiceURL returns the agent's JSON-RPC service URL, the transport batesian
+// speaks. It selects by binding rather than by position, because the first
+// supportedInterfaces entry is frequently gRPC (whose URL is often scheme-less).
+// Preference order: a v1.0 JSON-RPC interface, then a v0.3 additionalInterfaces
+// JSON-RPC entry, then the top-level url when preferredTransport is JSONRPC.
+// Failing that it returns the first http(s) interface, then the legacy url.
 func (c *AgentCard) GetServiceURL() string {
-	if len(c.SupportedInterfaces) > 0 {
-		return c.SupportedInterfaces[0].URL
+	for _, i := range c.SupportedInterfaces {
+		if strings.EqualFold(i.ProtocolBinding, "JSONRPC") && hasHTTPScheme(i.URL) {
+			return i.URL
+		}
+	}
+	for _, i := range c.AdditionalInterfaces {
+		if strings.EqualFold(i.Transport, "JSONRPC") && hasHTTPScheme(i.URL) {
+			return i.URL
+		}
+	}
+	if strings.EqualFold(c.PreferredTransport, "JSONRPC") && c.URL != "" {
+		return c.URL
+	}
+	// No JSON-RPC interface advertised; fall back to a usable URL for display.
+	for _, i := range c.SupportedInterfaces {
+		if hasHTTPScheme(i.URL) {
+			return i.URL
+		}
 	}
 	return c.URL
 }
 
-// AgentInterface describes a single A2A service endpoint (v1.0).
+// hasHTTPScheme reports whether rawURL is an absolute http(s) URL. gRPC interface
+// URLs are typically scheme-less "host:port" and are not usable for JSON-RPC.
+func hasHTTPScheme(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// AgentInterface describes a single A2A service endpoint. v1.0 cards tag the
+// transport with protocolBinding; v0.3 additionalInterfaces use transport.
 type AgentInterface struct {
-	URL             string `json:"url"`             // required; absolute HTTPS URL
-	ProtocolBinding string `json:"protocolBinding"` // required; "JSONRPC" | "GRPC" | "HTTP+JSON"
-	ProtocolVersion string `json:"protocolVersion"` // required; e.g. "1.0"
+	URL             string `json:"url"`                       // required; absolute URL (http(s) for JSON-RPC)
+	ProtocolBinding string `json:"protocolBinding,omitempty"` // v1.0; "JSONRPC" | "GRPC" | "HTTP+JSON"
+	Transport       string `json:"transport,omitempty"`       // v0.3; same vocabulary as protocolBinding
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
 	Tenant          string `json:"tenant,omitempty"`
 }
 
