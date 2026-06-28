@@ -18,7 +18,7 @@ pip install starlette uvicorn httpx mcp
 
 ## Server Registry
 
-The bundled rule set is **14 A2A + 15 MCP = 29 rules**. Every rule's primary
+The bundled rule set is **15 A2A + 15 MCP = 30 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -34,6 +34,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_card_trust_server.py` | 3105 | `a2a-card-trust-001` |
 | `a2a_extension_downgrade_server.py` | 3106 | `a2a-extension-downgrade-001` |
 | `a2a_push_binding_server.py` | 3107 | `a2a-push-binding-001` (two principals; needs two `--principal`s) |
+| `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` |
@@ -47,7 +48,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_dns_rebind_origin_server.py` | 7794 | `mcp-dns-rebind-origin-001` |
 | `mcp_batch_bypass_server.py` | 7795 | `mcp-jsonrpc-batch-bypass-001` |
 
-**Coverage.** 28 of the 29 rules have a standalone Python fixture above. The
+**Coverage.** 29 of the 30 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by
