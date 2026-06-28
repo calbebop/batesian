@@ -19,9 +19,9 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ## What ships
 
-Bundled rules: **14 A2A, 15 MCP (29 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **15 A2A, 15 MCP (30 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
-- [A2A rules](docs/rules-a2a.md) (14)
+- [A2A rules](docs/rules-a2a.md) (15)
 - [MCP rules](docs/rules-mcp.md) (15)
 
 Coverage spans:

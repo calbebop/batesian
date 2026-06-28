@@ -1,0 +1,63 @@
+id: a2a-jsonrpc-batch-bypass-001
+info:
+  name: A2A JSON-RPC Batch Authentication Bypass
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server's authentication can be bypassed by wrapping a
+    request in a JSON-RPC batch array.
+
+    The classic JSON-RPC batch bypass: an auth gate inspects the top-level request
+    object, but a JSON-RPC batch is an array and has no top-level method, so the
+    gate's check does not fire and the array is handed to the dispatcher, which
+    runs each element (CWE-288, authentication bypass via an alternate channel).
+    A2A enforces authentication at the HTTP layer (a rejected request returns HTTP
+    401/403), so the bypass shows up as a single request being rejected at the
+    transport while the identical request, batch-wrapped, reaches HTTP 200 and is
+    dispatched.
+
+    Detection sends the IDENTICAL request twice, differing only in batch wrapping,
+    for each protocol shape (A2A v1.0 GetTask, then the v0.3 tasks/get fallback):
+
+      1. Control: a plain JSON-RPC object, unauthenticated. It must be rejected
+         with HTTP 401/403 for there to be an auth gate to bypass.
+      2. Test: the same object as a one-element batch array, unauthenticated. A
+         CONFIRMED finding is raised only when it reaches HTTP 200 and the
+         dispatcher ran (the batch response carries a result or a non-auth
+         application error such as TaskNotFound).
+
+    A server that rejects the batch the same way, or rejects the array outright,
+    produces no finding.
+
+    SAFETY: the probe is a read-only GetTask for a guaranteed non-existent task id.
+    It never sends a message, creates, or mutates a task.
+
+    Currency: A2A v1.0 does not define JSON-RPC batching, so behaviour is
+    implementation-dependent; a generic JSON-RPC library processes batches unless
+    explicitly disabled. The rule applies to any A2A server that dispatches a batch
+    it received without authentication.
+
+  references:
+    - https://www.jsonrpc.org/specification#batch
+    - https://a2a-protocol.org/latest/specification/
+    - https://cwe.mitre.org/data/definitions/288.html
+
+  tags:
+    - a2a
+    - auth
+    - json-rpc
+    - batch
+    - bypass
+    - cwe-288
+
+attack:
+  protocol: a2a
+  type: a2a-jsonrpc-batch-bypass
+
+remediation: |
+  1. Reject JSON-RPC batch arrays unless batching is explicitly supported and
+     every element is independently authenticated and authorized.
+  2. Enforce authentication in a layer that runs before request-shape parsing, so a
+     single object and a batch array are subject to the same gate.
+  3. Do not gate on the top-level request method; an array has none, and per-method
+     checks must run per element.

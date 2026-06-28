@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **14 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **15 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -29,6 +29,7 @@ Each finding carries a **confidence**:
 | `a2a-card-trust-001` | [Agent Card Trust Durability](#a2a-card-trust-001) | High / Medium | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
+| `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 
 ---
 
@@ -305,3 +306,23 @@ webhook hijack if accepted). Distinct from `a2a-multitenant-isolation-001`
 another principal's task): here the vector is the push-config API itself, which
 can redirect a victim task's results to an attacker URL.
 
+---
+
+### a2a-jsonrpc-batch-bypass-001
+
+**JSON-RPC Batch Authentication Bypass** | Severity: High | CWE-288
+
+Tests whether authentication can be bypassed by wrapping a request in a JSON-RPC
+batch array. The gate inspects the top-level request object, but a batch is an
+array with no top-level method, so the check does not fire and the dispatcher runs
+each element. A2A enforces auth at the HTTP layer, so the bypass shows up as a
+single request rejected at the transport (HTTP 401/403) while the identical
+request, batch-wrapped, reaches HTTP 200 and is dispatched. Detection sends the
+**identical** request twice (single object then one-element array) for each
+protocol shape (v1.0 `GetTask`, then the v0.3 `tasks/get` fallback). A
+**confirmed** finding is raised only when the single object is rejected with
+401/403 but the batch reaches 200 and the dispatcher ran (the batch response
+carries a result or a non-auth application error such as `TaskNotFound`). The
+probe is a read-only `GetTask` for a non-existent task id, so nothing is sent,
+created, or mutated. A2A does not define batching, so a correct server should
+reject the array rather than dispatch it unauthenticated (CWE-288).
