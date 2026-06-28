@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **14 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **15 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -36,6 +36,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-secret-canary-001` | [Credential Canary Reflected in Responses](#mcp-secret-canary-001) | Medium | confirmed | CWE-522 |
 | `mcp-confused-deputy-001` | [OAuth Confused Deputy via redirect_uri](#mcp-confused-deputy-001) | High / Medium | confirmed / indicator | CWE-441 |
 | `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
+| `mcp-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#mcp-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 
 ---
 
@@ -315,3 +316,28 @@ exploitation additionally requires the server to be reachable from a victim's
 browser (a local or same-network bind), which the operator confirms for the
 deployment; this is the class behind the MCP Inspector RCE (CVE-2025-49596). A
 server that answers the foreign Origin with 403 produces no finding.
+
+---
+
+### mcp-jsonrpc-batch-bypass-001
+
+**JSON-RPC Batch Authentication Bypass** | Severity: High | CWE-288
+
+Tests whether authentication can be bypassed by wrapping a request in a JSON-RPC
+batch array. The classic failure: an auth gate inspects the top-level request
+object (for example "allow initialize, require auth for everything else", keyed on
+`body.method`); a batch is an array with no top-level method, so the gate does not
+fire and the dispatcher runs each element. Detection sends the **identical**
+request twice, differing only in batch wrapping: a single object (control) and a
+one-element array (test). A **confirmed** finding is raised only when the control
+is rejected (HTTP 401/403 or a JSON-RPC auth error) but the batch is processed and
+returns a result. Two gate shapes are probed: an auth gate on `initialize`, and a
+per-method gate on `tools/resources/prompts` list when `initialize` is open. A
+server that rejects the batch the same way, or rejects the array outright,
+produces no finding. The rule only sends `initialize` and `*list` requests; it
+never invokes a tool or mutates state.
+
+Currency: JSON-RPC batching is normative in revisions 2024-11-05 and 2025-03-26
+and was removed in 2025-06-18, so a compliant current server rejects batches. The
+rule targets servers on the earlier revisions and any later server that still
+processes batches (non-compliant), where the bypass is exploitable.
