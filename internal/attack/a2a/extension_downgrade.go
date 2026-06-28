@@ -60,7 +60,10 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 	if len(required) == 0 {
 		return nil, nil // no required extension advertised => nothing to downgrade
 	}
-	endpoint, _ := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	if !ok {
+		return nil, attack.ErrInconclusive
+	}
 
 	for _, uri := range required {
 		// Control: activate the required extension. If even this is rejected we

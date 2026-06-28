@@ -42,7 +42,7 @@ func NewTaskIDORExecutor(r attack.RuleContext) *TaskIDORExecutor {
 
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	var findings []attack.Finding
 
 	authedClient := attack.NewHTTPClient(opts, vars)
@@ -93,11 +93,29 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	if !accepted {
 		// Not a responsive A2A server, or our credentials were rejected: there
 		// is no owner-created task to test ownership against.
-		return e.probeTaskList(ctx, unauthClient, vars), nil
+		f, restReached := e.probeTaskList(ctx, unauthClient, vars)
+		if len(f) > 0 {
+			return f, nil
+		}
+		// JSON-RPC creation did not succeed and the REST task-list probe reached
+		// nothing: the rule could not be exercised against a testable endpoint.
+		if !ok && !restReached {
+			return nil, attack.ErrInconclusive
+		}
+		return nil, nil
 	}
 	taskID, contextID := extractTaskContext(ownerResp.Body)
 	if taskID == "" {
-		return e.probeTaskList(ctx, unauthClient, vars), nil
+		f, restReached := e.probeTaskList(ctx, unauthClient, vars)
+		if len(f) > 0 {
+			return f, nil
+		}
+		// JSON-RPC creation did not succeed and the REST task-list probe reached
+		// nothing: the rule could not be exercised against a testable endpoint.
+		if !ok && !restReached {
+			return nil, attack.ErrInconclusive
+		}
+		return nil, nil
 	}
 
 	// Step 2: Auth-enforcement discriminator. Attempt the same creation with no
@@ -147,7 +165,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 
-	findings = append(findings, e.probeTaskList(ctx, unauthClient, vars)...)
+	listFindings, _ := e.probeTaskList(ctx, unauthClient, vars)
+	findings = append(findings, listFindings...)
 	return findings, nil
 }
 
@@ -156,13 +175,17 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 // discloses every session's task IDs (and often history) server-wide, which is
 // the strongest form of the same broken-authorization failure. It runs over the
 // unauthenticated client and is independent of the per-task IDOR check above.
-func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient *attack.HTTPClient, vars attack.Vars) []attack.Finding {
+func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient *attack.HTTPClient, vars attack.Vars) ([]attack.Finding, bool) {
 	listEndpoints := []string{
 		vars.BaseURL + "/v1/tasks",
 		vars.BaseURL + "/tasks",
 	}
+	reached := false
 	for _, le := range listEndpoints {
 		listResp, err := unauthClient.GET(ctx, le, nil)
+		if err == nil && listResp.StatusCode != 404 {
+			reached = true
+		}
 		if err == nil && listResp.IsSuccess() && listResp.ContainsAny(`"tasks"`, `"contextId"`, `"history"`) {
 			return []attack.Finding{{
 				RuleID:     e.rule.ID,
@@ -177,8 +200,8 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient *atta
 				Evidence:    fmt.Sprintf("HTTP %d from %s\n%s", listResp.StatusCode, le, snippet(listResp.Body, 400)),
 				Remediation: e.rule.Remediation,
 				TargetURL:   le,
-			}}
+			}}, reached
 		}
 	}
-	return nil
+	return nil, reached
 }

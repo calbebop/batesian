@@ -274,8 +274,21 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 	p.section(fmt.Sprintf("Scan Results (%d finding(s))", total))
 	fmt.Fprintln(p.w)
 
+	notExercised := 0
+	for _, r := range results {
+		if r.Skipped {
+			notExercised++
+		}
+	}
+
 	if total == 0 {
-		fmt.Fprintf(p.w, "  %s\n\n", Green("No findings. Target appears clean for the tested rules."))
+		if notExercised > 0 {
+			fmt.Fprintf(p.w, "  %s\n\n", Yellow(fmt.Sprintf(
+				"No findings, but %d of %d rule(s) could not reach a testable endpoint and were not exercised. The target was not fully tested.",
+				notExercised, len(results))))
+		} else {
+			fmt.Fprintf(p.w, "  %s\n\n", Green("No findings. Target appears clean for the tested rules."))
+		}
 		return
 	}
 
@@ -299,6 +312,12 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		if r.Err != nil {
 			p.Warn(fmt.Sprintf("ERROR running %s: %v", r.Rule.ID, r.Err))
 		}
+	}
+
+	if notExercised > 0 {
+		fmt.Fprintf(p.w, "\n  %s\n", Yellow(fmt.Sprintf(
+			"Note: %d of %d rule(s) could not reach a testable endpoint and were not exercised.",
+			notExercised, len(results))))
 	}
 }
 

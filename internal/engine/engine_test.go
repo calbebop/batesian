@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"strings"
 	"testing"
 
 	batesian "github.com/calbebop/batesian"
@@ -36,8 +37,11 @@ func TestAllBundledRulesResolve(t *testing.T) {
 				t.Fatalf("expected 1 result, got %d", len(results))
 			}
 			res := results[0]
-			if res.Skipped {
-				t.Errorf("rule %q was skipped (%s) - add its attack.type to engine.resolveExecutor", r.ID, res.SkipMsg)
+			// Only a "no executor" skip indicates an unregistered attack.type. A
+			// skip because the rule could not reach a testable endpoint (expected
+			// against this unreachable target) means the executor DID resolve and run.
+			if res.Skipped && strings.Contains(res.SkipMsg, "no executor") {
+				t.Errorf("rule %q has no registered executor (%s) - add its attack.type to engine.resolveExecutor", r.ID, res.SkipMsg)
 			}
 		})
 	}

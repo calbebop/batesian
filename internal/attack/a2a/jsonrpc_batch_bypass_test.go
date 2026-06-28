@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -125,12 +126,18 @@ func TestBatchBypass_OpenNoFinding(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_NotA2A: a non-A2A endpoint that 404s must not produce a finding.
+// TestBatchBypass_NotA2A: a non-A2A endpoint that 404s everything has no reachable
+// JSON-RPC endpoint, so the rule reports inconclusive (not a finding, not clean).
 func TestBatchBypass_NotA2A(t *testing.T) {
 	srv := batchServer("not-a2a")
 	defer srv.Close()
 
-	if findings := runBatchBypass(t, srv); len(findings) != 0 {
-		t.Errorf("expected 0 findings for a non-A2A endpoint, got %d", len(findings))
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive for a non-A2A endpoint, got err=%v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings, got %d", len(findings))
 	}
 }

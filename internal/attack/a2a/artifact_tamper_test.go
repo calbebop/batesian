@@ -265,7 +265,9 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{"id": taskID, "state": "completed"}})
 		default:
-			w.WriteHeader(http.StatusNotFound)
+			// Realistic JSON-RPC: unknown methods return -32601, not HTTP 404.
+			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+				"error": map[string]interface{}{"code": -32601, "message": "method not found"}})
 		}
 	}))
 	defer srv.Close()

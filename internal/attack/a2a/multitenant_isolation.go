@@ -57,7 +57,10 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	}
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	if !ok {
+		return nil, attack.ErrInconclusive
+	}
 
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)

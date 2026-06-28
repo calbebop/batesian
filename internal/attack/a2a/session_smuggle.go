@@ -61,6 +61,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 
 	marker := "batesian-roleinj-" + vars.RandID
 
+	reached := false
 	for _, ep := range endpoints {
 		// Try both the v1.0 PascalCase method (SDK >=1.0.0) and the legacy slash
 		// method (SDK v0.3 compat), each carrying the marker as the message text.
@@ -93,6 +94,9 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		if err != nil {
 			continue
 		}
+		if resp.StatusCode != 404 {
+			reached = true
+		}
 
 		// Server rejected the agent-role message (per spec). Not vulnerable here.
 		if isJSONRPCError(resp.Body) || !resp.IsSuccess() || !looksLikeTask(resp.Body) {
@@ -107,6 +111,9 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		return nil, nil // accepted but neutralized (normalized to user role)
 	}
 
+	if !reached {
+		return nil, attack.ErrInconclusive
+	}
 	return nil, nil
 }
 
