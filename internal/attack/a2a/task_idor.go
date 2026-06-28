@@ -42,7 +42,7 @@ func NewTaskIDORExecutor(r attack.RuleContext) *TaskIDORExecutor {
 
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint := vars.BaseURL + "/"
+	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	var findings []attack.Finding
 
 	authedClient := attack.NewHTTPClient(opts, vars)
