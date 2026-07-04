@@ -1,0 +1,63 @@
+id: a2a-task-cancel-idor-001
+info:
+  name: A2A Cross-Principal Task Cancellation
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server binds task cancellation to the task's owner.
+
+    CancelTask (v1.0) / tasks/cancel (v0.3) moves a task to the terminal
+    "canceled" state. The spec requires servers to implement authorization
+    scoping so clients can only access authorized tasks, so cancellation must be
+    owner-bound. Cancellation is a distinct handler from reading a task
+    (a2a-task-idor-001) or continuing it (a2a-delegation-integrity-001) and can
+    be left unprotected on its own, giving an attacker a targeted disruption
+    primitive over other principals' tasks.
+
+    The rule needs two authenticated principals (A and B) and reports two
+    distinct confirmed failures:
+
+      1. Unauthenticated cancellation (CWE-862): the rule creates a task as A,
+         then cancels it with NO credentials. If that cancel is accepted (the
+         task becomes canceled), authentication is missing on a state-changing
+         operation.
+      2. Cross-principal cancellation (CWE-639): if the unauthenticated cancel is
+         rejected (so auth IS enforced), the rule cancels A's task as the WRONG
+         principal B. A CONFIRMED finding is raised only when B's cancel succeeds
+         and a read-back as owner A shows the task is now canceled.
+
+    A server that rejects the wrong-principal cancel, or that cannot cancel the
+    task (already terminal), produces no finding.
+
+    SAFETY: the rule creates and cancels its OWN throwaway task; it never cancels
+    a pre-existing task, and is standalone (it does not consume tasks other rules
+    created).
+
+    Note: against a server that completes tasks almost immediately the probe task
+    may reach a terminal state before it can be canceled, in which case the rule
+    cannot demonstrate the issue and reports nothing.
+
+  references:
+    - https://a2a-protocol.org/latest/specification/
+    - https://cwe.mitre.org/data/definitions/639.html
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - a2a
+    - authorization
+    - idor
+    - tasks
+    - cancel
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-task-cancel-idor
+
+remediation: |
+  1. Authenticate every cancel request and bind cancellation to the task's owning
+     principal; reject a cancel from any other identity with an authorization
+     error.
+  2. Never allow unauthenticated cancellation of a task.
+  3. Apply the same owner-scoping to all task-lifecycle operations (get, cancel,
+     resubscribe, push-config), not just task creation.

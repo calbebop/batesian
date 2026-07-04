@@ -114,7 +114,7 @@ release:
     ## Batesian {{.Version}}
 
     Adversarial red-team CLI for AI agent protocols (A2A and MCP).
-    30 bundled attack rules (15 A2A + 15 MCP). Single binary. No runtime dependencies.
+    31 bundled attack rules (16 A2A + 15 MCP). Single binary. No runtime dependencies.
 
     ### Install
 
