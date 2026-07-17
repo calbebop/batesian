@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **16 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **17 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -31,6 +31,7 @@ Each finding carries a **confidence**:
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
+| `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
 
 ---
 
@@ -354,3 +355,31 @@ A server that rejects the wrong-principal cancel, or that cannot cancel the task
 throwaway task; it never cancels a pre-existing one. Against a server that
 completes tasks almost immediately, the probe task may be terminal before it can
 be canceled, in which case the rule reports nothing.
+
+---
+
+### a2a-card-security-unenforced-001
+
+**Agent Card Declares Unenforced Authentication** | Severity: High | CWE-287 / CWE-306
+
+The AgentCard is a machine-readable contract: its `securitySchemes` plus a
+requirements list (named `security` in v0.3 cards, `securityRequirements` in v1.0
+proto-JSON cards - both are read) declare which authentication a caller MUST
+present. This rule fires only when the card declares a **non-empty** requirement
+with **no anonymous alternative** (an empty `{}` requirement object, per OpenAPI
+convention, explicitly permits anonymous access and is not flagged), then sends an
+unauthenticated core request. A first, non-mutating `tasks/get` for a random
+non-existent id records whether the read path is reachable anonymously; the
+definitive confirmation is an unauthenticated `message/send` that returns a task
+result (the created task is then read back unauthenticated to corroborate). A
+**confirmed** finding is raised only on a positive result envelope - never on an
+ambiguous application error - so a server that answers the unauthenticated request
+with HTTP 401/403 produces no finding.
+
+This complements `a2a-task-idor-001`, which keys off whether anonymous creation is
+rejected and **suppresses** its finding when the server enforces no authentication
+at all - so a wide-open agent goes unflagged there. This rule flags exactly that
+case, but only when the card promised authentication, making it an attributable
+contract violation (CWE-287 / CWE-306). It is distinct from `a2a-extcard-unauth-001`
+(the extended-card endpoint) and `a2a-card-trust-001` / `a2a-jws-algconf-001` (card
+signatures).

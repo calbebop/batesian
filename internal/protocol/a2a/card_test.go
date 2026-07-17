@@ -245,6 +245,33 @@ func TestAgentCard_FullV1(t *testing.T) {
 	}
 }
 
+// TestAgentCard_V03SecurityField verifies the v0.3 spelling of the requirements
+// list (`security`) parses, not only the v1.0 `securityRequirements`.
+func TestAgentCard_V03SecurityField(t *testing.T) {
+	const v03SecuredCard = `{
+		"name": "Secured Legacy Agent",
+		"url": "https://legacy.example.com",
+		"version": "0.3.0",
+		"capabilities": {},
+		"skills": [],
+		"securitySchemes": {"apiKey": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}}},
+		"security": [{"apiKey": []}]
+	}`
+	var card AgentCard
+	if err := json.Unmarshal([]byte(v03SecuredCard), &card); err != nil {
+		t.Fatalf("failed to parse v0.3 secured card: %v", err)
+	}
+	if len(card.Security) != 1 {
+		t.Fatalf("Security (v0.3) len = %d, want 1", len(card.Security))
+	}
+	if _, ok := card.Security[0]["apiKey"]; !ok {
+		t.Errorf("Security[0] should reference the apiKey scheme, got %v", card.Security[0])
+	}
+	if len(card.SecurityRequirements) != 0 {
+		t.Errorf("SecurityRequirements should be empty for a v0.3 card, got %d", len(card.SecurityRequirements))
+	}
+}
+
 func TestAgentCard_RoundTrip(t *testing.T) {
 	var card AgentCard
 	if err := json.Unmarshal([]byte(fullV1CardJSON), &card); err != nil {

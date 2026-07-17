@@ -43,9 +43,12 @@ type AgentCard struct {
 	Provider         *AgentProvider `json:"provider,omitempty"`
 	IconURL          string         `json:"iconUrl,omitempty"`
 
-	// Authentication (OpenAPI-style security schemes)
+	// Authentication (OpenAPI-style security schemes). The requirements list is
+	// named securityRequirements in v1.0 (proto JSON) but security in v0.3 cards;
+	// both are captured so either version's declared auth can be read.
 	SecuritySchemes      map[string]SecurityScheme `json:"securitySchemes,omitempty"`
 	SecurityRequirements []SecurityRequirement     `json:"securityRequirements,omitempty"`
+	Security             []SecurityRequirement     `json:"security,omitempty"`
 
 	// Signatures holds JWS signatures over the Agent Card (RFC 7515).
 	Signatures []AgentCardSignature `json:"signatures,omitempty"`
