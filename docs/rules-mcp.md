@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **16 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **17 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -29,6 +29,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
+| `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
@@ -174,6 +175,26 @@ that error (or any result envelope) shows the call was dispatched without
 credentials. The probe is read-only - it never executes a tool and sends only
 benign single-character argument values. A server that requires auth, or does not
 advertise the completions capability, produces no finding.
+
+---
+
+### mcp-logging-unauth-001
+
+**logging/setLevel Without Authentication** | Severity: Medium | CWE-862
+
+`logging/setLevel` sets the server's minimum log verbosity; servers that support
+it advertise the `logging` capability, confirmed structurally from the captured
+`initialize` result (`ServerSupports`). The MCP spec's Security section requires
+implementations to control log access, so an unauthenticated `logging/setLevel` is
+an access-control failure on a state-changing method: an anonymous caller can
+flood logs at `debug` (cost/DoS and burying attack traces) or suppress them at
+`emergency` (hiding malicious activity). The rule gates on the capability, then
+sends one `logging/setLevel` with a deliberately **invalid** level string; a
+`-32602` (invalid params) error - or any result envelope - proves the handler was
+dispatched without auth, while the invalid level means the server's real verbosity
+is never changed. A server that rejects with HTTP 401/403 or an auth error, or
+does not advertise the logging capability, produces no finding. Reported
+**confirmed** at medium severity.
 
 ---
 

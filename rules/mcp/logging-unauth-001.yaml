@@ -1,0 +1,52 @@
+id: mcp-logging-unauth-001
+info:
+  name: MCP logging/setLevel Reachable Without Authentication
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server answers logging/setLevel requests without
+    requiring authentication.
+
+    logging/setLevel sets the server's minimum log verbosity. Servers that
+    support it advertise the "logging" capability in the initialize handshake.
+    The MCP specification's Security section requires implementations to control
+    log access.
+
+    logging/setLevel is a state-changing operation. When it is reachable without
+    authentication, an anonymous caller can:
+    - flood logs at the debug level (driving cost/DoS on the logging pipeline and
+      burying attack traces in noise), or
+    - suppress logging at the emergency level (hiding malicious activity from
+      operators).
+
+    The rule gates on the advertised logging capability, then sends a single
+    logging/setLevel request with a deliberately invalid level string. A -32602
+    (invalid params) protocol error, or any result envelope, proves the handler
+    was dispatched without authentication. A server that enforces authentication
+    rejects the request with HTTP 401/403 or an auth error before dispatch.
+
+    The probe never changes the server's real log verbosity: the invalid level is
+    rejected by a compliant server (nothing is set).
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/logging
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/862.html
+
+  tags:
+    - mcp
+    - auth
+    - logging
+    - cwe-862
+
+attack:
+  protocol: mcp
+  type: mcp-logging-unauth
+
+remediation: |
+  1. Require authentication (OAuth 2.1 bearer token) before responding to
+     logging/setLevel requests, the same as any other state-changing method.
+  2. Return a JSON-RPC auth error (or HTTP 401/403) for unauthenticated
+     logging/setLevel calls instead of dispatching them.
+  3. Rate-limit and scope log-level control so a caller cannot use it to flood or
+     silence the server's logging pipeline.
