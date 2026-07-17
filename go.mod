@@ -1,6 +1,6 @@
 module github.com/calbebop/batesian
 
-go 1.25.11
+go 1.25.12
 
 retract (
 	// Pre-release development versions, retained only for history.
