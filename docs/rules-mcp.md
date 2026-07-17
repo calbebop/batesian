@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **15 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **16 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -28,6 +28,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
+| `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
@@ -150,6 +151,29 @@ protocol error; reaching that error (or any result envelope) shows the call was
 dispatched without credentials. It **never invokes a real or advertised tool** -
 destructive tool-argument fuzzing is out of scope. A server that requires auth, or
 does not advertise the tools capability, produces no finding.
+
+---
+
+### mcp-completion-unauth-001
+
+**completion/complete Without Authentication** | Severity: High / Medium | CWE-862 / CWE-200
+
+`completion/complete` returns autocompletion suggestions for prompt arguments and
+resource-template URIs; servers that support it advertise the `completions`
+capability, which is confirmed structurally from the captured `initialize` result
+(`ServerSupports`). The MCP spec requires implementations to control access to
+completion suggestions and prevent completion-based information disclosure, so an
+unauthenticated completion endpoint is both an access-control failure and an
+enumeration oracle. The rule confirms two outcomes: `completion/complete`
+dispatching an unauthenticated request (**medium**), and returning real suggestion
+values for a discovered prompt argument or resource-template variable (**high**) -
+both **confirmed**. To establish reachability without depending on an open
+prompts/resources listing, the rule falls back to a synthetic prompt reference,
+which the spec answers with a `-32602` (invalid params) protocol error; reaching
+that error (or any result envelope) shows the call was dispatched without
+credentials. The probe is read-only - it never executes a tool and sends only
+benign single-character argument values. A server that requires auth, or does not
+advertise the completions capability, produces no finding.
 
 ---
 

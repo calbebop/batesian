@@ -1,0 +1,58 @@
+id: mcp-completion-unauth-001
+info:
+  name: MCP completion/complete Reachable Without Authentication
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether an MCP server answers completion/complete requests without
+    requiring authentication.
+
+    completion/complete returns autocompletion suggestions for prompt arguments
+    and resource-template URIs. Servers that support it advertise the
+    "completions" capability in the initialize handshake. The MCP specification's
+    Security section requires implementations to control access to sensitive
+    suggestions and to prevent completion-based information disclosure.
+
+    When the endpoint is reachable without authentication it becomes an
+    enumeration oracle: an anonymous caller can fuzz argument values or
+    URI-template segments and read back valid completions. Those suggestions can
+    reveal internal identifiers, file paths, usernames, or other namespace
+    contents that were never meant to be exposed to an unauthenticated client.
+
+    The rule reports two outcomes:
+    - completion/complete dispatches an unauthenticated request (medium): the
+      access control gap is confirmed by probing with a reference the server
+      handles rather than rejecting at an auth layer.
+    - completion/complete returns real suggestion values for a discovered prompt
+      argument or resource template (high): the endpoint is actively leaking
+      valid completions to an anonymous caller.
+
+    completion/complete is read-only; the probe never executes a tool or mutates
+    state and sends only benign single-character argument values.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/completion
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/862.html
+    - https://cwe.mitre.org/data/definitions/200.html
+
+  tags:
+    - mcp
+    - auth
+    - completion
+    - information-disclosure
+    - cwe-862
+    - cwe-200
+
+attack:
+  protocol: mcp
+  type: mcp-completion-unauth
+
+remediation: |
+  1. Require authentication (OAuth 2.1 bearer token) before responding to
+     completion/complete requests, the same as any other data-bearing method.
+  2. Return a JSON-RPC auth error (or HTTP 401/403) for unauthenticated
+     completion/complete calls instead of dispatching them.
+  3. Scope completion suggestions to what the authenticated caller is authorized
+     to see, and rate-limit the endpoint so it cannot be used to brute-force the
+     server's internal namespace.
