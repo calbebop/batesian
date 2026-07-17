@@ -1,0 +1,62 @@
+id: a2a-card-security-unenforced-001
+info:
+  name: A2A Agent Card Declares Authentication That Is Not Enforced
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A server actually enforces the authentication its own
+    AgentCard advertises.
+
+    The AgentCard is a machine-readable contract. Its securitySchemes plus a
+    requirements list declare which authentication a caller must present. The
+    list is named "security" in v0.3 cards and "securityRequirements" in v1.0
+    (proto-JSON) cards; both are read.
+
+    When the card declares a non-empty requirement with no anonymous alternative
+    (an empty requirement object, per OpenAPI convention, would explicitly permit
+    anonymous access and is not flagged), the rule sends an unauthenticated core
+    request. If the server processes it and returns a result instead of rejecting
+    it at the auth layer (HTTP 401/403), the agent is not enforcing the security
+    contract it published, so any anonymous caller has the access the card says
+    requires authentication.
+
+    Detection:
+    - Fetch and parse the card; require a non-empty declared security requirement
+      with no anonymous ({}) alternative, else no finding.
+    - Read probe (non-mutating): an unauthenticated tasks/get for a random,
+      non-existent task id, used to record whether the read path is reachable
+      anonymously.
+    - Confirmation (definitive): an unauthenticated message/send. A returned task
+      result proves a core write executed with no credentials. The created task is
+      then read back unauthenticated to corroborate. The finding is raised only on
+      a positive result envelope, never on an ambiguous application error.
+
+    This complements a2a-task-idor-001, which suppresses its finding when a server
+    enforces no authentication at all: a wide-open agent is flagged here precisely
+    because its card promised authentication.
+
+  references:
+    - https://a2a-protocol.org/latest/specification/
+    - https://cwe.mitre.org/data/definitions/287.html
+    - https://cwe.mitre.org/data/definitions/306.html
+
+  tags:
+    - a2a
+    - auth
+    - agent-card
+    - cwe-287
+    - cwe-306
+
+attack:
+  protocol: a2a
+  type: a2a-card-security-unenforced
+
+remediation: |
+  1. Enforce, at the transport layer, the authentication your AgentCard declares
+     in securitySchemes / security (securityRequirements): reject requests that
+     omit valid credentials with HTTP 401 (and a WWW-Authenticate header) before
+     dispatching any JSON-RPC method.
+  2. If some endpoints are intentionally public, reflect that in the card - do not
+     declare a required security scheme the server does not enforce.
+  3. Keep the published card and the server's actual enforcement in sync; treat
+     the card as the authoritative contract clients rely on.
