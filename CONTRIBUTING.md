@@ -227,6 +227,13 @@ PR description.
 - Use conventional commit prefixes: `feat:`, `fix:`, `chore:`, `docs:`, `test:`
 - One logical change per commit.
 - Reference the rule ID in the commit message when adding or modifying a rule.
+- **Security fixes must use `fix(security):` or `fix(deps):`**, never `chore:`.
+  The release changelog excludes `chore:`, `docs:` and `test:` before grouping,
+  so a dependency bump or hardening change committed as `chore:` is silently
+  dropped from the release notes. The `fix(deps):` / `fix(security):` prefixes
+  land it in the **Security** section instead. Name the advisory (CVE and/or
+  `GO-` identifier) in the commit body so the release notes identify what was
+  fixed.
 
 ---
 
