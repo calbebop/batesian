@@ -19,10 +19,10 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ## What ships
 
-Bundled rules: **17 A2A, 16 MCP (33 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **17 A2A, 17 MCP (34 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
 - [A2A rules](docs/rules-a2a.md) (17)
-- [MCP rules](docs/rules-mcp.md) (16)
+- [MCP rules](docs/rules-mcp.md) (17)
 
 Coverage spans:
 
@@ -31,7 +31,7 @@ Coverage spans:
 - **Request & task integrity** - task IDOR, agent-role injection, artifact tampering, SEP-2243 header/body routing, SSE resumption replay
 - **Multi-party isolation** - cross-tenant isolation, session/context fixation, delegation chain-of-custody, cross-principal task cancellation
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
-- **Unauthenticated & cross-origin access** - exposed MCP tools, resources, prompt templates, and completion suggestions, Streamable HTTP Origin validation (DNS rebinding)
+- **Unauthenticated & cross-origin access** - exposed MCP tools, resources, prompt templates, completion suggestions, and log-level control, Streamable HTTP Origin validation (DNS rebinding)
 
 ## Install
 
