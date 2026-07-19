@@ -35,8 +35,8 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_extension_downgrade_server.py` | 3106 | `a2a-extension-downgrade-001` |
 | `a2a_push_binding_server.py` | 3107 | `a2a-push-binding-001` (two principals; needs two `--principal`s) |
 | `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
-| `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
+| `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` |

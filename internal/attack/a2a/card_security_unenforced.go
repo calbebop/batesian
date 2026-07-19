@@ -55,7 +55,11 @@ const (
 
 func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	client := attack.NewHTTPClient(opts, vars)
+	// Every request this rule makes is anonymous. The agent card is the PUBLIC
+	// contract an unauthenticated caller reads, and the probes must present no
+	// credentials, so injecting opts.Token anywhere would misrepresent what an
+	// anonymous client actually sees.
+	client := attack.NewUnauthHTTPClient(opts, vars)
 
 	// Fetch the card. Without it there is no declared contract to test against.
 	cardBody, ok := fetchAgentCardBody(ctx, client, vars.BaseURL)
@@ -75,21 +79,19 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 
 	// Resolve the JSON-RPC endpoint to probe. The card requires auth but we cannot
 	// reach a testable endpoint, so the contract cannot be exercised here.
-	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
 
-	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
-
 	// Step 1 (non-mutating): can an unauthenticated read even reach the handler?
 	// A read of a random non-existent id cannot return a task, so this only tells
 	// us whether the read path rejects at the auth layer (evidence, not verdict).
-	readReachable := e.readTask(ctx, unauthClient, endpoint, "batesian-missing-"+vars.RandID, vars.RandID) != probeAuthRejected
+	readReachable := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID) != probeAuthRejected
 
 	// Step 2 (definitive): unauthenticated create. A returned task proves a core
 	// write executed with no credentials despite the card requiring them.
-	createOutcome, createdTaskID := e.createProbe(ctx, unauthClient, endpoint, vars.RandID)
+	createOutcome, createdTaskID := e.createProbe(ctx, client, endpoint, vars.RandID)
 	if createOutcome != probeProcessedResult {
 		// No unauthenticated request was processed into a success result: either the
 		// server enforces auth (rejected) or only returned application errors. Do not
@@ -99,7 +101,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 
 	// Strengthen: read the just-created task back with no credentials. If that also
 	// returns the task, both the write and the read paths ignore the declared auth.
-	readBack := createdTaskID != "" && e.readTask(ctx, unauthClient, endpoint, createdTaskID, vars.RandID) == probeProcessedResult
+	readBack := createdTaskID != "" && e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID) == probeProcessedResult
 
 	return []attack.Finding{e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)}, nil
 }
