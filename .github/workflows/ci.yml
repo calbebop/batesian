@@ -43,14 +43,10 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # -coverprofile implies -cover, so the per-package coverage percentages are
+      # reported in the job log. The profile itself is not uploaded anywhere.
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v7
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
 
   lint:
     name: Lint

@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://golang.org)
 [![Build](https://github.com/calbebop/batesian/actions/workflows/ci.yml/badge.svg)](https://github.com/calbebop/batesian/actions)
-[![Go Report Card](https://goreportcard.com/badge/github.com/calbebop/batesian)](https://goreportcard.com/report/github.com/calbebop/batesian)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/calbebop/batesian/badge)](https://scorecard.dev/viewer/?uri=github.com/calbebop/batesian)
 
 CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https://modelcontextprotocol.io) stacks. It drives concrete protocol traffic (OAuth audience/scope/DCR, push-notification callbacks, JWS card signatures, session and task boundaries, agent-card handling) and records outcomes as `confirmed` or `indicator`, with optional SARIF for CI.
 
