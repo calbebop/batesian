@@ -3,10 +3,10 @@ module github.com/calbebop/batesian
 go 1.25.12
 
 retract (
-	// Pre-release development versions, retained only for history.
-	[v0.1.0, v0.3.0]
 	// Superseded by v1.1.0.
 	v1.0.0
+	// Pre-release development versions, retained only for history.
+	[v0.1.0, v0.3.0]
 )
 
 require (
@@ -20,5 +20,5 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 )

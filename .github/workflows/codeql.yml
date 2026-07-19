@@ -1,0 +1,58 @@
+name: CodeQL
+
+# Static analysis for the Go source. golangci-lint covers style and correctness
+# linting; CodeQL adds dataflow-based security analysis (injection, path
+# traversal, unsafe deserialization, credential handling) and reports into the
+# Security tab. Both run on every push and pull request.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Weekly, Monday 06:15 UTC. Catches newly published CodeQL queries against
+    # code that has not otherwise changed.
+    - cron: '15 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload results to the code-scanning dashboard.
+      security-events: write
+      # Needed by the action to read workflow run metadata.
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Pin the toolchain to the version go.mod requires so autobuild does not
+      # fall back to whatever Go ships on the runner image.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          languages: go
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          category: "/language:go"
