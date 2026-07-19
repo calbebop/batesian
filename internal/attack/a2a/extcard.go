@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -168,10 +169,21 @@ func isJSONRPCError(body []byte) bool {
 	return hasError
 }
 
-// snippet returns the first n bytes of body as a string.
+// snippet returns at most the first n bytes of body as a string, appending an
+// ellipsis when it truncates.
+//
+// Truncation backs up to a UTF-8 rune boundary so a multi-byte character is
+// never split. Snippets are taken from the scanned target's raw response and end
+// up in Finding.Evidence, which is marshalled into JSON and SARIF; a trailing
+// partial rune would be silently rewritten to U+FFFD there, corrupting the
+// evidence for any target that returns non-ASCII text.
 func snippet(body []byte, n int) string {
-	if len(body) > n {
-		return string(body[:n]) + "..."
+	if len(body) <= n {
+		return string(body)
 	}
-	return string(body)
+	cut := n
+	for cut > 0 && !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	return string(body[:cut]) + "..."
 }
