@@ -83,6 +83,16 @@ changelog:
   sort: asc
   use: git
   filters:
+    # Routine maintenance is filtered out of release notes. Two behaviours to
+    # know when reading a generated changelog:
+    #   - These excludes are applied BEFORE grouping, so a security fix
+    #     committed as `chore:` is dropped outright and never reaches the
+    #     Security group below.
+    #   - The patterns are not scope-aware: `^chore:` matches `chore: x` but NOT
+    #     `chore(ci): x`, so a scoped maintenance commit still lands under
+    #     "Other" rather than being excluded.
+    # Either way a security fix filed as a chore is mislabelled, so commit it as
+    # `fix(deps):` or `fix(security):` (see CONTRIBUTING.md, Commit Style).
     exclude:
       - '^docs:'
       - '^test:'
@@ -91,15 +101,20 @@ changelog:
       - Merge pull request
       - Merge branch
   groups:
+    # Security must precede the generic Bug fixes group: the first matching
+    # group claims the commit, and `fix(deps):` also matches `fix(...)`.
+    - title: Security
+      regexp: '^.*?fix\((deps|security)\)!?:.+$'
+      order: 0
     - title: New attack rules
       regexp: '^.*?rule(\(.+\))??!?:.+$'
-      order: 0
+      order: 1
     - title: Features
       regexp: '^.*?feat(\(.+\))??!?:.+$'
-      order: 1
+      order: 2
     - title: Bug fixes
       regexp: '^.*?fix(\(.+\))??!?:.+$'
-      order: 2
+      order: 3
     - title: Other
       order: 999
 
@@ -110,11 +125,30 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
+  # The rule count and the Security section below are per-release content:
+  # review both before tagging. The Security section names the advisories fixed
+  # in this release and should be emptied or updated for the next one.
   header: |
     ## Batesian {{.Version}}
 
     Adversarial red-team CLI for AI agent protocols (A2A and MCP).
     34 bundled attack rules (17 A2A + 17 MCP). Single binary. No runtime dependencies.
+
+    ### Security
+
+    Fixes **CVE-2026-39824** ([GO-2026-5024](https://pkg.go.dev/vuln/GO-2026-5024)):
+    a string-length overflow in `NewNTUnicodeString` in `golang.org/x/sys/windows`,
+    which returned a truncated string instead of an error for over-long input.
+    Resolved by upgrading `golang.org/x/sys` to v0.44.0. Batesian never calls the
+    affected symbol, so the advisory was not reachable from this code, but it is
+    fixed in the dependency tree.
+
+    This release is also the first to carry [SLSA build provenance](https://slsa.dev)
+    alongside the existing cosign signature and CycloneDX SBOMs. Verify with:
+
+    ```bash
+    gh attestation verify batesian_<version>_<platform>.tar.gz --repo calbebop/batesian
+    ```
 
     ### Install
 
