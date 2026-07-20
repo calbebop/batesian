@@ -65,11 +65,14 @@ func taskIDORServer(mode string) *httptest.Server {
 			mu.Unlock()
 			caps := map[string]interface{}{"tools": map[string]interface{}{}}
 			if mode != "no-tasks-cap" {
-				caps["tasks"] = map[string]interface{}{
-					"list":     map[string]interface{}{},
+				tasksCap := map[string]interface{}{
 					"cancel":   map[string]interface{}{},
 					"requests": map[string]interface{}{"tools": map[string]interface{}{"call": map[string]interface{}{}}},
 				}
+				if mode != "no-list-cap" {
+					tasksCap["list"] = map[string]interface{}{}
+				}
+				caps["tasks"] = tasksCap
 			}
 			w.Header().Set("Mcp-Session-Id", newSID)
 			result(map[string]interface{}{
@@ -122,7 +125,7 @@ func taskIDORServer(mode string) *httptest.Server {
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
-			if !exists || (mode == "secure" && own != sid) {
+			if !exists || ((mode == "secure" || mode == "list-only") && own != sid) {
 				rpcErr(-32602, "Task not found")
 				return
 			}
@@ -138,7 +141,7 @@ func taskIDORServer(mode string) *httptest.Server {
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
-			if !exists || mode == "metadata-only" || (mode == "secure" && own != sid) {
+			if !exists || mode == "metadata-only" || mode == "list-only" || (mode == "secure" && own != sid) {
 				rpcErr(-32602, "Task not found")
 				return
 			}
@@ -146,6 +149,19 @@ func taskIDORServer(mode string) *httptest.Server {
 				"content": []interface{}{map[string]interface{}{"type": "text", "text": "CONFIDENTIAL research output"}},
 				"isError": false,
 			})
+
+		case "tasks/list":
+			mu.Lock()
+			var listed []interface{}
+			for tid, own := range owner {
+				// A correctly-scoped server returns only the caller's own tasks.
+				if (mode == "secure" || mode == "metadata-only") && own != sid {
+					continue
+				}
+				listed = append(listed, map[string]interface{}{"taskId": tid, "status": "completed"})
+			}
+			mu.Unlock()
+			result(map[string]interface{}{"tasks": listed})
 
 		default:
 			rpcErr(-32601, "Method not found")
@@ -175,26 +191,41 @@ func TestTaskIDOR_CrossContext(t *testing.T) {
 	defer srv.Close()
 
 	findings := runTaskIDOR(t, srv)
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings (tasks/get + tasks/result), got %d: %+v", len(findings), findings)
+	if len(findings) != 3 {
+		t.Fatalf("expected 3 findings (tasks/get + tasks/result + tasks/list), got %d: %+v", len(findings), findings)
 	}
-	var high, critical bool
+	// Identify each failure by the method it names: severity alone is ambiguous
+	// now that both the result leak and the enumeration are critical.
+	var sawGet, sawResult, sawList bool
 	for _, f := range findings {
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
 		}
-		switch f.Severity {
-		case "high":
-			high = true
-		case "critical":
-			critical = true
+		switch {
+		case strings.Contains(f.Title, "tasks/get"):
+			sawGet = true
+			if f.Severity != "high" {
+				t.Errorf("tasks/get finding should be high, got %q", f.Severity)
+			}
+		case strings.Contains(f.Title, "tasks/result"):
+			sawResult = true
+			if f.Severity != "critical" {
+				t.Errorf("tasks/result finding should be critical, got %q", f.Severity)
+			}
 			if !strings.Contains(f.Evidence, "CONFIDENTIAL research output") {
 				t.Errorf("result finding should cite the disclosed output, got evidence %q", f.Evidence)
 			}
+		case strings.Contains(f.Title, "tasks/list"):
+			sawList = true
+			if f.Severity != "critical" {
+				t.Errorf("tasks/list finding should be critical, got %q", f.Severity)
+			}
+		default:
+			t.Errorf("unexpected finding title %q", f.Title)
 		}
 	}
-	if !high || !critical {
-		t.Errorf("expected both high and critical findings, got high=%v critical=%v", high, critical)
+	if !sawGet || !sawResult || !sawList {
+		t.Errorf("expected all three failures, got get=%v result=%v list=%v", sawGet, sawResult, sawList)
 	}
 }
 
@@ -209,6 +240,43 @@ func TestTaskIDOR_MetadataOnly(t *testing.T) {
 	}
 	if findings[0].Severity != "high" {
 		t.Errorf("expected the high tasks/get finding, got %q", findings[0].Severity)
+	}
+}
+
+// TestTaskIDOR_ListOnly: tasks/get and tasks/result are correctly scoped, but
+// tasks/list still enumerates another session's tasks. The enumeration check
+// must therefore run independently of the by-id checks.
+func TestTaskIDOR_ListOnly(t *testing.T) {
+	srv := taskIDORServer("list-only")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 finding (enumeration only), got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.Severity != "critical" {
+		t.Errorf("expected the critical enumeration finding, got %q", f.Severity)
+	}
+	if !strings.Contains(f.Title, "tasks/list") {
+		t.Errorf("expected the tasks/list enumeration finding, got title %q", f.Title)
+	}
+}
+
+// TestTaskIDOR_NoListCapability: the server does not advertise tasks.list, so
+// only the by-id failure is reported and no enumeration is attempted.
+func TestTaskIDOR_NoListCapability(t *testing.T) {
+	srv := taskIDORServer("no-list-cap")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (tasks/get + tasks/result, no enumeration), got %d: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if strings.Contains(f.Title, "tasks/list") {
+			t.Errorf("must not report enumeration when tasks.list is not advertised: %q", f.Title)
+		}
 	}
 }
 
