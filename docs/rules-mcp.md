@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **17 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **18 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -30,6 +30,7 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 | `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
+| `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
@@ -195,6 +196,45 @@ dispatched without auth, while the invalid level means the server's real verbosi
 is never changed. A server that rejects with HTTP 401/403 or an auth error, or
 does not advertise the logging capability, produces no finding. Reported
 **confirmed** at medium severity.
+
+---
+
+### mcp-task-idor-001
+
+**Task Readable Across Authorization Contexts** | Severity: Critical / High | CWE-639 / CWE-200
+
+MCP 2025-11-25 added durable **tasks**: a task-augmented `tools/call` returns a
+`taskId` immediately, and the caller later reads execution state with `tasks/get`
+and the underlying tool output with `tasks/result`. The spec's Security
+Considerations require that "receivers MUST reject `tasks/get`, `tasks/result`,
+and `tasks/cancel` requests for tasks that do not belong to the same
+authorization context as the requestor".
+
+The rule creates a task as one principal and reads it from a separate session as
+another, reporting two failures. An accepted cross-context `tasks/get` discloses
+another context's task metadata: status, timing, and status messages (**high**).
+An accepted cross-context `tasks/result` discloses the **actual tool output** the
+task produced, not metadata (**critical**). Both are **confirmed**.
+
+A finding is raised only after anonymous task creation is *rejected*, proving the
+server does enforce authentication. A server with no authentication at all is a
+different and more obvious failure owned by `mcp-tools-unauth-001`, and is
+suppressed here rather than mislabelled as broken object-level authorization. A
+server that scopes tasks to their creating context answers the cross-context read
+with `-32602` and produces no finding.
+
+**Safety.** Creating a task requires invoking a real tool, which is unique among
+the rules in this package (`mcp-tools-unauth-001` deliberately calls a
+non-existent tool so nothing executes). The rule therefore only invokes a
+task-capable tool whose annotations declare it `readOnlyHint: true` or
+explicitly `destructiveHint: false`, and skips entirely when no such tool is
+advertised; an unannotated tool is never invoked, since MCP treats a non-read-only
+tool as potentially destructive by default. Because `tasks/result` blocks until a
+task is terminal, the rule polls `tasks/get` within a bounded budget and requests
+the result only once the task has finished.
+
+**Currency.** Tasks are marked experimental in 2025-11-25 and their design may
+evolve, so this rule is version-scoped.
 
 ---
 

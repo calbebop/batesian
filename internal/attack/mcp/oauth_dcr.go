@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -147,10 +148,22 @@ func privilegedScopesIn(grantedScope string) []string {
 	return found
 }
 
+// snippetMCP returns at most maxLen bytes of body, appending an ellipsis when it
+// truncates.
+//
+// Truncation backs up to a UTF-8 rune boundary so a multi-byte character is
+// never split. Snippets are taken from the scanned target's raw response and end
+// up in Finding.Evidence, which is marshalled into JSON and SARIF; a trailing
+// partial rune would be silently rewritten to U+FFFD there, corrupting the
+// evidence for any target that returns non-ASCII text.
 func snippetMCP(body []byte) string {
 	const maxLen = 300
-	if len(body) > maxLen {
-		return string(body[:maxLen]) + "..."
+	if len(body) <= maxLen {
+		return string(body)
 	}
-	return string(body)
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	return string(body[:cut]) + "..."
 }
