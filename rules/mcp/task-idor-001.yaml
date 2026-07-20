@@ -1,0 +1,71 @@
+id: mcp-task-idor-001
+info:
+  name: MCP Task Readable Across Authorization Contexts
+  author: batesian
+  severity: high
+  description: |
+    Tests whether MCP tasks are bound to the authorization context that created
+    them.
+
+    MCP 2025-11-25 introduced durable tasks. A task-augmented tools/call returns
+    a taskId immediately, and the caller later reads execution state with
+    tasks/get and the underlying tool output with tasks/result. The
+    specification's Security Considerations are explicit:
+
+      "receivers MUST reject tasks/get, tasks/result, and tasks/cancel requests
+       for tasks that do not belong to the same authorization context as the
+       requestor."
+
+    The rule creates a task as one principal and attempts to read it from a
+    separate session as another, reporting two distinct failures:
+
+    - tasks/get returns another context's task (high). Task metadata discloses
+      execution status, timing, and status messages for work the caller did not
+      initiate.
+    - tasks/result returns another context's result (critical). This is the
+      actual output of the tool invocation, not metadata, so whatever that tool
+      produced crosses the authorization boundary.
+
+    A finding is raised only after an anonymous task creation is rejected, which
+    proves the server does enforce authentication. A server with no
+    authentication at all is a different and more obvious failure, owned by
+    mcp-tools-unauth-001, and is suppressed here rather than mislabelled as a
+    broken object-level authorization check.
+
+    Safety: creating a task requires invoking a real tool, which is unique among
+    the rules in this package. The rule therefore only invokes a task-capable
+    tool whose annotations declare it read-only or explicitly non-destructive,
+    and skips entirely when no such tool is advertised. Because tasks/result
+    blocks until a task is terminal, the rule polls tasks/get within a bounded
+    budget and only requests the result once the task has finished.
+
+    Currency: tasks are marked experimental in the 2025-11-25 specification and
+    their design may evolve, so this rule is version-scoped.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
+    - https://cwe.mitre.org/data/definitions/639.html
+    - https://cwe.mitre.org/data/definitions/200.html
+
+  tags:
+    - mcp
+    - auth
+    - tasks
+    - idor
+    - cwe-639
+    - cwe-200
+
+attack:
+  protocol: mcp
+  type: mcp-task-idor
+
+remediation: |
+  1. Bind every task to the authorization context that created it, and reject
+     tasks/get, tasks/result, and tasks/cancel for tasks belonging to any other
+     context. Return a JSON-RPC -32602 rather than the task.
+  2. Scope tasks/list to the requestor's own tasks. If the deployment cannot
+     identify requestors, do not advertise the tasks.list capability at all.
+  3. Where context binding is genuinely unavailable, generate task IDs with
+     enough entropy that they cannot be guessed, keep TTLs short, and document
+     the limitation so operators know task results are reachable by ID alone.
+  4. Rate-limit task operations so task IDs cannot be enumerated.
