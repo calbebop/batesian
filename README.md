@@ -24,6 +24,8 @@ Bundled rules: **17 A2A, 17 MCP (34 total)**. The set is deliberately narrow - e
 - [A2A rules](docs/rules-a2a.md) (17)
 - [MCP rules](docs/rules-mcp.md) (17)
 
+Rules are validated against third-party reference implementations, not only against the bundled fixtures. [Validation results](docs/validation-results.md) records what fires, what correctly stays silent on a server with no authentication at all, and the scanner defects that exercise has found.
+
 Coverage spans:
 
 - **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance, redirect_uri confused deputy
