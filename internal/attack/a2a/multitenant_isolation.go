@@ -116,7 +116,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		slashHeaders := map[string]string{}
 		for k, v := range p.Headers {
 			slashHeaders[k] = v
@@ -134,7 +134,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return "", "", false
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
@@ -156,7 +156,7 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		// Fall back to the v0.3 slash-method shape.
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -165,7 +165,7 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return false
 	}
 	return resp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)

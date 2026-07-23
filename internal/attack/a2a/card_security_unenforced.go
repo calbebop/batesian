@@ -167,7 +167,13 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 		o := classifyProbe(resp)
 		if o == probeProcessedResult {
 			taskID, _ := extractTaskContext(resp.Body)
-			return probeProcessedResult, taskID
+			if taskID == "" {
+				// A result envelope with no task id does not confirm a task was
+				// actually created; do not promote to a confirmed processed result.
+				o = probeProcessedError
+			} else {
+				return probeProcessedResult, taskID
+			}
 		}
 		if o > outcome {
 			outcome = o
@@ -185,7 +191,7 @@ func classifyProbe(resp *attack.Response) probeOutcome {
 	if isA2AAuthRejection(resp) {
 		return probeAuthRejected
 	}
-	if resp.IsSuccess() && !isJSONRPCError(resp.Body) && resp.ContainsAny(`"result"`) {
+	if resp.IsAccepted() {
 		return probeProcessedResult
 	}
 	if resp.IsSuccess() {

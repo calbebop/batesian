@@ -82,9 +82,9 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	if errA == nil && respA.StatusCode != 404 {
 		reached = true
 	}
-	if errA == nil && respA.IsSuccess() && !isJSONRPCError(respA.Body) {
+	if errA == nil && extCardDisclosed(respA) {
 		findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, respA))
-	} else if respB, errB := unauthClient.GET(ctx, extURL, nil); errB == nil && respB.IsSuccess() && !isJSONRPCError(respB.Body) {
+	} else if respB, errB := unauthClient.GET(ctx, extURL, nil); errB == nil && extCardDisclosed(respB) {
 		findings = append(findings, e.finding("HTTP GET", extURL, "", respB))
 	} else if errB == nil && respB.StatusCode != 404 {
 		reached = true
@@ -153,8 +153,8 @@ func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPC
 	if err != nil {
 		return nil, false
 	}
-	if !resp.IsSuccess() || isJSONRPCError(resp.Body) {
-		return resp, false // reached the endpoint, but not a disclosure
+	if !resp.IsAccepted() {
+		return resp, false // reached the endpoint, but no result envelope = not a disclosure
 	}
 	return resp, true
 }
@@ -167,6 +167,19 @@ func isJSONRPCError(body []byte) bool {
 	}
 	_, hasError := m["error"]
 	return hasError
+}
+
+// extCardDisclosed reports whether resp is a 2xx whose body parses as an agent
+// card. The extended card is served as a raw JSON object over HTTP GET, so a
+// disclosure is confirmed by validating the card shape (parseCard requires a
+// name or url) rather than treating any 2xx non-error body - including an HTML
+// login page or "{}" - as a card.
+func extCardDisclosed(resp *attack.Response) bool {
+	if !resp.IsSuccess() {
+		return false
+	}
+	_, ok := parseCard(resp.Body)
+	return ok
 }
 
 // snippet returns at most the first n bytes of body as a string, appending an

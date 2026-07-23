@@ -68,7 +68,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 				},
 			},
 		})
-		if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+		if err != nil || !resp.IsAccepted() {
 			resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      "batesian-create-" + vars.RandID,
@@ -82,7 +82,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 				},
 			})
 		}
-		if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+		if err != nil || !resp.IsAccepted() {
 			return resp, false
 		}
 		return resp, true
@@ -135,7 +135,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		"method":  "GetTask",
 		"params":  getParams,
 	})
-	if err != nil || !getResp.IsSuccess() || isJSONRPCError(getResp.Body) {
+	if err != nil || !getResp.IsAccepted() {
 		getResp, err = unauthClient.POST(ctx, endpoint, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-get-" + vars.RandID,
@@ -143,8 +143,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			"params":  getParams,
 		})
 	}
-	unauthReadSucceeded := err == nil && getResp.IsSuccess() && !isJSONRPCError(getResp.Body) &&
-		getResp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)
+	unauthReadSucceeded := err == nil && getResp.IsAccepted() &&
+		getResp.ContainsAny(taskID, contextID)
 
 	if authEnforcedOnCreate && unauthReadSucceeded {
 		findings = append(findings, attack.Finding{

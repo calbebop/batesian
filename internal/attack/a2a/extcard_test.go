@@ -133,3 +133,25 @@ func TestExtCardExecutor_Clean(t *testing.T) {
 		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
 	}
 }
+
+// TestExtCardExecutor_HTMLLoginNotFinding verifies that a server answering the
+// extended-card probe with a 200 HTML login page produces no finding. Previously
+// the rule treated any 2xx non-error body as a card and raised a CRITICAL
+// finding, which false-positived any target that redirects/answers probes with a
+// login page.
+func TestExtCardExecutor_HTMLLoginNotFinding(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Please log in</h1></body></html>"))
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings for a 200 HTML login page, got %d: %+v", len(findings), findings)
+	}
+}

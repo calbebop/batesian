@@ -195,7 +195,13 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 }
 
 func rawSSEClient(opts attack.Options) *http.Client {
-	return &http.Client{Transport: attack.Transport(opts)}
+	return &http.Client{
+		Transport: attack.Transport(opts),
+		// Match the shared scan client: do not follow redirects. The SSE GET
+		// must hit the stream endpoint the rule selected, not whatever a 3xx
+		// would bounce it to.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // resumeCheckpoint selects the first id-bearing event as the resume cursor and

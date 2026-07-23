@@ -105,8 +105,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	// only difference between the two probes is the Authorization header, so the
 	// forged-vs-baseline comparison isolates credential handling regardless of
 	// how the server signals rejection.
-	forgedOK := forgedResp.IsSuccess() && !isJSONRPCError(forgedResp.Body)
-	baselineOK := baselineResp.IsSuccess() && !isJSONRPCError(baselineResp.Body)
+	forgedOK := forgedResp.IsAccepted()
+	baselineOK := baselineResp.IsAccepted()
 
 	var findings []attack.Finding
 

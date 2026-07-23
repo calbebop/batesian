@@ -272,9 +272,12 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 }
 
 func TestOAuthAudience_Ambiguous200(t *testing.T) {
-	// Server returns 200 with no JSON-RPC envelope to every probe. This is
-	// signal-poor: cannot conclude exploit, but also cannot dismiss. The
-	// rule must downgrade to RiskIndicator.
+	// Server returns 200 with no JSON-RPC envelope to every probe (e.g. a
+	// non-MCP endpoint or a generic 2xx ack). That is not evidence that any
+	// forged token was accepted, so the rule must produce no finding rather
+	// than a downgraded indicator. (Previously a 200 non-result was treated as
+	// "ambiguous acceptance" and emitted a RiskIndicator, which false-positived
+	// non-MCP targets whose /mcp fell through to a 200 page.)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -289,11 +292,8 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 coalesced finding for ambiguous 200, got %d", len(findings))
-	}
-	if findings[0].Confidence != attack.RiskIndicator {
-		t.Errorf("expected RiskIndicator for ambiguous 200, got %q", findings[0].Confidence)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for a 200 non-result target, got %d: %+v", len(findings), findings)
 	}
 }
 
