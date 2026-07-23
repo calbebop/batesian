@@ -110,8 +110,13 @@ async def mcp_endpoint(request: Request) -> Response:
             "_meta": {"io.modelcontextprotocol/related-task": {"taskId": tid}},
         })
 
+    # Vulnerable: the list is not filtered to the requesting session either, so a
+    # caller can enumerate every task on the server without knowing any task id.
     if method == "tasks/list":
-        return result({"tasks": [{"taskId": t, "status": "completed"} for t in TASKS]})
+        return result({"tasks": [
+            {"taskId": t, "status": "completed", "createdAt": "2026-07-20T07:00:00Z"}
+            for t in TASKS
+        ]})
 
     return error(-32601, "Method not found")
 
