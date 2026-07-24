@@ -120,7 +120,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-pb-create-" + p.Name + "-" + randID,
@@ -134,7 +134,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return ""
 	}
 	taskID, _ := extractTaskContext(resp.Body)
@@ -164,7 +164,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 			"method":  at.method,
 			"params":  at.params,
 		})
-		if err == nil && resp.IsSuccess() && !isJSONRPCError(resp.Body) {
+		if err == nil && resp.IsAccepted() {
 			return true
 		}
 	}
@@ -185,7 +185,7 @@ func (e *PushBindingExecutor) getPush(ctx context.Context, c *attack.HTTPClient,
 			"method":  method,
 			"params":  map[string]interface{}{"taskId": taskID, "id": taskID},
 		})
-		if err == nil && resp.IsSuccess() && !isJSONRPCError(resp.Body) {
+		if err == nil && resp.IsAccepted() {
 			return resp.BodyString(), true
 		}
 	}

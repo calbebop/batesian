@@ -83,8 +83,10 @@ matching. The negative control disambiguates: if the control is accepted, the
 server accepts any forged token regardless of audience, so the result is reported
 as **blanket forged-token acceptance** (point at `mcp-token-replay-001`) rather
 than misattributed to a specific matching bug. A trap acceptance is a
-**confirmed** isolated matching bug only when the control was rejected; an
-ambiguous control downgrades trap acceptances to an **indicator**. Catching a
+**confirmed** isolated matching bug only when the control was rejected; a
+control that carried no JSON-RPC result envelope (so it could not be clearly
+rejected) downgrades trap acceptances to an **indicator**, and a 2xx body with
+no result envelope is never itself treated as acceptance. Catching a
 server that validates signatures correctly but still mishandles `aud` (the
 CVE-2026-30863 / RFC 7523-bis class) requires a real validly-signed cross-resource
 token and is tracked as a follow-up.

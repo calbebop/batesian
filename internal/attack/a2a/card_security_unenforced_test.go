@@ -100,6 +100,12 @@ func cardSecServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if mode == "result-no-taskid" {
+				// A result envelope that carries no task id: not a confirmable
+				// task creation, so the rule must not fire.
+				result(map[string]interface{}{"status": map[string]interface{}{"state": "submitted"}})
+				return
+			}
 			mu.Lock()
 			counter++
 			tid := fmt.Sprintf("task-%d", counter)
@@ -209,5 +215,22 @@ func TestCardSecurity_NotA2A(t *testing.T) {
 	_, err := runCardSec(t, srv)
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive for a non-A2A endpoint, got err=%v", err)
+	}
+}
+
+// TestCardSecurity_ResultWithoutTaskID: an unauthenticated message/send that
+// returns a result envelope carrying no task id is not a confirmable task
+// creation, so the rule must not fire. Previously a bare "result" substring
+// promoted this to a confirmed finding with an empty task id.
+func TestCardSecurity_ResultWithoutTaskID(t *testing.T) {
+	srv := cardSecServer("result-no-taskid")
+	defer srv.Close()
+
+	findings, err := runCardSec(t, srv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for a result with no task id, got %d: %+v", len(findings), findings)
 	}
 }

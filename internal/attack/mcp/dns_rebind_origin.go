@@ -89,9 +89,8 @@ func (e *DNSRebindOriginExecutor) initAccepted(ctx context.Context, client *atta
 		headers["Origin"] = origin
 	}
 	resp, err := client.POST(ctx, ep, headers, json.RawMessage(mcpInitBody))
-	if err != nil || resp.StatusCode != 200 {
+	if err != nil || !resp.IsAccepted() {
 		return false
 	}
-	body := resp.BodyString()
-	return isJSONRPCResult(body) && !isJSONRPCError(body)
+	return true
 }

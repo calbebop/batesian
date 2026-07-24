@@ -124,7 +124,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
@@ -138,7 +138,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return ""
 	}
 	taskID, _ := extractTaskContext(resp.Body)
@@ -174,7 +174,7 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPC
 		if isA2AAuthRejection(resp) {
 			return cancelAuthRejected
 		}
-		if resp.IsSuccess() && !isJSONRPCError(resp.Body) && bodyShowsCanceled(resp.Body) {
+		if resp.IsAccepted() && bodyShowsCanceled(resp.Body) {
 			return cancelCanceled
 		}
 		// Otherwise an application error (not cancelable / not found / unknown
@@ -196,7 +196,7 @@ func (e *TaskCancelIDORExecutor) taskIsCanceled(ctx context.Context, c *attack.H
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cancel-get-" + randID,
@@ -204,7 +204,7 @@ func (e *TaskCancelIDORExecutor) taskIsCanceled(ctx context.Context, c *attack.H
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return false
 	}
 	return bodyShowsCanceled(resp.Body)

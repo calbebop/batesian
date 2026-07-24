@@ -47,6 +47,16 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		inner: &http.Client{
 			Timeout:   timeout,
 			Transport: Transport(opts),
+			// Do not follow redirects. A scanner must see exactly what the
+			// probed endpoint returns: following a 3xx to a login page masks an
+			// auth rejection (and would then be misjudged as a 2xx success), and
+			// silently bouncing a request that may carry the operator's bearer
+			// token to a third-party host is a redirect-leak risk. Rules that
+			// need the raw redirect response (e.g. confused-deputy) keep their
+			// own client. OAuth token acquisition is unaffected: it uses the
+			// separate client in internal/auth, which legitimately follows
+			// redirects during the authorization-code flow.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		vars:  vars,
 		token: opts.Token,
@@ -70,6 +80,50 @@ func (r *Response) BodyString() string {
 // IsSuccess returns true for 2xx status codes.
 func (r *Response) IsSuccess() bool {
 	return r.StatusCode >= 200 && r.StatusCode < 300
+}
+
+// IsAccepted reports whether the response represents a successful JSON-RPC
+// result: an HTTP 2xx whose body is valid JSON carrying a "result" envelope and
+// no "error" envelope. This is the canonical "the JSON-RPC call succeeded"
+// oracle.
+//
+// It exists because the older idiom IsSuccess() && !isJSONRPCError(body) treats
+// any 2xx that is not a JSON-RPC error envelope as success - including an HTML
+// login page, an empty body, "{}", or a bare object. Those are not results, and
+// judging them as "accepted" produces false positives whenever a target answers
+// an unauthenticated probe with a 2xx non-JSON body (common: redirects to a
+// login page, generic 200 acks, HTML error interstitials).
+//
+// A JSON-null or empty-object result ({"result":null}, {"result":{}}) still
+// counts as accepted: both are valid JSON-RPC success shapes, and rejecting
+// them would risk false negatives on methods that legitimately return an empty
+// result (e.g. logging/setLevel).
+func (r *Response) IsAccepted() bool {
+	if !r.IsSuccess() {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(r.Body, &m); err != nil {
+		return false
+	}
+	_, hasResult := m["result"]
+	_, hasError := m["error"]
+	return hasResult && !hasError
+}
+
+// IsJSON reports whether the response body is a JSON object. Use it for raw HTTP
+// responses that are not JSON-RPC result envelopes (for example an A2A extended
+// agent card fetched over HTTP GET) to reject HTML, empty, or non-JSON bodies
+// before applying a structural shape check. Prefer IsAccepted for JSON-RPC
+// method calls, which additionally requires a result envelope.
+func (r *Response) IsJSON() bool {
+	var m map[string]interface{}
+	if err := json.Unmarshal(r.Body, &m); err != nil {
+		return false
+	}
+	// A JSON "null" unmarshals to a nil map without error, but it is not a JSON
+	// object, so it must not qualify as one.
+	return m != nil
 }
 
 // NormalizeHeaders returns a lowercase-keyed map of the response headers.

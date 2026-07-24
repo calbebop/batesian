@@ -77,7 +77,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 				},
 			},
 		})
-		if err != nil || (!resp.IsSuccess() && !isJSONRPCError(resp.Body)) {
+		if err != nil || !resp.IsAccepted() {
 			resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      "batesian-" + vars.RandID,
@@ -99,7 +99,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		}
 
 		// Server rejected the agent-role message (per spec). Not vulnerable here.
-		if isJSONRPCError(resp.Body) || !resp.IsSuccess() || !looksLikeTask(resp.Body) {
+		if !resp.IsAccepted() || !looksLikeTask(resp.Body) {
 			continue
 		}
 
@@ -185,7 +185,7 @@ func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, 
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-get-" + vars.RandID,
@@ -193,7 +193,7 @@ func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, 
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return nil, false
 	}
 	return resp.Body, true
