@@ -45,7 +45,7 @@ func NewInitDowngradeExecutor(r attack.RuleContext) *InitDowngradeExecutor {
 // spec, used as the auth-enforcing baseline.
 const (
 	legacyVersion = "2024-11-05"
-	modernVersion = "2025-03-26"
+	modernVersion = latestStable
 )
 
 func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -173,7 +173,7 @@ func (e *InitDowngradeExecutor) initAndList(ctx context.Context, client *attack.
 		return false, false, 0
 	}
 
-	session := mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id")}
+	session := mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
 	_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",

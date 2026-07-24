@@ -82,7 +82,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	var session mcpSession
 	if err == nil {
 		record(initResp.BodyString())
-		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id")}
+		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
 	}
 
 	// A handful of further calls, including a malformed one to elicit verbose
