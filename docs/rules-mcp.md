@@ -211,10 +211,19 @@ and `tasks/cancel` requests for tasks that do not belong to the same
 authorization context as the requestor".
 
 The rule creates a task as one principal and reads it from a separate session as
-another, reporting two failures. An accepted cross-context `tasks/get` discloses
-another context's task metadata: status, timing, and status messages (**high**).
-An accepted cross-context `tasks/result` discloses the **actual tool output** the
-task produced, not metadata (**critical**). Both are **confirmed**.
+another, reporting three failures, all **confirmed**:
+
+- An accepted cross-context `tasks/get` discloses another context's task
+  metadata: status, timing, and status messages (**high**).
+- An accepted cross-context `tasks/result` discloses the **actual tool output**
+  the task produced, not metadata (**critical**).
+- An accepted cross-context `tasks/list` **enumerates** another context's tasks
+  (**critical**). This is the strongest of the three because it needs no prior
+  knowledge of any task id at all, so every task on the server can be listed and
+  then read. It is gated on the `tasks.list` capability being advertised, and is
+  checked independently of the by-id failures: the spec requires anything
+  gettable to also be listable, but not the converse, so a server can scope
+  `tasks/get` and still leak the list.
 
 A finding is raised only after anonymous task creation is *rejected*, proving the
 server does enforce authentication. A server with no authentication at all is a
