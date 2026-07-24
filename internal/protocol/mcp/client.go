@@ -4,7 +4,6 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -15,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/calbebop/batesian/internal/sse"
 )
 
 const (
@@ -380,19 +381,12 @@ func readBody(resp *http.Response) []byte {
 	return b
 }
 
-// readFirstSSEData scans an SSE stream and returns the payload from the first
-// "data:" line. The scanner buffer is maxBodyBytes to handle large payloads
-// such as MCP server instructions embedded in initialize responses.
+// readFirstSSEData returns the joined payload of the first SSE event from r,
+// rejoining a payload split across several "data:" lines. The stream is not
+// drained. A read error maps to a nil body.
 func readFirstSSEData(r io.Reader) []byte {
-	scanner := bufio.NewScanner(io.LimitReader(r, maxBodyBytes))
-	scanner.Buffer(make([]byte, maxBodyBytes), maxBodyBytes)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			return []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-	}
-	return nil
+	payload, _ := sse.FirstData(r, maxBodyBytes)
+	return payload
 }
 
 // HasCapability returns true if the session's capability map includes the key.

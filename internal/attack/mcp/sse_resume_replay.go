@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/sse"
 )
 
 // SSEResumeReplayExecutor tests whether an MCP Streamable HTTP server replays one
@@ -183,26 +183,18 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		return nil
 	}
+	// Read events for the window via the shared parser, which joins a payload
+	// split across several "data:" lines so a marker or checkpoint id is not
+	// reduced to its last fragment. The stream is bounded by the request
+	// context: when the window expires the body read errors and the loop stops.
+	rd := sse.NewReader(resp.Body)
 	var events []sseEvent
-	var cur sseEvent
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case line == "":
-			if cur.data != "" {
-				events = append(events, cur)
-			}
-			cur = sseEvent{}
-		case strings.HasPrefix(line, "id:"):
-			cur.id = strings.TrimSpace(line[len("id:"):])
-		case strings.HasPrefix(line, "data:"):
-			cur.data = strings.TrimSpace(line[len("data:"):])
+	for {
+		ev, err := rd.Next()
+		if err != nil {
+			break
 		}
-	}
-	if cur.data != "" {
-		events = append(events, cur)
+		events = append(events, sseEvent{id: ev.ID, data: ev.Data})
 	}
 	return events
 }
