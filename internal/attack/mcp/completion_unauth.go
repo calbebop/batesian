@@ -316,23 +316,20 @@ func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSessio
 
 // completionDispatchReachable reports whether a completion/complete response
 // shows the handler was reached without auth. A completion result, any result
-// envelope, or a -32602 (invalid params / invalid prompt name) protocol error
-// all mean the call dispatched. A -32601 (capability not supported), an
-// auth-flavored error, or any other error does not. The reason is used as
-// finding evidence.
+// envelope, or any JSON-RPC error that is not "method not found" and not
+// auth-flavored means the call dispatched. The reason is used as finding evidence.
 func completionDispatchReachable(body map[string]interface{}) (bool, string) {
-	if errObj, ok := body["error"].(map[string]interface{}); ok {
-		code, _ := errObj["code"].(float64)
-		if int(code) == -32602 {
-			return true, "JSON-RPC error -32602 (invalid params) returned for the completion probe, so completion/complete was dispatched without auth"
-		}
-		return false, ""
-	}
-	if res, ok := body["result"].(map[string]interface{}); ok {
-		if _, ok := res["completion"]; ok {
-			return true, "completion/complete returned a completion result without auth"
+	sig, code := classifyDispatch(body)
+	switch sig {
+	case dispatchResult:
+		if res, ok := body["result"].(map[string]interface{}); ok {
+			if _, ok := res["completion"]; ok {
+				return true, "completion/complete returned a completion result without auth"
+			}
 		}
 		return true, "completion/complete returned a result envelope without auth"
+	case dispatchError:
+		return true, fmt.Sprintf("JSON-RPC error %d returned for the completion probe, so completion/complete was dispatched without auth", code)
 	}
 	return false, ""
 }

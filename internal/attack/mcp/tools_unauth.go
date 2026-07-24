@@ -152,20 +152,16 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 }
 
 // callDispatchReachable reports whether a tools/call response for a non-existent
-// tool shows the invocation path was reached without auth. A -32602 ("unknown
-// tool" / invalid params) protocol error or any result envelope means the server
-// dispatched the call; a -32601 (method not found) or auth-flavored error does
-// not. The returned reason is used as finding evidence.
+// tool shows the invocation path was reached without auth. A result envelope, or
+// any JSON-RPC error that is not "method not found" and not auth-flavored, means
+// the server dispatched the call. The returned reason is used as finding evidence.
 func callDispatchReachable(body map[string]interface{}) (bool, string) {
-	if errObj, ok := body["error"].(map[string]interface{}); ok {
-		code, _ := errObj["code"].(float64)
-		if int(code) == -32602 {
-			return true, "JSON-RPC error -32602 (unknown tool) returned for a non-existent tool, so the call was dispatched without auth"
-		}
-		return false, ""
-	}
-	if _, ok := body["result"]; ok {
+	sig, code := classifyDispatch(body)
+	switch sig {
+	case dispatchResult:
 		return true, "tools/call returned a result envelope for a non-existent tool, so the call was dispatched without auth"
+	case dispatchError:
+		return true, fmt.Sprintf("JSON-RPC error %d returned for a non-existent tool, so tools/call was dispatched without auth", code)
 	}
 	return false, ""
 }
