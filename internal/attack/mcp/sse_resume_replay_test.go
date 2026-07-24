@@ -197,3 +197,111 @@ func TestResume_NotMCP(t *testing.T) {
 
 	assertInconclusive(t, mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
+
+// resumeServerMultiline is a vulnerable replay server whose SSE events carry a
+// trailing empty "data:" line, as a chunked stream whose payload ends in a
+// newline can emit:
+//
+//	id: <eid>
+//	data: <payload>
+//	data:
+//
+// The previous reader kept only the last "data:" line, so the empty trailing
+// line overwrote the payload, the event was recorded empty, and it was skipped.
+// Session A then captured no marker and the rule stayed silent (false negative).
+// The joined parser reassembles <payload> and the finding fires.
+func resumeServerMultiline() *httptest.Server {
+	var mu sync.Mutex
+	var sessionCounter, eventCounter int
+	var log []sseLogEntry
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			method, _ := req["method"].(string)
+			id := req["id"]
+			w.Header().Set("Content-Type", "application/json")
+			switch method {
+			case "initialize":
+				mu.Lock()
+				sessionCounter++
+				sid := fmt.Sprintf("sess-%d", sessionCounter)
+				mu.Unlock()
+				w.Header().Set("Mcp-Session-Id", sid)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{
+						"protocolVersion": "2025-06-18",
+						"serverInfo":      map[string]interface{}{"name": "resume-ml", "version": "1.0"},
+						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+					},
+				})
+			default:
+				w.WriteHeader(http.StatusAccepted)
+			}
+			return
+		}
+
+		sid := r.Header.Get("Mcp-Session-Id")
+		leid := r.Header.Get("Last-Event-ID")
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		writeMultiline := func(eid, data string) {
+			// Payload on the first data: line, then an empty trailing data: line.
+			fmt.Fprintf(w, "id: %s\ndata: %s\ndata:\n\n", eid, data)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		if leid == "" {
+			mu.Lock()
+			var fresh []sseLogEntry
+			for i := 0; i < 2; i++ {
+				eventCounter++
+				eid := fmt.Sprintf("evt-%s-%d", sid, eventCounter)
+				data := fmt.Sprintf(`{"sid":%q,"secret":"S-%s-%d"}`, sid, sid, eventCounter)
+				entry := sseLogEntry{eid: eid, sid: sid, data: data}
+				log = append(log, entry)
+				fresh = append(fresh, entry)
+			}
+			mu.Unlock()
+			for _, ev := range fresh {
+				writeMultiline(ev.eid, ev.data)
+			}
+			return
+		}
+		mu.Lock()
+		snapshot := append([]sseLogEntry(nil), log...)
+		mu.Unlock()
+		start := -1
+		for i, ev := range snapshot {
+			if ev.eid == leid {
+				start = i
+				break
+			}
+		}
+		if start == -1 {
+			return
+		}
+		for _, ev := range snapshot[start+1:] {
+			writeMultiline(ev.eid, ev.data)
+		}
+	}))
+}
+
+func TestResume_MultilineDataEvent(t *testing.T) {
+	ts := resumeServerMultiline()
+	defer ts.Close()
+
+	findings := runResume(t, ts)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding when events span multiple data: lines, got %d: %+v", len(findings), findings)
+	}
+	// The full marker must survive reassembly; the trailing empty data: line
+	// must not have reduced it to a fragment.
+	if !strings.Contains(findings[0].Evidence, "S-sess-1-2") {
+		t.Errorf("expected the joined marker in evidence, got:\n%s", findings[0].Evidence)
+	}
+}

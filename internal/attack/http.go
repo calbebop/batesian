@@ -1,7 +1,6 @@
 package attack
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/calbebop/batesian/internal/sse"
 )
 
 const maxBody = 1 << 20 // 1 MB
@@ -254,27 +255,15 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 	}, nil
 }
 
-// readFirstSSEEvent reads a Server-Sent Events stream and returns the JSON payload
-// from the first "data:" line. The connection is not drained; the caller's defer
-// closes the body once we return. This avoids hanging indefinitely on a stream
-// that the server never closes (standard for MCP streamable HTTP transport).
-//
-// The scanner buffer is set to maxBody (1 MB) because MCP servers can emit
-// data lines with large embedded payloads (e.g., server instructions).
+// readFirstSSEEvent returns the joined payload of the first SSE event. The
+// stream is not drained: the parser stops after the first event so a stream the
+// server never closes (standard for MCP streamable HTTP) cannot block the scan.
+// A payload split across several "data:" lines is rejoined per spec. Errors
+// (an over-long line, a read failure) map to a nil body, which callers treat as
+// "no result".
 func readFirstSSEEvent(r io.Reader) []byte {
-	scanner := bufio.NewScanner(io.LimitReader(r, maxBody))
-	scanner.Buffer(make([]byte, maxBody), maxBody)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			return []byte(payload)
-		}
-	}
-	// scanner.Err() is nil on clean EOF; non-nil means a read or buffer error.
-	// Returning nil here is safe: callers treat empty body as "no result".
-	_ = scanner.Err()
-	return nil
+	payload, _ := sse.FirstData(r, maxBody)
+	return payload
 }
 
 // marshalBody encodes body as JSON with template variable expansion applied to string values.
