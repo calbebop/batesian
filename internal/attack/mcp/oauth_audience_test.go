@@ -297,6 +297,41 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 	}
 }
 
+// TestOAuthAudience_TrapAcceptedControlNonResult covers the rewritten
+// coalesceOutcomes path where a trap probe returns a clear result envelope
+// (accepted) but the negative control returns a 200 body with no result
+// envelope (inconclusive, not a clear rejection). The trap must still be
+// reported, downgraded to RiskIndicator (not confirmed, and not dropped).
+func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if s, ok := aud.(string); ok && strings.HasPrefix(s, "https://batesian-control") {
+			// negative control: 200 with no JSON-RPC result envelope
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		// every trap probe is accepted with a clean result envelope
+		initializeOK(w)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 downgraded finding (trap accepted, control inconclusive), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("expected RiskIndicator (control not clearly rejected), got %q", findings[0].Confidence)
+	}
+}
+
 func TestOAuthAudience_EvidenceRedaction(t *testing.T) {
 	// The operator-supplied audience must not appear verbatim in finding
 	// evidence: only a length-tagged summary is allowed. This protects

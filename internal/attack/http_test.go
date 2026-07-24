@@ -174,3 +174,39 @@ func TestHTTPClient_DoesNotFollowRedirects(t *testing.T) {
 	default:
 	}
 }
+
+// TestHTTPClient_RedirectDoesNotForwardToken guards the security property behind
+// S1: because the client does not follow redirects, a request carrying the
+// operator's bearer token is never forwarded to the redirect target (which may
+// be a third-party host). A redirecting endpoint must not become a token leak.
+func TestHTTPClient_RedirectDoesNotForwardToken(t *testing.T) {
+	gotAuthz := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/sink", http.StatusFound) // 302
+	})
+	mux.HandleFunc("/sink", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotAuthz <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := attack.NewHTTPClient(attack.Options{TimeoutSeconds: 5, Token: "operator-bearer-secret"}, attack.NewVars(srv.URL, ""))
+	resp, err := c.GET(context.Background(), srv.URL+"/start", nil)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 (redirect not followed), got %d", resp.StatusCode)
+	}
+	select {
+	case authz := <-gotAuthz:
+		t.Fatalf("bearer token was forwarded to the redirect target (Authorization=%q); the client must not follow redirects", authz)
+	default:
+		// good: /sink was never reached, so the token stayed put
+	}
+}

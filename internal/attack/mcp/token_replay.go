@@ -159,7 +159,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
 			// carries a JSON-RPC error is a protocol-layer rejection of the
 			// forged token and must not be reported.
-			if resp.StatusCode == 200 && isJSONRPCResult(resp.BodyString()) && !isJSONRPCError(resp.BodyString()) {
+			if resp.IsAccepted() {
 				findings = append(findings, attack.Finding{
 					RuleID:      e.rule.ID,
 					RuleName:    e.rule.Name,

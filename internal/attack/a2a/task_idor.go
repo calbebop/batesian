@@ -144,7 +144,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 	unauthReadSucceeded := err == nil && getResp.IsAccepted() &&
-		getResp.ContainsAny(taskID, contextID)
+		getResp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)
 
 	if authEnforcedOnCreate && unauthReadSucceeded {
 		findings = append(findings, attack.Finding{
