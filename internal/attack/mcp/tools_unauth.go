@@ -43,7 +43,7 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 
 	session, err := initializeMCP(ctx, client, vars.BaseURL)
 	if err != nil {
-		return nil, nil // not an MCP server
+		return nil, attack.ErrInconclusive // not an MCP server
 	}
 
 	// Skip servers that do not advertise the tools capability; probing them would

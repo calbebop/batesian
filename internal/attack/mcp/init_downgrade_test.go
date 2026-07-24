@@ -251,11 +251,5 @@ func TestInitDowngrade_NotMCPServer(t *testing.T) {
 	defer srv.Close()
 
 	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
-	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings on non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, exec, srv.URL, attack.Options{TimeoutSeconds: 5})
 }

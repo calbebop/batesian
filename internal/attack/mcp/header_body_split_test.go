@@ -130,7 +130,5 @@ func TestSplit_NotMCP(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 
-	if findings := runSplit(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }

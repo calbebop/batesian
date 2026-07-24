@@ -73,7 +73,7 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 
 	session, err := initializeMCP(ctx, client, vars.BaseURL)
 	if err != nil {
-		return nil, nil // not an MCP server
+		return nil, attack.ErrInconclusive // not an MCP server
 	}
 
 	// Skip servers that do not advertise the completions capability; probing them

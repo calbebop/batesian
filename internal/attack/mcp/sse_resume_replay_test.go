@@ -195,7 +195,5 @@ func TestResume_NotMCP(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 
-	if findings := runResume(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }

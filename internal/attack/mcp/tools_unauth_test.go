@@ -152,3 +152,12 @@ func TestToolsUnauth_NoToolsCapability(t *testing.T) {
 		t.Errorf("expected 0 findings for a server without the tools capability, got %d", len(findings))
 	}
 }
+
+// TestToolsUnauth_NotMCP: a non-MCP server (no reachable endpoint) must report
+// ErrInconclusive, not a clean pass.
+func TestToolsUnauth_NotMCP(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), ts.URL, testOpts())
+}

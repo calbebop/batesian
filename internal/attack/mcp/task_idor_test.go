@@ -327,7 +327,5 @@ func TestTaskIDOR_NotMCP(t *testing.T) {
 	srv := taskIDORServer("not-mcp")
 	defer srv.Close()
 
-	if findings := runTaskIDOR(t, srv); len(findings) != 0 {
-		t.Errorf("expected 0 findings for a non-MCP server, got %d: %+v", len(findings), findings)
-	}
+	assertInconclusive(t, mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}), srv.URL, testOpts())
 }

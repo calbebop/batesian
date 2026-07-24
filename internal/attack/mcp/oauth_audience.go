@@ -100,7 +100,7 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	}
 	if endpoint == "" {
 		// No candidate endpoint produced a usable response for any probe.
-		return nil, nil
+		return nil, attack.ErrInconclusive
 	}
 
 	finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes)

@@ -77,7 +77,8 @@ func (e *DNSRebindOriginExecutor) Execute(ctx context.Context, target string, op
 		// validated. No finding, and no need to try other endpoints.
 		return nil, nil
 	}
-	return nil, nil
+	// No candidate accepted a baseline initialize: not a testable MCP endpoint.
+	return nil, attack.ErrInconclusive
 }
 
 // initAccepted sends an MCP initialize to ep (optionally with an Origin header)

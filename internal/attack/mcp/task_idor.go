@@ -72,7 +72,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// Session A, which also discovers the endpoint.
 	sessA, ok := e.initSession(ctx, client, vars.BaseURL, tokenA)
 	if !ok {
-		return nil, nil // not an MCP server
+		return nil, attack.ErrInconclusive // not an MCP server
 	}
 
 	// Gate on the tasks capability and on task-augmented tools/call specifically.

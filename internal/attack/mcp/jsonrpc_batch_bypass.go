@@ -51,16 +51,24 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 	// server's auth gate. Injecting opts.Token would mask the bypass.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
+	var reached bool
 	for _, ep := range endpointCandidates(vars.BaseURL) {
-		if f := e.probeEndpoint(ctx, client, ep); f != nil {
+		f, epReached := e.probeEndpoint(ctx, client, ep)
+		if epReached {
+			reached = true
+		}
+		if f != nil {
 			return f, nil
 		}
+	}
+	if !reached {
+		return nil, attack.ErrInconclusive
 	}
 	return nil, nil
 }
 
 // probeEndpoint runs the bypass check against a single candidate endpoint.
-func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) []attack.Finding {
+func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {
 	initObj := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -76,7 +84,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 
 	ctrl, err := client.POST(ctx, ep, nil, initObj)
 	if err != nil {
-		return nil // endpoint unreachable
+		return nil, false // endpoint unreachable
 	}
 
 	switch {
@@ -84,16 +92,16 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 		// The server gates initialize itself. Does a one-element batch slip past?
 		test, err := client.POST(ctx, ep, nil, []interface{}{initObj})
 		if err != nil {
-			return nil
+			return nil, true
 		}
 		if test.IsSuccess() && batchHasResult(test.Body) && bodyLooksMCP(test.Body) {
 			detail := fmt.Sprintf(
 				"single initialize: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [initialize]: HTTP %d (processed, returned an MCP initialize result)",
 				ctrl.StatusCode, test.StatusCode)
-			return e.finding(ep, "initialize", detail)
+			return e.finding(ep, "initialize", detail), true
 		}
-		return nil
+		return nil, true
 
 	case isMCPInitialize(ctrl):
 		// initialize is open; look for a per-method gate that the batch bypasses.
@@ -102,10 +110,10 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
-		return e.probeMethodGate(ctx, client, session)
+		return e.probeMethodGate(ctx, client, session), true
 
 	default:
-		return nil // not an MCP endpoint
+		return nil, false // not an MCP endpoint
 	}
 }
 

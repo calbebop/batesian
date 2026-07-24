@@ -59,23 +59,35 @@ func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts
 	// WITHOUT proper credentials, so the probe must run with no bearer token.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
+	var reached bool
 	for _, ep := range endpointCandidates(vars.BaseURL) {
-		findings := e.probeEndpoint(ctx, client, ep)
-		if findings == nil {
-			continue
+		findings, epReached := e.probeEndpoint(ctx, client, ep)
+		if epReached {
+			reached = true
 		}
-		return findings, nil
+		if findings != nil {
+			return findings, nil
+		}
+	}
+	if !reached {
+		return nil, attack.ErrInconclusive
 	}
 	return nil, nil
 }
 
-func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) []attack.Finding {
+func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {
 	// Legacy path: initialize with the pre-auth version, then probe resources/list.
 	legacyInitOK, legacyAccess, legacyCount := e.initAndList(ctx, client, ep, legacyVersion)
 	if !legacyInitOK {
-		// Either not an MCP server here, or it rejected the legacy version
-		// outright (a secure posture). Nothing to confirm.
-		return nil
+		// The legacy initialize did not succeed. Distinguish "not an MCP
+		// endpoint" from "a server that speaks MCP but rejects this version" by
+		// probing whether the endpoint answers initialize with a JSON-RPC
+		// response at all. A version-rejection error still counts as reached:
+		// the endpoint is testable, it just declined the offered version.
+		if !e.responsiveMCP(ctx, client, ep) {
+			return nil, false // not a responsive MCP endpoint
+		}
+		return nil, true // reached, but the offered version was rejected - nothing to confirm
 	}
 
 	// Modern baseline: does the server enforce auth under the post-auth version?
@@ -105,10 +117,31 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 				ep, modernVersion, legacyVersion, legacyCount),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
-		}}
+		}}, true
 	}
 
-	return nil
+	return nil, true
+}
+
+// responsiveMCP reports whether ep answered an MCP initialize with a JSON-RPC
+// response (a result OR an error envelope). A version-rejection error still
+// counts: the endpoint speaks MCP, it just declined the offered version, so the
+// rule reached a testable endpoint (clean) rather than being unable to test.
+func (e *InitDowngradeExecutor) responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bool {
+	resp, err := client.POST(ctx, ep, nil, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": modernVersion,
+			"capabilities":    map[string]interface{}{},
+			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
+		},
+	})
+	if err != nil || !resp.IsSuccess() {
+		return false
+	}
+	return looksJSONRPC(resp.BodyString())
 }
 
 // initAndList performs an MCP initialize with the given protocol version, sends
