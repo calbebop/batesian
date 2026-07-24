@@ -15,7 +15,7 @@ import (
 
 const (
 	legacyVer = "2024-11-05"
-	modernVer = "2025-03-26"
+	modernVer = "2025-06-18"
 )
 
 // versionAwareServer models a server that tracks each session's negotiated

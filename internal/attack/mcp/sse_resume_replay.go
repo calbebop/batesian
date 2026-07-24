@@ -141,7 +141,7 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 		return "", false
 	}
 	sid := resp.Headers.Get("Mcp-Session-Id")
-	inited := map[string]string{}
+	inited := map[string]string{"Mcp-Protocol-Version": latestStable}
 	if token != "" {
 		inited["Authorization"] = "Bearer " + token
 	}

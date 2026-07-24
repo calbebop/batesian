@@ -105,7 +105,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 
 	case isMCPInitialize(ctrl):
 		// initialize is open; look for a per-method gate that the batch bypasses.
-		session := mcpSession{Endpoint: ep, SessionID: ctrl.Headers.Get("Mcp-Session-Id"), RawInit: ctrl.Body}
+		session := mcpSession{Endpoint: ep, SessionID: ctrl.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(ctrl.Body), RawInit: ctrl.Body}
 		_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",

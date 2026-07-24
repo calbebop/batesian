@@ -47,8 +47,11 @@ func NewTokenReplayExecutor(r attack.RuleContext) *TokenReplayExecutor {
 	return &TokenReplayExecutor{rule: r}
 }
 
-// mcpInitBody is the standard MCP initialize request used as the probe body.
-const mcpInitBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"batesian","version":"dev"}}}`
+// mcpInitBody is the standard MCP initialize request used as the probe body. The
+// offered protocolVersion mirrors latestStable: a stale offered version here is
+// rejected as "Unsupported protocol version" by current servers (a silent false
+// negative). Shared by token_replay, dns_rebind_origin, and oauth_audience.
+const mcpInitBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"batesian","version":"dev"}}}`
 
 // Execute runs the token replay / audience validation test.
 func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {

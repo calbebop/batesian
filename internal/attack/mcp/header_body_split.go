@@ -114,7 +114,7 @@ func (e *HeaderBodySplitExecutor) initialize(ctx context.Context, client *attack
 	if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
 		return mcpSession{}, false
 	}
-	session := mcpSession{Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"), RawInit: resp.Body}
+	session := mcpSession{Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body), RawInit: resp.Body}
 	initedHeaders := session.header()
 	if initedHeaders == nil {
 		initedHeaders = map[string]string{}

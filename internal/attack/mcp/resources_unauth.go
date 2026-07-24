@@ -184,7 +184,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			"id":      1,
 			"method":  "initialize",
 			"params": map[string]interface{}{
-				"protocolVersion": "2025-03-26",
+				"protocolVersion": latestStable,
 				"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
 				"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 			},
@@ -197,9 +197,10 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		}
 
 		session := mcpSession{
-			Endpoint:  ep,
-			SessionID: initResp.Headers.Get("Mcp-Session-Id"),
-			RawInit:   initResp.Body,
+			Endpoint:        ep,
+			SessionID:       initResp.Headers.Get("Mcp-Session-Id"),
+			ProtocolVersion: negotiatedVersion(initResp.Body),
+			RawInit:         initResp.Body,
 		}
 
 		// notifications/initialized - fire and forget

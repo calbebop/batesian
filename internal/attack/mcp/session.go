@@ -24,6 +24,11 @@ func endpointCandidates(baseURL string) []string {
 type mcpSession struct {
 	Endpoint  string
 	SessionID string
+	// ProtocolVersion is the MCP version in effect for this session: the
+	// protocolVersion the server returned in its initialize result, or the
+	// offered version if the server did not echo one. Sent on subsequent
+	// requests via the Mcp-Protocol-Version header.
+	ProtocolVersion string
 	// RawInit is the raw JSON body of the server's initialize response, captured
 	// once during the handshake so executors can inspect advertised server
 	// capabilities without issuing a second initialize.
@@ -51,11 +56,43 @@ func (s mcpSession) ServerSupports(capability string) bool {
 	return ok
 }
 
-// header returns the Mcp-Session-Id header map if a session ID is present,
-// or nil if the server did not issue one (older servers, test servers).
+// header returns the headers that must accompany subsequent MCP requests on this
+// session: Mcp-Protocol-Version (Streamable HTTP servers validate it to route
+// and may reject requests that omit it) and, when the server issued one,
+// Mcp-Session-Id. Returns nil if neither applies (older servers, test servers).
 func (s mcpSession) header() map[string]string {
-	if s.SessionID == "" {
+	h := map[string]string{}
+	if s.ProtocolVersion != "" {
+		h["Mcp-Protocol-Version"] = s.ProtocolVersion
+	}
+	if s.SessionID != "" {
+		h["Mcp-Session-Id"] = s.SessionID
+	}
+	if len(h) == 0 {
 		return nil
 	}
-	return map[string]string{"Mcp-Session-Id": s.SessionID}
+	return h
+}
+
+// latestStable is the MCP protocol version offered in initialize requests. The
+// spec says clients should offer the latest version they support; the server
+// negotiates by responding with its own version. Offering a stale version risks
+// an "Unsupported protocol version" rejection on current servers (a silent
+// false negative), so this stays current.
+const latestStable = "2025-06-18"
+
+// negotiatedVersion reads the protocolVersion the server chose from its
+// initialize result body, falling back to latestStable if the server did not
+// echo one. The negotiated value is sent in the Mcp-Protocol-Version header on
+// subsequent requests.
+func negotiatedVersion(initBody []byte) string {
+	var body struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(initBody, &body) == nil && body.Result.ProtocolVersion != "" {
+		return body.Result.ProtocolVersion
+	}
+	return latestStable
 }

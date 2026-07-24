@@ -165,9 +165,10 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			continue
 		}
 		session := mcpSession{
-			Endpoint:  ep,
-			SessionID: resp.Headers.Get("Mcp-Session-Id"),
-			RawInit:   resp.Body,
+			Endpoint:        ep,
+			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
+			ProtocolVersion: negotiatedVersion(resp.Body),
+			RawInit:         resp.Body,
 		}
 		_, _ = client.POST(ctx, ep, e.headers(session, token), map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -181,6 +182,9 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 // headers builds the per-request headers for a session and principal.
 func (e *TaskIDORExecutor) headers(s mcpSession, token string) map[string]string {
 	h := map[string]string{}
+	if s.ProtocolVersion != "" {
+		h["Mcp-Protocol-Version"] = s.ProtocolVersion
+	}
 	if s.SessionID != "" {
 		h["Mcp-Session-Id"] = s.SessionID
 	}
