@@ -361,3 +361,17 @@ func TestOAuthAudience_EvidenceRedaction(t *testing.T) {
 		t.Errorf("evidence missing length-tagged audience summary %q: %s", wantLenTag, findings[0].Evidence)
 	}
 }
+
+// TestOAuthAudience_UnreachableHost: when no candidate endpoint can be reached
+// (every probe transport-errors - no endpoint produced any response),
+// runProbesAgainstEndpoint returns an empty endpoint and the rule reports
+// ErrInconclusive rather than a clean pass. (A server that merely 404s the
+// probes is "reached, all rejected" = clean; this is the distinct unreachable
+// case, exercised by tearing the server down so the port refuses connections.)
+func TestOAuthAudience_UnreachableHost(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := srv.URL
+	srv.Close() // refuse all further connections to this address
+
+	assertInconclusive(t, mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()), addr, optsWithAudience(testExpectedAud))
+}

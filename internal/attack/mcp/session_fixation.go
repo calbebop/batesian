@@ -65,7 +65,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 1: initialize while presenting a client-chosen session id.
 	ep, assigned, ok := e.initWithSession(ctx, client, vars.BaseURL, fixed)
 	if !ok {
-		return nil, nil // not a responsive MCP server
+		return nil, attack.ErrInconclusive // not a responsive MCP server
 	}
 	// Discriminator: the server returned its OWN session id, ignoring the
 	// supplied one. That is the correct, secure behavior - no finding.

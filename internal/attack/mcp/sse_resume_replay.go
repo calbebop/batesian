@@ -44,18 +44,31 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
 	}
 
+	var reached bool
 	for _, ep := range endpointCandidates(vars.BaseURL) {
-		if f := e.probe(ctx, client, raw, ep, tokenA, tokenB); f != nil {
+		f, epReached := e.probe(ctx, client, raw, ep, tokenA, tokenB)
+		if epReached {
+			reached = true
+		}
+		if f != nil {
 			return f, nil
 		}
+	}
+	if !reached {
+		return nil, attack.ErrInconclusive
 	}
 	return nil, nil
 }
 
-func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string) []attack.Finding {
+func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string) ([]attack.Finding, bool) {
 	sessionA, ok := e.initialize(ctx, client, ep, tokenA)
-	if !ok || sessionA == "" {
-		return nil // not MCP here, or server mints no session ids (can't prove cross-session)
+	if !ok {
+		return nil, false // not a responsive MCP endpoint
+	}
+	if sessionA == "" {
+		// Responsive MCP server that mints no session ids: no resumable surface
+		// to test, but the endpoint was reached.
+		return nil, true
 	}
 
 	// A's checkpoint: open A's stream and capture an id-bearing event plus the
@@ -64,12 +77,12 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	aEvents := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
 	checkpointID, markers := resumeCheckpoint(aEvents)
 	if checkpointID == "" || len(markers) == 0 {
-		return nil // no resumable event surface to test
+		return nil, true // no resumable event surface to test
 	}
 
 	sessionB, ok := e.initialize(ctx, client, ep, tokenB)
 	if !ok || sessionB == "" || sessionB == sessionA {
-		return nil // need a second, distinct server-minted session
+		return nil, true // need a second, distinct server-minted session
 	}
 
 	// As B, resume from A's checkpoint id and see whether A's later events are
@@ -98,10 +111,10 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 					ep, sessionA, checkpointID, sessionB, checkpointID, marker),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
-			}}
+			}}, true
 		}
 	}
-	return nil
+	return nil, true
 }
 
 // initialize performs an MCP initialize as the given token and returns the

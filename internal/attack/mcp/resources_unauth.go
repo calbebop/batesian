@@ -50,7 +50,7 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 	// MCP requires an initialize handshake before any method calls.
 	session, err := initializeMCP(ctx, client, vars.BaseURL)
 	if err != nil {
-		return nil, nil // not an MCP server
+		return nil, attack.ErrInconclusive // not an MCP server
 	}
 
 	var findings []attack.Finding
