@@ -189,7 +189,5 @@ func TestBatchBypass_NotMCP(t *testing.T) {
 	srv := batchServer("not-mcp")
 	defer srv.Close()
 
-	if findings := runBatchBypass(t, srv); len(findings) != 0 {
-		t.Errorf("expected 0 findings for a non-MCP endpoint, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"}), srv.URL, testOpts())
 }

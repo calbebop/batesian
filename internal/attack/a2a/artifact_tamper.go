@@ -114,7 +114,7 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	// A re-submission is "accepted" only on HTTP success WITHOUT a JSON-RPC error
 	// envelope. A 4xx, or a 200 carrying {"error": {...}} such as "task already
 	// exists", is a rejection => immutability enforced => no finding.
-	tamperAccepted := tamperResp.IsSuccess() && !isJSONRPCError(tamperResp.Body)
+	tamperAccepted := tamperResp.IsAccepted()
 	if !tamperAccepted {
 		return nil, nil
 	}
@@ -131,7 +131,7 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 
 	// Could not read the task back: report the accepted re-submission as an
 	// indicator (suspicious, but the overwrite is unproven).
-	if getErr != nil || getResp == nil || !getResp.IsSuccess() || isJSONRPCError(getResp.Body) {
+	if getErr != nil || getResp == nil || !getResp.IsAccepted() {
 		return []attack.Finding{e.indicator(endpoint, assignedID, tamperResp.StatusCode, tamperResp.BodyString())}, nil
 	}
 

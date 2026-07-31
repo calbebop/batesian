@@ -255,3 +255,73 @@ func TestTokenReplay_NoOAuthMetadata(t *testing.T) {
 		t.Errorf("expected zero findings when no OAuth metadata present, got %d", len(findings))
 	}
 }
+
+// versionRejectingTokenServer advertises OAuth metadata and rejects an
+// initialize offered with the stale 2024-11-05 protocol version (returning the
+// JSON-RPC error a strict current server sends for an unsupported version),
+// while accepting the current version. Proves the mcpInitBody version bump
+// closes a false negative: before the bump, every forged-token initialize was
+// rejected on version grounds and the rule reported clean.
+func versionRejectingTokenServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + srv.Listener.Addr().String()
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":         base,
+				"token_endpoint": base + "/token",
+			})
+		case "/mcp":
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			params, _ := req["params"].(map[string]interface{})
+			version, _ := params["protocolVersion"].(string)
+			if version == "2024-11-05" {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"error":   map[string]interface{}{"code": -32600, "message": "Unsupported protocol version"},
+				})
+				return
+			}
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"result": map[string]interface{}{
+						"protocolVersion": version,
+						"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
+					},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv
+}
+
+// TestTokenReplay_CurrentVersionNotRejected: a strict current server rejects an
+// initialize offered as 2024-11-05. The rule must offer a current version so the
+// forged-token initialize is accepted (and the finding fires), not rejected on
+// version grounds.
+func TestTokenReplay_CurrentVersionNotRejected(t *testing.T) {
+	srv := versionRejectingTokenServer(t)
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected a finding (current-version initialize accepted, forged token accepted); got 0 - the offered protocolVersion may have been rejected as stale")
+	}
+}
