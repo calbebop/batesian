@@ -92,7 +92,5 @@ func TestDNSRebind_NotMCP(t *testing.T) {
 	ts := dnsRebindServer("not-mcp")
 	defer ts.Close()
 
-	if findings := runDNSRebind(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewDNSRebindOriginExecutor(dnsRebindRC()), ts.URL, testOpts())
 }

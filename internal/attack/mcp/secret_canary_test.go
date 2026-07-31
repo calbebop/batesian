@@ -100,7 +100,5 @@ func TestCanary_NonMCP(t *testing.T) {
 	ts := canaryServer("nonmcp")
 	defer ts.Close()
 
-	if findings := runCanary(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }

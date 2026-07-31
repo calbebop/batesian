@@ -121,7 +121,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-ctxfix-send-" + randID,
@@ -136,7 +136,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return "", ""
 	}
 	taskID, returnedCtx = extractTaskContext(resp.Body)
@@ -157,7 +157,7 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-ctxfix-get-" + randID,
@@ -165,7 +165,7 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return false
 	}
 	return resp.ContainsAny(marker)

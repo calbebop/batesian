@@ -133,3 +133,57 @@ func TestExtCardExecutor_Clean(t *testing.T) {
 		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
 	}
 }
+
+// TestExtCardExecutor_HTMLLoginNotFinding verifies that a server answering the
+// extended-card probe with a 200 HTML login page produces no finding. Previously
+// the rule treated any 2xx non-error body as a card and raised a CRITICAL
+// finding, which false-positived any target that redirects/answers probes with a
+// login page.
+func TestExtCardExecutor_HTMLLoginNotFinding(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><h1>Please log in</h1></body></html>"))
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings for a 200 HTML login page, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestExtCardExecutor_HTTPGetRawCard is the positive control for the legacy
+// HTTP-GET transport: a server that serves a raw agent card (top-level name/url)
+// at the extended-card path. This exercises the parseCard-based extCardDisclosed
+// gate, which the other tests (which serve a JSON-RPC result envelope) do not.
+func TestExtCardExecutor_HTTPGetRawCard(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/extendedAgentCard" {
+			writeJSON(w, map[string]interface{}{
+				"name":        "Raw Card Agent",
+				"url":         "https://agent.example.com",
+				"description": "extended capabilities",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding from the HTTP-GET raw-card path, got %d: %+v", len(findings), findings)
+	}
+	// The first GET carries a fabricated invalid token; a card returned to it is
+	// a critical auth bypass.
+	if findings[0].Severity != "critical" {
+		t.Errorf("expected critical (fabricated token accepted), got %q", findings[0].Severity)
+	}
+}

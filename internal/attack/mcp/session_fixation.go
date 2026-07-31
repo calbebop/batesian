@@ -65,7 +65,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 1: initialize while presenting a client-chosen session id.
 	ep, assigned, ok := e.initWithSession(ctx, client, vars.BaseURL, fixed)
 	if !ok {
-		return nil, nil // not a responsive MCP server
+		return nil, attack.ErrInconclusive // not a responsive MCP server
 	}
 	// Discriminator: the server returned its OWN session id, ignoring the
 	// supplied one. That is the correct, secure behavior - no finding.
@@ -74,7 +74,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	}
 
 	// Best-effort: complete the handshake for the pre-seeded session.
-	_, _ = client.POST(ctx, ep, map[string]string{"Mcp-Session-Id": fixed}, map[string]interface{}{
+	_, _ = client.POST(ctx, ep, map[string]string{"Mcp-Session-Id": fixed, "Mcp-Protocol-Version": latestStable}, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
@@ -131,7 +131,7 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 			"id":      1,
 			"method":  "initialize",
 			"params": map[string]interface{}{
-				"protocolVersion": "2025-03-26",
+				"protocolVersion": latestStable,
 				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 				"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 			},
@@ -154,7 +154,7 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 // not found"); a method-not-found error still means the session passed
 // validation and reached method dispatch.
 func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, ep, sessionID string, extraHeaders map[string]string) bool {
-	headers := map[string]string{"Mcp-Session-Id": sessionID}
+	headers := map[string]string{"Mcp-Session-Id": sessionID, "Mcp-Protocol-Version": latestStable}
 	for k, v := range extraHeaders {
 		headers[k] = v
 	}
