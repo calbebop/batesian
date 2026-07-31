@@ -23,6 +23,8 @@ import (
 //     returns an empty completion result => medium only (no disclosure).
 //   - "reachable-synth": only completions advertised; completion/complete answers
 //     -32602 for the synthetic probe ref => medium only.
+//   - "reachable-internal": only completions advertised; completion/complete
+//     answers -32603 for the synthetic probe ref => medium only.
 //   - "auth-enforced":   completion/complete answers -32001 Unauthorized => silent.
 //   - "no-cap":          completions capability absent => silent.
 //   - "not-mcp":         initialize 404s => silent.
@@ -102,6 +104,9 @@ func completionServer(mode string) *httptest.Server {
 				rpcErr(-32001, "Unauthorized")
 			case "reachable-synth":
 				rpcErr(-32602, "Invalid params: unknown prompt")
+			case "reachable-internal":
+				// A non-(-32602) validation path: still proves dispatch without auth.
+				rpcErr(-32603, "internal: unknown completion ref")
 			case "reachable-empty":
 				completion([]interface{}{})
 			case "resource-oracle":
@@ -210,6 +215,22 @@ func TestCompletionUnauth_ReachableSynthetic(t *testing.T) {
 	}
 }
 
+// TestCompletionUnauth_ReachableViaInternalError: a synthetic probe answered with
+// -32603 still proves completion/complete was dispatched without auth. The old
+// dispatch helper accepted only -32602 and stayed silent here (false negative).
+func TestCompletionUnauth_ReachableViaInternalError(t *testing.T) {
+	srv := completionServer("reachable-internal")
+	defer srv.Close()
+
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 reachability finding for the -32603 response, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != "medium" {
+		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
+	}
+}
+
 // TestCompletionUnauth_AuthEnforced: completion/complete requires auth => silent.
 func TestCompletionUnauth_AuthEnforced(t *testing.T) {
 	srv := completionServer("auth-enforced")
@@ -235,7 +256,5 @@ func TestCompletionUnauth_NotMCP(t *testing.T) {
 	srv := completionServer("not-mcp")
 	defer srv.Close()
 
-	if findings := runCompletionUnauth(t, srv); len(findings) != 0 {
-		t.Errorf("expected 0 findings for a non-MCP server, got %d: %+v", len(findings), findings)
-	}
+	assertInconclusive(t, mcpattack.NewCompletionUnauthExecutor(attack.RuleContext{ID: "mcp-completion-unauth-001"}), srv.URL, testOpts())
 }

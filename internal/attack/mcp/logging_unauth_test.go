@@ -132,7 +132,5 @@ func TestLoggingUnauth_NotMCP(t *testing.T) {
 	srv := loggingServer("not-mcp")
 	defer srv.Close()
 
-	if findings := runLoggingUnauth(t, srv); len(findings) != 0 {
-		t.Errorf("expected 0 findings for a non-MCP server, got %d: %+v", len(findings), findings)
-	}
+	assertInconclusive(t, mcpattack.NewLoggingUnauthExecutor(attack.RuleContext{ID: "mcp-logging-unauth-001"}), srv.URL, testOpts())
 }

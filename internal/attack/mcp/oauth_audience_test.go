@@ -272,9 +272,12 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 }
 
 func TestOAuthAudience_Ambiguous200(t *testing.T) {
-	// Server returns 200 with no JSON-RPC envelope to every probe. This is
-	// signal-poor: cannot conclude exploit, but also cannot dismiss. The
-	// rule must downgrade to RiskIndicator.
+	// Server returns 200 with no JSON-RPC envelope to every probe (e.g. a
+	// non-MCP endpoint or a generic 2xx ack). That is not evidence that any
+	// forged token was accepted, so the rule must produce no finding rather
+	// than a downgraded indicator. (Previously a 200 non-result was treated as
+	// "ambiguous acceptance" and emitted a RiskIndicator, which false-positived
+	// non-MCP targets whose /mcp fell through to a 200 page.)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -289,11 +292,43 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for a 200 non-result target, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestOAuthAudience_TrapAcceptedControlNonResult covers the rewritten
+// coalesceOutcomes path where a trap probe returns a clear result envelope
+// (accepted) but the negative control returns a 200 body with no result
+// envelope (inconclusive, not a clear rejection). The trap must still be
+// reported, downgraded to RiskIndicator (not confirmed, and not dropped).
+func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if s, ok := aud.(string); ok && strings.HasPrefix(s, "https://batesian-control") {
+			// negative control: 200 with no JSON-RPC result envelope
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		// every trap probe is accepted with a clean result envelope
+		initializeOK(w)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(findings) != 1 {
-		t.Fatalf("expected 1 coalesced finding for ambiguous 200, got %d", len(findings))
+		t.Fatalf("expected 1 downgraded finding (trap accepted, control inconclusive), got %d: %+v", len(findings), findings)
 	}
 	if findings[0].Confidence != attack.RiskIndicator {
-		t.Errorf("expected RiskIndicator for ambiguous 200, got %q", findings[0].Confidence)
+		t.Errorf("expected RiskIndicator (control not clearly rejected), got %q", findings[0].Confidence)
 	}
 }
 
@@ -325,4 +360,18 @@ func TestOAuthAudience_EvidenceRedaction(t *testing.T) {
 	if !strings.Contains(findings[0].Evidence, wantLenTag) {
 		t.Errorf("evidence missing length-tagged audience summary %q: %s", wantLenTag, findings[0].Evidence)
 	}
+}
+
+// TestOAuthAudience_UnreachableHost: when no candidate endpoint can be reached
+// (every probe transport-errors - no endpoint produced any response),
+// runProbesAgainstEndpoint returns an empty endpoint and the rule reports
+// ErrInconclusive rather than a clean pass. (A server that merely 404s the
+// probes is "reached, all rejected" = clean; this is the distinct unreachable
+// case, exercised by tearing the server down so the port refuses connections.)
+func TestOAuthAudience_UnreachableHost(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := srv.URL
+	srv.Close() // refuse all further connections to this address
+
+	assertInconclusive(t, mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()), addr, optsWithAudience(testExpectedAud))
 }

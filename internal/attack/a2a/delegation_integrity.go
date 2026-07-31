@@ -124,7 +124,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
@@ -138,7 +138,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return "", "", false
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
@@ -168,7 +168,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 			},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-deleg-cont-" + randID,
@@ -184,7 +184,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 			},
 		})
 	}
-	if err != nil || !resp.IsSuccess() || isJSONRPCError(resp.Body) {
+	if err != nil || !resp.IsAccepted() {
 		return false
 	}
 	// The continuation landed on A's task only if the result still references it.

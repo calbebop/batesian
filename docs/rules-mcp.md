@@ -83,8 +83,10 @@ matching. The negative control disambiguates: if the control is accepted, the
 server accepts any forged token regardless of audience, so the result is reported
 as **blanket forged-token acceptance** (point at `mcp-token-replay-001`) rather
 than misattributed to a specific matching bug. A trap acceptance is a
-**confirmed** isolated matching bug only when the control was rejected; an
-ambiguous control downgrades trap acceptances to an **indicator**. Catching a
+**confirmed** isolated matching bug only when the control was rejected; a
+control that carried no JSON-RPC result envelope (so it could not be clearly
+rejected) downgrades trap acceptances to an **indicator**, and a 2xx body with
+no result envelope is never itself treated as acceptance. Catching a
 server that validates signatures correctly but still mishandles `aud` (the
 CVE-2026-30863 / RFC 7523-bis class) requires a real validly-signed cross-resource
 token and is tracked as a follow-up.
@@ -211,10 +213,19 @@ and `tasks/cancel` requests for tasks that do not belong to the same
 authorization context as the requestor".
 
 The rule creates a task as one principal and reads it from a separate session as
-another, reporting two failures. An accepted cross-context `tasks/get` discloses
-another context's task metadata: status, timing, and status messages (**high**).
-An accepted cross-context `tasks/result` discloses the **actual tool output** the
-task produced, not metadata (**critical**). Both are **confirmed**.
+another, reporting three failures, all **confirmed**:
+
+- An accepted cross-context `tasks/get` discloses another context's task
+  metadata: status, timing, and status messages (**high**).
+- An accepted cross-context `tasks/result` discloses the **actual tool output**
+  the task produced, not metadata (**critical**).
+- An accepted cross-context `tasks/list` **enumerates** another context's tasks
+  (**critical**). This is the strongest of the three because it needs no prior
+  knowledge of any task id at all, so every task on the server can be listed and
+  then read. It is gated on the `tasks.list` capability being advertised, and is
+  checked independently of the by-id failures: the spec requires anything
+  gettable to also be listable, but not the converse, so a server can scope
+  `tasks/get` and still leak the list.
 
 A finding is raised only after anonymous task creation is *rejected*, proving the
 server does enforce authentication. A server with no authentication at all is a
