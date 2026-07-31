@@ -72,7 +72,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// Session A, which also discovers the endpoint.
 	sessA, ok := e.initSession(ctx, client, vars.BaseURL, tokenA)
 	if !ok {
-		return nil, nil // not an MCP server
+		return nil, attack.ErrInconclusive // not an MCP server
 	}
 
 	// Gate on the tasks capability and on task-augmented tools/call specifically.
@@ -107,18 +107,29 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		return nil, nil // need a distinct session to demonstrate the boundary
 	}
 
-	meta, ok := e.getTask(ctx, client, sessB, tokenB, taskID)
-	if !ok {
-		return nil, nil // correctly scoped: B cannot see A's task
+	var findings []attack.Finding
+
+	// Step 4: can B read A's task by id? A correctly-scoped server answers -32602.
+	if meta, ok := e.getTask(ctx, client, sessB, tokenB, taskID); ok {
+		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, crossPrincipal))
+
+		// Escalate if B can also read the result. tasks/result blocks until the
+		// task is terminal, so poll tasks/get first and stay inside the budget.
+		if e.pollTerminal(ctx, client, sessB, tokenB, taskID) {
+			if content, ok := e.getResult(ctx, client, sessB, tokenB, taskID); ok {
+				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, crossPrincipal))
+			}
+		}
 	}
 
-	findings := []attack.Finding{e.metadataFinding(sessA.Endpoint, taskID, meta, crossPrincipal)}
-
-	// Step 4: escalate if B can also read the result. tasks/result blocks until
-	// the task is terminal, so poll tasks/get first and stay inside the budget.
-	if e.pollTerminal(ctx, client, sessB, tokenB, taskID) {
-		if content, ok := e.getResult(ctx, client, sessB, tokenB, taskID); ok {
-			findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, crossPrincipal))
+	// Step 5: can B enumerate A's task without knowing its id? This is checked
+	// independently of step 4: the spec requires anything gettable to also be
+	// listable, but not the converse, so a server can scope tasks/get and still
+	// leak the list. Enumeration is the stronger failure because it needs no
+	// prior knowledge of the task id at all.
+	if tasksSupportsList(sessA.RawInit) {
+		if ids, ok := e.listTasks(ctx, client, sessB, tokenB); ok && containsTaskID(ids, taskID) {
+			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), crossPrincipal))
 		}
 	}
 
@@ -154,9 +165,10 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			continue
 		}
 		session := mcpSession{
-			Endpoint:  ep,
-			SessionID: resp.Headers.Get("Mcp-Session-Id"),
-			RawInit:   resp.Body,
+			Endpoint:        ep,
+			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
+			ProtocolVersion: negotiatedVersion(resp.Body),
+			RawInit:         resp.Body,
 		}
 		_, _ = client.POST(ctx, ep, e.headers(session, token), map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -170,6 +182,9 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 // headers builds the per-request headers for a session and principal.
 func (e *TaskIDORExecutor) headers(s mcpSession, token string) map[string]string {
 	h := map[string]string{}
+	if s.ProtocolVersion != "" {
+		h["Mcp-Protocol-Version"] = s.ProtocolVersion
+	}
 	if s.SessionID != "" {
 		h["Mcp-Session-Id"] = s.SessionID
 	}
@@ -199,6 +214,70 @@ func tasksSupportsToolCall(rawInit []byte) bool {
 	}
 	_, ok := body.Result.Capabilities.Tasks.Requests.Tools["call"]
 	return ok
+}
+
+// tasksSupportsList reports whether the handshake declared capabilities.tasks.list,
+// which is what permits tasks/list at all. The spec tells receivers that cannot
+// identify requestors not to declare it, precisely because listing exposes task
+// metadata regardless of how much entropy the task ids carry.
+func tasksSupportsList(rawInit []byte) bool {
+	var body struct {
+		Result struct {
+			Capabilities struct {
+				Tasks map[string]json.RawMessage `json:"tasks"`
+			} `json:"capabilities"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rawInit, &body); err != nil {
+		return false
+	}
+	_, ok := body.Result.Capabilities.Tasks["list"]
+	return ok
+}
+
+// listTasks enumerates the tasks visible to the given principal, returning the
+// task ids from the first page. ok is false when the server refuses the call.
+func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, token string) ([]string, bool) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      6,
+		"method":  "tasks/list",
+		"params":  map[string]interface{}{},
+	})
+	if err != nil || !resp.IsSuccess() {
+		return nil, false
+	}
+	var body struct {
+		Result *struct {
+			Tasks []struct {
+				TaskID string `json:"taskId"`
+			} `json:"tasks"`
+		} `json:"result"`
+		Error map[string]interface{} `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		return nil, false
+	}
+	if body.Error != nil || body.Result == nil {
+		return nil, false
+	}
+	ids := make([]string, 0, len(body.Result.Tasks))
+	for _, t := range body.Result.Tasks {
+		if t.TaskID != "" {
+			ids = append(ids, t.TaskID)
+		}
+	}
+	return ids, true
+}
+
+// containsTaskID reports whether the enumerated list includes the target task.
+func containsTaskID(ids []string, taskID string) bool {
+	for _, id := range ids {
+		if id == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 // findSafeTaskTool picks a task-capable tool the rule is willing to invoke, and
@@ -410,6 +489,29 @@ func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState
 			"endpoint: %s\ntask: %s\nanonymous task creation: rejected (auth enforced)\n"+
 				"cross-context tasks/get: accepted\ndisclosed status: %s\nstatusMessage: %s\ncreatedAt: %s",
 			endpoint, taskID, st.Status, st.StatusMessage, st.CreatedAt),
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+	}
+}
+
+func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int, crossPrincipal bool) attack.Finding {
+	return attack.Finding{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "critical",
+		Confidence: attack.ConfirmedExploit,
+		Title:      "MCP tasks/list enumerates another authorization context's tasks",
+		Description: fmt.Sprintf(
+			"tasks/list at %s returned task %s to %s that did not create it, in a list of %d task(s). "+
+				"This is a stronger failure than reading a task by id: the caller needs no prior knowledge "+
+				"of any task id, so every task on the server can be enumerated and then read. The MCP spec "+
+				"requires receivers to return only tasks associated with the requestor's authorization "+
+				"context, and to not advertise the tasks.list capability at all when requestors cannot be "+
+				"identified.", endpoint, taskID, requestorLabel(crossPrincipal), total),
+		Evidence: fmt.Sprintf(
+			"endpoint: %s\nanonymous task creation: rejected (auth enforced)\n"+
+				"cross-context tasks/list: accepted\ntasks returned: %d\nincludes another context's task: %s",
+			endpoint, total, taskID),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}

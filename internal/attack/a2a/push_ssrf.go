@@ -68,8 +68,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	token := "batesian-" + vars.RandID
 
 	// Try multiple transport bindings and SDK versions.
-	// Note: A JSON-RPC error response also contains "id" - we must check !isJSONRPCError
-	// to avoid false positives from -32601 Method Not Found responses.
+	// Note: A JSON-RPC error response (e.g. -32601 Method Not Found) is not a
+	// task acceptance. IsAccepted requires a real result envelope, which excludes
+	// both error envelopes and non-JSON 2xx bodies (login pages, empty acks).
 	var taskAccepted bool
 	var acceptedBinding string
 
@@ -91,7 +92,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	if err == nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
-	if err == nil && sendResp.IsSuccess() && !isJSONRPCError(sendResp.Body) {
+	if err == nil && sendResp.IsAccepted() {
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
 		if taskID != "" {
@@ -105,7 +106,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 					"token":               token,
 				},
 			})
-			if pushErr == nil && pushResp.IsSuccess() && !isJSONRPCError(pushResp.Body) {
+			if pushErr == nil && pushResp.IsAccepted() {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
 			}
@@ -118,8 +119,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		if err2 == nil && jsonrpcResp.StatusCode != 404 {
 			reached = true
 		}
-		if err2 == nil && jsonrpcResp.IsSuccess() && !isJSONRPCError(jsonrpcResp.Body) &&
-			jsonrpcResp.ContainsAny(`"result"`) {
+		if err2 == nil && jsonrpcResp.IsAccepted() {
 			taskAccepted = true
 			acceptedBinding = "JSONRPC/v0.3-tasks-send"
 		}
@@ -131,7 +131,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		if err3 == nil && httpResp.StatusCode != 404 {
 			reached = true
 		}
-		if err3 == nil && httpResp.IsSuccess() {
+		if err3 == nil && httpResp.IsSuccess() && httpResp.IsJSON() {
 			taskAccepted = true
 			acceptedBinding = "HTTP+JSON"
 		}
