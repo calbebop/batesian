@@ -14,6 +14,7 @@ import (
 // toolsUnauthServer builds a mock MCP server. callBehavior controls how
 // tools/call answers an unknown tool name:
 //   - "unknown": JSON-RPC -32602 "Unknown tool" (dispatch reached, no auth)
+//   - "internal": JSON-RPC -32603 internal error (dispatch reached, no auth)
 //   - "authgate": JSON-RPC -32001 "Unauthorized" (call gated behind auth)
 //
 // When advertiseTools is false the server omits the tools capability. When
@@ -61,6 +62,12 @@ func toolsUnauthServer(advertiseTools, listAuth bool, callBehavior string) *http
 			if callBehavior == "authgate" {
 				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
 					"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"}})
+				return
+			}
+			if callBehavior == "internal" {
+				// A non-(-32602) validation path: still proves dispatch without auth.
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+					"error": map[string]interface{}{"code": -32603, "message": "internal error: unknown tool " + paramName(req)}})
 				return
 			}
 			// "unknown": the scanner only ever calls a non-existent tool name.
@@ -151,4 +158,36 @@ func TestToolsUnauth_NoToolsCapability(t *testing.T) {
 	if findings := runToolsUnauth(t, srv); len(findings) != 0 {
 		t.Errorf("expected 0 findings for a server without the tools capability, got %d", len(findings))
 	}
+}
+
+// TestToolsUnauth_CallReachableViaInternalError: tools/call surfacing a -32603
+// for the non-existent tool still proves the invocation path was reached without
+// auth. The old dispatch helper accepted only -32602 and reported just the list
+// finding here (false negative).
+func TestToolsUnauth_CallReachableViaInternalError(t *testing.T) {
+	srv := toolsUnauthServer(true, false, "internal")
+	defer srv.Close()
+
+	findings := runToolsUnauth(t, srv)
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (list + call via -32603), got %d: %+v", len(findings), findings)
+	}
+	hasHigh := false
+	for _, f := range findings {
+		if f.Severity == "high" {
+			hasHigh = true
+		}
+	}
+	if !hasHigh {
+		t.Error("expected a high tools/call reachability finding for the -32603 response")
+	}
+}
+
+// TestToolsUnauth_NotMCP: a non-MCP server (no reachable endpoint) must report
+// ErrInconclusive, not a clean pass.
+func TestToolsUnauth_NotMCP(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), ts.URL, testOpts())
 }

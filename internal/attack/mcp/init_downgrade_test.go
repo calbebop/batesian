@@ -15,7 +15,7 @@ import (
 
 const (
 	legacyVer = "2024-11-05"
-	modernVer = "2025-03-26"
+	modernVer = "2025-06-18"
 )
 
 // versionAwareServer models a server that tracks each session's negotiated
@@ -251,11 +251,5 @@ func TestInitDowngrade_NotMCPServer(t *testing.T) {
 	defer srv.Close()
 
 	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
-	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings on non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, exec, srv.URL, attack.Options{TimeoutSeconds: 5})
 }

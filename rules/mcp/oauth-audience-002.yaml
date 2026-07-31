@@ -22,8 +22,10 @@ info:
       (no signature/audience validation) and the rule reports that blanket
       acceptance rather than misattributing it to a specific matching bug. A
       trap acceptance is only reported as a specific, confirmed matching bug when
-      the control was REJECTED; if the control response is ambiguous, trap
-      acceptances are downgraded to an indicator.
+      the control was REJECTED; if the control response carried no JSON-RPC
+      result envelope (so it could not be clearly rejected), trap acceptances
+      are downgraded to an indicator. A 2xx body with no result envelope is
+      never itself treated as acceptance.
     - `aud-substring-trap`   - wraps the expected value in a clearly-different
       string (e.g., `<expected>.canary-batesian-mismatch.invalid`). Catches
       validators that use `strings.Contains` / `HasPrefix` / `HasSuffix`.

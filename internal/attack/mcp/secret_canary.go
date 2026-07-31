@@ -36,15 +36,23 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 	canaryOpts.Token = canary
 	client := attack.NewHTTPClient(canaryOpts, vars)
 
+	var reached bool
 	for _, ep := range endpointCandidates(vars.BaseURL) {
-		if f := e.probe(ctx, client, ep, canary); f != nil {
+		f, epReached := e.probe(ctx, client, ep, canary)
+		if epReached {
+			reached = true
+		}
+		if f != nil {
 			return f, nil
 		}
+	}
+	if !reached {
+		return nil, attack.ErrInconclusive
 	}
 	return nil, nil
 }
 
-func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) []attack.Finding {
+func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool) {
 	applicable := false
 	reflectedIn := ""
 
@@ -74,7 +82,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	var session mcpSession
 	if err == nil {
 		record(initResp.BodyString())
-		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id")}
+		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
 	}
 
 	// A handful of further calls, including a malformed one to elicit verbose
@@ -92,7 +100,9 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	}
 
 	if !applicable || reflectedIn == "" {
-		return nil
+		// applicable == false means no JSON-RPC/MCP-shaped response was seen
+		// (not an MCP endpoint); applicable == true with no reflection is secure.
+		return nil, applicable
 	}
 
 	return []attack.Finding{{
@@ -110,7 +120,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			ep, canary, snippetAround(reflectedIn, canary)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
-	}}
+	}}, true
 }
 
 // looksJSONRPC reports whether a response body resembles a JSON-RPC / MCP reply,

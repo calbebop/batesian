@@ -205,3 +205,12 @@ func TestPromptUnauth_NoPromptsCapability(t *testing.T) {
 		t.Errorf("expected 0 findings for server without prompts capability, got %d", len(findings))
 	}
 }
+
+// TestPromptUnauth_NotMCP: a non-MCP server (no reachable endpoint) must report
+// ErrInconclusive, not a clean pass.
+func TestPromptUnauth_NotMCP(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"}), ts.URL, testOpts())
+}

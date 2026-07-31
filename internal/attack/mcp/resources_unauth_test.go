@@ -216,11 +216,5 @@ func TestResourcesUnauth_NotMCPServer(t *testing.T) {
 	defer ts.Close()
 
 	exec := mcpattack.NewResourcesUnauthExecutor(resourcesRC())
-	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings on non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, exec, ts.URL, testOpts())
 }

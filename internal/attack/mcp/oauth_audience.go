@@ -62,7 +62,6 @@ type audVerdict int
 const (
 	verdictRejected audVerdict = iota
 	verdictAcceptedVulnerable
-	verdictAcceptedAmbiguous
 	verdictInconclusive
 )
 
@@ -101,7 +100,7 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	}
 	if endpoint == "" {
 		// No candidate endpoint produced a usable response for any probe.
-		return nil, nil
+		return nil, attack.ErrInconclusive
 	}
 
 	finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes)
@@ -351,7 +350,10 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, ba
 // HTTP 200 + a JSON-RPC `result` envelope is the cleanest acceptance signal.
 // HTTP 200 + a JSON-RPC `error` envelope is treated as rejection because the
 // server is explicitly refusing the call. HTTP 200 with neither shape (empty
-// body, raw HTML, etc.) is ambiguous and downgrades the rule-level verdict.
+// body, raw HTML, "{}", etc.) is inconclusive: it is not evidence that the call
+// was accepted, so it produces no finding. (Previously this was treated as a
+// downgraded "ambiguous" acceptance, which false-positived non-MCP targets whose
+// /mcp request fell through to a 200 HTML page.)
 func classifyResponse(resp *attack.Response) audVerdict {
 	switch {
 	case resp.StatusCode == 200:
@@ -364,7 +366,7 @@ func classifyResponse(resp *attack.Response) audVerdict {
 		if isJSONRPCResult(body) {
 			return verdictAcceptedVulnerable
 		}
-		return verdictAcceptedAmbiguous
+		return verdictInconclusive
 	case resp.StatusCode == 401, resp.StatusCode == 403:
 		return verdictRejected
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
@@ -415,13 +417,12 @@ func isJSONRPCError(body string) bool {
 // fact instead of a misattributed matching bug. A specific matching-bug finding
 // is reported as ConfirmedExploit only when the control was clearly REJECTED
 // (so the audience value is the decisive factor); if the control response was
-// ambiguous, accepted traps are downgraded to RiskIndicator because the bug
-// cannot be cleanly isolated.
+// inconclusive (not clearly rejected), accepted traps are downgraded to
+// RiskIndicator because the bug cannot be cleanly isolated.
 func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes []probeOutcome) *attack.Finding {
 	var (
 		control    *probeOutcome
 		vulnerable []probeOutcome
-		ambiguous  []probeOutcome
 	)
 	for i := range outcomes {
 		o := outcomes[i]
@@ -429,11 +430,8 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 			control = &outcomes[i]
 			continue
 		}
-		switch o.verdict {
-		case verdictAcceptedVulnerable:
+		if o.verdict == verdictAcceptedVulnerable {
 			vulnerable = append(vulnerable, o)
-		case verdictAcceptedAmbiguous:
-			ambiguous = append(ambiguous, o)
 		}
 	}
 
@@ -447,36 +445,26 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 			Confidence:  attack.ConfirmedExploit,
 			Title:       fmt.Sprintf("MCP server %s", control.probe.titleSuffix),
 			Description: control.probe.descSuffix,
-			Evidence:    formatEvidence(endpoint, expected, []probeOutcome{*control}, nil),
+			Evidence:    formatEvidence(endpoint, expected, []probeOutcome{*control}),
 			Remediation: rc.Remediation,
 			TargetURL:   endpoint,
 		}
 	}
 
-	if len(vulnerable) == 0 && len(ambiguous) == 0 {
+	if len(vulnerable) == 0 {
 		return nil
 	}
 
 	controlRejected := control != nil && control.verdict == verdictRejected
 
-	var (
-		confidence attack.Confidence
-		primary    probeOutcome
-	)
-	switch {
-	case len(vulnerable) > 0 && controlRejected:
-		// Control rejected but a trap accepted: the audience value is decisive,
-		// so the matching bug is cleanly isolated.
+	// A trap that returned a clear result envelope is a real acceptance. If the
+	// negative control was clearly rejected, the audience value is the decisive
+	// factor and the matching bug is cleanly isolated (confirmed). Otherwise the
+	// control was inconclusive and the bug cannot be fully isolated (indicator).
+	primary := vulnerable[0]
+	confidence := attack.RiskIndicator
+	if controlRejected {
 		confidence = attack.ConfirmedExploit
-		primary = vulnerable[0]
-	case len(vulnerable) > 0:
-		// Trap accepted but the control response was ambiguous/inconclusive:
-		// cannot fully isolate the matching logic. Report as an indicator.
-		confidence = attack.RiskIndicator
-		primary = vulnerable[0]
-	default:
-		confidence = attack.RiskIndicator
-		primary = ambiguous[0]
 	}
 
 	return &attack.Finding{
@@ -486,7 +474,7 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 		Confidence:  confidence,
 		Title:       fmt.Sprintf("MCP server %s", primary.probe.titleSuffix),
 		Description: primary.probe.descSuffix,
-		Evidence:    formatEvidence(endpoint, expected, vulnerable, ambiguous),
+		Evidence:    formatEvidence(endpoint, expected, vulnerable),
 		Remediation: rc.Remediation,
 		TargetURL:   endpoint,
 	}
@@ -495,7 +483,7 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 // formatEvidence renders the per-probe evidence block. The operator-supplied
 // audience is summarized rather than echoed verbatim to avoid leaking
 // production identifiers into shared scan reports.
-func formatEvidence(endpoint, expected string, vulnerable, ambiguous []probeOutcome) string {
+func formatEvidence(endpoint, expected string, vulnerable []probeOutcome) string {
 	var sb strings.Builder
 	sb.WriteString("endpoint: ")
 	sb.WriteString(endpoint)
@@ -506,12 +494,6 @@ func formatEvidence(endpoint, expected string, vulnerable, ambiguous []probeOutc
 	if len(vulnerable) > 0 {
 		sb.WriteString("\nAccepted probes (clear vulnerability signal):\n")
 		for _, o := range vulnerable {
-			writeOutcomeLine(&sb, o)
-		}
-	}
-	if len(ambiguous) > 0 {
-		sb.WriteString("\nAccepted probes (ambiguous response shape):\n")
-		for _, o := range ambiguous {
 			writeOutcomeLine(&sb, o)
 		}
 	}

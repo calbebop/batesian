@@ -82,6 +82,55 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 	}
 }
 
+// TestSessionSmuggle_V03OnlyFallback: a server that implements only the legacy
+// v0.3 message/send method, answering the v1.0 SendMessage with -32601. Before
+// the fallback-trigger fix the rule never tried message/send here (the v1.0
+// -32601 response did not trigger the fallback) and silently reported clean;
+// after the fix the rule falls back to message/send, the agent-role message is
+// honored, and the confirmed finding fires.
+func TestSessionSmuggle_V03OnlyFallback(t *testing.T) {
+	var stored map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		body := readBody(r)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		switch method {
+		case "SendMessage":
+			rpcErr(w, id, -32601, "Method not found") // v1.0 method not implemented
+		case "message/send":
+			params, _ := body["params"].(map[string]interface{})
+			stored, _ = params["message"].(map[string]interface{})
+			taskResult(w, id, "task-smuggle-v03", "ctx-smuggle-v03")
+		case "GetTask", "tasks/get":
+			writeJSON(w, map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"id": "task-smuggle-v03", "contextId": "ctx-smuggle-v03",
+					"history": []interface{}{stored},
+				},
+			})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding via the v0.3 fallback, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
+	}
+}
+
 // TestSessionSmuggle_PatchedRejects: the server rejects any non-user role with
 // JSON-RPC -32602. The rule MUST stay silent.
 func TestSessionSmuggle_PatchedRejects(t *testing.T) {

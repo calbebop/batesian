@@ -148,7 +148,7 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 				},
 			},
 		})
-		if err == nil && resp.IsSuccess() && !isJSONRPCError(resp.Body) {
+		if err == nil && resp.IsAccepted() {
 			return true, v.name
 		}
 	}

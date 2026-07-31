@@ -161,14 +161,7 @@ func TestSessionFixation_NotMCPServer(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
-	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
-		Execute(context.Background(), srv.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-MCP server, got %d", len(findings))
-	}
+	assertInconclusive(t, mcpattack.NewSessionFixationExecutor(sfRuleCtx()), srv.URL, testOpts())
 }
 
 // TestSessionFixation_CrossPrincipal: with a second principal configured the

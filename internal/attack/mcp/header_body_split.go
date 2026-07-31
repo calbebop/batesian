@@ -30,31 +30,39 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
+	var reached bool
 	for _, ep := range endpointCandidates(vars.BaseURL) {
-		if f := e.probe(ctx, client, ep); f != nil {
+		f, epReached := e.probe(ctx, client, ep)
+		if epReached {
+			reached = true
+		}
+		if f != nil {
 			return f, nil
 		}
+	}
+	if !reached {
+		return nil, attack.ErrInconclusive
 	}
 	return nil, nil
 }
 
-func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep string) []attack.Finding {
+func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {
 	session, ok := e.initialize(ctx, client, ep)
 	if !ok {
-		return nil // not an MCP endpoint here
+		return nil, false // not an MCP endpoint here
 	}
 
 	// Probe 1: omit Mcp-Method. If the server still executes tools/list, it does
 	// not enforce header presence (not SEP-2243-aware) - nothing to confirm.
 	if e.toolsList(ctx, client, ep, session, nil) {
-		return nil
+		return nil, true
 	}
 
 	// Probe 2: matching Mcp-Method. Must be accepted, otherwise we cannot drive
 	// the mismatch test (the endpoint may require headers we are not sending).
 	matched := "tools/list"
 	if !e.toolsList(ctx, client, ep, session, &matched) {
-		return nil
+		return nil, true
 	}
 
 	// Probe 3: mismatched Mcp-Method. A compliant server MUST reject; if it
@@ -82,9 +90,9 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 				ep),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
-		}}
+		}}, true
 	}
-	return nil
+	return nil, true
 }
 
 // initialize performs an MCP initialize (sending a matching Mcp-Method so a
@@ -106,7 +114,7 @@ func (e *HeaderBodySplitExecutor) initialize(ctx context.Context, client *attack
 	if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
 		return mcpSession{}, false
 	}
-	session := mcpSession{Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"), RawInit: resp.Body}
+	session := mcpSession{Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body), RawInit: resp.Body}
 	initedHeaders := session.header()
 	if initedHeaders == nil {
 		initedHeaders = map[string]string{}

@@ -1,7 +1,6 @@
 package attack
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/calbebop/batesian/internal/sse"
 )
 
 const maxBody = 1 << 20 // 1 MB
@@ -47,6 +48,16 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		inner: &http.Client{
 			Timeout:   timeout,
 			Transport: Transport(opts),
+			// Do not follow redirects. A scanner must see exactly what the
+			// probed endpoint returns: following a 3xx to a login page masks an
+			// auth rejection (and would then be misjudged as a 2xx success), and
+			// silently bouncing a request that may carry the operator's bearer
+			// token to a third-party host is a redirect-leak risk. Rules that
+			// need the raw redirect response (e.g. confused-deputy) keep their
+			// own client. OAuth token acquisition is unaffected: it uses the
+			// separate client in internal/auth, which legitimately follows
+			// redirects during the authorization-code flow.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		vars:  vars,
 		token: opts.Token,
@@ -70,6 +81,50 @@ func (r *Response) BodyString() string {
 // IsSuccess returns true for 2xx status codes.
 func (r *Response) IsSuccess() bool {
 	return r.StatusCode >= 200 && r.StatusCode < 300
+}
+
+// IsAccepted reports whether the response represents a successful JSON-RPC
+// result: an HTTP 2xx whose body is valid JSON carrying a "result" envelope and
+// no "error" envelope. This is the canonical "the JSON-RPC call succeeded"
+// oracle.
+//
+// It exists because the older idiom IsSuccess() && !isJSONRPCError(body) treats
+// any 2xx that is not a JSON-RPC error envelope as success - including an HTML
+// login page, an empty body, "{}", or a bare object. Those are not results, and
+// judging them as "accepted" produces false positives whenever a target answers
+// an unauthenticated probe with a 2xx non-JSON body (common: redirects to a
+// login page, generic 200 acks, HTML error interstitials).
+//
+// A JSON-null or empty-object result ({"result":null}, {"result":{}}) still
+// counts as accepted: both are valid JSON-RPC success shapes, and rejecting
+// them would risk false negatives on methods that legitimately return an empty
+// result (e.g. logging/setLevel).
+func (r *Response) IsAccepted() bool {
+	if !r.IsSuccess() {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(r.Body, &m); err != nil {
+		return false
+	}
+	_, hasResult := m["result"]
+	_, hasError := m["error"]
+	return hasResult && !hasError
+}
+
+// IsJSON reports whether the response body is a JSON object. Use it for raw HTTP
+// responses that are not JSON-RPC result envelopes (for example an A2A extended
+// agent card fetched over HTTP GET) to reject HTML, empty, or non-JSON bodies
+// before applying a structural shape check. Prefer IsAccepted for JSON-RPC
+// method calls, which additionally requires a result envelope.
+func (r *Response) IsJSON() bool {
+	var m map[string]interface{}
+	if err := json.Unmarshal(r.Body, &m); err != nil {
+		return false
+	}
+	// A JSON "null" unmarshals to a nil map without error, but it is not a JSON
+	// object, so it must not qualify as one.
+	return m != nil
 }
 
 // NormalizeHeaders returns a lowercase-keyed map of the response headers.
@@ -200,27 +255,15 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 	}, nil
 }
 
-// readFirstSSEEvent reads a Server-Sent Events stream and returns the JSON payload
-// from the first "data:" line. The connection is not drained; the caller's defer
-// closes the body once we return. This avoids hanging indefinitely on a stream
-// that the server never closes (standard for MCP streamable HTTP transport).
-//
-// The scanner buffer is set to maxBody (1 MB) because MCP servers can emit
-// data lines with large embedded payloads (e.g., server instructions).
+// readFirstSSEEvent returns the joined payload of the first SSE event. The
+// stream is not drained: the parser stops after the first event so a stream the
+// server never closes (standard for MCP streamable HTTP) cannot block the scan.
+// A payload split across several "data:" lines is rejoined per spec. Errors
+// (an over-long line, a read failure) map to a nil body, which callers treat as
+// "no result".
 func readFirstSSEEvent(r io.Reader) []byte {
-	scanner := bufio.NewScanner(io.LimitReader(r, maxBody))
-	scanner.Buffer(make([]byte, maxBody), maxBody)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			return []byte(payload)
-		}
-	}
-	// scanner.Err() is nil on clean EOF; non-nil means a read or buffer error.
-	// Returning nil here is safe: callers treat empty body as "no result".
-	_ = scanner.Err()
-	return nil
+	payload, _ := sse.FirstData(r, maxBody)
+	return payload
 }
 
 // marshalBody encodes body as JSON with template variable expansion applied to string values.
