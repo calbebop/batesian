@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // A2A agent cards declare where the JSON-RPC transport actually lives; it is not
@@ -120,15 +121,15 @@ func pinToTargetHost(cardURL, baseURL string) string {
 	return pinned.String()
 }
 
-// candidateEndpoints lists JSON-RPC paths to probe when the card does not declare
+// candidatePaths lists JSON-RPC paths to probe when the card does not declare
 // one. Root is first so servers that mount JSON-RPC at the root keep working.
+var candidatePaths = []string{"/", "/a2a/jsonrpc", "/a2a", "/rpc"}
+
+// candidateEndpoints returns the URLs to probe under baseURL. A target that
+// already names a path is probed as given before these paths are appended to
+// it; see endpoint.Candidates.
 func candidateEndpoints(baseURL string) []string {
-	return []string{
-		baseURL + "/",
-		baseURL + "/a2a/jsonrpc",
-		baseURL + "/a2a",
-		baseURL + "/rpc",
-	}
+	return endpoint.Candidates(baseURL, candidatePaths)
 }
 
 // probeJSONRPCEndpoint reports whether a path answers JSON-RPC. It sends a
