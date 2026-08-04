@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
 	// Blank imports run each executor package's init(), which registers its
@@ -120,10 +121,20 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	// A rule that could not reach a testable endpoint is recorded as skipped, not
 	// as a (misleading) clean result and not as an error.
 	if errors.Is(err, attackpkg.ErrInconclusive) {
+		// Executors may wrap ErrInconclusive with the reason the rule could not
+		// run (for example, the target speaks a protocol era these rules do not
+		// support). Surface that detail rather than discarding it: "not tested
+		// because your server speaks MCP 2026-07-28" is actionable, while a bare
+		// "could not reach a testable endpoint" invites the operator to assume a
+		// network problem. The generic prefix is preserved either way.
+		msg := "could not reach a testable endpoint"
+		if detail := inconclusiveDetail(err); detail != "" {
+			msg += ": " + detail
+		}
 		return RunResult{
 			Rule:    r,
 			Skipped: true,
-			SkipMsg: "could not reach a testable endpoint",
+			SkipMsg: msg,
 		}
 	}
 	return RunResult{
@@ -251,4 +262,17 @@ func FindingsBySeverity(results []RunResult) map[string][]attackpkg.Finding {
 		}
 	}
 	return out
+}
+
+// inconclusiveDetail returns the reason an executor attached when wrapping
+// ErrInconclusive, or "" when it wrapped nothing. Executors wrap with
+// fmt.Errorf("%w: <reason>", attack.ErrInconclusive), so the reason is whatever
+// follows the sentinel's own message.
+func inconclusiveDetail(err error) string {
+	full := err.Error()
+	base := attackpkg.ErrInconclusive.Error()
+	if !strings.HasPrefix(full, base) {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(full, base), ": ")
 }

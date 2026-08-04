@@ -50,7 +50,9 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 	// MCP requires an initialize handshake before any method calls.
 	session, err := initializeMCP(ctx, client, vars.BaseURL)
 	if err != nil {
-		return nil, attack.ErrInconclusive // not an MCP server
+		// Not reachable as a legacy MCP server; inconclusive carries the reason
+		// when the target turned out to be a modern-era server.
+		return nil, inconclusive(err)
 	}
 
 	var findings []attack.Finding
@@ -210,6 +212,21 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		})
 
 		return session, nil
+	}
+
+	// No candidate path completed a legacy handshake. Before reporting the target
+	// as unreachable, check whether it is actually a modern (2026-07-28) server,
+	// which has no initialize method at all. Distinguishing the two is the
+	// difference between "this scanner does not speak your protocol version" and
+	// a bare "could not connect".
+	//
+	// This runs only on the failure path, so a legacy server, still the norm,
+	// pays no extra request.
+	for _, ep := range endpoints {
+		if detectEra(ctx, client, ep) == EraModern {
+			return mcpSession{}, fmt.Errorf("%w: %s speaks MCP %s (stateless era), which these rules do not yet support",
+				errModernEra, ep, modernEraVersion)
+		}
 	}
 
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)

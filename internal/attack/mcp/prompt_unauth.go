@@ -31,7 +31,9 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 
 	session, err := initializeMCP(ctx, client, vars.BaseURL)
 	if err != nil {
-		return nil, attack.ErrInconclusive // not an MCP server
+		// Not reachable as a legacy MCP server; inconclusive carries the reason
+		// when the target turned out to be a modern-era server.
+		return nil, inconclusive(err)
 	}
 
 	// Skip servers that do not advertise the prompts capability - probing them
