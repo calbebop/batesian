@@ -63,25 +63,23 @@ sboms:
 # GitHub Actions OIDC token. Verifiers can confirm the binary came from this
 # repo's release pipeline. Requires cosign on the runner and id-token: write
 # permission on the release job.
+#
+# cosign v3 removed --output-signature and --output-certificate from sign-blob
+# and made --bundle required: the Sigstore bundle now carries the signature,
+# the certificate and the transparency-log entry in one file, and replaces the
+# separate .sig and .pem rather than accompanying them. GoReleaser publishes
+# whatever `signature` names, so the bundle is named there.
+#
+# Releases up to v1.5.0 published checksums.txt.sig and checksums.txt.pem and
+# remain verifiable exactly as before; from v1.6.0 the artifact is
+# checksums.txt.sigstore.json instead.
 signs:
   - cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
       - "--yes"
-      # cosign v3 made --bundle required. Omitting it fails the release with
-      # "create bundle file: open : no such file or directory", because cosign
-      # is handed an empty path.
-      #
-      # GoReleaser only uploads the files named by `signature` and
-      # `certificate`, so a bundle written next to the artifact would be
-      # generated and then silently dropped. It goes to a scratch path instead:
-      # the flag is satisfied, and the release keeps publishing exactly the
-      # checksums.txt.sig and checksums.txt.pem that existing verifiers fetch.
-      - "--bundle=${artifact}.cosign-bundle.tmp"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
     output: true
@@ -152,10 +150,17 @@ release:
     35 bundled attack rules (17 A2A + 18 MCP). Single binary. No runtime dependencies.
 
     Every release is published with a cosign signature over `checksums.txt`, a
-    CycloneDX SBOM per archive, and SLSA build provenance. Verify provenance with:
+    CycloneDX SBOM per archive, and SLSA build provenance.
 
     ```bash
+    # Build provenance
     gh attestation verify batesian_<version>_<platform>.tar.gz --repo calbebop/batesian
+
+    # Checksums signature (Sigstore bundle)
+    cosign verify-blob checksums.txt \
+      --bundle checksums.txt.sigstore.json \
+      --certificate-identity-regexp 'https://github.com/calbebop/batesian/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
     ```
 
     ### Install
