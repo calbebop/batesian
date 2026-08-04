@@ -19,7 +19,20 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)ghp_[a-zA-Z0-9]{36}`),                           // GitHub token
 	regexp.MustCompile(`(?i)(bearer|authorization)\s*[=:]\s*\S{10,}`),       // Bearer/auth token
 	regexp.MustCompile(`(?i)eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}`),     // JWT
+	// Credentials in a URI userinfo section, as in
+	// postgresql://admin:hunter2@db.internal:5432/prod. Connection strings are
+	// a routine thing to expose through a resource and the password pattern
+	// above cannot see one, because it looks for password=value rather than a
+	// positional secret. Requiring the @ is what keeps an ordinary
+	// http://host:8080/path from matching on its port.
+	regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s:@]+@[^/\s]+`), // URI userinfo credentials
 }
+
+// maxResourceReads bounds how many resources one run will read. A server may
+// list hundreds, and reading all of them makes a scan's cost a function of the
+// target rather than of the rule. The count actually read is reported in the
+// evidence, so a bounded run never reads as an exhaustive one.
+const maxResourceReads = 5
 
 // ResourcesUnauthExecutor probes MCP resources/list and resources/read without
 // authentication (rule mcp-resources-unauth-001).
@@ -109,54 +122,36 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 		TargetURL:   session.Endpoint,
 	})
 
-	// Step 2: read the first resource
-	if len(uris) == 0 {
+	// Step 2: read resources, preferring one that demonstrates a credential leak.
+	//
+	// Reading only the first resource made the escalation to critical an accident
+	// of list order: a server that lists a public README ahead of its database
+	// credentials was reported as merely readable. The listing order is the
+	// server's choice, so the rule cannot let it decide the severity.
+	read, examined := e.readResources(ctx, client, session, uris)
+	if read == nil {
 		return findings, nil
 	}
 
-	readResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      4,
-		"method":  "resources/read",
-		"params":  map[string]interface{}{"uri": uris[0]},
-	})
-	if err != nil || !readResp.IsSuccess() {
-		return findings, nil
-	}
-
-	var readBody map[string]interface{}
-	if err := json.Unmarshal(readResp.Body, &readBody); err != nil {
-		return findings, nil
-	}
-	if _, hasErr := readBody["error"]; hasErr {
-		return findings, nil
-	}
-
-	content := string(readResp.Body)
 	// Baseline: unauthenticated read of resource content is high. Escalate to
 	// critical only when the content actually contains a detected secret -
 	// severity should track demonstrated impact, not be flat-critical for every
 	// readable resource (which may be benign, e.g. a public README).
 	sev := "high"
-
-	var credEvidence string
-	for _, re := range credentialPatterns {
-		if loc := re.FindStringIndex(content); loc != nil {
-			credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
-			sev = "critical"
-			break
-		}
+	if read.credEvidence != "" {
+		sev = "critical"
 	}
 
-	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\ncontent snippet: %.400s", readResp.StatusCode, session.Endpoint, uris[0], content)
-	title := fmt.Sprintf("MCP resource %q content readable without authentication", uris[0])
+	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\nresources examined: %d of %d listed\ncontent snippet: %.400s",
+		read.statusCode, session.Endpoint, read.uri, examined, len(uris), read.content)
+	title := fmt.Sprintf("MCP resource %q content readable without authentication", read.uri)
 	description := fmt.Sprintf("resources/read for %s returned content without authentication. "+
-		"Resource data is directly accessible to any unauthenticated caller.", uris[0])
+		"Resource data is directly accessible to any unauthenticated caller.", read.uri)
 
-	if credEvidence != "" {
-		title = fmt.Sprintf("MCP resource %q contains potential credentials and is readable without authentication", uris[0])
-		description += "\n\nCredential pattern detected in content: " + credEvidence
-		evidenceLines += "\n" + credEvidence
+	if read.credEvidence != "" {
+		title = fmt.Sprintf("MCP resource %q contains potential credentials and is readable without authentication", read.uri)
+		description += "\n\nCredential pattern detected in content: " + read.credEvidence
+		evidenceLines += "\n" + read.credEvidence
 	}
 
 	findings = append(findings, attack.Finding{
@@ -172,6 +167,82 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 	})
 
 	return findings, nil
+}
+
+// resourceRead is one successfully read resource.
+type resourceRead struct {
+	uri          string
+	statusCode   int
+	content      string
+	credEvidence string
+}
+
+// readResources reads resources until one yields a credential, up to
+// maxResourceReads. It returns that resource if any content matched, otherwise
+// the first resource that could be read at all, along with the number of
+// resources it attempted. A nil result means nothing could be read.
+//
+// examined is reported in the finding's evidence, because a run that stopped at
+// the cap has not looked at everything and must not read as though it had.
+func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *attack.HTTPClient, session mcpSession, uris []string) (result *resourceRead, examined int) {
+	var first *resourceRead
+
+	for i, uri := range uris {
+		if examined >= maxResourceReads {
+			break
+		}
+		examined++
+
+		read := e.readResource(ctx, client, session, uri, i)
+		if read == nil {
+			continue
+		}
+		// A credential is the strongest evidence available, so stop as soon as
+		// one turns up rather than spending the remaining budget.
+		if read.credEvidence != "" {
+			return read, examined
+		}
+		if first == nil {
+			first = read
+		}
+	}
+
+	return first, examined
+}
+
+// readResource performs one resources/read and classifies its content. It
+// returns nil when the read did not produce content, which covers a transport
+// failure, a non-2xx reply, an unparseable body and a JSON-RPC error.
+func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, i int) *resourceRead {
+	resp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
+		"jsonrpc": "2.0",
+		// Distinct ids per read: reusing one id across requests makes a
+		// server's replies ambiguous to correlate.
+		"id":     4 + i,
+		"method": "resources/read",
+		"params": map[string]interface{}{"uri": uri},
+	})
+	if err != nil || !resp.IsSuccess() {
+		return nil
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		return nil
+	}
+	if _, hasErr := body["error"]; hasErr {
+		return nil
+	}
+
+	content := string(resp.Body)
+	read := &resourceRead{uri: uri, statusCode: resp.StatusCode, content: content}
+	for _, re := range credentialPatterns {
+		if loc := re.FindStringIndex(content); loc != nil {
+			read.credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
+			break
+		}
+	}
+	return read
 }
 
 // initializeMCP performs the MCP initialize handshake and returns a session

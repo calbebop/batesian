@@ -141,8 +141,16 @@ retrieves data directly. All findings are **confirmed** (the data was actually
 returned without a token). Severity is **impact-graded**: an unauthenticated list
 and a readable resource are **high**; the read is escalated to **critical** only
 when the returned content matches a credential pattern (AWS/OpenAI/GitHub keys,
-private keys, JWTs, password/bearer assignments), and the matched pattern is cited
-in the evidence.
+private keys, JWTs, password/bearer assignments, credentials in a URI userinfo
+section such as `postgresql://user:pass@host/db`), and the matched pattern is
+cited in the evidence.
+
+Up to five resources are read, stopping at the first one that matches, and the
+finding reports that resource. Reading only the first would leave the severity to
+the server's list order, so a deployment that lists a public README ahead of its
+database credentials would be graded high. The evidence states how many resources
+were examined against how many were listed, so a run that stopped at the bound is
+distinguishable from one that saw everything.
 
 ---
 
