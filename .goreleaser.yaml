@@ -70,6 +70,16 @@ signs:
     args:
       - sign-blob
       - "--yes"
+      # cosign v3 made --bundle required. Omitting it fails the release with
+      # "create bundle file: open : no such file or directory", because cosign
+      # is handed an empty path.
+      #
+      # GoReleaser only uploads the files named by `signature` and
+      # `certificate`, so a bundle written next to the artifact would be
+      # generated and then silently dropped. It goes to a scratch path instead:
+      # the flag is satisfied, and the release keeps publishing exactly the
+      # checksums.txt.sig and checksums.txt.pem that existing verifiers fetch.
+      - "--bundle=${artifact}.cosign-bundle.tmp"
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
       - "${artifact}"
