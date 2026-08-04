@@ -39,8 +39,13 @@ info:
     blocks until a task is terminal, the rule polls tasks/get within a bounded
     budget and only requests the result once the task has finished.
 
-    Currency: tasks are marked experimental in the 2025-11-25 specification and
-    their design may evolve, so this rule is version-scoped.
+    Currency: tasks were introduced as experimental in 2025-11-25, and the
+    2026-07-28 revision moved them out of the core protocol into the
+    io.modelcontextprotocol/tasks extension. The redesign replaces the blocking
+    tasks/result method with polling via tasks/get, adds tasks/update, and removes
+    tasks/list. This rule targets the 2025-11-25 core shape: it gates on the core
+    tasks capability, so a 2026-07-28 server that advertises the extension instead
+    is skipped rather than mis-tested. Covering the extension is separate work.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks

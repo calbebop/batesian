@@ -20,6 +20,27 @@ Acceptance is judged at the **protocol layer** throughout: a probe counts as
 accepted only on HTTP 200 carrying a JSON-RPC `result` envelope. A 200 with a
 JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 
+## Protocol currency
+
+These rules target the **handshake-based** MCP revisions (`2024-11-05` through
+`2025-11-25`), which establish a session with `initialize` and carry
+`Mcp-Session-Id`. That is what the reference implementations still speak: as of
+this writing `@modelcontextprotocol/server-everything` negotiates `2025-11-25`
+and does not implement `server/discover`.
+
+The **`2026-07-28`** revision makes MCP stateless. It removes the
+`initialize`/`notifications/initialized` handshake in favour of per-request
+`_meta`, removes protocol-level sessions and the `Mcp-Session-Id` header,
+removes the HTTP GET stream and `Last-Event-ID` resumability, removes
+`logging/setLevel`, and moves tasks into an extension. Support for it is
+tracked separately; individual rules whose surface changed carry a **Currency**
+note below.
+
+Rules gate on advertised capabilities and on reaching a live endpoint, so
+against a server this rule set cannot handshake with they report **inconclusive
+or skip**, never a clean pass. A target that could not be exercised is reported
+as not tested rather than as secure.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | indicator | CWE-284 |
@@ -199,6 +220,13 @@ is never changed. A server that rejects with HTTP 401/403 or an auth error, or
 does not advertise the logging capability, produces no finding. Reported
 **confirmed** at medium severity.
 
+**Currency.** `logging/setLevel` is normative in revisions 2024-11-05 through
+2025-11-25. The **2026-07-28** revision **removes the method outright** (log
+level is now set per-request via `io.modelcontextprotocol/logLevel` in `_meta`)
+and deprecates the Logging feature as a whole. This rule therefore applies to
+servers on the earlier revisions. Because it gates on the advertised `logging`
+capability, a 2026-07-28 server is skipped rather than producing a false result.
+
 ---
 
 ### mcp-task-idor-001
@@ -244,8 +272,13 @@ tool as potentially destructive by default. Because `tasks/result` blocks until 
 task is terminal, the rule polls `tasks/get` within a bounded budget and requests
 the result only once the task has finished.
 
-**Currency.** Tasks are marked experimental in 2025-11-25 and their design may
-evolve, so this rule is version-scoped.
+**Currency.** Tasks were introduced as experimental in 2025-11-25, and the
+**2026-07-28** revision moved them out of the core protocol into the
+`io.modelcontextprotocol/tasks` extension: the blocking `tasks/result` is
+replaced by polling `tasks/get`, `tasks/update` is added, and **`tasks/list` is
+removed**. This rule targets the 2025-11-25 core shape and gates on the core
+`tasks` capability, so a 2026-07-28 server advertising the extension instead is
+skipped rather than mis-tested. Covering the extension is separate work.
 
 ---
 
