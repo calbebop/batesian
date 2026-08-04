@@ -1,0 +1,99 @@
+name: MCP era watch
+
+# Batesian's MCP rules target the handshake-based protocol revisions. The
+# 2026-07-28 revision is stateless and is the current specification, but as of
+# writing no reference implementation speaks it: the reference server still
+# negotiates 2025-11-25 and does not implement the mandatory server/discover.
+#
+# Adding modern-era rules before a real server exists would mean writing
+# detection nobody can validate, which is how false negatives have reached this
+# repository before. So that work is deliberately gated on the ecosystem moving.
+#
+# This job watches for that. It boots the reference server each week and asks it
+# server/discover. When the answer stops looking legacy, it opens an issue. It
+# does nothing at all while the answer stays the same, so a quiet repo means the
+# gate is still closed rather than that someone forgot to look.
+
+on:
+  schedule:
+    # Weekly, Tuesday 07:23 UTC. An odd minute keeps this off the top-of-hour
+    # spike that every scheduled workflow lands on.
+    - cron: '23 7 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe the reference server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Probe for modern-era support
+        id: probe
+        run: python3 .github/scripts/mcp_era_probe.py
+        env:
+          PROBE_PORT: '3180'
+
+      - name: Open an issue when the ecosystem has moved
+        if: steps.probe.outputs.era == 'modern'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const marker = '<!-- mcp-era-watch -->';
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'mcp-era',
+            });
+            if (existing.data.some(i => i.body && i.body.includes(marker))) {
+              core.info('An open era-watch issue already exists; not filing another.');
+              return;
+            }
+            const detail = process.env.PROBE_DETAIL || '(no detail captured)';
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'MCP reference server now speaks the 2026-07-28 era',
+              labels: ['mcp-era'],
+              body: [
+                marker,
+                '',
+                'The weekly era probe found that the reference MCP server now answers',
+                '`server/discover` as a modern-era server. The gate on Phase 2 and Phase 3',
+                'of the 2026-07-28 work is therefore lifted: there is now a real server to',
+                'validate modern-era rules against.',
+                '',
+                '## What the probe saw',
+                '',
+                '```',
+                detail,
+                '```',
+                '',
+                '## What this unblocks',
+                '',
+                '- **Phase 2**: modern transport support (`server/discover`, per-request `_meta`,',
+                '  the required `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers).',
+                '- **Phase 3**: per-rule triage. Most unauth rules port (the methods survive,',
+                '  only the transport changed). `mcp-logging-unauth-001` targets a method the',
+                '  revision removes. `mcp-sse-resume-replay-001` loses its surface entirely.',
+                '  `mcp-task-idor-001` needs rewriting for the tasks extension shape.',
+                '- New surface the revision introduces: `x-mcp-header` injection, MRTR state',
+                '  handling, and `cacheScope: public` on sensitive results.',
+                '',
+                'Era detection itself already ships, so until this work lands a modern server',
+                'is reported as unsupported rather than as unreachable.',
+              ].join('\n'),
+            });
+        env:
+          PROBE_DETAIL: ${{ steps.probe.outputs.detail }}

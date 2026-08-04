@@ -125,35 +125,28 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  # The rule count and any per-release sections in the header below are reviewed
-  # before each tag. Keep them current; the auto-generated changelog lists the
-  # commits.
+  # The header is intentionally evergreen: it describes what Batesian is, not
+  # what changed in a particular release. Per-release narrative used to live here
+  # and went stale every time, because it had to be rewritten by hand before each
+  # tag and nothing failed when it was not. The generated changelog below already
+  # lists every change, grouped by Security, New attack rules, Features and Bug
+  # fixes, with a link to each PR.
+  #
+  # The one value here that still needs a human is the rule count, since
+  # goreleaser has no variable for it. Verify it against `ls rules/*/*.yaml | wc -l`
+  # before tagging.
   header: |
     ## Batesian {{.Version}}
 
     Adversarial red-team CLI for AI agent protocols (A2A and MCP).
     35 bundled attack rules (17 A2A + 18 MCP). Single binary. No runtime dependencies.
 
-    ### Detection accuracy
+    Every release is published with a cosign signature over `checksums.txt`, a
+    CycloneDX SBOM per archive, and SLSA build provenance. Verify provenance with:
 
-    This release fixes several false negatives and false positives in the core
-    detection logic, surfaced by validating against third-party reference servers
-    rather than self-authored fixtures. The HTTP client no longer follows
-    redirects: a 302 to a login page was being read as a successful call, and a
-    redirect could carry the operator's bearer token to a third-party host. A 2xx
-    response that is not valid JSON with a `result` envelope is no longer treated
-    as a successful JSON-RPC call. MCP rules now report inconclusive instead of
-    clean when no endpoint is reachable, offer current protocol versions so
-    current servers no longer reject the handshake, send the `Mcp-Protocol-Version`
-    header on follow-ups, rejoin multi-line SSE events so chunked responses are
-    not dropped, and treat any non-auth JSON-RPC error (not only `-32602`) as proof
-    an unauthenticated probe reached the handler.
-
-    ### New rule
-
-    `mcp-task-idor-001` covers the MCP 2025-11-25 tasks surface: cross-context
-    reads of task state (`tasks/get`) and the underlying tool output
-    (`tasks/result`), plus enumeration of another context's tasks via `tasks/list`.
+    ```bash
+    gh attestation verify batesian_<version>_<platform>.tar.gz --repo calbebop/batesian
+    ```
 
     ### Install
 
