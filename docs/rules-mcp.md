@@ -24,17 +24,33 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 
 These rules target the **handshake-based** MCP revisions (`2024-11-05` through
 `2025-11-25`), which establish a session with `initialize` and carry
-`Mcp-Session-Id`. That is what the reference implementations still speak: as of
-this writing `@modelcontextprotocol/server-everything` negotiates `2025-11-25`
-and does not implement `server/discover`.
+`Mcp-Session-Id`.
 
 The **`2026-07-28`** revision makes MCP stateless. It removes the
 `initialize`/`notifications/initialized` handshake in favour of per-request
 `_meta`, removes protocol-level sessions and the `Mcp-Session-Id` header,
 removes the HTTP GET stream and `Last-Event-ID` resumability, removes
-`logging/setLevel`, and moves tasks into an extension. Support for it is
-tracked separately; individual rules whose surface changed carry a **Currency**
-note below.
+`logging/setLevel`, and moves tasks into an extension. Individual rules whose
+surface changed carry a **Currency** note below.
+
+The Tier-1 SDKs shipped that revision on 2026-07-27 and 2026-07-28: TypeScript
+`@modelcontextprotocol/server` 2.0.0, Python `mcp` 2.0.0, Go 1.7.0, C# 2.0.
+**They serve both eras from one server.** A 2026-era server built on the Python
+or TypeScript SDK answers `server/discover` *and* the 2025-era `initialize`
+handshake on the same endpoint, unless the deployment goes out of its way to
+disable the older one. These rules therefore keep working against current
+servers, and era detection only reports a target as unsupported when it is
+modern-only.
+
+`@modelcontextprotocol/server-everything`, the example server, is a separate
+matter: it is still pinned to the 1.x SDK and negotiates `2025-11-25`. Its
+version is not a signal about the ecosystem.
+
+Era detection itself is checked weekly against a server built on the current
+official SDK (`.github/workflows/mcp-era-watch.yml`, using
+`testdata/mcp_modern_era_server.py`), so a change in the specification, the SDK,
+or our classification surfaces as a failing job rather than as a wrong scan
+result.
 
 Rules gate on advertised capabilities and on reaching a live endpoint, so
 against a server this rule set cannot handshake with they report **inconclusive

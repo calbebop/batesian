@@ -59,12 +59,31 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_completion_unauth_server.py` | 7796 | `mcp-completion-unauth-001` |
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
 | `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s) |
+| `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
 
 **Coverage.** 34 of the 35 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by
 unit tests via `net/http/httptest`; it is not a standalone server.
+
+**`mcp_modern_era_server.py` is the one server here that is not deliberately
+vulnerable.** It is built on the official MCP Python SDK and speaks the
+2026-07-28 revision, so era detection (`internal/attack/mcp/era.go`) can be
+checked against a real modern server instead of against the specification alone.
+No rule fires against it, and a scan reporting nothing is the expected result.
+`.github/workflows/mcp-era-watch.yml` starts it weekly and runs the
+integration-tagged tests in `internal/attack/mcp/era_live_test.go` against it:
+
+```sh
+python testdata/mcp_modern_era_server.py &
+BATESIAN_LIVE_MCP_ENDPOINT=http://127.0.0.1:7799/mcp \
+  go test -tags=integration -run TestDetectEra_Live ./internal/attack/mcp/
+```
+
+Because the SDK serves both eras from one server, it also answers the 2025-era
+`initialize` handshake, which is why the existing rules still work against
+current deployments.
 
 The multi-tenant and delegation fixtures exercise the chained rules: they require
 two principals supplied with `--principal name=...,token=...,tenant=...` (or a

@@ -3,6 +3,12 @@ version: "2"
 run:
   timeout: 5m
   tests: true
+  # Without this the integration-tagged files are invisible to every linter,
+  # so era_live_test.go would ship unlinted. Analysing them costs nothing here:
+  # the tag only gates whether `go test` runs them, and they need a live server
+  # to run, not to compile.
+  build-tags:
+    - integration
 
 linters:
   default: standard
