@@ -1,18 +1,20 @@
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/calbebop/batesian/internal/endpoint"
+)
 
 // candidatePaths are tried in order when discovering an MCP endpoint.
 // Servers commonly mount the JSON-RPC handler at /mcp, /, /api, or /rpc.
 var candidatePaths = []string{"/mcp", "/", "/api", "/rpc"}
 
-// endpointCandidates returns candidate URLs to try for the given base URL.
+// endpointCandidates returns candidate URLs to try for the given base URL. A
+// target that already names a path is probed as given before the conventional
+// paths are appended to it; see endpoint.Candidates.
 func endpointCandidates(baseURL string) []string {
-	out := make([]string, len(candidatePaths))
-	for i, p := range candidatePaths {
-		out[i] = baseURL + p
-	}
-	return out
+	return endpoint.Candidates(baseURL, candidatePaths)
 }
 
 // mcpSession holds the discovered MCP endpoint and the session ID returned by

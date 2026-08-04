@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/calbebop/batesian/internal/endpoint"
 	"github.com/calbebop/batesian/internal/sse"
 )
 
@@ -125,16 +126,16 @@ type PromptArgument struct {
 }
 
 // Initialize performs the MCP initialize handshake and returns a Session.
-// It tries candidate endpoint paths until one succeeds.
+// It tries candidate endpoints until one succeeds.
 func (c *Client) Initialize(ctx context.Context) (*Session, error) {
-	for _, path := range candidatePaths {
-		ep := c.baseURL + path
+	candidates := endpoint.Candidates(c.baseURL, candidatePaths)
+	for _, ep := range candidates {
 		session, err := c.tryInitialize(ctx, ep)
 		if err == nil {
 			return session, nil
 		}
 	}
-	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidatePaths)
+	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
 // ListTools calls tools/list and returns all available tools.

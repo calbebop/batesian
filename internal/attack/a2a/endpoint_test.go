@@ -80,16 +80,12 @@ func newClient(target string) *attack.HTTPClient {
 	return attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(target, ""))
 }
 
-// a2aMock serves an optional card and answers JSON-RPC at rpcPath (a TaskNotFound
-// error), 404 elsewhere.
-func a2aMock(card string, rpcPath string) *httptest.Server {
+// a2aMock answers JSON-RPC at rpcPath (a TaskNotFound error) and 404s
+// elsewhere. It deliberately serves no agent card: these are the cardless cases,
+// where discovery has to fall back to probing paths. Card-driven discovery
+// builds its own server, in TestResolveA2AEndpoint_FromCard.
+func a2aMock(rpcPath string) *httptest.Server {
 	mux := http.NewServeMux()
-	if card != "" {
-		mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(card))
-		})
-	}
 	if rpcPath != "" {
 		mux.HandleFunc(rpcPath, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -128,7 +124,7 @@ func TestResolveA2AEndpoint_FromCard(t *testing.T) {
 
 func TestResolveA2AEndpoint_FallbackToCardlessPath(t *testing.T) {
 	// No card; JSON-RPC mounted at /a2a/jsonrpc. Discovery must probe and find it.
-	srv := a2aMock("", "/a2a/jsonrpc")
+	srv := a2aMock("/a2a/jsonrpc")
 	defer srv.Close()
 	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
 	if !ok || ep != srv.URL+"/a2a/jsonrpc" {
@@ -138,7 +134,7 @@ func TestResolveA2AEndpoint_FallbackToCardlessPath(t *testing.T) {
 
 func TestResolveA2AEndpoint_FallbackToRoot(t *testing.T) {
 	// No card; JSON-RPC at root, like our existing fixtures. Must resolve to "/".
-	srv := a2aMock("", "/")
+	srv := a2aMock("/")
 	defer srv.Close()
 	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
 	if !ok || ep != srv.URL+"/" {
@@ -154,5 +150,36 @@ func TestResolveA2AEndpoint_NothingReachable(t *testing.T) {
 	defer srv.Close()
 	if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
 		t.Error("expected ok=false when no JSON-RPC endpoint responds")
+	}
+}
+
+// A target that already names the JSON-RPC path must be probed as given.
+// Discovery only ever appended to the target, so /a2a became /a2a/,
+// /a2a/a2a/jsonrpc, /a2a/a2a and /a2a/rpc, and the endpoint the operator had
+// pointed at was never tried. There is no agent card here, which is the case
+// that matters: with a card, discovery takes the URL the card declares.
+func TestResolveA2AEndpoint_TargetNamesTheEndpointPath(t *testing.T) {
+	srv := a2aMock("/a2a/jsonrpc")
+	defer srv.Close()
+
+	for _, target := range []string{srv.URL + "/a2a/jsonrpc", srv.URL + "/a2a/jsonrpc/"} {
+		t.Run(target, func(t *testing.T) {
+			ep, ok := resolveA2AEndpoint(context.Background(), newClient(target), target)
+			if !ok || ep != srv.URL+"/a2a/jsonrpc" {
+				t.Errorf("endpoint = %q ok = %v, want %s/a2a/jsonrpc true", ep, ok, srv.URL)
+			}
+		})
+	}
+}
+
+// The origin form is unchanged: appending still finds a handler mounted at a
+// conventional path.
+func TestResolveA2AEndpoint_OriginTargetUnchanged(t *testing.T) {
+	srv := a2aMock("/a2a/jsonrpc")
+	defer srv.Close()
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok || ep != srv.URL+"/a2a/jsonrpc" {
+		t.Errorf("endpoint = %q ok = %v, want %s/a2a/jsonrpc true", ep, ok, srv.URL)
 	}
 }
