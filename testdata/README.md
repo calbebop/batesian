@@ -11,8 +11,15 @@ They are intentionally misconfigured to be exploitable.
 ## Prerequisites
 
 ```sh
-pip install starlette uvicorn httpx mcp
+pip install starlette uvicorn httpx "mcp>=2"
 ```
+
+Only `mcp_unauth_resources_server.py` uses the MCP Python SDK; the rest are plain
+Starlette. The SDK's v2 line is what `pip install mcp` now gives you, and it
+renamed `FastMCP` to `MCPServer` with no compatibility alias, so that fixture
+does not run on 1.x. The version is pinned above rather than left bare so a
+future major bump is a deliberate change here instead of a fixture that stops
+starting.
 
 ---
 
@@ -112,7 +119,7 @@ batesian scan --target http://127.0.0.1:9998 --rule-ids a2a-push-ssrf-001 -v
 
 When adding a new test server, pick the next free port, document it in the
 Server Registry table above before merging. Prefer the `77xx` band for servers
-in this directory that bind with uvicorn (Starlette or FastMCP). The `31xx`
+in this directory that bind with uvicorn (Starlette or the MCP SDK). The `31xx`
 band is used for selected multi-rule MCP/A2A servers; `9998` is reserved for
 the main A2A lab server. Do not reuse a port already listed in the registry.
 
