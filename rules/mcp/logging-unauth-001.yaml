@@ -28,6 +28,13 @@ info:
     The probe never changes the server's real log verbosity: the invalid level is
     rejected by a compliant server (nothing is set).
 
+    Currency: logging/setLevel is normative in revisions 2024-11-05 through
+    2025-11-25. The 2026-07-28 revision removes the method outright (log level is
+    set per-request via io.modelcontextprotocol/logLevel in _meta) and deprecates
+    the Logging feature as a whole, so this rule applies to servers on the earlier
+    revisions. A 2026-07-28 server does not advertise the logging capability, so
+    the rule's capability gate skips it rather than reporting a false result.
+
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/logging
     - https://modelcontextprotocol.io/docs/concepts/authorization
