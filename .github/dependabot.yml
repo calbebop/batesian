@@ -17,3 +17,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    # Actions published from a single repository must move together. CodeQL
+    # aborts with "Loaded a configuration file for version X, but running
+    # version Y" when init, autobuild, analyze and upload-sarif are not on the
+    # same release, so an ungrouped bump opens one PR per action and every one
+    # of them fails in isolation. Grouping makes the bump atomic.
+    groups:
+      codeql-action:
+        patterns:
+          - github/codeql-action*
