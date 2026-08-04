@@ -1,18 +1,23 @@
 name: MCP era watch
 
-# Batesian's MCP rules target the handshake-based protocol revisions. The
-# 2026-07-28 revision is stateless and is the current specification, but as of
-# writing no reference implementation speaks it: the reference server still
-# negotiates 2025-11-25 and does not implement the mandatory server/discover.
+# Batesian's MCP rules target the handshake-based protocol revisions. Era
+# detection (internal/attack/mcp/era.go) exists so a server speaking the
+# stateless 2026-07-28 revision is reported as unsupported rather than as
+# unreachable, which is the difference between "this scanner does not speak your
+# protocol version" and a bare "could not connect".
 #
-# Adding modern-era rules before a real server exists would mean writing
-# detection nobody can validate, which is how false negatives have reached this
-# repository before. So that work is deliberately gated on the ecosystem moving.
+# That detection was written from the specification, at a time when nothing
+# implemented the revision. It does now: the Tier-1 SDKs shipped 2026-07-28
+# support on 2026-07-27 and 2026-07-28 (TypeScript @modelcontextprotocol/server
+# 2.0.0, Python mcp 2.0.0, Go 1.7.0, C# 2.0). So this job stopped being a watch
+# for something to appear and became a check that detection still works against
+# what did.
 #
-# This job watches for that. It boots the reference server each week and asks it
-# server/discover. When the answer stops looking legacy, it opens an issue. It
-# does nothing at all while the answer stays the same, so a quiet repo means the
-# gate is still closed rather than that someone forgot to look.
+# It boots testdata/mcp_modern_era_server.py, built on the official Python SDK,
+# and runs the real detectEra against it rather than a reimplementation. A
+# failure means the specification, the SDK, or our detection has moved, and a
+# scheduled failure notifies on its own; there is no issue-filing step and this
+# job needs no write permission.
 
 on:
   schedule:
@@ -25,12 +30,9 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    name: Probe the reference server
+  detect:
+    name: Detect the era of a real modern server
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
 
     steps:
       - name: Checkout code
@@ -38,62 +40,50 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Probe for modern-era support
-        id: probe
-        run: python3 .github/scripts/mcp_era_probe.py
-        env:
-          PROBE_PORT: '3180'
-
-      - name: Open an issue when the ecosystem has moved
-        if: steps.probe.outputs.era == 'modern'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          script: |
-            const marker = '<!-- mcp-era-watch -->';
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'mcp-era',
-            });
-            if (existing.data.some(i => i.body && i.body.includes(marker))) {
-              core.info('An open era-watch issue already exists; not filing another.');
-              return;
-            }
-            const detail = process.env.PROBE_DETAIL || '(no detail captured)';
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: 'MCP reference server now speaks the 2026-07-28 era',
-              labels: ['mcp-era'],
-              body: [
-                marker,
-                '',
-                'The weekly era probe found that the reference MCP server now answers',
-                '`server/discover` as a modern-era server. The gate on Phase 2 and Phase 3',
-                'of the 2026-07-28 work is therefore lifted: there is now a real server to',
-                'validate modern-era rules against.',
-                '',
-                '## What the probe saw',
-                '',
-                '```',
-                detail,
-                '```',
-                '',
-                '## What this unblocks',
-                '',
-                '- **Phase 2**: modern transport support (`server/discover`, per-request `_meta`,',
-                '  the required `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers).',
-                '- **Phase 3**: per-rule triage. Most unauth rules port (the methods survive,',
-                '  only the transport changed). `mcp-logging-unauth-001` targets a method the',
-                '  revision removes. `mcp-sse-resume-replay-001` loses its surface entirely.',
-                '  `mcp-task-idor-001` needs rewriting for the tasks extension shape.',
-                '- New surface the revision introduces: `x-mcp-header` injection, MRTR state',
-                '  handling, and `cacheScope: public` on sensitive results.',
-                '',
-                'Era detection itself already ships, so until this work lands a modern server',
-                'is reported as unsupported rather than as unreachable.',
-              ].join('\n'),
-            });
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the MCP Python SDK
+        # Unpinned on purpose. The point of this job is to notice when the
+        # current SDK stops matching our detection, so it has to track the
+        # version an operator would actually install.
+        run: pip install "mcp>=2" uvicorn
+
+      - name: Start the modern-era server
+        run: |
+          nohup python testdata/mcp_modern_era_server.py > /tmp/mcp-modern-server.log 2>&1 &
+          # Readiness is a real server/discover, not a port check: the point is
+          # that the endpoint answers the request detection sends, so a server
+          # that is listening but not yet serving does not race the test.
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:7799/mcp \
+              -X POST -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -H 'MCP-Protocol-Version: 2026-07-28' \
+              -H 'Mcp-Method: server/discover' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"ci","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}'; then
+              echo "server is answering server/discover"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "modern-era server did not answer within the timeout"
+          cat /tmp/mcp-modern-server.log
+          exit 1
+
+      - name: Check era detection against it
+        run: go test -tags=integration -run 'TestDetectEra_Live|TestInitializeMCP_Live' -v ./internal/attack/mcp/
         env:
-          PROBE_DETAIL: ${{ steps.probe.outputs.detail }}
+          BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7799/mcp
+
+      - name: Server log
+        if: failure()
+        run: cat /tmp/mcp-modern-server.log
