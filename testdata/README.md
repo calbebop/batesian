@@ -26,7 +26,7 @@ fixtures for live-validation / manual smoke testing.
 
 | File | Port | Rules covered |
 |---|---|---|
-| `a2a_vulnerable_server.py` | 9998 | `a2a-extcard-unauth-001`, `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-task-idor-001`, `a2a-peer-impersonation-001`, `a2a-jws-algconf-001` |
+| `a2a_vulnerable_server.py` | 9998 | `a2a-extcard-unauth-001`, `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-peer-impersonation-001`; `a2a-task-idor-001` and `a2a-jws-algconf-001` are silent here by design (see note below) |
 | `a2a_new_rules_server.py` | 3101 | `a2a-wellknown-hostinject-001`, `a2a-artifact-tamper-001` |
 | `a2a_multitenant_server.py` | 3102 | `a2a-multitenant-isolation-001` (two tenants; needs two `--principal`s) |
 | `a2a_delegation_server.py` | 3103 | `a2a-delegation-integrity-001` (two principals; needs two `--principal`s) |
@@ -69,6 +69,24 @@ blackboard.
 > Note: some multi-rule Python servers may still carry leftover routes from rules
 > that were pruned from the scanner. Only the rule IDs listed in the table above
 > are part of the current rule set.
+
+**A rule staying silent against its fixture is not always a fixture bug.** Two
+rules on `a2a_vulnerable_server.py` are silent by design, because the fixture
+does not exhibit what they test for:
+
+- `a2a-task-idor-001` requires authentication to be enforced on task creation, so
+  that reading a task back without credentials demonstrates broken *authorization*
+  rather than absent *authentication*. This fixture enforces no authentication at
+  all, so the rule's discriminator correctly suppresses the finding. That
+  no-auth exposure is `a2a-peer-impersonation-001`'s territory, and it does fire.
+- `a2a-jws-algconf-001` analyses JWS signatures on the agent card. This fixture
+  deliberately serves an unsigned card, so there is nothing to analyse.
+
+When adding a fixture, confirm the rule actually fires against it rather than
+assuming coverage from the registry table. `a2a-session-smuggle-001` was listed
+here for a long time while the fixture returned a hardcoded task history that
+could never contain the scanner's marker, so the rule could never confirm the
+injection and always reported nothing.
 
 ---
 
