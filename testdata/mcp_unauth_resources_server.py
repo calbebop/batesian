@@ -4,14 +4,18 @@ Batesian MCP validation target: unauthenticated resource access (mcp-resources-u
 This server exposes MCP resources without any authentication, including one that
 returns a simulated database connection string containing credentials.
 
+Requires the MCP Python SDK v2 (`pip install "mcp>=2"`), which is what
+`pip install mcp` now gives you. v2 renamed FastMCP to MCPServer with no
+compatibility alias, so this file does not run on the 1.x line.
+
 Run:
     python testdata/mcp_unauth_resources_server.py
 
 Endpoint: http://localhost:7787/mcp
 """
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("UnauthResourcesTarget", stateless_http=True, json_response=True)
+mcp = MCPServer("UnauthResourcesTarget")
 
 
 @mcp.resource("config://database")
@@ -48,4 +52,8 @@ def ping() -> str:
 if __name__ == "__main__":
     import uvicorn
     print("Starting MCP unauthenticated resources server on http://localhost:7787/mcp")
-    uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=7787)
+    # v2 moved stateless_http and json_response off the constructor and onto the
+    # app factory. Both matter here: stateless keeps every probe independent of a
+    # session, and JSON responses keep the fixture readable with curl.
+    app = mcp.streamable_http_app(json_response=True, stateless_http=True)
+    uvicorn.run(app, host="127.0.0.1", port=7787)

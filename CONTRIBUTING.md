@@ -163,7 +163,7 @@ add a new file only if no existing server is a natural host. Either way:
 - Print startup confirmation lines so the caller can wait for readiness.
 - Implement only the minimum routes needed to trigger the rule(s).
 - Stay within the project test-server dependency set:
-  `pip install starlette uvicorn httpx mcp`. Do not introduce new third-party
+  `pip install starlette uvicorn httpx "mcp>=2"`. Do not introduce new third-party
   packages without updating `testdata/README.md`.
 - Include a module docstring listing every rule ID the server covers and how
   to run it.
