@@ -108,11 +108,80 @@ func TestCredentialPatterns_ExistingShapesStillMatch(t *testing.T) {
 	}
 }
 
-// Known gap, deliberately not asserted either way so that fixing it does not
-// have to fight a test: the bearer pattern is
-// (bearer|authorization)\s*[=:]\s*\S{10,}, which cannot match the canonical
-// header form "Authorization: Bearer <token>". After "authorization:" the next
-// token is "Bearer", only six characters, and after "bearer" there is no
-// separator at all. So the one shape an operator is most likely to find in a
-// leaked config is the one shape this does not catch. Left alone here because
-// it is a separate change from the URI userinfo gap this file was added for.
+// The canonical header form is what an operator is most likely to find in a
+// leaked config, and it used to be the one shape the bearer pattern could not
+// see: after "authorization:" the next token is "Bearer", six characters, which
+// failed the \S{10,} the pattern needs.
+func TestCredentialPatterns_AuthorizationHeader(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{
+			name:  "canonical header form",
+			input: "Authorization: Bearer sk_live_51H8xQ2eZvKYlo2C",
+			want:  true,
+		},
+		{
+			name:  "lowercase header",
+			input: "authorization: bearer abcdefghijklmnop",
+			want:  true,
+		},
+		{
+			name:  "yaml style with quotes",
+			input: `authorization: "Bearer ghp_abcdefghijklmnopqrst"`,
+			want:  true,
+		},
+		{
+			// Content is matched against the raw JSON-RPC body, so a quote
+			// inside a resource arrives escaped.
+			name:  "json escaped quote before the value",
+			input: `{"text":"authorization: \"Bearer ghp_abcdefghijklmnopqrst\""}`,
+			want:  true,
+		},
+		{
+			name:  "no bearer prefix, token directly after the separator",
+			input: "Authorization=abcdefghijklmnopqrst",
+			want:  true,
+		},
+		{
+			// Making the separator optional to catch a bare "Bearer <token>"
+			// would match this, so the separator stays required.
+			name:  "prose about authorization",
+			input: "Authorization requirements documented in the handbook",
+			want:  false,
+		},
+		{
+			name:  "header naming a scheme but no token",
+			input: "Authorization: required",
+			want:  false,
+		},
+		{
+			name:  "bearer prefix with too short a token",
+			input: "Authorization: Bearer short",
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesAnyCredentialPattern(tt.input); got != tt.want {
+				t.Errorf("matchesAnyCredentialPattern(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// Deliberate boundary: a standalone "Bearer <token>" with no Authorization
+// keyword and no separator still does not match, because keying on a bare
+// "bearer" would fire on prose. The common case is covered anyway, since a JWT
+// matches the eyJ pattern whatever precedes it.
+func TestCredentialPatterns_StandaloneBearerBoundary(t *testing.T) {
+	if matchesAnyCredentialPattern("bearer instruments outstanding at year end") {
+		t.Error("a bare bearer keyword in prose must not match")
+	}
+	if !matchesAnyCredentialPattern("Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9") {
+		t.Error("a bearer-prefixed JWT should still match, via the JWT pattern")
+	}
+}

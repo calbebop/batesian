@@ -17,8 +17,20 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[=:]\s*\S{6,}`),         // Password
 	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----`),   // Private keys
 	regexp.MustCompile(`(?i)ghp_[a-zA-Z0-9]{36}`),                           // GitHub token
-	regexp.MustCompile(`(?i)(bearer|authorization)\s*[=:]\s*\S{10,}`),       // Bearer/auth token
-	regexp.MustCompile(`(?i)eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}`),     // JWT
+	// The optional "Bearer " after the separator is what lets this match the
+	// canonical header form, Authorization: Bearer <token>. Without it the
+	// pattern reached "Bearer", six characters, and gave up against the
+	// \S{10,} it needs; the one shape most likely to appear in a leaked config
+	// was the one shape it could not see. The separator stays required, because
+	// making it optional would match any long word following the keyword, as in
+	// "Authorization requirements documented".
+	//
+	// The quote class is not cosmetic: content is matched against the raw
+	// JSON-RPC response body, so a resource holding `authorization: "Bearer x"`
+	// arrives with the quote escaped, as \" , sitting between the separator and
+	// the value.
+	regexp.MustCompile(`(?i)(bearer|authorization)\s*[=:]\s*[\\"']*\s*(bearer\s+)?\S{10,}`), // Bearer/auth token
+	regexp.MustCompile(`(?i)eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}`),                     // JWT
 	// Credentials in a URI userinfo section, as in
 	// postgresql://admin:hunter2@db.internal:5432/prod. Connection strings are
 	// a routine thing to expose through a resource and the password pattern
