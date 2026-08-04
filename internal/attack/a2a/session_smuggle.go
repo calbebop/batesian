@@ -239,9 +239,20 @@ func isAgentRole(v interface{}) bool {
 }
 
 // looksLikeTask returns true if the body resembles an A2A task response.
+//
+// Task states appear in two spellings. v0.3 used lowercase strings ("working"),
+// while v1.0 carries the proto enum ("TASK_STATE_WORKING"), and A2A v1.0.1
+// standardized the specification's own examples on the enum form. Both are
+// matched, because this gates whether a finding is reported at all: a server
+// whose task body carried only the enum state would otherwise be read as not a
+// task, and the rule would stay silent against a target it should flag.
 func looksLikeTask(body []byte) bool {
 	s := string(body)
-	return containsAnyStr(s, `"contextId"`, `"taskId"`, `"working"`, `"submitted"`, `"kind":"task"`)
+	return containsAnyStr(s,
+		`"contextId"`, `"taskId"`, `"kind":"task"`,
+		`"working"`, `"submitted"`,
+		"TASK_STATE_WORKING", "TASK_STATE_SUBMITTED",
+	)
 }
 
 // extractTaskContext extracts the taskId and contextId from a JSON-RPC task result.

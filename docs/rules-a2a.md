@@ -13,6 +13,27 @@ Each finding carries a **confidence**:
 - **indicator** - a suspicious posture was observed but exploitation could not be
   proven from the response alone; manual verification is recommended.
 
+## Protocol currency
+
+These rules target **A2A v1.0** (the current released version, v1.0.1 as of this
+writing) and fall back to the **v0.3** shapes where they differ, so a deployment
+on either revision is exercised. In practice that means sending the v1.0
+PascalCase methods with the `A2A-Version: 1.0` header first and retrying with the
+v0.3 slash methods, and reading both the v1.0 `securityRequirements` and the v0.3
+`security` field from an agent card.
+
+Unlike MCP, A2A has had no restructuring revision: v1.0.1 is a patch that fixed
+specification inconsistencies rather than changing the protocol. Two of its
+changes touch this rule set:
+
+- **Task states** are documented in the proto enum form (`TASK_STATE_CANCELED`)
+  rather than the lowercase strings (`canceled`) v0.3 used. Detection accepts
+  both spellings, since a rule gated on recognizing a task state would otherwise
+  go silent against a compliant server.
+- **`application/a2a+json`** is now the preferred content type for the HTTP+JSON
+  binding. It is a SHOULD rather than a MUST, and the JSON-RPC binding these
+  rules primarily drive explicitly keeps `application/json`.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |
