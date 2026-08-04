@@ -148,6 +148,17 @@ async def handle_send_message(req_id, params: dict) -> Response:
                 "parts": [{"text": f"Echo: {text_in}" + (f"\n{delegation_note}" if delegation_note else "")}]
             }
         ],
+        # Vulnerability: the submitted message is stored in history with the role
+        # the CLIENT claimed, rather than being normalized to the user role. This
+        # is what makes the smuggling real: a client-supplied role:agent turn ends
+        # up in the conversation history an LLM later reads as server-originated.
+        # Storing the message verbatim also means a scanner's unique marker is
+        # retrievable, so the injection can actually be confirmed rather than
+        # merely suspected.
+        "history": [
+            {"role": 1, "parts": [{"text": "original user message"}]},
+            {"role": role, "parts": parts},
+        ],
     }
     TASK_STORE[task_id] = task
 
@@ -160,15 +171,20 @@ def handle_get_task(req_id, params: dict) -> Response:
     task = TASK_STORE.get(task_id)
     if task is None:
         return jsonrpc_error(req_id, -32602, "Task not found")
-    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {**task, "history": [
-        {"role": 1, "parts": [{"text": "original user message"}]},
-        {"role": 2, "parts": [{"text": "agent response with sensitive context"}]},
-    ]}})
+    # The task already carries the history recorded when the message was
+    # submitted. Returning that, rather than a canned transcript, is what lets a
+    # caller observe which role the server actually stored.
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": task})
 
 
 async def handle_push_config(req_id, params: dict) -> Response:
+    # Deployments carry the callback either nested under pushNotificationConfig
+    # (the v0.3 shape) or flat on params (the shape the a2a-sdk v1.0 two-step
+    # uses). Accept both, so this fixture exercises a caller that sends either.
     config = params.get("pushNotificationConfig", {})
-    callback_url = config.get("url", "")
+    callback_url = config.get("url", "") or params.get("pushNotificationUrl", "")
+    if not config:
+        config = {"url": callback_url, "token": params.get("token", "")}
 
     # Vulnerability: makes outbound HTTP request to caller-supplied URL
     if callback_url:
