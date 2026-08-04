@@ -95,14 +95,17 @@ const (
 	modernErrCodeMax = -32020
 )
 
-// Named codes the specification defines in the reserved range. Detection uses
-// the range rather than this list, so a future spec-defined code is still
-// recognized, but the names make the intent legible.
-const (
-	errHeaderMismatch                  = -32020
-	errMissingRequiredClientCapability = -32021
-	errUnsupportedProtocolVersion      = -32022
-)
+// The codes the specification currently defines in the reserved range.
+// Detection deliberately keys on the range rather than this list, so a code the
+// specification adds later is still recognized as modern. The list exists so a
+// test can assert every named code really does fall inside the range that
+// isModernError accepts: if the two ever disagree, detection would miss a
+// server that identified itself with a code the specification defines.
+var specDefinedModernErrors = map[string]int{
+	"HeaderMismatch":                  -32020,
+	"MissingRequiredClientCapability": -32021,
+	"UnsupportedProtocolVersion":      -32022,
+}
 
 // isModernError reports whether a response body carries a JSON-RPC error whose
 // code falls in the range the MCP specification reserves for itself.

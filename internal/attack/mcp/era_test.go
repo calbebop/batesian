@@ -217,6 +217,22 @@ func TestIsModernError(t *testing.T) {
 	}
 }
 
+// TestSpecDefinedModernErrorsAreDetected guards the seam between the named
+// codes the specification defines and the range detection actually keys on. If
+// a named code fell outside the range, a modern server that identified itself
+// with that code would be misread as legacy.
+func TestSpecDefinedModernErrorsAreDetected(t *testing.T) {
+	for name, code := range specDefinedModernErrors {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":%d,"message":%q}}`, code, name)
+		if !isModernError([]byte(body)) {
+			t.Errorf("%s (%d) is defined by the specification but is not detected as a modern error", name, code)
+		}
+		if code < modernErrCodeMin || code > modernErrCodeMax {
+			t.Errorf("%s (%d) falls outside the reserved range [%d, %d]", name, code, modernErrCodeMin, modernErrCodeMax)
+		}
+	}
+}
+
 // TestEraString keeps the human-facing labels stable, since they appear in the
 // operator-visible skip message.
 func TestEraString(t *testing.T) {
