@@ -62,7 +62,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	client := attack.NewHTTPClient(opts, vars)
-	endpoint, _ := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	endpoint, endpointOK := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	reached := false
 	callbackURL := listenerURL + "/batesian-" + vars.RandID
 	token := "batesian-" + vars.RandID
@@ -131,7 +131,12 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		if err3 == nil && httpResp.StatusCode != 404 {
 			reached = true
 		}
-		if err3 == nil && httpResp.IsSuccess() && httpResp.IsJSON() {
+		// The HTTP+JSON binding returns a task object rather than a JSON-RPC
+		// envelope, so IsAccepted is the wrong test here. An explicit error
+		// envelope still has to be excluded: without that, any service answering
+		// 200 with a JSON error body counts as having accepted a task, and the
+		// rule goes on to wait for a callback that was never registered.
+		if err3 == nil && httpResp.IsSuccess() && httpResp.IsJSON() && !isJSONRPCError(httpResp.Body) {
 			taskAccepted = true
 			acceptedBinding = "HTTP+JSON"
 		}
@@ -143,7 +148,10 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		if !reached {
 			return nil, attack.ErrInconclusive
 		}
-		return nil, nil
+		// reached only records a response that was not a 404, which any JSON-RPC
+		// service satisfies. Confirm the target is an A2A agent before calling
+		// this not applicable.
+		return nil, notTestableGiven(ctx, client, vars.BaseURL, endpointOK)
 	}
 
 	// Wait for OOB callback.

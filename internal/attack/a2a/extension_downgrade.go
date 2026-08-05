@@ -56,11 +56,14 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	required := e.requiredExtensions(ctx, client, vars.BaseURL)
+	required, cardServed := e.requiredExtensions(ctx, client, vars.BaseURL)
+	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	if len(required) == 0 {
+		if !cardServed && !ok {
+			return nil, attack.ErrInconclusive // nothing here is an A2A agent
+		}
 		return nil, nil // no required extension advertised => nothing to downgrade
 	}
-	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
@@ -83,7 +86,13 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 
 // requiredExtensions fetches the agent card and returns the URIs of every
 // extension the card marks `required: true`.
-func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) []string {
+//
+// cardServed is reported separately from the result, because an empty list means
+// two different things. A card that advertises no required extension leaves
+// nothing to downgrade, which is a clean result. No card at all means the target
+// was never identified as an A2A agent, and returning clean for that claims
+// coverage the scan does not have.
+func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) (uris []string, cardServed bool) {
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
 		resp, err := client.GET(ctx, baseURL+path, nil)
 		if err != nil || !resp.IsSuccess() {
@@ -100,6 +109,7 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 		if err := json.Unmarshal(resp.Body, &card); err != nil {
 			continue
 		}
+		cardServed = true
 		var out []string
 		for _, ext := range card.Capabilities.Extensions {
 			if ext.Required && ext.URI != "" {
@@ -107,10 +117,10 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 			}
 		}
 		if len(out) > 0 {
-			return out
+			return out, true
 		}
 	}
-	return nil
+	return nil, cardServed
 }
 
 // sendMessage issues a SendMessage with the given extra headers. When forceShape

@@ -56,7 +56,7 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	// /v1/message:send are tried since the endpoint varies by binding type. One
 	// finding max, preferring the invalid-token (critical) signal.
 	reached := false
-	jsonrpcEP, _ := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
+	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
 	for _, ep := range []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"} {
 		resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID)
 		if resp != nil && resp.StatusCode != 404 {
@@ -92,8 +92,13 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 
 	// No disclosure found. If nothing was even reachable, the rule could not be
 	// exercised against a testable endpoint.
-	if len(findings) == 0 && !reached {
-		return nil, attack.ErrInconclusive
+	if len(findings) == 0 {
+		if !reached {
+			return nil, attack.ErrInconclusive
+		}
+		// reached only records a response that was not a 404. Confirm the target
+		// is an A2A agent before reporting no disclosure as a clean result.
+		return nil, notTestableGiven(ctx, unauthClient, vars.BaseURL, endpointOK)
 	}
 	return findings, nil
 }
