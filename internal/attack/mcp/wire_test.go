@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -70,6 +71,18 @@ func wireServer(t *testing.T, serveLegacy, serveModern bool) (*httptest.Server, 
 				})
 				return
 			}
+			// The SDK also requires Mcp-Name to mirror the named subject, for the
+			// three methods that address one.
+			if key, bearing := nameBearingMethods[method]; bearing {
+				if want, ok := params[key].(string); ok && want != "" && r.Header.Get("Mcp-Name") != want {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": body["id"],
+						"error": map[string]interface{}{"code": -32020, "message": "mcp-name header does not match"},
+					})
+					return
+				}
+			}
 			if _, ok := params["_meta"].(map[string]interface{}); !ok {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -90,6 +103,10 @@ func wireServer(t *testing.T, serveLegacy, serveModern bool) (*httptest.Server, 
 				}
 			case "tools/list":
 				result["tools"] = []interface{}{map[string]interface{}{"name": "echo"}}
+			case "resources/read":
+				result["contents"] = []interface{}{
+					map[string]interface{}{"uri": params["uri"], "text": "content"},
+				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": body["id"], "result": result,
@@ -297,4 +314,88 @@ func keysOf(m map[string]json.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// A rule ported onto runOnEachWire must exercise both wires of a dual-era server
+// and label the modern findings, so that on a server exposing the same surface
+// twice the two results are distinguishable rather than looking like duplicates.
+func TestRunOnEachWire_LabelsModernFindingsOnly(t *testing.T) {
+	srv, _ := wireServer(t, true, true)
+	defer srv.Close()
+
+	var eras []Era
+	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(s mcpSession) []attack.Finding {
+			eras = append(eras, s.Era)
+			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}
+		})
+	if err != nil {
+		t.Fatalf("runOnEachWire: %v", err)
+	}
+	if len(eras) != 2 || eras[0] != EraLegacy || eras[1] != EraModern {
+		t.Fatalf("probe should run on legacy then modern, ran on %v", eras)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected a finding per wire, got %d", len(findings))
+	}
+	if findings[0].Title != "surface exposed" {
+		t.Errorf("legacy finding was relabelled to %q; a legacy-only scan must be unchanged", findings[0].Title)
+	}
+	if !strings.Contains(findings[1].Title, modernEraVersion) {
+		t.Errorf("modern finding is unlabelled: %q", findings[1].Title)
+	}
+	if !strings.Contains(findings[1].Evidence, "wire: MCP "+modernEraVersion) {
+		t.Errorf("modern evidence should name the wire, got %q", findings[1].Evidence)
+	}
+}
+
+// A legacy-only server must produce exactly what it produced before the port: one
+// pass, no labels.
+func TestRunOnEachWire_LegacyOnlyIsUnchanged(t *testing.T) {
+	srv, _ := wireServer(t, true, false)
+	defer srv.Close()
+
+	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(mcpSession) []attack.Finding {
+			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}
+		})
+	if err != nil {
+		t.Fatalf("runOnEachWire: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Title != "surface exposed" {
+		t.Fatalf("expected one unlabelled finding, got %+v", findings)
+	}
+}
+
+// The header a rule cannot omit without being told the call was refused. Only
+// tools/call, prompts/get and resources/read carry a named subject; everything
+// else must not send it.
+func TestSessionPost_ModernMirrorsMcpName(t *testing.T) {
+	srv, seen := wireServer(t, false, true)
+	defer srv.Close()
+
+	sessions, err := openSessions(context.Background(), wireClient(), srv.URL)
+	if err != nil {
+		t.Fatalf("openSessions: %v", err)
+	}
+	s := sessions[0]
+
+	resp, err := s.post(context.Background(), wireClient(), 1, "resources/read",
+		map[string]interface{}{"uri": "spike://notes"})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if !resp.IsAccepted() {
+		t.Fatalf("resources/read rejected, Mcp-Name is probably missing: %s", resp.BodyString())
+	}
+	if got := (*seen)[len(*seen)-1].headers.Get("Mcp-Name"); got != "spike://notes" {
+		t.Errorf("Mcp-Name = %q, want the uri parameter", got)
+	}
+
+	if _, err := s.post(context.Background(), wireClient(), 2, "tools/list", nil); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if got := (*seen)[len(*seen)-1].headers.Get("Mcp-Name"); got != "" {
+		t.Errorf("tools/call is name-bearing but tools/list is not; sent Mcp-Name=%q", got)
+	}
 }

@@ -72,6 +72,24 @@ settled with a single `initialize` per candidate, on the bail path only, and a
 2026-07-28 server is reported as speaking an unsupported protocol version rather
 than as unreachable.
 
+## Both protocol wires
+
+A server built on the current SDKs answers **both** the handshake-based revisions
+and 2026-07-28 on the same endpoint. `mcp-resources-unauth-001` and
+`mcp-tools-unauth-001` are exercised on each wire it serves, because the two need
+not be gated alike: a server can enforce authorization on one and not the other.
+
+Findings from the 2026-07-28 wire carry a `[MCP 2026-07-28 wire]` suffix and name
+the wire in their evidence, so a surface exposed on both produces two
+distinguishable results rather than what looks like a duplicate. A legacy-only
+target reports exactly what it reported before, with no suffix.
+
+A modern request carries no session: the protocol version and client capabilities
+travel in `params._meta`, the method is mirrored into `Mcp-Method`, and for
+`tools/call`, `prompts/get` and `resources/read` the named subject is mirrored into
+`Mcp-Name`. Every one of those is mandatory, and a mismatch or omission earns
+`-32020`.
+
 ## Endpoint discovery
 
 A target that names a path is probed as given; otherwise `/mcp`, `/`, `/api` and
