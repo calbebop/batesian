@@ -132,15 +132,30 @@ func candidateEndpoints(baseURL string) []string {
 	return endpoint.Candidates(baseURL, candidatePaths)
 }
 
-// probeJSONRPCEndpoint reports whether a path answers JSON-RPC. It sends a
-// read-only task lookup for a non-existent id and treats a JSON-RPC envelope
-// (result or error) or an auth rejection (401/403) as a live endpoint; a 404 or
-// transport error means this is not the endpoint.
+// methodNotFound is the JSON-RPC code for an unimplemented method. It is the
+// one error a task lookup can earn that says nothing about what the server is.
+const methodNotFound = -32601
+
+// probeJSONRPCEndpoint reports whether a path answers JSON-RPC as an A2A agent.
+// It sends a read-only task lookup for a non-existent id and treats a JSON-RPC
+// envelope (result or error) or an auth rejection (401/403) as a live endpoint;
+// a 404 or transport error means this is not the endpoint.
 //
 // It tries both the v0.3 (tasks/get) and v1.0 (GetTask) method names, because a
 // server that does not implement one may answer 404 for it while still being a
 // JSON-RPC endpoint that handles the other. Probing only one method would miss
 // such servers.
+//
+// "Method not found" is treated as weak evidence rather than as proof. Any
+// JSON-RPC service answers an unknown method that way, so an MCP server was
+// being accepted here as an A2A agent: point the scanner at one and sixteen A2A
+// rules reported clean rather than skipped, which turns "could not test" into
+// "tested, nothing found". When that is all a candidate offers, the endpoint is
+// asked whether it is an MCP server before it is accepted.
+//
+// The check is deliberately negative rather than a stricter test for A2A. A2A
+// servers exist that implement neither task-get spelling, including two of this
+// repository's own fixtures, and requiring a task-shaped answer would lose them.
 func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoint string) bool {
 	probes := []struct {
 		method  string
@@ -149,6 +164,8 @@ func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoi
 		{"tasks/get", nil},
 		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
 	}
+
+	sawMethodNotFound := false
 	for _, p := range probes {
 		resp, err := client.POST(ctx, endpoint, p.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -165,11 +182,65 @@ func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoi
 		if resp.StatusCode == 404 {
 			continue
 		}
+		if code, ok := jsonRPCErrorCode(resp.Body); ok && code == methodNotFound {
+			sawMethodNotFound = true
+			continue
+		}
+		// Anything else on a JSON-RPC envelope is an answer only something
+		// implementing the method could give: a TaskNotFound, an invalid-params
+		// rejection of our probe's shape, or an actual result.
 		if isJSONRPCError(resp.Body) || resp.ContainsAny(`"jsonrpc"`, `"result"`) {
 			return true
 		}
 	}
+
+	if sawMethodNotFound {
+		return !answersMCPInitialize(ctx, client, endpoint)
+	}
 	return false
+}
+
+// answersMCPInitialize reports whether the endpoint identifies itself as an MCP
+// server. MCP opens with an initialize handshake whose result carries a
+// protocolVersion, and no A2A method produces that, so a valid MCP result here
+// is conclusive.
+//
+// This is deliberately not the MCP package's initializeMCP, which does much more
+// (candidate paths, session ids, protocol negotiation, era detection). All that
+// is wanted here is a yes or no about one URL that has already been located.
+func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoint string) bool {
+	resp, err := client.POST(ctx, endpoint, nil, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "batesian-a2a-discovery-mcp",
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]interface{}{},
+			"clientInfo":      map[string]interface{}{"name": "batesian", "version": attack.Version},
+		},
+	})
+	if err != nil || !resp.IsAccepted() {
+		return false
+	}
+	return resp.ContainsAny(`"protocolVersion"`)
+}
+
+// jsonRPCErrorCode extracts the numeric code from a JSON-RPC error envelope. ok
+// is false when the body is not JSON, carries no error object, or the error has
+// no numeric code.
+func jsonRPCErrorCode(body []byte) (int, bool) {
+	var envelope struct {
+		Error *struct {
+			Code *float64 `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, false
+	}
+	if envelope.Error == nil || envelope.Error.Code == nil {
+		return 0, false
+	}
+	return int(*envelope.Error.Code), true
 }
 
 // hasHTTPScheme reports whether rawURL is an absolute http(s) URL.

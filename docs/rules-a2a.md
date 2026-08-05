@@ -34,6 +34,24 @@ changes touch this rule set:
   binding. It is a SHOULD rather than a MUST, and the JSON-RPC binding these
   rules primarily drive explicitly keeps `application/json`.
 
+## Endpoint discovery
+
+The JSON-RPC transport is not required to live at the target root, so discovery
+prefers the URL the agent card declares for the JSON-RPC interface, pinned to the
+target's own scheme and host. Only when no card names one does it probe the
+conventional paths.
+
+A probed path is judged by a read-only task lookup for a non-existent id, in both
+the v0.3 (`tasks/get`) and v1.0 (`GetTask`) spellings. **"Method not found" is
+treated as weak evidence**: every JSON-RPC service answers an unknown method that
+way, so accepting it meant an MCP server was taken for an A2A agent and the rules
+ran against it. When that is all a path offers, it is asked whether it answers an
+MCP `initialize`; a valid MCP result disqualifies it.
+
+The check is negative on purpose. A2A agents exist that implement neither
+task-get spelling, so requiring a task-shaped answer would lose them. A target
+where no A2A endpoint is found is reported as **not tested**, not as clean.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |

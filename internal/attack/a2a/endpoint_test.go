@@ -172,6 +172,86 @@ func TestResolveA2AEndpoint_TargetNamesTheEndpointPath(t *testing.T) {
 	}
 }
 
+// jsonRPCServer answers every POST with the given body, whatever the path. It
+// stands in for a JSON-RPC service that is not an A2A agent.
+func jsonRPCServer(reply func(method string) string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(reply(method)))
+	}))
+}
+
+// An MCP server answers a task lookup with "method not found", exactly as an
+// A2A agent that implements neither spelling does. Accepting that as an A2A
+// endpoint made sixteen A2A rules report clean against an MCP target instead of
+// skipping, which is the difference between "tested, nothing found" and "could
+// not test".
+func TestResolveA2AEndpoint_MCPServerIsNotAnA2AEndpoint(t *testing.T) {
+	srv := jsonRPCServer(func(method string) string {
+		if method == "initialize" {
+			return `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18",` +
+				`"serverInfo":{"name":"mcp","version":"1.0"},"capabilities":{}}}`
+		}
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`
+	})
+	defer srv.Close()
+
+	if ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
+		t.Errorf("resolved %q against an MCP server, want ok=false so the rules skip", ep)
+	}
+}
+
+// The reason the check is negative rather than a stricter test for A2A: agents
+// exist that implement neither task-get spelling and answer "method not found"
+// for both, including this repository's own delegation and push-binding
+// fixtures. They must still be discovered.
+func TestResolveA2AEndpoint_AgentWithoutTaskMethodsStillFound(t *testing.T) {
+	srv := jsonRPCServer(func(string) string {
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`
+	})
+	defer srv.Close()
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok {
+		t.Fatal("expected ok=true: a JSON-RPC service that is not MCP stays an A2A candidate")
+	}
+	if ep != srv.URL+"/" {
+		t.Errorf("endpoint = %q, want %s/", ep, srv.URL)
+	}
+}
+
+// A task lookup answered with anything other than "method not found" is
+// evidence only something implementing the method could give, so it is accepted
+// without the MCP question being asked at all.
+func TestResolveA2AEndpoint_TaskNotFoundNeedsNoDisambiguation(t *testing.T) {
+	mcpProbes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		if method == "initialize" {
+			mcpProbes++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+	}))
+	defer srv.Close()
+
+	if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); !ok {
+		t.Fatal("expected ok=true for a server answering TaskNotFound")
+	}
+	if mcpProbes != 0 {
+		t.Errorf("sent %d MCP initialize probes, want 0 when the answer already settles it", mcpProbes)
+	}
+}
+
 // The origin form is unchanged: appending still finds a handler mounted at a
 // conventional path.
 func TestResolveA2AEndpoint_OriginTargetUnchanged(t *testing.T) {
