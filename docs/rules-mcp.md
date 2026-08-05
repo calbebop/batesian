@@ -113,7 +113,10 @@ that rejects the registration or reduces the grant to read-only produces no find
 
 Tests whether the server's `aud` matching logic is robust to common
 implementation bugs, once the expected audience is known (via `--audience-claim`
-or RFC 9728 auto-discovery; otherwise the rule reports inconclusive and skips).
+or RFC 9728 auto-discovery). Without one, the outcome depends on whether anything
+answered: an MCP server that advertises no metadata has no audience to check
+against, so that is a **clean** result, while a target where nothing answered the
+handshake is reported as **not tested**.
 It submits a **negative control** plus three trap probes as forged HS256 JWTs:
 
 - `aud-control-unrelated` - isolates the audience logic from blanket signature

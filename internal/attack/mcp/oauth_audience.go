@@ -81,12 +81,20 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 
 	expected := strings.TrimSpace(opts.AudienceClaim)
 	if expected == "" {
-		discovered := discoverExpectedAudience(ctx, client, vars.BaseURL)
+		discovered, mcpReached := discoverExpectedAudience(ctx, client, vars.BaseURL)
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
-			// resource metadata. Skip silently rather than emit a misleading
-			// finding. Operators who want this rule to run should pass
+			// resource metadata. Operators who want this rule to run should pass
 			// --audience-claim or expose RFC 9728 metadata on the target.
+			//
+			// Which of two things happened decides how that is reported. An MCP
+			// server that answered but advertises no metadata is genuinely not
+			// applicable, and clean is honest. A target where nothing answered
+			// was never exercised, and clean there would claim coverage the scan
+			// does not have.
+			if !mcpReached {
+				return nil, attack.ErrInconclusive
+			}
 			return nil, nil
 		}
 		expected = discovered
@@ -227,20 +235,25 @@ func hasUpper(s string) bool {
 //
 // Returns the resource URI on success, or an empty string if nothing
 // usable was found (caller treats that as "skip").
-func discoverExpectedAudience(ctx context.Context, client *attack.HTTPClient, baseURL string) string {
-	if metaURL := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL); metaURL != "" {
+func discoverExpectedAudience(ctx context.Context, client *attack.HTTPClient, baseURL string) (audience string, mcpReached bool) {
+	metaURL, mcpReached := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
+	if metaURL != "" {
 		if resource := fetchResourceFromMetadata(ctx, client, metaURL); resource != "" {
-			return resource
+			return resource, mcpReached
 		}
 	}
 	wellKnown := baseURL + "/.well-known/oauth-protected-resource"
-	return fetchResourceFromMetadata(ctx, client, wellKnown)
+	return fetchResourceFromMetadata(ctx, client, wellKnown), mcpReached
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to
 // the first responsive endpoint candidate and returns the resource_metadata
 // URL advertised in the WWW-Authenticate response header, if any.
-func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HTTPClient, baseURL string) string {
+// mcpReached reports whether any candidate answered the handshake, which is what
+// separates "this MCP server exposes no OAuth" from "nothing here answered at
+// all". The first is a clean result for an OAuth-gated rule; the second is a
+// target that was never tested.
+func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HTTPClient, baseURL string) (metadataURL string, mcpReached bool) {
 	body := json.RawMessage(mcpInitBody)
 	for _, ep := range endpointCandidates(baseURL) {
 		// Use no Authorization header (override any opts.Token) so the server
@@ -255,16 +268,17 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		// 401 is the expected discovery response; some servers also emit the
 		// header on 403. We accept any response that carries the header.
 		if u := parseResourceMetadataURL(resp.Headers.Get("WWW-Authenticate")); u != "" {
-			return u
+			// A challenge is itself proof the endpoint is live and gated.
+			return u, true
 		}
 		// An endpoint that answered the handshake is the server, and it issued no
 		// challenge. The remaining candidates are the same server at paths it does
 		// not serve, so walking them only adds 404s.
 		if isMCPInitialize(resp) {
-			return ""
+			return "", true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // resourceMetadataRE extracts the resource_metadata="..." parameter from a
