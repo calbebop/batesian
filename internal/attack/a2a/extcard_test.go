@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -148,11 +149,14 @@ func TestExtCardExecutor_HTMLLoginNotFinding(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings for a 200 HTML login page, got %d: %+v", len(findings), findings)
+	}
+	// Nothing here identifies as an A2A agent: every path answers with the same
+	// login page. Silence is the right finding count, but the run must say it
+	// could not test rather than that the target is clean.
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("expected ErrInconclusive against a login-page server, got err=%v", err)
 	}
 }
 

@@ -50,12 +50,17 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 	cardURL := vars.BaseURL + "/.well-known/agent-card.json"
 	resp, err := client.GET(ctx, cardURL, nil)
 	if err != nil || !resp.IsSuccess() {
-		return nil, nil
+		// The rule analyses signatures on the card. Without one it was not
+		// exercised, and reporting clean would read as "the signatures are
+		// sound" for a target that served no card at all. This holds even when
+		// the target is plainly an A2A agent by other evidence: a card rule with
+		// no card has nothing to say either way.
+		return nil, attack.ErrInconclusive
 	}
 
 	var card map[string]interface{}
 	if err := json.Unmarshal(resp.Body, &card); err != nil {
-		return nil, nil
+		return nil, attack.ErrInconclusive
 	}
 
 	var findings []attack.Finding

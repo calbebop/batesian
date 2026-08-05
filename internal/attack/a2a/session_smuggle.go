@@ -51,7 +51,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 
 	// The A2A JSON-RPC endpoint is POST / in most implementations.
 	// Some HTTP+JSON bindings also use /v1/message:send.
-	jsonrpcEP, _ := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	endpoints := []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"}
 
 	// A2A-sdk v1.0.x uses gRPC-style PascalCase methods and requires
@@ -114,7 +114,10 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	if !reached {
 		return nil, attack.ErrInconclusive
 	}
-	return nil, nil
+	// reached only records that something answered without a 404, which any
+	// JSON-RPC service satisfies. Confirm the target is an A2A agent before
+	// reporting this as a clean result.
+	return nil, notTestableGiven(ctx, client, vars.BaseURL, endpointOK)
 }
 
 // evaluateAcceptance reads the created task's history and classifies the result.

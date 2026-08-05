@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,12 +127,18 @@ func TestExtDowngrade_ControlRejected(t *testing.T) {
 	}
 }
 
-// TestExtDowngrade_NotACardServer: no card => no finding.
+// TestExtDowngrade_NotACardServer: no card at all means nothing identified as an
+// A2A agent, which is different from an agent whose card declares no required
+// extension. The first was not tested; only the second is clean.
 func TestExtDowngrade_NotACardServer(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 
-	if findings := runExtDowngrade(t, ts); len(findings) != 0 {
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive against a non-card server, got err=%v", err)
+	}
+	if len(findings) != 0 {
 		t.Errorf("expected zero findings against a non-card server, got %d", len(findings))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -171,12 +172,18 @@ func TestCardTrust_Clean(t *testing.T) {
 	}
 }
 
-// TestCardTrust_NotACardServer: no well-known card => no findings.
+// TestCardTrust_NotACardServer: no well-known card means the rule was never
+// exercised, not that the card is sound. It used to report clean here, which is
+// indistinguishable from a target whose card passed every check.
 func TestCardTrust_NotACardServer(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 
-	if findings := runCardTrust(t, ts); len(findings) != 0 {
+	findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive against a non-card server, got err=%v", err)
+	}
+	if len(findings) != 0 {
 		t.Errorf("expected zero findings against a non-card server, got %d", len(findings))
 	}
 }

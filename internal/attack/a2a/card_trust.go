@@ -51,7 +51,10 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	primaryBody, primaryCacheControl, primaryOK := fetchCard(ctx, client, primaryURL)
 	legacyBody, _, legacyOK := fetchCard(ctx, client, legacyURL)
 	if !primaryOK && !legacyOK {
-		return nil, nil // not a responsive A2A card server
+		// This rule analyses the card, so no card means it was not exercised.
+		// It used to return clean here, which reads as "the card is fine" for a
+		// target that served none.
+		return nil, attack.ErrInconclusive
 	}
 
 	// Use whichever path actually served a card as the basis for the cache and

@@ -52,6 +52,29 @@ The check is negative on purpose. A2A agents exist that implement neither
 task-get spelling, so requiring a task-shaped answer would lose them. A target
 where no A2A endpoint is found is reported as **not tested**, not as clean.
 
+## Clean, or never tested
+
+A rule that finds nothing distinguishes two outcomes, and reports them
+differently:
+
+- **Clean.** The target is an A2A agent and this attack did not work against it,
+  or the feature the rule targets is absent. A card that advertises no required
+  extension leaves `a2a-extension-downgrade-001` nothing to downgrade, and that
+  is a real result.
+- **Not tested.** Nothing at the target identifies as an A2A agent. Every rule
+  reports this rather than a clean pass, because a scan that says "no findings"
+  for a host it never exercised claims coverage it does not have.
+
+A target counts as testable when endpoint discovery finds a JSON-RPC endpoint
+**or** an agent card is served. Either alone is enough: agents exist that serve
+no card, and agents exist whose card is served while their transport is not
+where discovery looks.
+
+The three card-analysis rules (`a2a-card-trust-001`, `a2a-jws-algconf-001`,
+`a2a-wellknown-hostinject-001`) are stricter, and report **not tested** whenever
+no card is served, even against a target that is plainly an agent by other
+evidence. A card rule with no card has nothing to say either way.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |

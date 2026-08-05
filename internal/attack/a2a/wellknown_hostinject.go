@@ -55,6 +55,10 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 
 	var findings []attack.Finding
 	seen := map[string]bool{}
+	// A card has to be served for the reflection test to mean anything. Without
+	// one, every probe falls through the continues below and the rule returns an
+	// empty slice, which reads as "no reflection" rather than "never tested".
+	cardParsed := false
 
 	for _, path := range cardPaths {
 		for _, probe := range probes {
@@ -70,6 +74,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 			if err := json.Unmarshal(resp.Body, &card); err != nil {
 				continue
 			}
+			cardParsed = true
 
 			reflections := findReflections(card, hostInjectCanary)
 			if len(reflections) == 0 {
@@ -132,6 +137,9 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 		}
 	}
 
+	if len(findings) == 0 && !cardParsed {
+		return nil, attack.ErrInconclusive
+	}
 	return findings, nil
 }
 

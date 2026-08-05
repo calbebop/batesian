@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -171,8 +172,10 @@ func TestJWSAlgConfExecutor_NoSignatures(t *testing.T) {
 	}
 }
 
-// TestJWSAlgConfExecutor_NotFound verifies that a 404 response from the card
-// endpoint produces zero findings and a nil error.
+// TestJWSAlgConfExecutor_NotFound verifies that a 404 from the card endpoint is
+// reported as not tested rather than as clean. The rule analyses signatures on
+// the card; with no card there is nothing to analyse, and a clean result would
+// read as "the signatures are sound".
 func TestJWSAlgConfExecutor_NotFound(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -181,8 +184,8 @@ func TestJWSAlgConfExecutor_NotFound(t *testing.T) {
 
 	ex := a2a.NewJWSAlgConfExecutor(testRuleCtx())
 	findings, err := ex.Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("expected nil error for 404, got: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive for a 404 card path, got: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings for 404, got %d: %+v", len(findings), findings)
