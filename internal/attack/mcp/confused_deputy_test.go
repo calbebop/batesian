@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,11 +143,25 @@ func TestConfusedDeputy_DCRRestricted(t *testing.T) {
 
 // TestConfusedDeputy_NotOAuth: no authorization-server metadata. The rule does
 // not apply and MUST stay silent.
+// An MCP server that exposes no OAuth surface is not applicable, which is a clean
+// result. The fixture has to answer the handshake for that to be the case: a
+// target where nothing answers was never tested (see the next test).
 func TestConfusedDeputy_NotOAuth(t *testing.T) {
-	ts := confusedDeputyServer("not-oauth")
+	ts, _ := mountedMCPServer(t)
 	defer ts.Close()
 
 	if findings := runConfusedDeputy(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-OAuth server, got %d", len(findings))
+		t.Errorf("expected zero findings against a non-OAuth MCP server, got %d", len(findings))
+	}
+}
+
+func TestConfusedDeputy_NothingReachableIsNotTested(t *testing.T) {
+	ts := confusedDeputyServer("not-oauth") // 404s the OAuth documents and everything else
+	defer ts.Close()
+
+	_, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when nothing answered, got err=%v", err)
 	}
 }

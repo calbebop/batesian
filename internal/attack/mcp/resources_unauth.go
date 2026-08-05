@@ -299,18 +299,28 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 
 	// No candidate path completed a legacy handshake. Before reporting the target
 	// as unreachable, check whether it is actually a modern (2026-07-28) server,
-	// which has no initialize method at all. Distinguishing the two is the
-	// difference between "this scanner does not speak your protocol version" and
-	// a bare "could not connect".
-	//
-	// This runs only on the failure path, so a legacy server, still the norm,
-	// pays no extra request.
-	for _, ep := range endpoints {
-		if detectEra(ctx, client, ep) == EraModern {
-			return mcpSession{}, fmt.Errorf("%w: %s speaks MCP %s (stateless era), which these rules do not yet support",
-				errModernEra, ep, modernEraVersion)
-		}
+	// which has no initialize method at all.
+	if err := modernEraReason(ctx, client, endpoints); err != nil {
+		return mcpSession{}, err
 	}
 
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)
+}
+
+// modernEraReason returns the error to carry forward when none of endpoints
+// completed a legacy handshake but one of them turns out to speak the modern
+// (2026-07-28) revision, and nil when none does.
+//
+// Distinguishing the two is the difference between telling an operator "this
+// scanner does not speak your protocol version" and a bare "could not connect".
+// It runs only on a failure path, so a legacy server, still the norm, pays
+// nothing for it.
+func modernEraReason(ctx context.Context, client *attack.HTTPClient, endpoints []string) error {
+	for _, ep := range endpoints {
+		if detectEra(ctx, client, ep) == EraModern {
+			return fmt.Errorf("%w: %s speaks MCP %s (stateless era), which these rules do not yet support",
+				errModernEra, ep, modernEraVersion)
+		}
+	}
+	return nil
 }

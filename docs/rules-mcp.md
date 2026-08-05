@@ -57,6 +57,21 @@ against a server this rule set cannot handshake with they report **inconclusive
 or skip**, never a clean pass. A target that could not be exercised is reported
 as not tested rather than as secure.
 
+## OAuth-gated rules
+
+`mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-token-replay-001`,
+`mcp-oauth-metadata-ssrf-001` and `mcp-confused-deputy-001` need an OAuth surface
+to test: an authorization-server or protected-resource document, or a registration
+endpoint. When none is advertised they report **clean**, because a server without
+OAuth is not applicable rather than insecure.
+
+That holds only for a server that answered. A target where nothing responded to an
+MCP handshake is reported as **not tested**, since a clean result there would say
+the OAuth handling is sound about a host the rule never reached. Reachability is
+settled with a single `initialize` per candidate, on the bail path only, and a
+2026-07-28 server is reported as speaking an unsupported protocol version rather
+than as unreachable.
+
 ## Endpoint discovery
 
 A target that names a path is probed as given; otherwise `/mcp`, `/`, `/api` and

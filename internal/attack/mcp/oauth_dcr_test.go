@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,8 +206,9 @@ func TestOAuthDCR_AuthGatedRegistration(t *testing.T) {
 	}
 }
 
+// A reachable MCP server with no OAuth metadata is not applicable: clean.
 func TestOAuthDCR_NoOAuthServer(t *testing.T) {
-	ts := httptest.NewServer(http.NotFoundHandler())
+	ts, _ := mountedMCPServer(t)
 	defer ts.Close()
 
 	findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(context.Background(), ts.URL, testOpts())
@@ -214,6 +216,17 @@ func TestOAuthDCR_NoOAuthServer(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected zero findings on non-OAuth server, got %d", len(findings))
+		t.Errorf("expected zero findings on a non-OAuth MCP server, got %d", len(findings))
+	}
+}
+
+// Nothing answered, so the rule was never exercised.
+func TestOAuthDCR_NothingReachableIsNotTested(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	_, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when nothing answered, got err=%v", err)
 	}
 }

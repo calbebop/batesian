@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -97,11 +98,23 @@ func TestMetadataSSRF_NoFetch(t *testing.T) {
 }
 
 // TestMetadataSSRF_NoOAuth: no DCR endpoint => clean skip.
+// A reachable MCP server with no DCR advertisement is not applicable: clean.
 func TestMetadataSSRF_NoOAuth(t *testing.T) {
-	ts := metadataSSRFServer("no-oauth")
+	ts, _ := mountedMCPServer(t)
 	defer ts.Close()
 
 	if findings := runMetadataSSRF(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a non-OAuth server, got %d", len(findings))
+		t.Errorf("expected zero findings against a non-OAuth MCP server, got %d", len(findings))
+	}
+}
+
+func TestMetadataSSRF_NothingReachableIsNotTested(t *testing.T) {
+	ts := metadataSSRFServer("no-oauth") // 404s the metadata and everything else
+	defer ts.Close()
+
+	_, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when nothing answered, got err=%v", err)
 	}
 }
