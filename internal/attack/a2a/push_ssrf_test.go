@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,6 +186,96 @@ func TestPushSSRF_MessageReplyIsNotARegistration(t *testing.T) {
 	}
 }
 
+// restPushServer speaks only the HTTP+JSON binding, mounted under a prefix the
+// card advertises. JSON-RPC is dead here, so the rule can only get there through
+// the card.
+//
+// The REST attempt used to POST a fixed /tasks/send. No binding defines that
+// path, and the prefix cannot be guessed either: a2a-sdk takes it as a parameter
+// and lets the deployment choose which protocol version sits under it.
+func restPushServer(t *testing.T, prefix string) *httptest.Server {
+	t.Helper()
+	var host string
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(mux)
+
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"REST Agent","supportedInterfaces":[` +
+			`{"url":"` + host + prefix + `","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}]}`))
+	})
+	mux.HandleFunc(prefix+"/message:send", func(w http.ResponseWriter, r *http.Request) {
+		// The shape a2a-sdk actually returns from REST message:send.
+		writeJSON(w, map[string]interface{}{
+			"task": map[string]interface{}{"id": "task-rest-001", "contextId": "ctx-rest-001"},
+		})
+	})
+	mux.HandleFunc(prefix+"/tasks/task-rest-001/pushNotificationConfigs", func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		if url, _ := body["url"].(string); url != "" {
+			token, _ := body["token"].(string)
+			hc := &http.Client{Timeout: 3 * time.Second}
+			if cbReq, err := http.NewRequest(http.MethodPost, url, nil); err == nil {
+				cbReq.Header.Set("X-A2A-Notification-Token", token)
+				if resp, err := hc.Do(cbReq); err == nil {
+					_ = resp.Body.Close()
+				}
+			}
+		}
+		writeJSON(w, map[string]interface{}{"taskId": "task-rest-001", "url": "registered"})
+	})
+
+	srv.Start()
+	host = srv.URL
+	return srv
+}
+
+func TestPushSSRF_RESTBindingFromCard(t *testing.T) {
+	ts := restPushServer(t, "/v1")
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one confirmed SSRF finding over the REST binding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+// An agent that advertises no HTTP+JSON interface must not be probed for one.
+// The old code POSTed /tasks/send at every target regardless, which was a
+// guaranteed 404 on each scan.
+func TestPushSSRF_NoRESTInterfaceIsNotProbed(t *testing.T) {
+	var restProbes int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"JSONRPC Only","preferredTransport":"JSONRPC"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, ":send") || strings.Contains(r.URL.Path, "tasks/send") {
+			restProbes++
+		}
+		writeJSON(w, jsonRPCError(-32601, "Method not found"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, _ = a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, testOpts())
+
+	if restProbes != 0 {
+		t.Errorf("sent %d REST probes to an agent that advertises no HTTP+JSON interface, want 0", restProbes)
+	}
+}
+
 // TestPushSSRF_AcceptedNoCallback: the server accepts the push config but never
 // calls back (normal A2A behaviour). No SSRF is demonstrated, so the rule MUST
 // stay silent rather than flag the by-design feature.
@@ -238,7 +329,12 @@ func TestPushSSRF_DryRunBindsNoListener(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, "http://target.invalid", opts); err != nil {
+	// A dry run answers every request with a synthetic 200 {} and reaches no
+	// agent, so ErrInconclusive is the truthful outcome and is accepted here.
+	// What this test is actually about is the two assertions below: no socket,
+	// and the placeholder callback in the recorded plan.
+	_, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, "http://target.invalid", opts)
+	if err != nil && !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("dry-run Execute returned error: %v", err)
 	}
 

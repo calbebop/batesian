@@ -129,12 +129,15 @@ a push-notification config is normal A2A behaviour and is **not** reported.
 Supplying `--oob-url` points the callback at an external collector and emits
 operator guidance for manual confirmation.
 
-Two bindings are driven. On **v1.0** the callback is registered through
+Three bindings are driven. On **v1.0** the callback is registered through
 `CreateTaskPushNotificationConfig`, whose params are a `TaskPushNotificationConfig`
 carrying a flat `url`; there is no way to attach one to a send, because
 `SendMessageConfiguration` has no such field. On **v0.3** it travels inline on
 `message/send` under `configuration.pushNotificationConfig`, and is also set
-explicitly with `tasks/pushNotificationConfig/set`.
+explicitly with `tasks/pushNotificationConfig/set`. The **HTTP+JSON** binding is
+driven only when the agent card advertises one, at the URL the card gives: its
+prefix is a deployment choice, so there is no path to fall back on and an agent
+without that interface is not probed for it.
 
 A callback can only fire for a task that is still running: a config registered
 against a task the agent has already completed has no status update left to
