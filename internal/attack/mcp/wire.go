@@ -29,6 +29,18 @@ import (
 //     is a quiet way to think you are testing one era while testing the other.
 //   - No server/discover call is needed first. Methods work immediately.
 
+// nameBearingMethods maps each modern-era method that addresses a named subject to
+// the params field carrying that name, which the Mcp-Name header must mirror.
+//
+// Taken from the SDK's own NAME_BEARING_METHODS table rather than inferred: it is
+// exactly three methods, and the server only checks the header when the body
+// carries the field.
+var nameBearingMethods = map[string]string{
+	"tools/call":     "name",
+	"prompts/get":    "name",
+	"resources/read": "uri",
+}
+
 // post sends a JSON-RPC request on whichever wire this session belongs to,
 // building the headers and params each era requires.
 func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id interface{}, method string, params map[string]interface{}) (*attack.Response, error) {
@@ -49,6 +61,15 @@ func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id inte
 		headers = map[string]string{
 			"MCP-Protocol-Version": modernEraVersion,
 			"Mcp-Method":           method,
+		}
+		// Methods that address a named subject must mirror it into Mcp-Name as
+		// well, and a mismatch is the same -32020 a wrong Mcp-Method earns. A rule
+		// that omitted it would read that rejection as a server refusing the call
+		// and report clean.
+		if key, ok := nameBearingMethods[method]; ok {
+			if name, ok := params[key].(string); ok && name != "" {
+				headers["Mcp-Name"] = name
+			}
 		}
 	}
 
@@ -134,6 +155,42 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 		ProtocolVersion: modernEraVersion,
 		RawInit:         resp.Body,
 	}, true
+}
+
+// runOnEachWire opens every wire the target serves and runs probe against each,
+// returning the findings from all of them.
+//
+// A server that serves both eras is exposed on both, and the two need not behave
+// alike, so each is exercised. Findings from the modern wire are labelled; see
+// labelEra.
+func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
+	probe func(mcpSession) []attack.Finding) ([]attack.Finding, error) {
+	sessions, err := openSessions(ctx, client, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	var out []attack.Finding
+	for _, s := range sessions {
+		out = append(out, labelEra(s, probe(s))...)
+	}
+	return out, nil
+}
+
+// labelEra tags findings produced on the modern wire, so that on a server serving
+// both they are not read as duplicates of the legacy ones. It also tells an
+// operator which surface to fix, which is the point: the two wires can differ.
+//
+// Legacy findings are returned untouched, so a scan of a legacy-only server, still
+// the norm, reports exactly what it reported before.
+func labelEra(session mcpSession, findings []attack.Finding) []attack.Finding {
+	if session.Era != EraModern {
+		return findings
+	}
+	for i := range findings {
+		findings[i].Title += fmt.Sprintf(" [MCP %s wire]", modernEraVersion)
+		findings[i].Evidence = fmt.Sprintf("wire: MCP %s (stateless)\n%s", modernEraVersion, findings[i].Evidence)
+	}
+	return findings
 }
 
 // modernResultPayload strips the envelope a modern result wraps its payload in.

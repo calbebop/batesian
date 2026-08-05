@@ -72,41 +72,37 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 	// opts.Token were injected the finding would be misleading.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	// MCP requires an initialize handshake before any method calls.
-	session, err := initializeMCP(ctx, client, vars.BaseURL)
-	if err != nil {
-		// Not reachable as a legacy MCP server; inconclusive carries the reason
-		// when the target turned out to be a modern-era server.
-		return nil, inconclusive(err)
-	}
+	// A server may expose resources on both protocol wires, and need not gate them
+	// the same way on each, so every wire it serves is probed.
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+		return e.probeSession(ctx, client, session)
+	})
+}
 
+// probeSession runs the rule against one already-opened wire.
+func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) []attack.Finding {
 	var findings []attack.Finding
 
 	// Step 1: resources/list - enumerate available resources
-	listResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      3,
-		"method":  "resources/list",
-		"params":  map[string]interface{}{},
-	})
+	listResp, err := session.post(ctx, client, 3, "resources/list", nil)
 	if err != nil || !listResp.IsSuccess() {
-		return nil, nil
+		return nil
 	}
 
 	var listBody map[string]interface{}
 	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil, nil
+		return nil
 	}
 
 	// JSON-RPC error means the endpoint exists but rejected the call - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil, nil
+		return nil
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	resourcesRaw, _ := result["resources"].([]interface{})
 	if len(resourcesRaw) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// Build a display list of resource URIs
@@ -142,7 +138,7 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 	// server's choice, so the rule cannot let it decide the severity.
 	read, examined := e.readResources(ctx, client, session, uris)
 	if read == nil {
-		return findings, nil
+		return findings
 	}
 
 	// Baseline: unauthenticated read of resource content is high. Escalate to
@@ -178,7 +174,7 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings, nil
+	return findings
 }
 
 // resourceRead is one successfully read resource.
@@ -226,14 +222,9 @@ func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *att
 // returns nil when the read did not produce content, which covers a transport
 // failure, a non-2xx reply, an unparseable body and a JSON-RPC error.
 func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, i int) *resourceRead {
-	resp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		// Distinct ids per read: reusing one id across requests makes a
-		// server's replies ambiguous to correlate.
-		"id":     4 + i,
-		"method": "resources/read",
-		"params": map[string]interface{}{"uri": uri},
-	})
+	// Distinct ids per read: reusing one id across requests makes a server's
+	// replies ambiguous to correlate.
+	resp, err := session.post(ctx, client, 4+i, "resources/read", map[string]interface{}{"uri": uri})
 	if err != nil || !resp.IsSuccess() {
 		return nil
 	}

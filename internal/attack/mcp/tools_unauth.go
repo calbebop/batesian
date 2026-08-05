@@ -41,45 +41,42 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 	// accessible WITHOUT authentication. Injecting opts.Token would mask the finding.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	session, err := initializeMCP(ctx, client, vars.BaseURL)
-	if err != nil {
-		// Not reachable as a legacy MCP server; inconclusive carries the reason
-		// when the target turned out to be a modern-era server.
-		return nil, inconclusive(err)
-	}
+	// A server may expose tools on both protocol wires, and need not gate them the
+	// same way on each, so every wire it serves is probed.
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+		return e.probeSession(ctx, client, session, vars.RandID)
+	})
+}
 
+// probeSession runs the rule against one already-opened wire.
+func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) []attack.Finding {
 	// Skip servers that do not advertise the tools capability; probing them would
 	// produce meaningless noise. Read from the captured handshake capabilities
 	// rather than substring-matching the body.
 	if !session.ServerSupports("tools") {
-		return nil, nil
+		return nil
 	}
 
 	// Step 1: tools/list without any auth token.
-	listResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      3,
-		"method":  "tools/list",
-		"params":  map[string]interface{}{},
-	})
+	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
 	if err != nil || !listResp.IsSuccess() {
-		return nil, nil
+		return nil
 	}
 
 	var listBody map[string]interface{}
 	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil, nil
+		return nil
 	}
 
 	// A JSON-RPC error means auth is enforced on tool methods - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil, nil
+		return nil
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	toolsRaw, _ := result["tools"].([]interface{})
 	if len(toolsRaw) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// Collect tool names for evidence.
@@ -114,25 +111,21 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 	// nothing. Reaching that error proves the invocation path accepts
 	// unauthenticated calls; an auth-enforcing server rejects with 401/403 or an
 	// auth error before tool dispatch.
-	bogusTool := "batesian-nonexistent-" + vars.RandID
-	callResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      4,
-		"method":  "tools/call",
-		"params":  map[string]interface{}{"name": bogusTool, "arguments": map[string]interface{}{}},
-	})
+	bogusTool := "batesian-nonexistent-" + randID
+	callResp, err := session.post(ctx, client, 4, "tools/call",
+		map[string]interface{}{"name": bogusTool, "arguments": map[string]interface{}{}})
 	if err != nil || !callResp.IsSuccess() {
-		return findings, nil // auth gate (401/403) or unreachable; the list finding stands
+		return findings // auth gate (401/403) or unreachable; the list finding stands
 	}
 
 	var callBody map[string]interface{}
 	if err := json.Unmarshal(callResp.Body, &callBody); err != nil {
-		return findings, nil
+		return findings
 	}
 
 	reachable, reason := callDispatchReachable(callBody)
 	if !reachable {
-		return findings, nil
+		return findings
 	}
 
 	findings = append(findings, attack.Finding{
@@ -150,7 +143,7 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings, nil
+	return findings
 }
 
 // callDispatchReachable reports whether a tools/call response for a non-existent
