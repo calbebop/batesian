@@ -75,9 +75,12 @@ than as unreachable.
 ## Both protocol wires
 
 A server built on the current SDKs answers **both** the handshake-based revisions
-and 2026-07-28 on the same endpoint. `mcp-resources-unauth-001` and
-`mcp-tools-unauth-001` are exercised on each wire it serves, because the two need
-not be gated alike: a server can enforce authorization on one and not the other.
+and 2026-07-28 on the same endpoint. The four unauthenticated-access rules,
+`mcp-resources-unauth-001`, `mcp-tools-unauth-001`, `mcp-prompt-unauth-001` and
+`mcp-completion-unauth-001`, are exercised on each wire it serves, because the two
+need not be gated alike: a server can enforce authorization on one and not the
+other. Each wire is capability-gated on its own advertisement, so a surface the
+server exposes on only one era is probed only there.
 
 Findings from the 2026-07-28 wire carry a `[MCP 2026-07-28 wire]` suffix and name
 the wire in their evidence, so a surface exposed on both produces two
