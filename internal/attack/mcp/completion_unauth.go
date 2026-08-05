@@ -71,18 +71,20 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 	// reachable WITHOUT authentication. Injecting opts.Token would mask the finding.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	session, err := initializeMCP(ctx, client, vars.BaseURL)
-	if err != nil {
-		// Not reachable as a legacy MCP server; inconclusive carries the reason
-		// when the target turned out to be a modern-era server.
-		return nil, inconclusive(err)
-	}
+	// A server may expose completion on both protocol wires, and need not gate it
+	// the same way on each, so every wire it serves is probed.
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+		return e.probeSession(ctx, client, session, vars.RandID)
+	})
+}
 
+// probeSession runs the rule against one already-opened wire.
+func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) []attack.Finding {
 	// Skip servers that do not advertise the completions capability; probing them
 	// would produce meaningless noise. Read from the captured handshake object
 	// rather than substring-matching the body.
 	if !session.ServerSupports("completions") {
-		return nil, nil
+		return nil
 	}
 
 	// Probe real refs discovered from the live server first, preferring one that
@@ -109,7 +111,7 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 	// completion answers this with 401/403 or an auth error and stays silent.
 	if firstReachable == nil {
 		synth := completionRef{
-			params:  map[string]interface{}{"type": "ref/prompt", "name": "batesian-nonexistent-" + vars.RandID},
+			params:  map[string]interface{}{"type": "ref/prompt", "name": "batesian-nonexistent-" + randID},
 			argName: "batesian_probe",
 			real:    false,
 			label:   "synthetic probe ref",
@@ -118,7 +120,7 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 	}
 
 	if firstReachable == nil {
-		return nil, nil
+		return nil
 	}
 
 	// Base the reachability finding on the disclosure probe when one was found, so
@@ -165,7 +167,7 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 		})
 	}
 
-	return findings, nil
+	return findings
 }
 
 // probe sends a single unauthenticated completion/complete request for ref and
@@ -173,20 +175,15 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 // transport error, or a non-dispatching JSON-RPC error. Suggestion values are
 // captured only for real refs (synthetic refs never disclose real data).
 func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession, ref completionRef) *completionOutcome {
-	resp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      7,
-		"method":  "completion/complete",
-		// An empty value asks the server to enumerate all suggestions for the
-		// argument. Fuzzy/prefix matchers (the common implementation) return their
-		// full candidate set for the empty prefix, which is exactly the
-		// enumerate-everything behavior an attacker abuses; a non-empty probe value
-		// would be silently filtered out against namespaces that do not share its
-		// prefix (e.g. numeric identifiers).
-		"params": map[string]interface{}{
-			"ref":      ref.params,
-			"argument": map[string]interface{}{"name": ref.argName, "value": ""},
-		},
+	// An empty value asks the server to enumerate all suggestions for the
+	// argument. Fuzzy/prefix matchers (the common implementation) return their
+	// full candidate set for the empty prefix, which is exactly the
+	// enumerate-everything behavior an attacker abuses; a non-empty probe value
+	// would be silently filtered out against namespaces that do not share its
+	// prefix (e.g. numeric identifiers).
+	resp, err := session.post(ctx, client, 7, "completion/complete", map[string]interface{}{
+		"ref":      ref.params,
+		"argument": map[string]interface{}{"name": ref.argName, "value": ""},
 	})
 	if err != nil || !resp.IsSuccess() {
 		return nil
@@ -296,12 +293,7 @@ func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, sessio
 // result object, or ok=false on any transport failure, non-2xx, or JSON-RPC
 // error (which means the listing itself is gated and yields no usable ref).
 func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSession, method string) (map[string]interface{}, bool) {
-	resp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      6,
-		"method":  method,
-		"params":  map[string]interface{}{},
-	})
+	resp, err := session.post(ctx, client, 6, method, nil)
 	if err != nil || !resp.IsSuccess() {
 		return nil, false
 	}

@@ -29,47 +29,44 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 	// accessible WITHOUT authentication. Injecting opts.Token would mask the finding.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	session, err := initializeMCP(ctx, client, vars.BaseURL)
-	if err != nil {
-		// Not reachable as a legacy MCP server; inconclusive carries the reason
-		// when the target turned out to be a modern-era server.
-		return nil, inconclusive(err)
-	}
+	// A server may expose prompts on both protocol wires, and need not gate them
+	// the same way on each, so every wire it serves is probed.
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+		return e.probeSession(ctx, client, session)
+	})
+}
 
+// probeSession runs the rule against one already-opened wire.
+func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) []attack.Finding {
 	// Skip servers that do not advertise the prompts capability - probing them
 	// would produce meaningless noise. This reads the server capabilities from
 	// the handshake captured by initializeMCP (no redundant second initialize),
 	// and parses the structured capabilities object rather than substring-matching
 	// the whole body (which could false-match "prompts" in serverInfo/instructions).
 	if !session.ServerSupports("prompts") {
-		return nil, nil
+		return nil
 	}
 
 	// Call prompts/list without any auth token.
-	listResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      3,
-		"method":  "prompts/list",
-		"params":  map[string]interface{}{},
-	})
+	listResp, err := session.post(ctx, client, 3, "prompts/list", nil)
 	if err != nil || !listResp.IsSuccess() {
-		return nil, nil
+		return nil
 	}
 
 	var listBody map[string]interface{}
 	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil, nil
+		return nil
 	}
 
 	// JSON-RPC error means auth is enforced - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil, nil
+		return nil
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	promptsRaw, _ := result["prompts"].([]interface{})
 	if len(promptsRaw) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// Collect prompt names for evidence.
@@ -104,25 +101,20 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 
 	// Attempt to retrieve content of the first prompt via prompts/get.
 	if len(names) == 0 {
-		return findings, nil
+		return findings
 	}
 
-	getResp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      4,
-		"method":  "prompts/get",
-		"params":  map[string]interface{}{"name": names[0]},
-	})
+	getResp, err := session.post(ctx, client, 4, "prompts/get", map[string]interface{}{"name": names[0]})
 	if err != nil || !getResp.IsSuccess() {
-		return findings, nil
+		return findings
 	}
 
 	var getBody map[string]interface{}
 	if err := json.Unmarshal(getResp.Body, &getBody); err != nil {
-		return findings, nil
+		return findings
 	}
 	if _, hasErr := getBody["error"]; hasErr {
-		return findings, nil
+		return findings
 	}
 
 	content := string(getResp.Body)
@@ -142,5 +134,5 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings, nil
+	return findings
 }
