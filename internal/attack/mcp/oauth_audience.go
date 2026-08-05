@@ -257,6 +257,12 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		if u := parseResourceMetadataURL(resp.Headers.Get("WWW-Authenticate")); u != "" {
 			return u
 		}
+		// An endpoint that answered the handshake is the server, and it issued no
+		// challenge. The remaining candidates are the same server at paths it does
+		// not serve, so walking them only adds 404s.
+		if isMCPInitialize(resp) {
+			return ""
+		}
 	}
 	return ""
 }

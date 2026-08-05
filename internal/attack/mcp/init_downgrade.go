@@ -59,20 +59,9 @@ func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts
 	// WITHOUT proper credentials, so the probe must run with no bearer token.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	var reached bool
-	for _, ep := range endpointCandidates(vars.BaseURL) {
-		findings, epReached := e.probeEndpoint(ctx, client, ep)
-		if epReached {
-			reached = true
-		}
-		if findings != nil {
-			return findings, nil
-		}
-	}
-	if !reached {
-		return nil, attack.ErrInconclusive
-	}
-	return nil, nil
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probeEndpoint(ctx, client, ep)
+	})
 }
 
 func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {

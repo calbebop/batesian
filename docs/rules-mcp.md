@@ -57,6 +57,14 @@ against a server this rule set cannot handshake with they report **inconclusive
 or skip**, never a clean pass. A target that could not be exercised is reported
 as not tested rather than as secure.
 
+## Endpoint discovery
+
+A target that names a path is probed as given; otherwise `/mcp`, `/`, `/api` and
+`/rpc` are tried in that order. The walk **stops at the first path that answers as
+an MCP endpoint**, because the remaining candidates are the same server at paths
+it does not serve, so probing them yields 404s rather than coverage. Only when no
+candidate answers does a rule report that it could not test.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | indicator | CWE-284 |
