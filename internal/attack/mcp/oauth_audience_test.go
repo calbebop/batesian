@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -217,19 +218,43 @@ func TestOAuthAudience_SecureServer_AllRejected(t *testing.T) {
 	}
 }
 
-func TestOAuthAudience_PreconditionNotMet_NoAudience(t *testing.T) {
-	// Server responds 404 to everything: no advertisement, no metadata,
-	// no operator input. Rule must skip silently.
-	srv := httptest.NewServer(http.NotFoundHandler())
+// "The precondition is not met" covers two different situations, and they are not
+// reported the same way.
+//
+// An MCP server that answers the handshake but advertises no resource metadata is
+// genuinely not applicable: there is no audience to check against, and a clean
+// result is honest.
+func TestOAuthAudience_PreconditionNotMet_MCPServerWithoutMetadata(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		initializeOK(w) // no WWW-Authenticate challenge, no metadata anywhere
+	})
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
 	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected a clean result for an MCP server with no metadata, got err=%v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when audience cannot be resolved, got %d", len(findings))
+	}
+}
+
+// A target where nothing answers was never exercised. Reporting clean there says
+// the audience handling is sound about a host the rule never reached.
+func TestOAuthAudience_NothingReachableIsNotTested(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive against a 404-everything target, got err=%v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }
 

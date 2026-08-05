@@ -123,15 +123,8 @@ func TestCandidateWalk_StopsOnceAnEndpointAnswers(t *testing.T) {
 // The boundary the change must not cross: when nothing answers, every candidate
 // is still tried and the rule reports that it could not test, rather than a clean
 // pass.
-//
-// oauth-audience is excluded. It reports a clean pass rather than inconclusive
-// when no OAuth surface is reachable, which predates this change and is a
-// separate question from the candidate walk.
 func TestCandidateWalk_NothingAnswersIsStillInconclusive(t *testing.T) {
 	for name, exec := range walkExecutors() {
-		if name == "oauth-audience" {
-			continue
-		}
 		t.Run(name, func(t *testing.T) {
 			var hits int64
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
