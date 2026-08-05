@@ -36,20 +36,9 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 	canaryOpts.Token = canary
 	client := attack.NewHTTPClient(canaryOpts, vars)
 
-	var reached bool
-	for _, ep := range endpointCandidates(vars.BaseURL) {
-		f, epReached := e.probe(ctx, client, ep, canary)
-		if epReached {
-			reached = true
-		}
-		if f != nil {
-			return f, nil
-		}
-	}
-	if !reached {
-		return nil, attack.ErrInconclusive
-	}
-	return nil, nil
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probe(ctx, client, ep, canary)
+	})
 }
 
 func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool) {

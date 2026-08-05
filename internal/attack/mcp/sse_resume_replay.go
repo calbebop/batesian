@@ -44,20 +44,9 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
 	}
 
-	var reached bool
-	for _, ep := range endpointCandidates(vars.BaseURL) {
-		f, epReached := e.probe(ctx, client, raw, ep, tokenA, tokenB)
-		if epReached {
-			reached = true
-		}
-		if f != nil {
-			return f, nil
-		}
-	}
-	if !reached {
-		return nil, attack.ErrInconclusive
-	}
-	return nil, nil
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probe(ctx, client, raw, ep, tokenA, tokenB)
+	})
 }
 
 func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string) ([]attack.Finding, bool) {

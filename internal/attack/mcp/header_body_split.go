@@ -30,20 +30,9 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	var reached bool
-	for _, ep := range endpointCandidates(vars.BaseURL) {
-		f, epReached := e.probe(ctx, client, ep)
-		if epReached {
-			reached = true
-		}
-		if f != nil {
-			return f, nil
-		}
-	}
-	if !reached {
-		return nil, attack.ErrInconclusive
-	}
-	return nil, nil
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probe(ctx, client, ep)
+	})
 }
 
 func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {

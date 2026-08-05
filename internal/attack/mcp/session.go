@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 
+	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
@@ -15,6 +16,31 @@ var candidatePaths = []string{"/mcp", "/", "/api", "/rpc"}
 // paths are appended to it; see endpoint.Candidates.
 func endpointCandidates(baseURL string) []string {
 	return endpoint.Candidates(baseURL, candidatePaths)
+}
+
+// probeCandidates runs probe against each candidate endpoint under baseURL and
+// returns the first findings produced.
+//
+// probe reports whether the candidate answered as an MCP endpoint, and the walk
+// stops there whether or not that candidate yielded a finding. The candidate list
+// exists to locate the server, not to test several of them: once a path has
+// answered, the remaining candidates are the same server at paths it does not
+// serve, so probing them buys 404s rather than coverage. Measured against
+// @modelcontextprotocol/server-everything, that walk was 30% of a scan's requests.
+//
+// When no candidate answers, the rule was never exercised, which is
+// ErrInconclusive rather than a clean pass.
+func probeCandidates(baseURL string, probe func(endpoint string) ([]attack.Finding, bool)) ([]attack.Finding, error) {
+	for _, ep := range endpointCandidates(baseURL) {
+		findings, reached := probe(ep)
+		if findings != nil {
+			return findings, nil
+		}
+		if reached {
+			return nil, nil
+		}
+	}
+	return nil, attack.ErrInconclusive
 }
 
 // mcpSession holds the discovered MCP endpoint and the session ID returned by

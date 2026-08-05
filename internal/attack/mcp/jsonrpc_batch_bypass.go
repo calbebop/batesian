@@ -51,20 +51,9 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 	// server's auth gate. Injecting opts.Token would mask the bypass.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	var reached bool
-	for _, ep := range endpointCandidates(vars.BaseURL) {
-		f, epReached := e.probeEndpoint(ctx, client, ep)
-		if epReached {
-			reached = true
-		}
-		if f != nil {
-			return f, nil
-		}
-	}
-	if !reached {
-		return nil, attack.ErrInconclusive
-	}
-	return nil, nil
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probeEndpoint(ctx, client, ep)
+	})
 }
 
 // probeEndpoint runs the bypass check against a single candidate endpoint.
