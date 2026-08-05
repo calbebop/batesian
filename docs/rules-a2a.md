@@ -129,6 +129,18 @@ a push-notification config is normal A2A behaviour and is **not** reported.
 Supplying `--oob-url` points the callback at an external collector and emits
 operator guidance for manual confirmation.
 
+Two bindings are driven. On **v1.0** the callback is registered through
+`CreateTaskPushNotificationConfig`, whose params are a `TaskPushNotificationConfig`
+carrying a flat `url`; there is no way to attach one to a send, because
+`SendMessageConfiguration` has no such field. On **v0.3** it travels inline on
+`message/send` under `configuration.pushNotificationConfig`, and is also set
+explicitly with `tasks/pushNotificationConfig/set`.
+
+A callback can only fire for a task that is still running: a config registered
+against a task the agent has already completed has no status update left to
+notify on. Against a long-running agent on the official SDK this reports a
+confirmed finding, with the echoed token as evidence.
+
 Confirmed unfixed in the reference `a2a-python` SDK as of April 2026
 ([issue #786](https://github.com/google-a2a/a2a-python/issues/786)).
 

