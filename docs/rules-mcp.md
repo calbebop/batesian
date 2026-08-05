@@ -335,9 +335,15 @@ server that instead **adopts a client-chosen id** is vulnerable to session
 fixation. The rule confirms the failure with a control to avoid false positives
 on servers that track no sessions at all:
 
-1. `initialize` carrying a client-chosen `Mcp-Session-Id`. If the server returns
-   its **own** id instead, it mints the id server-side, which is secure, so no
-   finding is raised.
+0. An ordinary `initialize` establishes that the target is a reachable MCP
+   server. Reachability is judged here, and not from the seeded handshake below,
+   because a server may reject that handshake outright: the reference
+   implementation answers it `400` / `-32000 "Bad Request: No valid session ID
+   provided"`. That refusal is the defence this rule tests for, so it is graded
+   as a clean pass rather than as an untestable target.
+1. `initialize` carrying a client-chosen `Mcp-Session-Id`. If the server rejects
+   it, or returns its **own** id instead, the id is not client-controllable and
+   no finding is raised.
 2. A follow-up call presenting the attacker-chosen id must be **accepted**.
 3. Control: the same call presenting a different, **never-initialized** random id
    must be **rejected** (404). If it is also accepted, the server enforces no

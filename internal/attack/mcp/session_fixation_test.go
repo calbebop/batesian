@@ -41,6 +41,9 @@ func writeToolsResult(w http.ResponseWriter, id interface{}) {
 //   - "fixable":      adopts a client-supplied Mcp-Session-Id; rejects unknown ids (404)
 //   - "server-minted": ignores the supplied id and mints its own; rejects unknown ids
 //   - "sessionless":  does not track sessions at all (accepts any id, never 404)
+//   - "rejects-seeded": refuses an initialize that carries a client-chosen id,
+//     which is what the reference implementation does and what this rule tests
+//     for. A plain initialize on the same endpoint still succeeds.
 func fixationServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	valid := map[string]bool{}
@@ -58,6 +61,21 @@ func fixationServer(mode string) *httptest.Server {
 		case "initialize":
 			sid := ""
 			switch mode {
+			case "rejects-seeded":
+				if supplied != "" {
+					// Byte-for-byte what @modelcontextprotocol/server-everything
+					// answers a seeded initialize.
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": nil,
+						"error": map[string]interface{}{
+							"code": -32000, "message": "Bad Request: No valid session ID provided",
+						},
+					})
+					return
+				}
+				counter++
+				sid = fmt.Sprintf("srv-%d", counter)
 			case "fixable":
 				if supplied != "" {
 					sid = supplied // VULNERABLE: trusts the client-chosen id
@@ -157,11 +175,37 @@ func TestSessionFixation_SessionlessIsNotFixation(t *testing.T) {
 }
 
 // TestSessionFixation_NotMCPServer: a non-MCP server yields no findings.
+//
+// This is the boundary the fix below must not erase. Refusing the seeded id and
+// not being an MCP server at all look identical from the seeded handshake alone,
+// and only the second is untested.
 func TestSessionFixation_NotMCPServer(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
 
 	assertInconclusive(t, mcpattack.NewSessionFixationExecutor(sfRuleCtx()), srv.URL, testOpts())
+}
+
+// TestSessionFixation_RejectsSeededSessionIsClean: a server that refuses an
+// initialize carrying a client-chosen session id is doing the right thing, and
+// the rule must report a clean pass.
+//
+// The rule used to use the seeded handshake as its only reachability probe, so
+// this refusal read as "no MCP server here" and the rule reported inconclusive
+// against every server that implements the defence. The reference
+// implementation is one of them.
+func TestSessionFixation_RejectsSeededSessionIsClean(t *testing.T) {
+	srv := fixationServer("rejects-seeded")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
+		Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("expected a clean pass, got err=%v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected no findings against a server that rejects the seeded id, got %d: %+v", len(findings), findings)
+	}
 }
 
 // TestSessionFixation_CrossPrincipal: with a second principal configured the
