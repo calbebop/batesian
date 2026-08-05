@@ -80,7 +80,7 @@ jobs:
           exit 1
 
       - name: Check era detection against it
-        run: go test -tags=integration -run 'TestDetectEra_Live|TestInitializeMCP_Live' -v ./internal/attack/mcp/
+        run: go test -tags=integration -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live' -v ./internal/attack/mcp/
         env:
           BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7799/mcp
 

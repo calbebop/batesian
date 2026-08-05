@@ -81,6 +81,9 @@ func oauthNotApplicable(ctx context.Context, client *attack.HTTPClient, baseURL 
 type mcpSession struct {
 	Endpoint  string
 	SessionID string
+	// Era is the wire this session speaks. The zero value, EraUnknown, behaves as
+	// legacy so the handshake-based rules that predate era support are unchanged.
+	Era Era
 	// ProtocolVersion is the MCP version in effect for this session: the
 	// protocolVersion the server returned in its initialize result, or the
 	// offered version if the server did not echo one. Sent on subsequent
