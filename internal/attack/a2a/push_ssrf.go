@@ -159,20 +159,38 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 	}
 
-	// Attempt 3: HTTP+JSON binding (REST API style, some older deployments)
-	if !taskAccepted {
-		httpResp, err3 := client.POST(ctx, vars.BaseURL+"/tasks/send", map[string]string{}, buildHTTPTaskRequest(callbackURL, token, vars.RandID))
-		if err3 == nil && httpResp.StatusCode != 404 {
+	// Attempt 3: the HTTP+JSON (REST) binding, where the card advertises one.
+	//
+	// This used to POST a fixed /tasks/send. No such route exists: the REST
+	// binding names its methods message:send and
+	// tasks/{id}/pushNotificationConfigs, and a2a-sdk answers /tasks/send 404.
+	// Nor can the prefix be guessed, since the deployment chooses it and chooses
+	// which protocol version sits under it. So the base comes from the card, and
+	// an agent that advertises no HTTP+JSON interface is not probed at all.
+	if restBase := resolveHTTPJSONBase(ctx, client, vars.BaseURL); !taskAccepted && restBase != "" {
+		sendResp3, err3 := client.POST(ctx, restBase+"/message:send", map[string]string{"A2A-Version": "1.0"},
+			buildRESTSendRequest(vars.RandID))
+		if err3 == nil && sendResp3.StatusCode != 404 {
 			reached = true
 		}
-		// The HTTP+JSON binding returns a task object rather than a JSON-RPC
-		// envelope, so IsAccepted is the wrong test here. An explicit error
-		// envelope still has to be excluded: without that, any service answering
-		// 200 with a JSON error body counts as having accepted a task, and the
-		// rule goes on to wait for a callback that was never registered.
-		if err3 == nil && httpResp.IsSuccess() && httpResp.IsJSON() && !isJSONRPCError(httpResp.Body) {
-			taskAccepted = true
-			acceptedBinding = "HTTP+JSON"
+		// The REST binding answers with a task object rather than a JSON-RPC
+		// envelope, so IsAccepted is the wrong test. An explicit error body still
+		// has to be excluded: without that, any service answering 200 with a JSON
+		// error counts as having accepted a task, and the rule goes on to wait
+		// for a callback that was never registered.
+		if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
+			// As on JSON-RPC v1.0, the callback cannot ride along with the send:
+			// the configuration block has no push field. It is registered against
+			// the task that came back.
+			if taskID := restTaskID(sendResp3.Body); taskID != "" {
+				cfgResp, cfgErr := client.POST(ctx, restBase+"/tasks/"+taskID+"/pushNotificationConfigs",
+					map[string]string{"A2A-Version": "1.0"},
+					map[string]interface{}{"url": callbackURL, "token": token})
+				if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+					taskAccepted = true
+					acceptedBinding = "HTTP+JSON/pushNotificationConfigs"
+				}
+			}
 		}
 	}
 
@@ -265,19 +283,37 @@ func buildV03SendRequest(callbackURL, token, randID string) map[string]interface
 	}
 }
 
-// buildHTTPTaskRequest creates the A2A task/send request body for HTTP+JSON binding.
-func buildHTTPTaskRequest(callbackURL, token, taskID string) map[string]interface{} {
-	pushConfig := map[string]string{"url": callbackURL, "token": token}
+// restTaskID pulls the task id out of a REST message:send reply. The REST
+// binding has no JSON-RPC envelope, so extractTaskContext, which requires a
+// result object, finds nothing here. a2a-sdk answers with the SendMessageResponse
+// oneof, {"task":{...}}; the bare task object is accepted too, since the wrapper
+// is a proto detail rather than something the binding guarantees.
+func restTaskID(body []byte) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+	if task, ok := m["task"].(map[string]interface{}); ok {
+		if id, _ := task["id"].(string); id != "" {
+			return id
+		}
+	}
+	id, _ := m["id"].(string)
+	return id
+}
+
+// buildRESTSendRequest creates the body for a REST message:send. It is a
+// SendMessageRequest, so the message sits under `message` and carries no push
+// config; the callback is registered separately against the returned task.
+func buildRESTSendRequest(randID string) map[string]interface{} {
 	return map[string]interface{}{
-		"id": "batesian-" + taskID,
 		"message": map[string]interface{}{
-			"role": "user",
+			"messageId": "batesian-" + randID,
+			"role":      "ROLE_USER",
 			"parts": []interface{}{
-				map[string]string{"type": "text", "text": "ping"},
+				map[string]string{"text": "ping"},
 			},
 		},
-		"pushNotificationConfig": pushConfig,
-		"pushNotification":       pushConfig,
 	}
 }
 

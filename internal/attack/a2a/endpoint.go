@@ -40,6 +40,37 @@ func (i a2aDiscoveryInterface) isJSONRPC() bool {
 	return strings.EqualFold(i.ProtocolBinding, "JSONRPC") || strings.EqualFold(i.Transport, "JSONRPC")
 }
 
+func (i a2aDiscoveryInterface) isHTTPJSON() bool {
+	return strings.EqualFold(i.ProtocolBinding, "HTTP+JSON") || strings.EqualFold(i.Transport, "HTTP+JSON")
+}
+
+// resolveHTTPJSONBase returns the base URL of the card's HTTP+JSON (REST)
+// interface, pinned to the target host, or "" when none is advertised.
+//
+// The REST binding's paths cannot be guessed. a2a-sdk mounts them under a
+// caller-chosen prefix and lets the deployment decide which protocol version
+// sits where, so on one server /message:send is the v1.0 route and
+// /v1/message:send is the v0.3 compatibility route. The card is the only thing
+// that says where the binding lives, and an agent that advertises no HTTP+JSON
+// interface has none to probe.
+func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL string) string {
+	card, found := fetchDiscoveryCard(ctx, client, baseURL)
+	if !found {
+		return ""
+	}
+	for _, group := range [][]a2aDiscoveryInterface{card.SupportedInterfaces, card.AdditionalInterfaces} {
+		for _, iface := range group {
+			if iface.isHTTPJSON() && hasHTTPScheme(iface.URL) {
+				return strings.TrimSuffix(pinToTargetHost(iface.URL, baseURL), "/")
+			}
+		}
+	}
+	if strings.EqualFold(card.PreferredTransport, "HTTP+JSON") && hasHTTPScheme(card.URL) {
+		return strings.TrimSuffix(pinToTargetHost(card.URL, baseURL), "/")
+	}
+	return ""
+}
+
 // resolveA2AEndpoint returns the JSON-RPC endpoint to probe and whether a usable
 // endpoint was found. It prefers the URL the agent card declares for the JSON-RPC
 // transport; failing that, it probes a small set of conventional paths. The
