@@ -62,10 +62,29 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	fixed := "batesian-fixed-" + vars.RandID
 	unseeded := "batesian-unseeded-" + vars.RandID
 
-	// Step 1: initialize while presenting a client-chosen session id.
-	ep, assigned, ok := e.initWithSession(ctx, client, vars.BaseURL, fixed)
+	// Reachability is established with an ordinary handshake, separately from
+	// the attack. A server that refuses the seeded id at initialize is the
+	// defence this rule tests for, and reading that refusal as "nothing here"
+	// made the rule report inconclusive against exactly the servers it covers:
+	// the reference implementation answers the seeded initialize with
+	// HTTP 400 -32000 "Bad Request: No valid session ID provided", while a
+	// plain initialize on the same endpoint returns 200 and a session id.
+	//
+	// Going through initializeMCP also gives this rule era detection, so a
+	// modern-era target is reported as speaking an unsupported protocol version
+	// rather than as unreachable.
+	session, err := initializeMCP(ctx, client, vars.BaseURL)
+	if err != nil {
+		return nil, inconclusive(err)
+	}
+	ep := session.Endpoint
+
+	// Step 1: initialize again, this time presenting a client-chosen session id.
+	assigned, ok := e.initWithSession(ctx, client, ep, fixed)
 	if !ok {
-		return nil, attack.ErrInconclusive // not a responsive MCP server
+		// The endpoint is a working MCP server, so this is a rejection of the
+		// seeded id rather than an unreachable target. That is secure.
+		return nil, nil
 	}
 	// Discriminator: the server returned its OWN session id, ignoring the
 	// supplied one. That is the correct, secure behavior - no finding.
@@ -120,31 +139,32 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	return []attack.Finding{e.finding(ep, fixed, crossPrincipal, chain)}, nil
 }
 
-// initWithSession sends an initialize request carrying a client-chosen
-// Mcp-Session-Id header and returns the working endpoint, the session id the
-// server actually assigned (its response header, possibly empty), and whether a
-// responsive MCP server was found.
-func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, baseURL, supplied string) (endpoint, assigned string, ok bool) {
-	for _, ep := range endpointCandidates(baseURL) {
-		resp, err := client.POST(ctx, ep, map[string]string{"Mcp-Session-Id": supplied}, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "initialize",
-			"params": map[string]interface{}{
-				"protocolVersion": latestStable,
-				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-				"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
-			},
-		})
-		if err != nil || !resp.IsSuccess() {
-			continue
-		}
-		if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
-			continue
-		}
-		return ep, resp.Headers.Get("Mcp-Session-Id"), true
+// initWithSession sends an initialize request to a known endpoint carrying a
+// client-chosen Mcp-Session-Id header. It returns the session id the server
+// assigned (its response header, possibly empty) and whether the handshake was
+// accepted at all.
+//
+// ok is false only when the server refused this handshake. The endpoint is
+// already known to speak MCP, so a refusal here means the seeded id was
+// rejected, which is the secure behaviour rather than an unreachable target.
+func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, endpoint, supplied string) (assigned string, ok bool) {
+	resp, err := client.POST(ctx, endpoint, map[string]string{"Mcp-Session-Id": supplied}, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": latestStable,
+			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
+		},
+	})
+	if err != nil || !resp.IsSuccess() {
+		return "", false
 	}
-	return "", "", false
+	if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		return "", false
+	}
+	return resp.Headers.Get("Mcp-Session-Id"), true
 }
 
 // sessionAccepted reports whether a follow-up call presenting sessionID is
