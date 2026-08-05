@@ -423,14 +423,17 @@ simply don't implement SEP-2243), all with body `method = tools/list`:
    it enforces header *presence* but not header/body *consistency*, so a gateway
    that routes or rate-limits on `Mcp-Method` can be bypassed.
 
-**Currency.** SEP-2243 arrived in **2026-07-28**, and these rules negotiate an
-earlier revision, so in practice step 1 is accepted and the rule stops there. That
-is reported as **not tested**, naming the revision, rather than as clean: a server
-on a wire with no such requirement was never asked the question. A server that does
-enforce header presence is tested on its merits whatever version it advertises, and
+**Currency.** SEP-2243 arrived in **2026-07-28**, so the check is driven on every
+wire a server serves and is only meaningful on that one. A server whose modern wire
+enforces presence is tested on its merits there, and a legacy wire that ignores the
+header contributes nothing.
+
+**Not tested** is reported only when no wire exercised the check and the reason was
+the revision: a legacy-only server has no such requirement to violate, and calling
+that clean would assert header/body consistency about a server never asked. A
+server that enforces header presence is tested whatever version it advertises, and
 one on 2026-07-28 or later that ignores the header reports clean, since this rule's
-subject is the mismatch rather than the absence. Exercising the requirement on its
-own wire needs modern-era transport support, which is tracked separately.
+subject is the mismatch rather than the absence.
 
 ---
 

@@ -41,9 +41,10 @@ var nameBearingMethods = map[string]string{
 	"resources/read": "uri",
 }
 
-// post sends a JSON-RPC request on whichever wire this session belongs to,
-// building the headers and params each era requires.
-func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id interface{}, method string, params map[string]interface{}) (*attack.Response, error) {
+// request builds the headers and body this session's era requires for one call.
+// It is split out of post so postShaping can reshape the headers without
+// duplicating the era rules.
+func (s mcpSession) request(id interface{}, method string, params map[string]interface{}) (map[string]string, map[string]interface{}) {
 	if params == nil {
 		params = map[string]interface{}{}
 	}
@@ -72,13 +73,36 @@ func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id inte
 			}
 		}
 	}
+	if headers == nil {
+		headers = map[string]string{}
+	}
 
-	return client.POST(ctx, s.Endpoint, headers, map[string]interface{}{
+	return headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
-	})
+	}
+}
+
+// post sends a JSON-RPC request on whichever wire this session belongs to,
+// building the headers and params each era requires.
+func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id interface{}, method string, params map[string]interface{}) (*attack.Response, error) {
+	headers, body := s.request(id, method, params)
+	return client.POST(ctx, s.Endpoint, headers, body)
+}
+
+// postShaping is post for a rule that must send a deliberately malformed request.
+// shape receives the headers this era would have sent and may change or delete
+// any of them, which is how the SEP-2243 rule omits or mismatches Mcp-Method
+// without also having to rebuild the _meta block the era requires.
+func (s mcpSession) postShaping(ctx context.Context, client *attack.HTTPClient, id interface{}, method string,
+	params map[string]interface{}, shape func(map[string]string)) (*attack.Response, error) {
+	headers, body := s.request(id, method, params)
+	if shape != nil {
+		shape(headers)
+	}
+	return client.POST(ctx, s.Endpoint, headers, body)
 }
 
 // modernMeta is the _meta block every modern request must carry. clientCapabilities

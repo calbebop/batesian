@@ -165,3 +165,87 @@ func TestSplit_NotMCP(t *testing.T) {
 
 	assertInconclusive(t, mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
+
+// The case this rule was written for and could never reach until the modern
+// transport existed: a server whose 2026-07-28 wire enforces Mcp-Method presence
+// but not its value. Until now the rule opened a 2025-era session, where the
+// requirement does not exist, and stopped at its first probe.
+func TestSplit_VulnerableOnTheModernWire(t *testing.T) {
+	ts := modernSplitServer(t, false)
+	defer ts.Close()
+
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding on the modern wire, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
+		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+	if !strings.Contains(findings[0].Title, "2026-07-28 wire") {
+		t.Errorf("a modern-wire finding should say so: %q", findings[0].Title)
+	}
+}
+
+// A modern wire that validates the value is secure, and must stay silent.
+func TestSplit_StrictOnTheModernWire(t *testing.T) {
+	ts := modernSplitServer(t, true)
+	defer ts.Close()
+
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings against a strict modern server, got %d: %+v", len(findings), findings)
+	}
+}
+
+// modernSplitServer serves only the 2026-07-28 wire. It always rejects a missing
+// Mcp-Method, as the SDK does; strict decides whether it also rejects a mismatched
+// one, which is the difference between secure and the split-brain.
+func modernSplitServer(t *testing.T, strict bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		w.Header().Set("Content-Type", "application/json")
+
+		// No legacy wire here: the handshake is refused, so the rule can only
+		// reach this server through server/discover.
+		if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]interface{}{"code": -32022, "message": "UnsupportedProtocolVersion"},
+			})
+			return
+		}
+		hdr := r.Header.Get("Mcp-Method")
+		if hdr == "" || (strict && hdr != method) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+			})
+			return
+		}
+		result := map[string]interface{}{"cacheScope": "private", "resultType": "complete"}
+		switch method {
+		case "server/discover":
+			result["supportedVersions"] = []string{"2026-07-28"}
+			result["capabilities"] = map[string]interface{}{"tools": map[string]interface{}{}}
+		case "tools/list":
+			result["tools"] = []interface{}{map[string]interface{}{"name": "echo"}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id, "result": result,
+		})
+	}))
+}
