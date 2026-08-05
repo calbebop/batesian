@@ -62,8 +62,9 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	// Step 1: Discover the OAuth metadata endpoint to find the registration endpoint.
 	registrationEndpoint, err := e.discoverRegistrationEndpoint(ctx, client, vars.BaseURL)
 	if err != nil {
-		// Not a finding - this MCP server may not use OAuth 2.1.
-		return nil, nil //nolint:nilerr
+		// Not a finding - this MCP server may not use OAuth 2.1. That holds only
+		// for a server that answered; an unreachable target was never tested.
+		return nil, oauthNotApplicable(ctx, client, vars.BaseURL) //nolint:nilerr
 	}
 
 	// Step 2: Unauthenticated registration requesting admin/write scopes.

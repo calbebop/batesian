@@ -65,7 +65,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	// separate host), and OIDC deployments expose openid-configuration. Skip when
 	// none is present.
 	if !oauthMetadataPresent(ctx, client, vars.BaseURL) {
-		return nil, nil
+		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
 	}
 
 	// Step 2: Forge the three probe tokens.

@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,8 +243,9 @@ func TestTokenReplay_AlternateDiscoveryPaths(t *testing.T) {
 	}
 }
 
+// A reachable MCP server with no OAuth metadata is not applicable: clean.
 func TestTokenReplay_NoOAuthMetadata(t *testing.T) {
-	ts := httptest.NewServer(http.NotFoundHandler())
+	ts, _ := mountedMCPServer(t)
 	defer ts.Close()
 
 	exec := mcpattack.NewTokenReplayExecutor(tokenReplayRC())
@@ -253,6 +255,17 @@ func TestTokenReplay_NoOAuthMetadata(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when no OAuth metadata present, got %d", len(findings))
+	}
+}
+
+func TestTokenReplay_NothingReachableIsNotTested(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	_, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when nothing answered, got err=%v", err)
 	}
 }
 

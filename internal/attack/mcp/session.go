@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -41,6 +42,34 @@ func probeCandidates(baseURL string, probe func(endpoint string) ([]attack.Findi
 		}
 	}
 	return nil, attack.ErrInconclusive
+}
+
+// oauthNotApplicable converts an OAuth-gated rule's "no OAuth surface here" into
+// the right answer for the caller.
+//
+// These rules gate on an OAuth surface: an authorization-server document, a
+// protected-resource document, a registration endpoint. When none is reachable
+// they used to report a clean pass, which covers two different situations. An MCP
+// server that exposes no OAuth is genuinely not applicable, and clean is honest.
+// A target where nothing answered at all was never exercised, and clean there
+// says the OAuth handling is sound about a host the rule never reached.
+//
+// Reachability is settled with responsiveMCP, one request per candidate, stopping
+// at the first that answers. On a server mounted at /mcp that is a single extra
+// request, paid only on the path where the rule was about to bail. Era detection
+// runs only when nothing answered, so a modern-era target is reported as speaking
+// an unsupported protocol version rather than as unreachable.
+func oauthNotApplicable(ctx context.Context, client *attack.HTTPClient, baseURL string) error {
+	endpoints := endpointCandidates(baseURL)
+	for _, ep := range endpoints {
+		if responsiveMCP(ctx, client, ep) {
+			return nil
+		}
+	}
+	if err := modernEraReason(ctx, client, endpoints); err != nil {
+		return inconclusive(err)
+	}
+	return attack.ErrInconclusive
 }
 
 // mcpSession holds the discovered MCP endpoint and the session ID returned by

@@ -58,8 +58,9 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	regEP, authEP := discoverOAuthEndpoints(ctx, client, vars.BaseURL)
 	if authEP == "" || regEP == "" {
 		// No authorization endpoint, or no DCR endpoint to obtain a client_id.
-		// CIMD-only (2025-11-25) and non-OAuth servers land here: not applicable.
-		return nil, nil
+		// CIMD-only (2025-11-25) and non-OAuth servers land here: not applicable,
+		// but only when something actually answered.
+		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
 	}
 
 	// Register a client with an off-origin redirect. We use a domain unrelated to

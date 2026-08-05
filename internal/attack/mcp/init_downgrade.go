@@ -73,7 +73,7 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 		// probing whether the endpoint answers initialize with a JSON-RPC
 		// response at all. A version-rejection error still counts as reached:
 		// the endpoint is testable, it just declined the offered version.
-		if !e.responsiveMCP(ctx, client, ep) {
+		if !responsiveMCP(ctx, client, ep) {
 			return nil, false // not a responsive MCP endpoint
 		}
 		return nil, true // reached, but the offered version was rejected - nothing to confirm
@@ -116,7 +116,10 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 // response (a result OR an error envelope). A version-rejection error still
 // counts: the endpoint speaks MCP, it just declined the offered version, so the
 // rule reached a testable endpoint (clean) rather than being unable to test.
-func (e *InitDowngradeExecutor) responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bool {
+//
+// One request, and no session bookkeeping, which is why the OAuth-gated rules use
+// it rather than a full handshake to answer "is this even an MCP server".
+func responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bool {
 	resp, err := client.POST(ctx, ep, nil, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,

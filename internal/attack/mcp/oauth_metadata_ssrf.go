@@ -40,7 +40,9 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 
 	registrationEndpoint, ok := e.discoverRegistrationEndpoint(ctx, client, vars.BaseURL)
 	if !ok {
-		return nil, nil // server does not advertise OAuth DCR
+		// The server advertises no OAuth DCR, which is not applicable rather than
+		// clean only if the server answered at all.
+		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
 	}
 
 	// Resolve the OOB listener (external if provided, else a local one).
