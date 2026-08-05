@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +22,12 @@ func hbsRuleCtx() attack.RuleContext {
 //   - "split":     requires Mcp-Method presence but ignores its VALUE (vulnerable)
 //   - "strict":    rejects missing OR mismatched Mcp-Method with 400/-32020
 //   - "unaware":   ignores Mcp-Method entirely (not SEP-2243-aware)
-func splitServer(mode string) *httptest.Server {
+func splitServer(mode string) *httptest.Server { return splitServerAt(mode, "2025-06-18") }
+
+// splitServerAt advertises the given protocol revision, which decides whether
+// "ignores Mcp-Method" is expected for that wire or a gap on a wire that requires
+// the header.
+func splitServerAt(mode, version string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -49,7 +55,7 @@ func splitServer(mode string) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
-					"protocolVersion": "2025-06-18",
+					"protocolVersion": version,
 					"serverInfo":      map[string]interface{}{"name": "split-fixture", "version": "1.0"},
 					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 				},
@@ -115,13 +121,40 @@ func TestSplit_Strict(t *testing.T) {
 	}
 }
 
-// TestSplit_Unaware: ignores Mcp-Method entirely => not SEP-2243-aware, no finding.
-func TestSplit_Unaware(t *testing.T) {
+// TestSplit_UnawareOnALegacyWireIsNotTested: a server that ignores Mcp-Method on a
+// pre-2026-07-28 wire has no requirement to violate, so the rule stops at its
+// first probe having tested nothing.
+//
+// This used to report clean, which asserted header/body consistency about a
+// server that was never asked, on every scan of every legacy target. Since
+// SEP-2243 arrived in 2026-07-28 and these rules negotiate an earlier revision,
+// that was the outcome for every server in practice.
+func TestSplit_UnawareOnALegacyWireIsNotTested(t *testing.T) {
 	ts := splitServer("unaware")
 	defer ts.Close()
 
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive on a legacy wire, got err=%v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
+	}
+	if !strings.Contains(err.Error(), "2026-07-28") {
+		t.Errorf("skip reason should name the revision that introduced the requirement, got %q", err)
+	}
+}
+
+// On a wire that does carry the requirement, a server ignoring the header is a
+// real observation rather than an untested one. It is still not this rule's
+// subject, which is the mismatch, so the result is clean and not a finding.
+func TestSplit_UnawareOnAModernWireIsClean(t *testing.T) {
+	ts := splitServerAt("unaware", "2026-07-28")
+	defer ts.Close()
+
 	if findings := runSplit(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a header-unaware server, got %d: %+v", len(findings), findings)
+		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
 	}
 }
 
