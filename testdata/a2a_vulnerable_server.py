@@ -178,11 +178,20 @@ def handle_get_task(req_id, params: dict) -> Response:
 
 
 async def handle_push_config(req_id, params: dict) -> Response:
-    # Deployments carry the callback either nested under pushNotificationConfig
-    # (the v0.3 shape) or flat on params (the shape the a2a-sdk v1.0 two-step
-    # uses). Accept both, so this fixture exercises a caller that sends either.
+    # Two real shapes, both taken from the protocol rather than from what our own
+    # scanner happens to send:
+    #   v0.3  tasks/pushNotificationConfig/set -> params.pushNotificationConfig.url
+    #   v1.0  CreateTaskPushNotificationConfig -> params IS a
+    #         TaskPushNotificationConfig, whose callback field is a flat `url`
+    #         (fields: tenant, id, taskId, url, token, authentication).
+    #
+    # An earlier version of this fixture also accepted a flat
+    # `pushNotificationUrl`, on the mistaken belief that it was the v1.0 shape.
+    # No SDK defines that field: a2a-sdk v1 rejects it with -32602 "has no field
+    # named". Accepting it here made the fixture vouch for a request no real
+    # agent answers, which is the reverse of what a validation target is for.
     config = params.get("pushNotificationConfig", {})
-    callback_url = config.get("url", "") or params.get("pushNotificationUrl", "")
+    callback_url = config.get("url", "") or params.get("url", "")
     if not config:
         config = {"url": callback_url, "token": params.get("token", "")}
 
