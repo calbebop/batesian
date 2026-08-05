@@ -30,28 +30,69 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probe(ctx, client, ep)
+	// Set only when the server turned out not to enforce Mcp-Method presence, in
+	// which case it carries the version that session negotiated. A server that
+	// does enforce presence is tested on its merits and never sets this, whatever
+	// version it advertises.
+	unawareAt := ""
+	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		f, reached, unaware := e.probe(ctx, client, ep)
+		if unaware != "" {
+			unawareAt = unaware
+		}
+		return f, reached
 	})
+	if err != nil || len(findings) > 0 {
+		return findings, err
+	}
+
+	// The server did not enforce Mcp-Method presence, so the rule stopped at its
+	// first probe. Whether that is a clean result depends on the revision.
+	//
+	// Mcp-Method mirroring and its -32020 HeaderMismatch rejection were introduced
+	// by SEP-2243 in 2026-07-28. On an earlier wire there is no requirement to
+	// violate, so probe 1 is always accepted and nothing is ever tested. Calling
+	// that clean asserted header/body consistency about a server that was never
+	// asked, on every scan. A server on 2026-07-28 or later that ignores the header
+	// is a different matter and still reports clean here, because this rule's
+	// subject is the mismatch, not the absence.
+	//
+	// The dated revisions sort lexicographically, which is what makes the compare
+	// safe.
+	if unawareAt != "" && unawareAt < headerValidationVersion {
+		return nil, fmt.Errorf("%w: no SEP-2243 surface at MCP %s; Mcp-Method validation was introduced in %s",
+			attack.ErrInconclusive, unawareAt, headerValidationVersion)
+	}
+	return nil, nil
 }
 
-func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {
+// headerValidationVersion is the revision that introduced Mcp-Method mirroring
+// and the -32020 HeaderMismatch rejection this rule tests for.
+const headerValidationVersion = modernEraVersion
+
+// probe returns the findings, whether the endpoint answered as MCP, and, only
+// when the server turned out not to enforce Mcp-Method presence, the version the
+// session negotiated. Callers use that last value to decide whether "no
+// enforcement" is expected for the revision in play.
+func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep string) (findings []attack.Finding, reached bool, unawareAt string) {
 	session, ok := e.initialize(ctx, client, ep)
 	if !ok {
-		return nil, false // not an MCP endpoint here
+		return nil, false, "" // not an MCP endpoint here
 	}
 
 	// Probe 1: omit Mcp-Method. If the server still executes tools/list, it does
 	// not enforce header presence (not SEP-2243-aware) - nothing to confirm.
 	if e.toolsList(ctx, client, ep, session, nil) {
-		return nil, true
+		return nil, true, session.ProtocolVersion
 	}
 
 	// Probe 2: matching Mcp-Method. Must be accepted, otherwise we cannot drive
 	// the mismatch test (the endpoint may require headers we are not sending).
+	// Presence is enforced by this point, so the rule is testing a server that
+	// implements SEP-2243 whatever version it advertises.
 	matched := "tools/list"
 	if !e.toolsList(ctx, client, ep, session, &matched) {
-		return nil, true
+		return nil, true, ""
 	}
 
 	// Probe 3: mismatched Mcp-Method. A compliant server MUST reject; if it
@@ -79,9 +120,9 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 				ep),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
-		}}, true
+		}}, true, ""
 	}
-	return nil, true
+	return nil, true, ""
 }
 
 // initialize performs an MCP initialize (sending a matching Mcp-Method so a
