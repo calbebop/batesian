@@ -142,15 +142,21 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 }
 
 // setPush attempts to register a push-notification config for taskID, trying the
-// v1.0 method+nested-config shape then the v0.3 slash-method shape, and also the
-// flat pushNotificationUrl field some deployments use.
+// v1.0 shape then the v0.3 one.
+//
+// On v1.0 the params ARE a TaskPushNotificationConfig, whose fields are tenant,
+// id, taskId, url, token and authentication. This used to send a nested
+// pushNotificationConfig alongside a flat pushNotificationUrl; neither field
+// exists, and a2a-sdk rejects the call with -32602 "has no field named", so the
+// v1.0 attempt never registered anything. v0.3 is the shape that does nest the
+// config, and it is unchanged.
 func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, taskID, url, token, randID string) bool {
 	cfg := map[string]string{"url": url, "token": token}
 	attempts := []struct {
 		method string
 		params map[string]interface{}
 	}{
-		{"CreateTaskPushNotificationConfig", map[string]interface{}{"taskId": taskID, "pushNotificationConfig": cfg, "pushNotificationUrl": url, "token": token}},
+		{"CreateTaskPushNotificationConfig", map[string]interface{}{"taskId": taskID, "url": url, "token": token}},
 		{"tasks/pushNotificationConfig/set", map[string]interface{}{"taskId": taskID, "pushNotificationConfig": cfg}},
 	}
 	for _, at := range attempts {
