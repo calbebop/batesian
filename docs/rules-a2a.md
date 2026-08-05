@@ -385,6 +385,11 @@ webhook hijack if accepted). Distinct from `a2a-multitenant-isolation-001`
 another principal's task): here the vector is the push-config API itself, which
 can redirect a victim task's results to an attacker URL.
 
+The config is written in whichever shape the deployment takes: on **v1.0** the
+params to `CreateTaskPushNotificationConfig` are themselves a
+`TaskPushNotificationConfig`, so the callback is a flat `url`, while **v0.3**
+nests it under `pushNotificationConfig` on `tasks/pushNotificationConfig/set`.
+
 ---
 
 ### a2a-jsonrpc-batch-bypass-001

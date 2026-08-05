@@ -53,10 +53,20 @@ def error(req_id, msg):
 
 
 def push_url(params):
+    """Read the callback from the two shapes the protocol defines.
+
+    v0.3 nests it under pushNotificationConfig. v1.0 params ARE a
+    TaskPushNotificationConfig, so the callback is a flat `url` alongside taskId
+    and token.
+
+    A flat `pushNotificationUrl` used to be accepted here as well. No SDK defines
+    that field, a2a-sdk rejects it with -32602, and accepting it meant this
+    fixture agreed with the scanner instead of with the protocol.
+    """
     cfg = params.get("pushNotificationConfig")
     if isinstance(cfg, dict) and cfg.get("url"):
         return cfg["url"]
-    return params.get("pushNotificationUrl", "")
+    return params.get("url", "")
 
 
 async def rpc(request: Request) -> Response:

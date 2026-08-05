@@ -18,7 +18,13 @@ import (
 //   - "unbound": any authenticated principal may set/get any task's push config.
 //   - "bound": only the task owner may set/get (secure).
 //   - "open": even unauthenticated set succeeds (no-auth control plane).
-func pushServer(mode string) *httptest.Server {
+//
+// v1Only makes the server refuse the v0.3 slash methods, which is what a
+// deployment without the compatibility layer looks like. It matters because the
+// v0.3 fallback otherwise masks a wrong v1.0 request shape.
+func pushServer(mode string) *httptest.Server { return pushServerVersioned(mode, false) }
+
+func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 	type cfg struct{ url, owner string }
 	pushCfg := map[string]cfg{} // taskId -> config
 	taskOwner := map[string]string{}
@@ -53,6 +59,11 @@ func pushServer(mode string) *httptest.Server {
 				"error": map[string]interface{}{"code": -32600, "message": msg}})
 		}
 
+		if v1Only && strings.Contains(method, "/") {
+			rpcErr("method not found")
+			return
+		}
+
 		switch method {
 		case "SendMessage", "message/send":
 			if who == "" {
@@ -64,7 +75,16 @@ func pushServer(mode string) *httptest.Server {
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 			tid, _ := params["taskId"].(string)
-			url := pushURL(params)
+			// Strict per method, as a2a-sdk is: on the v1.0 PascalCase call the
+			// params ARE a TaskPushNotificationConfig, so the callback is flat
+			// and a nested pushNotificationConfig is an unknown field. v0.3 is
+			// the shape that nests it. A harness that accepted either on either
+			// method would pass while a real agent answered -32602.
+			url := pushURL(params, method)
+			if url == "" {
+				rpcErr("invalid params")
+				return
+			}
 			if mode != "open" && who == "" {
 				rpcErr("auth required")
 				return
@@ -93,13 +113,21 @@ func pushServer(mode string) *httptest.Server {
 	}))
 }
 
-func pushURL(params map[string]interface{}) string {
-	if c, ok := params["pushNotificationConfig"].(map[string]interface{}); ok {
-		if u, ok := c["url"].(string); ok {
-			return u
-		}
+// pushURL reads the callback from the two shapes the protocol defines: nested
+// under pushNotificationConfig on v0.3, and flat on params for v1.0, where the
+// params ARE a TaskPushNotificationConfig.
+//
+// It used to also accept a flat pushNotificationUrl, which is the field the rule
+// happened to send and which no SDK defines. Accepting it here let the harness
+// pass while a2a-sdk answered the same request -32602, so only shapes the
+// protocol defines are read now.
+func pushURL(params map[string]interface{}, method string) string {
+	if method == "CreateTaskPushNotificationConfig" {
+		u, _ := params["url"].(string)
+		return u
 	}
-	if u, ok := params["pushNotificationUrl"].(string); ok {
+	if c, ok := params["pushNotificationConfig"].(map[string]interface{}); ok {
+		u, _ := c["url"].(string)
 		return u
 	}
 	return ""
@@ -140,6 +168,21 @@ func TestPushBinding_Unbound(t *testing.T) {
 	titles := findings[0].Title + "|" + findings[1].Title
 	if !strings.Contains(titles, "writable") || !strings.Contains(titles, "readable") {
 		t.Errorf("expected one write and one read finding, got: %s", titles)
+	}
+}
+
+// A deployment that speaks only v1.0 has no v0.3 fallback to hide behind, so the
+// rule's v1.0 request shape has to be right. It was not: the params to
+// CreateTaskPushNotificationConfig ARE a TaskPushNotificationConfig, and the rule
+// sent a nested pushNotificationConfig plus an invented pushNotificationUrl,
+// which a2a-sdk rejects with -32602.
+func TestPushBinding_UnboundV1Only(t *testing.T) {
+	ts := pushServerVersioned("unbound", true)
+	defer ts.Close()
+
+	findings := runPushBinding(t, ts, pushPrincipals())
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings against a v1.0-only server, got %d: %+v", len(findings), findings)
 	}
 }
 
