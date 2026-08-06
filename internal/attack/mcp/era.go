@@ -117,6 +117,39 @@ func isModernError(body []byte) bool {
 	return code >= modernErrCodeMin && code <= modernErrCodeMax
 }
 
+// modernWireAdvertised reports whether a server/discover reply lists the modern
+// revision among the versions the server says it supports.
+//
+// Answering server/discover is not the same as serving the modern wire. The
+// specification requires every server to implement the RPC, and describes
+// supportedVersions as the list from which "the client should choose a version
+// for use in subsequent requests". A server built on the Go SDK takes that
+// literally: a handshake-only (non-stateless) deployment answers discovery with
+// only 2025-era versions, then rejects any 2026-07-28 request with a plain-text
+// HTTP 400 saying the version needs a stateless server. Keying on "discovery
+// answered" read that refusal as an authorization refusal, and reported a
+// critical era-downgrade bypass against a server enforcing no authorization at
+// all.
+//
+// A reply without supportedVersions is not a DiscoverResult: the field is
+// required in the specification and in all three official SDKs.
+func modernWireAdvertised(body []byte) bool {
+	var envelope struct {
+		Result *struct {
+			SupportedVersions []string `json:"supportedVersions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Result == nil {
+		return false
+	}
+	for _, v := range envelope.Result.SupportedVersions {
+		if v == modernEraVersion {
+			return true
+		}
+	}
+	return false
+}
+
 // jsonRPCErrorCode extracts the numeric code from a JSON-RPC error envelope.
 // ok is false when the body is not JSON, carries no error object, or the error
 // has no numeric code.
@@ -138,12 +171,15 @@ func jsonRPCErrorCode(body []byte) (int, bool) {
 // detectEra determines which protocol era the server at endpoint implements by
 // sending a modern server/discover request and classifying the reply.
 //
-// server/discover is the right probe because a modern server MUST implement it,
-// so its absence is itself diagnostic. The classification follows the rule the
-// Streamable HTTP binding gives for backward compatibility: attempt a modern
-// request, and on a rejection inspect the body before concluding anything. A
-// recognized modern error means the server speaks a modern revision (the client
-// should correct its request rather than fall back); anything else means legacy.
+// server/discover is the right probe because its reply names the versions the
+// server serves, which is the question being asked. Answering it is not itself
+// the signal: every server MUST implement the RPC, so a handshake-only server
+// answers too and names only handshake-era versions. The classification follows
+// the rule the Streamable HTTP binding gives for backward compatibility: attempt
+// a modern request, and on a rejection inspect the body before concluding
+// anything. A recognized modern error means the server speaks a modern revision
+// (the client should correct its request rather than fall back); anything else
+// means legacy.
 //
 // Only a transport failure yields EraUnknown. Any HTTP reply, including 404 or
 // 405, tells us something answered, and absent a modern error that answer is
@@ -178,8 +214,10 @@ func detectEra(ctx context.Context, client *attack.HTTPClient, endpoint string) 
 		return EraUnknown
 	}
 
-	// A DiscoverResult means the server implements the modern discovery RPC.
-	if resp.IsAccepted() {
+	// A DiscoverResult that advertises the modern revision means the server
+	// serves that wire. Discovery answering at all does not, because every
+	// server implements the RPC whatever era it serves; see modernWireAdvertised.
+	if resp.IsAccepted() && modernWireAdvertised(resp.Body) {
 		return EraModern
 	}
 	// A spec-reserved error code can only come from a modern server, whatever

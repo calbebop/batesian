@@ -164,13 +164,18 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 // the server's capabilities, and the rules that gate on a capability need them.
 // The result carries them under the same result.capabilities path an initialize
 // result uses, so ServerSupports reads either without knowing the difference.
+//
+// A reply is only taken as a modern wire when it advertises the modern revision
+// in its own supportedVersions. Every server implements server/discover whatever
+// era it serves, so answering it proves nothing on its own; see
+// modernWireAdvertised for what treating the answer as proof cost.
 func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (mcpSession, bool) {
 	probe := mcpSession{Endpoint: ep, Era: EraModern}
 	resp, err := probe.post(ctx, client, "batesian-discover", "server/discover", nil)
 	if err != nil || !resp.IsAccepted() {
 		return mcpSession{}, false
 	}
-	if !resp.ContainsAny(`"capabilities"`, `"supportedVersions"`, `"resultType"`) {
+	if !modernWireAdvertised(resp.Body) {
 		return mcpSession{}, false
 	}
 	return mcpSession{

@@ -118,6 +118,24 @@ func TestDetectEra(t *testing.T) {
 			want:   EraLegacy,
 			why:    "a 2xx carrying a legacy error is not a DiscoverResult",
 		},
+		{
+			// The shape a handshake-only server built on the Go SDK returns. It
+			// answers discovery, as every server must, and names only the eras it
+			// actually serves. Reading the answer itself as modern classified it
+			// as a wire it rejects with HTTP 400.
+			name:   "discover result advertising only handshake-era versions",
+			status: 200,
+			body:   `{"jsonrpc":"2.0","id":"x","result":{"resultType":"complete","supportedVersions":["2025-11-25","2025-06-18","2024-11-05"],"capabilities":{}}}`,
+			want:   EraLegacy,
+			why:    "the server names the versions it serves and the modern revision is not among them",
+		},
+		{
+			name:   "discover result carrying no supportedVersions",
+			status: 200,
+			body:   `{"jsonrpc":"2.0","id":"x","result":{"resultType":"complete","capabilities":{}}}`,
+			want:   EraLegacy,
+			why:    "supportedVersions is required on a DiscoverResult, so a reply without it is not one",
+		},
 	}
 
 	for _, tt := range tests {
@@ -212,6 +230,38 @@ func TestIsModernError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isModernError([]byte(tt.body)); got != tt.want {
 				t.Errorf("isModernError(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestModernWireAdvertised covers the discriminator directly, because both
+// detectEra and discoverModern rest on it and the interesting cases are all in
+// how a DiscoverResult is shaped rather than in the HTTP exchange around it.
+func TestModernWireAdvertised(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"modern only", `{"result":{"supportedVersions":["2026-07-28"],"capabilities":{}}}`, true},
+		{"modern among others", `{"result":{"supportedVersions":["2026-07-28","2025-11-25"],"capabilities":{}}}`, true},
+		{"modern last", `{"result":{"supportedVersions":["2025-06-18","2026-07-28"],"capabilities":{}}}`, true},
+		{"handshake eras only", `{"result":{"supportedVersions":["2025-11-25","2024-11-05"],"capabilities":{}}}`, false},
+		{"empty list", `{"result":{"supportedVersions":[],"capabilities":{}}}`, false},
+		{"field absent", `{"result":{"capabilities":{},"resultType":"complete"}}`, false},
+		{"no result object", `{"jsonrpc":"2.0","id":1,"error":{"code":-32601}}`, false},
+		// The version must be read from result.supportedVersions and nowhere
+		// else: a server may mention the revision in instructions or _meta
+		// without serving it, and a substring match would take that as proof.
+		{"version named outside supportedVersions", `{"result":{"supportedVersions":["2025-11-25"],"instructions":"upgrading to 2026-07-28 soon","capabilities":{}}}`, false},
+		{"not json", `Bad Request: protocol version "2026-07-28" is only supported on stateless HTTP servers`, false},
+		{"empty", ``, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := modernWireAdvertised([]byte(tt.body)); got != tt.want {
+				t.Errorf("modernWireAdvertised(%s) = %v, want %v", tt.body, got, tt.want)
 			}
 		})
 	}
