@@ -25,7 +25,7 @@ starting.
 
 ## Server Registry
 
-The bundled rule set is **17 A2A + 18 MCP = 35 rules**. Every rule's primary
+The bundled rule set is **17 A2A + 19 MCP = 36 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -60,8 +60,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
 | `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s) |
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
+| `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (gates the handshake wire only) |
 
-**Coverage.** 34 of the 35 rules have a standalone Python fixture above. The
+**Coverage.** 35 of the 36 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by

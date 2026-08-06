@@ -1,0 +1,62 @@
+id: mcp-era-downgrade-001
+info:
+  name: MCP Protocol Era Downgrade Auth Bypass
+  author: batesian
+  severity: critical
+  description: |
+    Tests whether a server that serves BOTH MCP protocol eras on one endpoint
+    applies its authorization check to only one of them.
+
+    The 2026-07-28 revision is a second, independent request path: no handshake,
+    no session, the protocol version and client capabilities carried in each
+    request's _meta. Servers built on the current Tier-1 SDKs serve it alongside
+    the handshake-based revisions at the same URL, by default. An authorization
+    check added to one request path therefore leaves the other reachable, and a
+    caller simply asks on the wire that answers.
+
+    Serving both eras is SPEC-COMPLIANT and is NOT reported. The finding is
+    specifically the asymmetry, confirmed by asking the same read-only listing on
+    each wire with no credentials and comparing:
+
+    - one wire REFUSED and the other ANSWERED => confirmed bypass
+      (critical / ConfirmedExploit). Direction does not matter: whichever wire is
+      open is the one an attacker uses.
+    - both answered => the server gates nothing; that is reported by
+      mcp-resources-unauth-001 and mcp-tools-unauth-001, not here.
+    - both refused => the gate is applied uniformly (secure).
+    - only one era served => nothing to compare (not applicable).
+
+    The listing method is chosen per wire from that wire's own advertised
+    capabilities, because the two need not match; comparing a method one wire does
+    not implement would measure the capability difference rather than the gate.
+
+    Scope: this compares access at the METHOD level, on wires that both open
+    unauthenticated. A server that instead gates the handshake itself, so that only
+    one wire opens at all, is not reported here.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28
+    - https://modelcontextprotocol.io/docs/concepts/authorization
+    - https://cwe.mitre.org/data/definitions/757.html
+
+  tags:
+    - mcp
+    - auth-bypass
+    - era-downgrade
+    - protocol
+    - cwe-757
+
+attack:
+  protocol: mcp
+  type: mcp-era-downgrade
+
+remediation: |
+  1. Apply authentication and authorization in one place that both request paths
+     traverse, rather than per handler or per transport. If the check lives in the
+     handshake, the stateless era has no handshake to carry it.
+  2. Treat the 2026-07-28 entry point as a full second surface in review and
+     testing: every method reachable on it needs the same gate as its
+     handshake-era counterpart.
+  3. If only one era is intended to be served, disable the other explicitly
+     (for example the TypeScript SDK's `legacy` option) rather than leaving it
+     enabled and ungated.

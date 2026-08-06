@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **18 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **19 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -113,6 +113,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
+| `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
@@ -368,6 +369,45 @@ modern path and mask the bug. A **confirmed** finding is reported only when the
 modern session is rejected (auth enforced) but the legacy session succeeds. If
 both succeed, the server simply has no auth (owned by `mcp-resources-unauth-001`);
 if both are rejected, the server is secure - neither produces a finding here.
+
+---
+
+### mcp-era-downgrade-001
+
+**Protocol Era Downgrade Auth Bypass** | Severity: Critical | CWE-757
+
+The sibling of `mcp-init-downgrade-001`, with wires in place of versions. The
+2026-07-28 revision is a second, independent request path: no handshake, no
+session, the protocol version and client capabilities carried in each request's
+`_meta`. Servers built on the current Tier-1 SDKs serve it alongside the
+handshake revisions at the same URL by default, so an authorization check added to
+one request path leaves the other reachable and a caller asks on the wire that
+answers.
+
+Serving both eras is spec-compliant and is **not** reported. The finding is the
+asymmetry, confirmed by asking the same read-only listing on each wire with no
+credentials:
+
+- one wire **refused**, the other **answered** => **confirmed** bypass. Direction
+  is irrelevant: whichever wire is open is the one that gets used.
+- both answered => the server gates nothing, which is `mcp-resources-unauth-001`
+  and `mcp-tools-unauth-001` territory, so this is suppressed rather than
+  double-counted.
+- both refused => the gate is applied uniformly (secure).
+- only one era served => nothing to compare (not applicable).
+
+The listing method is chosen per wire from that wire's **own** advertised
+capabilities, since the two need not match: on a server built on the Python SDK
+the handshake reports `experimental, prompts, resources, tools` while
+`server/discover` reports `prompts, resources, tools`. Comparing a method one wire
+does not implement would measure the capability difference rather than the gate.
+
+**Scope.** This compares access at the method level on wires that both open
+unauthenticated. A server that gates the handshake itself, so only one wire opens
+at all, is not reported here. And no reference implementation currently exhibits
+the bug: the SDKs serve both eras correctly and apply no authorization, so the rule
+is validated against `testdata/mcp_era_downgrade_server.py` rather than against
+one of them.
 
 ---
 
