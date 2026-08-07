@@ -419,6 +419,132 @@ func TestFetchAgentCard_RealV1SecuredCard(t *testing.T) {
 	}
 }
 
+// TestAgentCard_RequiresAuth covers what probe reports in its Authentication
+// block. Reading only the v1.0 securityRequirements field described every v0.3
+// agent as "no (unauthenticated access)", including ones that reject anonymous
+// callers with 401.
+func TestAgentCard_RequiresAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		sec  string
+		want bool
+		why  string
+	}{
+		{
+			name: "v0.3 security field",
+			sec:  `"security":[{"bearerAuth":["a2a:invoke"]}]`,
+			want: true,
+			why:  "a native v0.3 implementation declares auth here and nowhere else",
+		},
+		{
+			name: "v1.0 securityRequirements, nested",
+			sec:  `"securityRequirements":[{"schemes":{"bearerAuth":{"list":["a2a:invoke"]}}}]`,
+			want: true,
+			why:  "the v1.0 spelling must keep working",
+		},
+		{
+			name: "both fields present",
+			sec:  `"securityRequirements":[{"schemes":{"bearerAuth":{"list":[]}}}],"security":[{}]`,
+			want: true,
+			why:  "v1.0 takes precedence when a card carries both",
+		},
+		{
+			name: "no declaration",
+			sec:  `"name2":"x"`,
+			want: false,
+			why:  "nothing declared means nothing required",
+		},
+		{
+			name: "v0.3 with an anonymous alternative",
+			sec:  `"security":[{},{"bearerAuth":[]}]`,
+			want: false,
+			why:  "an empty requirement object explicitly permits anonymous access",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"name":"Agent","description":"d","version":"1.0.0","capabilities":{},"skills":[],` + tt.sec + `}`
+			var card AgentCard
+			if err := json.Unmarshal([]byte(body), &card); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := card.RequiresAuth(); got != tt.want {
+				t.Errorf("RequiresAuth() = %v, want %v (%s)", got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// TestSecurityScheme_V03FlatForm covers the OpenAPI flat form a v0.3 card serves.
+// The shapes are the ones the official Go SDK emits, which is a native v0.3
+// implementation. Before this, every member stayed nil and Type() reported
+// "unknown", so probe could not name the scheme an agent declared.
+func TestSecurityScheme_V03FlatForm(t *testing.T) {
+	tests := []struct {
+		name     string
+		scheme   string
+		wantType string
+	}{
+		{"http bearer", `{"type":"http","scheme":"bearer","bearerFormat":"opaque"}`, "http/bearer"},
+		{"http basic", `{"type":"http","scheme":"basic"}`, "http/basic"},
+		{"apiKey", `{"type":"apiKey","in":"header","name":"X-API-Key"}`, "apiKey"},
+		{"oauth2", `{"type":"oauth2","flows":{"clientCredentials":{"tokenUrl":"https://idp/token","scopes":{}}}}`, "oauth2"},
+		{"openIdConnect", `{"type":"openIdConnect","openIdConnectUrl":"https://idp/.well-known/openid-configuration"}`, "openIdConnect"},
+		{"mutualTLS", `{"type":"mutualTLS"}`, "mtls"},
+		// The v1.0 nested form must be unaffected.
+		{"v1.0 nested http", `{"httpAuthSecurityScheme":{"scheme":"bearer"}}`, "http/bearer"},
+		{"v1.0 nested apiKey", `{"apiKeySecurityScheme":{"location":"header","name":"X-API-Key"}}`, "apiKey"},
+		// An unreadable scheme must not fail the card.
+		{"unrecognized type", `{"type":"quantum"}`, "unknown"},
+		{"not an object", `"bearer"`, "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"name":"Agent","description":"d","version":"1.0.0","capabilities":{},"skills":[],` +
+				`"securitySchemes":{"s":` + tt.scheme + `}}`
+			var card AgentCard
+			if err := json.Unmarshal([]byte(body), &card); err != nil {
+				t.Fatalf("card must parse: %v", err)
+			}
+			if card.Name != "Agent" {
+				t.Errorf("the rest of the card must survive, got name %q", card.Name)
+			}
+			scheme, ok := card.SecuritySchemes["s"]
+			if !ok {
+				t.Fatal("scheme missing from the map")
+			}
+			if got := scheme.Type(); got != tt.wantType {
+				t.Errorf("Type() = %q, want %q", got, tt.wantType)
+			}
+		})
+	}
+}
+
+// TestSecurityScheme_V03APIKeyLocation: v0.3 names the location "in", v1.0 names
+// it "location". Both must land in the same field, since that is what an operator
+// needs in order to know where the key goes.
+func TestSecurityScheme_V03APIKeyLocation(t *testing.T) {
+	for name, scheme := range map[string]string{
+		"v0.3 in":       `{"type":"apiKey","in":"cookie","name":"sid"}`,
+		"v1.0 location": `{"apiKeySecurityScheme":{"location":"cookie","name":"sid"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var s SecurityScheme
+			if err := json.Unmarshal([]byte(scheme), &s); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if s.APIKey == nil {
+				t.Fatal("APIKey member not populated")
+			}
+			if s.APIKey.Location != "cookie" {
+				t.Errorf("Location = %q, want cookie", s.APIKey.Location)
+			}
+		})
+	}
+}
+
 func TestAgentCard_RoundTrip(t *testing.T) {
 	var card AgentCard
 	if err := json.Unmarshal([]byte(fullV1CardJSON), &card); err != nil {

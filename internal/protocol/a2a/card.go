@@ -137,6 +137,39 @@ type AgentSkill struct {
 	SecurityRequirements []SecurityRequirement `json:"securityRequirements,omitempty"`
 }
 
+// DeclaredSecurity returns the requirements list the card actually declares,
+// preferring the v1.0 securityRequirements field and falling back to the v0.3
+// security field.
+//
+// The two spellings hold the same statement, so a caller asking "what auth does
+// this card require" must consult both. Reading only securityRequirements
+// reported every v0.3 agent as unauthenticated, including ones that reject
+// anonymous callers outright. The precedence lives here so callers do not each
+// reimplement it.
+func (c *AgentCard) DeclaredSecurity() []SecurityRequirement {
+	if len(c.SecurityRequirements) > 0 {
+		return c.SecurityRequirements
+	}
+	return c.Security
+}
+
+// RequiresAuth reports whether the card declares authentication with no
+// anonymous alternative. Per OpenAPI semantics an empty requirement object in the
+// list explicitly permits anonymous access, so its presence means auth is not
+// required whatever else the list holds.
+func (c *AgentCard) RequiresAuth() bool {
+	list := c.DeclaredSecurity()
+	if len(list) == 0 {
+		return false
+	}
+	for _, req := range list {
+		if len(req) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // SecurityRequirement maps scheme names to required OAuth scopes.
 // An empty slice means the scheme is required but no specific scopes are needed.
 type SecurityRequirement map[string][]string
@@ -220,14 +253,94 @@ func protoSchemeMap(entry map[string]json.RawMessage) (SecurityRequirement, bool
 }
 
 // SecurityScheme is a discriminated union - exactly one nested scheme object is populated.
-// The discriminant is the JSON key name itself (apiKeySecurityScheme, httpAuthSecurityScheme, etc.),
-// not a "type" field. This matches the A2A v1.0 specification.
+// In v1.0 the discriminant is the JSON key name itself (apiKeySecurityScheme,
+// httpAuthSecurityScheme, etc.). v0.3 cards instead use the OpenAPI form, a flat
+// object carrying a "type" field; UnmarshalJSON reads both into these fields.
 type SecurityScheme struct {
 	APIKey        *APIKeySecurityScheme        `json:"apiKeySecurityScheme,omitempty"`
 	HTTPAuth      *HTTPAuthSecurityScheme      `json:"httpAuthSecurityScheme,omitempty"`
 	OAuth2        *OAuth2SecurityScheme        `json:"oauth2SecurityScheme,omitempty"`
 	OpenIDConnect *OpenIDConnectSecurityScheme `json:"openIdConnectSecurityScheme,omitempty"`
 	MTLS          *MutualTLSSecurityScheme     `json:"mtlsSecurityScheme,omitempty"`
+}
+
+// UnmarshalJSON accepts the v1.0 nested form and the v0.3 OpenAPI flat form.
+//
+// v1.0 keys the union on the member name:
+//
+//	{"httpAuthSecurityScheme": {"scheme": "bearer"}}
+//
+// v0.3 follows OpenAPI, with a flat object and a "type" discriminant. The shapes
+// served by the official Go SDK, which is a native v0.3 implementation, are:
+//
+//	{"type": "http",          "scheme": "bearer", "bearerFormat": "opaque"}
+//	{"type": "apiKey",        "in": "header", "name": "X-API-Key"}
+//	{"type": "oauth2",        "flows": {...}}
+//	{"type": "openIdConnect", "openIdConnectUrl": "..."}
+//	{"type": "mutualTLS"}
+//
+// Without this, a v0.3 card left every member nil and Type() reported "unknown",
+// so probe could not name the scheme an agent declared. Note apiKey carries the
+// location under "in" here and under "location" in v1.0, so both are read.
+func (s *SecurityScheme) UnmarshalJSON(data []byte) error {
+	// The nested form first: it is unambiguous, since none of its keys collide
+	// with the flat form's.
+	type nested SecurityScheme
+	var n nested
+	if err := json.Unmarshal(data, &n); err == nil {
+		candidate := SecurityScheme(n)
+		if candidate.Type() != "unknown" {
+			*s = candidate
+			return nil
+		}
+	}
+
+	var flat struct {
+		Type              string            `json:"type"`
+		Description       string            `json:"description"`
+		Scheme            string            `json:"scheme"`
+		BearerFormat      string            `json:"bearerFormat"`
+		In                string            `json:"in"`
+		Location          string            `json:"location"`
+		Name              string            `json:"name"`
+		Flows             OAuthFlows        `json:"flows"`
+		OAuth2MetadataURL string            `json:"oauth2MetadataUrl"`
+		OpenIDConnectURL  string            `json:"openIdConnectUrl"`
+		Scopes            map[string]string `json:"scopes"`
+	}
+	if err := json.Unmarshal(data, &flat); err != nil {
+		// Not an object we can read. Leave the scheme empty rather than failing
+		// the card: Type() reports "unknown", which is the honest answer, and one
+		// unreadable scheme must not cost the operator the whole card.
+		*s = SecurityScheme{}
+		return nil
+	}
+
+	switch flat.Type {
+	case "http":
+		s.HTTPAuth = &HTTPAuthSecurityScheme{
+			Description: flat.Description, Scheme: flat.Scheme, BearerFormat: flat.BearerFormat,
+		}
+	case "apiKey":
+		location := flat.In
+		if location == "" {
+			location = flat.Location
+		}
+		s.APIKey = &APIKeySecurityScheme{
+			Description: flat.Description, Location: location, Name: flat.Name,
+		}
+	case "oauth2":
+		s.OAuth2 = &OAuth2SecurityScheme{
+			Description: flat.Description, Flows: flat.Flows, OAuth2MetadataURL: flat.OAuth2MetadataURL,
+		}
+	case "openIdConnect":
+		s.OpenIDConnect = &OpenIDConnectSecurityScheme{
+			Description: flat.Description, OpenIDConnectURL: flat.OpenIDConnectURL,
+		}
+	case "mutualTLS":
+		s.MTLS = &MutualTLSSecurityScheme{Description: flat.Description}
+	}
+	return nil
 }
 
 // Type returns a human-readable string describing the scheme type.

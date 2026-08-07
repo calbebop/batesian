@@ -179,7 +179,7 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 		Streaming:             card.Capabilities.Streaming,
 		PushNotifications:     card.Capabilities.PushNotifications,
 		ExtendedCardAvailable: card.Capabilities.ExtendedAgentCard,
-		AuthRequired:          len(card.SecurityRequirements) > 0,
+		AuthRequired:          card.RequiresAuth(),
 		Elapsed:               elapsed,
 	}
 
