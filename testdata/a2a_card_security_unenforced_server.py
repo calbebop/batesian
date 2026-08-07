@@ -37,7 +37,13 @@ AGENT_CARD = {
     "securitySchemes": {
         "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "Bearer", "bearerFormat": "JWT"}},
     },
-    "securityRequirements": [{"bearerAuth": []}],
+    # SecurityRequirement is a proto message holding one map field, so a v1.0
+    # card nests the scheme names under "schemes" and each maps to a StringList.
+    # This fixture previously served [{"bearerAuth": []}], the v0.3 body shape
+    # under the v1.0 field name, which no real implementation emits: it was
+    # vouching for how the rule happened to parse rather than for the protocol,
+    # and it hid the rule naming the proto field as the scheme.
+    "securityRequirements": [{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}],
 }
 
 tasks = {}

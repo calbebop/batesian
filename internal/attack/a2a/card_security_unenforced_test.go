@@ -18,8 +18,11 @@ import (
 
 // cardSecServer builds a mock A2A server whose AgentCard security declaration and
 // JSON-RPC auth behavior depend on mode:
-//   - "vuln-v1":      card declares securityRequirements (v1.0 field) requiring a
-//     scheme, but message/send is served unauthenticated => finding.
+//   - "vuln-v1":      card declares securityRequirements in the real v1.0 wire
+//     shape (names nested under "schemes"), but message/send is served
+//     unauthenticated => finding.
+//   - "vuln-v1-flat":  the same field carrying the OpenAPI-flat shape, which a
+//     server that hand-rolls its card may serve => finding.
 //   - "vuln-v03":     same, but the card uses the v0.3 "security" field => finding
 //     (proves both field spellings are read).
 //   - "secure":       card declares required auth and the server enforces it
@@ -27,6 +30,8 @@ import (
 //   - "anon-allowed": card requirement list includes an empty {} object, so
 //     anonymous access is explicitly permitted; even though the endpoint is open,
 //     it must not be flagged => silent.
+//   - "anon-allowed-v1": the v1.0 spelling of the same statement, an entry whose
+//     "schemes" map is empty => silent.
 //   - "no-security":  card declares no security requirement; the open endpoint is
 //     not a broken promise => silent.
 //   - "not-a2a":      no card, everything 404 => inconclusive.
@@ -40,12 +45,19 @@ func cardSecServer(mode string) *httptest.Server {
 		switch mode {
 		case "vuln-v03":
 			sec = `"security":[{"bearerAuth":[]}],`
+		case "vuln-v1-flat":
+			sec = `"securityRequirements":[{"bearerAuth":[]}],`
 		case "anon-allowed":
 			sec = `"securityRequirements":[{},{"bearerAuth":[]}],`
+		case "anon-allowed-v1":
+			sec = `"securityRequirements":[{"schemes":{}}],`
 		case "no-security":
 			sec = ``
 		default: // vuln-v1, secure
-			sec = `"securityRequirements":[{"bearerAuth":[]}],`
+			// The shape both official SDKs serve: SecurityRequirement is a
+			// proto message holding one map field, so the scheme names sit a
+			// level below the entry.
+			sec = `"securityRequirements":[{"schemes":{"bearerAuth":{"list":["a2a:invoke"]}}}],`
 		}
 		return `{
 			"name": "Card Security Test Agent",
@@ -158,6 +170,35 @@ func TestCardSecurity_VulnV1(t *testing.T) {
 	if !strings.Contains(f.Title, "declares required authentication") {
 		t.Errorf("unexpected title %q", f.Title)
 	}
+	// The scheme name is the actionable part of the finding: it tells an operator
+	// which scheme their server failed to enforce. On the real v1.0 shape the
+	// names sit under "schemes", and reading the entry's own keys reported the
+	// literal "schemes" on every v1.0 card in existence.
+	if !strings.Contains(f.Evidence, "bearerAuth") {
+		t.Errorf("evidence must name the declared scheme, got:\n%s", f.Evidence)
+	}
+	if strings.Contains(f.Evidence, "scheme(s): schemes") {
+		t.Errorf("evidence named the proto field instead of the scheme:\n%s", f.Evidence)
+	}
+}
+
+// TestCardSecurity_VulnV1FlatShape: a server that hand-rolls its card may put the
+// names at the top level under the v1.0 field name. Both shapes must be read, so
+// fixing the nested shape must not lose this one.
+func TestCardSecurity_VulnV1FlatShape(t *testing.T) {
+	srv := cardSecServer("vuln-v1-flat")
+	defer srv.Close()
+
+	findings, err := runCardSec(t, srv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "bearerAuth") {
+		t.Errorf("evidence must name the declared scheme, got:\n%s", findings[0].Evidence)
+	}
 }
 
 // TestCardSecurity_VulnV03: the v0.3 "security" field must be read, not only the
@@ -193,6 +234,21 @@ func TestCardSecurity_AnonymousAllowed(t *testing.T) {
 
 	if findings, err := runCardSec(t, srv); err != nil || len(findings) != 0 {
 		t.Errorf("expected 0 findings / nil err when the card permits anonymous access, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+// TestCardSecurity_AnonymousAllowedV1: the v1.0 spelling of "anonymous is
+// permitted" is an entry whose schemes map is empty, since a proto message
+// always carries its map field. Reading the entry's own keys saw one key and
+// called auth required, which would flag an open endpoint the card never
+// promised to protect.
+func TestCardSecurity_AnonymousAllowedV1(t *testing.T) {
+	srv := cardSecServer("anon-allowed-v1")
+	defer srv.Close()
+
+	if findings, err := runCardSec(t, srv); err != nil || len(findings) != 0 {
+		t.Errorf("expected 0 findings / nil err when the v1.0 card permits anonymous access, got %d findings, err=%v",
+			len(findings), err)
 	}
 }
 
