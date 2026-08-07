@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -150,10 +151,23 @@ type reflection struct {
 }
 
 // findReflections recursively walks a JSON object and returns the dot-paths and
-// values of any string field whose value contains the canary substring.
+// values of any string field whose value contains the canary substring, sorted by
+// path.
+//
+// The sort is load-bearing, not cosmetic. walkJSON ranges a
+// map[string]interface{}, and Go randomizes map iteration order, so without it the
+// reflection order changed between runs. Everything downstream inherits that
+// order: the caller joins the paths into the dedup key that collapses the same
+// reflection across the two well-known paths, so the key differed run to run and
+// the dedup hit or missed at random. The same header was reported twice, once as
+// "provider.url, url" and once as "url, provider.url", and one fixture yielded 3,
+// 4 or 5 findings on identical input. The finding title, description and evidence
+// list the fields too, so a stable order also makes two scans of an unchanged
+// target diffable.
 func findReflections(v interface{}, canary string) []reflection {
 	var out []reflection
 	walkJSON(v, "", canary, &out)
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
 }
 
