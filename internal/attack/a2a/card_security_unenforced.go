@@ -256,10 +256,11 @@ func declaredAuthRequirement(card map[string]interface{}) (schemes []string, req
 		if !ok {
 			return nil, false // malformed requirement entry: do not assert a violation
 		}
-		if len(obj) == 0 {
-			return nil, false // empty requirement object: anonymous access is allowed
+		names, ok := requirementSchemeNames(obj)
+		if !ok {
+			return nil, false // anonymous access is allowed by this entry
 		}
-		for name := range obj {
+		for _, name := range names {
 			if !seen[name] {
 				seen[name] = true
 				schemes = append(schemes, name)
@@ -268,6 +269,55 @@ func declaredAuthRequirement(card map[string]interface{}) (schemes []string, req
 	}
 	sort.Strings(schemes)
 	return schemes, true
+}
+
+// requirementSchemeNames returns the scheme names one requirement entry demands.
+// ok is false when the entry permits anonymous access, which is what an entry
+// carrying no scheme at all means.
+//
+// Two wire shapes exist and both are read here, because the field name alone does
+// not tell them apart.
+//
+// v1.0 is proto-derived: SecurityRequirement holds a single map field named
+// schemes, so an entry serializes as
+//
+//	{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}
+//
+// and the scheme names are one level down. Both official SDKs define it this way
+// (a2a-sdk's proto descriptor and @a2a-js/sdk's SecurityRequirement interface),
+// so this is the shape every real v1.0 card serves. Reading the entry's own keys
+// yielded the literal "schemes" as the scheme name on every one of them.
+//
+// v0.3 and OpenAPI put the names at the top level:
+//
+//	{"bearerAuth": ["a2a:invoke"]}
+//
+// The two are told apart by structure rather than by which card field they came
+// from: an entry whose only key is "schemes" mapping to an object is the proto
+// shape. A v0.3 card could in principle declare a scheme actually named
+// "schemes", but then its value is a scope array, not an object, so the check
+// does not misfire on it.
+func requirementSchemeNames(entry map[string]interface{}) (names []string, ok bool) {
+	if len(entry) == 0 {
+		return nil, false
+	}
+	if len(entry) == 1 {
+		if inner, isObject := entry["schemes"].(map[string]interface{}); isObject {
+			if len(inner) == 0 {
+				// An explicit empty scheme map requires nothing, the same
+				// statement {} makes in the v0.3 shape.
+				return nil, false
+			}
+			for name := range inner {
+				names = append(names, name)
+			}
+			return names, true
+		}
+	}
+	for name := range entry {
+		names = append(names, name)
+	}
+	return names, true
 }
 
 // cardSecurityList returns the requirements list, preferring the v1.0
