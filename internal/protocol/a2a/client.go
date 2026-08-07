@@ -8,8 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
 	"strings"
 	"time"
+
+	"github.com/calbebop/batesian/internal/httpx"
 )
 
 const (
@@ -32,6 +35,10 @@ type Client struct {
 	http    *http.Client
 	baseURL string
 	headers map[string]string
+
+	// proxyErr records an unusable --proxy value so NewClient can report it
+	// rather than let the scan run with interception silently bypassed.
+	proxyErr error
 }
 
 // ClientOption configures a Client.
@@ -54,6 +61,26 @@ func WithHeader(key, value string) ClientOption {
 // WithBearerToken adds an Authorization: Bearer header.
 func WithBearerToken(token string) ClientOption {
 	return WithHeader("Authorization", "Bearer "+token)
+}
+
+// WithProxy routes requests through an intercepting proxy. An empty value leaves
+// the environment in charge (HTTPS_PROXY, HTTP_PROXY, NO_PROXY), which is also the
+// default: a bare &http.Transport{} ignores the environment, so before this the
+// recon path proxied nothing even when the operator had set HTTPS_PROXY.
+//
+// An unusable value is reported at construction rather than dropped, so a mistyped
+// proxy cannot silently bypass interception.
+func WithProxy(raw string) ClientOption {
+	return func(c *Client) {
+		proxy, err := httpx.ProxyFunc(raw)
+		if err != nil {
+			c.proxyErr = err
+			return
+		}
+		if t, ok := c.http.Transport.(*http.Transport); ok {
+			t.Proxy = proxy
+		}
+	}
 }
 
 // WithSkipTLSVerify disables TLS certificate verification.
@@ -85,7 +112,7 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		http: &http.Client{
 			Timeout:   defaultTimeout,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{}}, //nolint:gosec
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
 		},
 		baseURL: base,
 		headers: map[string]string{
@@ -96,6 +123,10 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	for _, o := range opts {
 		o(c)
 	}
+	if c.proxyErr != nil {
+		return nil, c.proxyErr
+	}
+
 	return c, nil
 }
 

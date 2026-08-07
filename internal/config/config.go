@@ -39,6 +39,11 @@ type Config struct {
 	// SkipTLS disables TLS certificate verification.
 	SkipTLS bool `yaml:"skip_tls"`
 
+	// Proxy routes every request through an intercepting proxy, so a scan can be
+	// reviewed in Burp or ZAP. Empty leaves the environment in charge
+	// (HTTPS_PROXY, HTTP_PROXY, NO_PROXY).
+	Proxy string `yaml:"proxy"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -191,6 +196,13 @@ func Example() string {
 
 # Disable TLS certificate verification (not recommended for production).
 # skip_tls: false
+
+# Route every request through an intercepting proxy, so a whole scan can be
+# reviewed in Burp or ZAP. A bare host:port is fine. Usually paired with skip_tls,
+# since such proxies present their own CA. Omit to honour HTTPS_PROXY/HTTP_PROXY/
+# NO_PROXY instead; note that Go does not send loopback targets through an
+# environment proxy, so a scan against 127.0.0.1 needs this set explicitly.
+# proxy: 127.0.0.1:8080
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

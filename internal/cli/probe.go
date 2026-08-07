@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/protocol/a2a"
 	"github.com/calbebop/batesian/internal/protocol/mcp"
 	"github.com/calbebop/batesian/internal/report"
@@ -50,6 +51,7 @@ func init() {
 	probeCmd.Flags().String("token", "", "Bearer token for authenticated requests")
 	probeCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
 	probeCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
+	probeCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
 	rootCmd.AddCommand(probeCmd)
 }
 
@@ -61,6 +63,12 @@ func runProbe(cmd *cobra.Command, args []string) error {
 	token, _ := cmd.Flags().GetString("token")
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
+	proxy, _ := cmd.Flags().GetString("proxy")
+	// Validate once, up front: a broken proxy should not look like an unreachable
+	// target.
+	if _, err := httpx.ProxyFunc(proxy); err != nil {
+		return err
+	}
 
 	if target == "" {
 		return fmt.Errorf("--target is required")
@@ -83,15 +91,15 @@ func runProbe(cmd *cobra.Command, args []string) error {
 
 	switch strings.ToLower(protocol) {
 	case "a2a":
-		return probeA2A(target, token, timeoutSecs, skipTLS, format, printer)
+		return probeA2A(target, token, timeoutSecs, skipTLS, proxy, format, printer)
 	case "mcp":
-		return probeMCP(target, token, timeoutSecs, skipTLS, format, printer)
+		return probeMCP(target, token, timeoutSecs, skipTLS, proxy, format, printer)
 	default:
 		return fmt.Errorf("unknown protocol %q; supported: a2a, mcp", protocol)
 	}
 }
 
-func probeA2A(target, token string, timeoutSecs int, skipTLS bool, format report.Format, printer *report.Printer) error { //nolint:cyclop
+func probeA2A(target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
 	if timeoutSecs <= 0 {
 		timeoutSecs = 10
 	}
@@ -103,6 +111,9 @@ func probeA2A(target, token string, timeoutSecs int, skipTLS bool, format report
 	}
 	if skipTLS {
 		opts = append(opts, a2a.WithSkipTLSVerify())
+	}
+	if proxy != "" {
+		opts = append(opts, a2a.WithProxy(proxy))
 	}
 
 	client, err := a2a.NewClient(target, opts...)
@@ -208,7 +219,7 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 	return r
 }
 
-func probeMCP(target, token string, timeoutSecs int, skipTLS bool, format report.Format, printer *report.Printer) error {
+func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
 	if timeoutSecs <= 0 {
 		timeoutSecs = 10
 	}
@@ -220,6 +231,9 @@ func probeMCP(target, token string, timeoutSecs int, skipTLS bool, format report
 	}
 	if skipTLS {
 		opts = append(opts, mcp.WithSkipTLSVerify())
+	}
+	if proxy != "" {
+		opts = append(opts, mcp.WithProxy(proxy))
 	}
 
 	client, err := mcp.NewClient(target, opts...)

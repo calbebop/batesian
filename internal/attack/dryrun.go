@@ -5,8 +5,11 @@ import (
 	"crypto/tls"
 	"io"
 	"net/http"
+
 	"strings"
 	"sync"
+
+	"github.com/calbebop/batesian/internal/httpx"
 )
 
 // DryRunOOBPlaceholderURL is the base callback URL substituted for a real OOB
@@ -125,8 +128,14 @@ func syntheticResponse(req *http.Request) *http.Response {
 
 // Transport returns the RoundTripper for a scan-path HTTP client. In a dry run it
 // returns a recording transport that sends nothing; otherwise a real
-// *http.Transport honoring opts.SkipTLS. Routing every scan-path client through
-// this one function is what makes the dry-run "send nothing" guarantee total.
+// *http.Transport honoring opts.SkipTLS and opts.Proxy. Routing every scan-path
+// client through this one function is what makes the dry-run "send nothing"
+// guarantee total, and it is why one change here reaches the shared client plus
+// the two rules that keep their own (confused-deputy and sse-resume-replay).
+//
+// A bare &http.Transport{} does not consult the environment, so before this every
+// scan ignored HTTPS_PROXY while the OAuth clients honoured it. See
+// httpx.ProxyFunc.
 func Transport(opts Options) http.RoundTripper {
 	if opts.DryRun {
 		return &dryRunRoundTripper{rec: opts.Recorder}
@@ -135,5 +144,22 @@ func Transport(opts Options) http.RoundTripper {
 	if opts.SkipTLS {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
+	proxy, err := httpx.ProxyFunc(opts.Proxy)
+	if err != nil {
+		// Fail every request rather than fall back to a direct connection: a
+		// mistyped proxy that silently bypasses the operator's interception is
+		// precisely the outcome this option exists to prevent.
+		return &erroringRoundTripper{err: err}
+	}
+	tr.Proxy = proxy
 	return tr
+}
+
+// erroringRoundTripper fails every request with a fixed error. It reports a
+// misconfigured proxy at the point of use, so the failure is attributable instead
+// of appearing as a scan that mysteriously reached nothing.
+type erroringRoundTripper struct{ err error }
+
+func (e *erroringRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
 }
