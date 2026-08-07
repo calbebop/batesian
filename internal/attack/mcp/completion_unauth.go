@@ -73,18 +73,20 @@ func (e *CompletionUnauthExecutor) Execute(ctx context.Context, target string, o
 
 	// A server may expose completion on both protocol wires, and need not gate it
 	// the same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session, vars.RandID)
 	})
 }
 
-// probeSession runs the rule against one already-opened wire.
-func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) []attack.Finding {
+// probeSession runs the rule against one already-opened wire. determined reports
+// whether the wire established anything; see classifyProbe.
+func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) (findings []attack.Finding, determined bool) {
 	// Skip servers that do not advertise the completions capability; probing them
 	// would produce meaningless noise. Read from the captured handshake object
-	// rather than substring-matching the body.
+	// rather than substring-matching the body. Determined: the server says it has
+	// no completion surface, so none can be open.
 	if !session.ServerSupports("completions") {
-		return nil
+		return nil, true
 	}
 
 	// Probe real refs discovered from the live server first, preferring one that
@@ -92,7 +94,10 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 	// reachable probe so reachability is reported even when no ref discloses.
 	var firstReachable, disclosure *completionOutcome
 	for _, ref := range e.discoverRefs(ctx, client, session) {
-		out := e.probe(ctx, client, session, ref)
+		out, probed := e.probe(ctx, client, session, ref)
+		if probed {
+			determined = true
+		}
 		if out == nil {
 			continue
 		}
@@ -116,11 +121,17 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 			real:    false,
 			label:   "synthetic probe ref",
 		}
-		firstReachable = e.probe(ctx, client, session, synth)
+		var probed bool
+		firstReachable, probed = e.probe(ctx, client, session, synth)
+		if probed {
+			determined = true
+		}
 	}
 
 	if firstReachable == nil {
-		return nil
+		// Nothing was reachable. Whether that means the surface is closed or that
+		// no probe ever got an answer is the difference determined carries.
+		return nil, determined
 	}
 
 	// Base the reachability finding on the disclosure probe when one was found, so
@@ -130,7 +141,7 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		base = disclosure
 	}
 
-	findings := []attack.Finding{{
+	findings = []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "medium",
@@ -167,14 +178,17 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		})
 	}
 
-	return findings
+	return findings, true
 }
 
 // probe sends a single unauthenticated completion/complete request for ref and
 // returns the outcome if the handler was reached, or nil on an HTTP auth gate,
 // transport error, or a non-dispatching JSON-RPC error. Suggestion values are
 // captured only for real refs (synthetic refs never disclose real data).
-func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession, ref completionRef) *completionOutcome {
+// probe returns the outcome for one reference. determined reports whether the
+// server answered at all: a nil outcome with determined false means the probe
+// established nothing, which must not be reported as a closed surface.
+func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession, ref completionRef) (out *completionOutcome, determined bool) {
 	// An empty value asks the server to enumerate all suggestions for the
 	// argument. Fuzzy/prefix matchers (the common implementation) return their
 	// full candidate set for the empty prefix, which is exactly the
@@ -185,22 +199,19 @@ func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTT
 		"ref":      ref.params,
 		"argument": map[string]interface{}{"name": ref.argName, "value": ""},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return nil
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return nil
+	verdict, body := classifyProbe(resp, err)
+	if verdict != probeAnswered {
+		return nil, verdict == probeRejected
 	}
 	reachable, reason := completionDispatchReachable(body)
 	if !reachable {
-		return nil
+		return nil, true
 	}
-	out := &completionOutcome{ref: ref, status: resp.StatusCode, reason: reason}
+	out = &completionOutcome{ref: ref, status: resp.StatusCode, reason: reason}
 	if ref.real {
 		out.values = completionValues(body)
 	}
-	return out
+	return out, true
 }
 
 // discoverRefs returns real completion references built from the server's live

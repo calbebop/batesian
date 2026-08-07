@@ -192,15 +192,34 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 // A server that serves both eras is exposed on both, and the two need not behave
 // alike, so each is exercised. Findings from the modern wire are labelled; see
 // labelEra.
+//
+// probe reports whether it established anything on that wire, which is separate
+// from whether it found something: a probe whose request failed in transport, or
+// whose answer carried no protocol-level verdict, has tested nothing. When no
+// wire established anything and nothing was found, the result is ErrInconclusive
+// rather than a clean report, because "the scanner could not tell" and "the
+// server is secure" are different claims and the engine records them differently.
+//
+// Findings survive an undetermined wire. A rule that confirmed an open listing
+// and then failed to complete a follow-up probe still found the listing, and the
+// honest report is that finding rather than a blanket "not tested".
 func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
-	probe func(mcpSession) []attack.Finding) ([]attack.Finding, error) {
+	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	sessions, err := openSessions(ctx, client, baseURL)
 	if err != nil {
 		return nil, err
 	}
 	var out []attack.Finding
+	anyDetermined := false
 	for _, s := range sessions {
-		out = append(out, labelEra(s, probe(s))...)
+		findings, determined := probe(s)
+		if determined {
+			anyDetermined = true
+		}
+		out = append(out, labelEra(s, findings)...)
+	}
+	if len(out) == 0 && !anyDetermined {
+		return nil, attack.ErrInconclusive
 	}
 	return out, nil
 }

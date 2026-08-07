@@ -1,6 +1,79 @@
 package mcp
 
-import "strings"
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"github.com/calbebop/batesian/internal/attack"
+)
+
+// probeVerdict says what a probe attempt established, before its body is
+// interpreted. The distinction the rules were missing is the first one: a probe
+// that failed to produce an answer is not the same as a server that refused.
+type probeVerdict int
+
+const (
+	// probeInconclusive means nothing was established. The request failed in
+	// transport, or the server answered in a way that carries no protocol-level
+	// verdict (a gateway 502, an HTML 500, an empty 400), or the body would not
+	// parse. Reporting a surface clean on this basis claims it is secure when it
+	// was never tested.
+	probeInconclusive probeVerdict = iota
+	// probeRejected means the server answered and the answer was not a usable
+	// result: an auth status, or a JSON-RPC error. Whether that is authorization
+	// being enforced or the method being absent, the surface is closed and a
+	// clean result is correct.
+	probeRejected
+	// probeAnswered means an HTTP 2xx carrying a parseable JSON object, which the
+	// caller can interpret.
+	probeAnswered
+)
+
+// classifyProbe decides what a probe established.
+//
+// The gate this replaces was `if err != nil || !resp.IsSuccess() { return nil }`
+// followed by `if json.Unmarshal(...) != nil { return nil }`, which collapsed
+// "refused", "unreachable" and "unparseable" into a clean result. Measured
+// against a wide-open server whose listings answered 502, the unauth rules
+// reported all three surfaces clean, indistinguishably from the same server
+// answering 401.
+//
+// Every non-2xx that carries a JSON-RPC error stays rejected rather than
+// inconclusive, deliberately. A -32601 says the method is absent and a -32001
+// says access was denied; both mean the surface is closed, which is what the
+// rules concluded before. Only a non-2xx with no protocol-level answer in it
+// changes meaning. Keeping that case out of probeAnswered also matters because
+// classifyDispatch is documented for 2xx bodies only: a 500 carrying -32603
+// would otherwise read as "the handler ran" and invent a finding.
+func classifyProbe(resp *attack.Response, err error) (probeVerdict, map[string]interface{}) {
+	if err != nil || resp == nil {
+		return probeInconclusive, nil
+	}
+
+	var body map[string]interface{}
+	parsed := json.Unmarshal(resp.Body, &body) == nil && body != nil
+
+	if resp.IsSuccess() {
+		if !parsed {
+			return probeInconclusive, nil
+		}
+		return probeAnswered, body
+	}
+
+	// An auth status is an answer on its own, whatever the body looks like.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return probeRejected, nil
+	}
+	// Otherwise the server must have said something in JSON-RPC terms for this to
+	// count as an answer.
+	if parsed {
+		if _, hasErr := body["error"]; hasErr {
+			return probeRejected, nil
+		}
+	}
+	return probeInconclusive, nil
+}
 
 // authFlavoredError reports whether a JSON-RPC error signals an authentication
 // or authorization rejection rather than a request-processing or validation

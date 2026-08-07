@@ -406,9 +406,9 @@ func TestRunOnEachWire_LabelsModernFindingsOnly(t *testing.T) {
 
 	var eras []Era
 	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
-		func(s mcpSession) []attack.Finding {
+		func(s mcpSession) ([]attack.Finding, bool) {
 			eras = append(eras, s.Era)
-			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}
+			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}, true
 		})
 	if err != nil {
 		t.Fatalf("runOnEachWire: %v", err)
@@ -437,8 +437,8 @@ func TestRunOnEachWire_LegacyOnlyIsUnchanged(t *testing.T) {
 	defer srv.Close()
 
 	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
-		func(mcpSession) []attack.Finding {
-			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}
+		func(mcpSession) ([]attack.Finding, bool) {
+			return []attack.Finding{{Title: "surface exposed", Evidence: "body"}}, true
 		})
 	if err != nil {
 		t.Fatalf("runOnEachWire: %v", err)
@@ -478,5 +478,77 @@ func TestSessionPost_ModernMirrorsMcpName(t *testing.T) {
 	}
 	if got := (*seen)[len(*seen)-1].headers.Get("Mcp-Name"); got != "" {
 		t.Errorf("tools/call is name-bearing but tools/list is not; sent Mcp-Name=%q", got)
+	}
+}
+
+// A wire that establishes nothing must not read as a clean pass. This is what
+// carries the per-probe verdict up to the engine, which records ErrInconclusive
+// as skipped rather than as a secure result.
+func TestRunOnEachWire_UndeterminedWithNoFindingsIsInconclusive(t *testing.T) {
+	srv, _ := wireServer(t, true, false)
+	defer srv.Close()
+
+	_, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(mcpSession) ([]attack.Finding, bool) {
+			return nil, false
+		})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when no wire established anything, got %v", err)
+	}
+}
+
+// A determined wire that found nothing is a genuine clean pass and must stay one.
+func TestRunOnEachWire_DeterminedWithNoFindingsIsClean(t *testing.T) {
+	srv, _ := wireServer(t, true, false)
+	defer srv.Close()
+
+	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(mcpSession) ([]attack.Finding, bool) {
+			return nil, true
+		})
+	if err != nil {
+		t.Fatalf("a determined wire must not be inconclusive: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d", len(findings))
+	}
+}
+
+// Findings survive an undetermined wire. A rule that confirmed something and then
+// failed a follow-up probe still found it, and reporting "not tested" would throw
+// away a real result.
+func TestRunOnEachWire_FindingsSurviveAnUndeterminedWire(t *testing.T) {
+	srv, _ := wireServer(t, true, false)
+	defer srv.Close()
+
+	findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(mcpSession) ([]attack.Finding, bool) {
+			return []attack.Finding{{Title: "surface exposed"}}, false
+		})
+	if err != nil {
+		t.Fatalf("findings must not be discarded as inconclusive: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected the finding to survive, got %d", len(findings))
+	}
+}
+
+// On a dual-era server one wire establishing something is enough: the other may
+// legitimately not serve the surface.
+func TestRunOnEachWire_OneDeterminedWireIsEnough(t *testing.T) {
+	srv, _ := wireServer(t, true, true)
+	defer srv.Close()
+
+	calls := 0
+	_, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+		func(mcpSession) ([]attack.Finding, bool) {
+			calls++
+			return nil, calls == 1 // legacy determined, modern not
+		})
+	if err != nil {
+		t.Fatalf("one determined wire must be enough, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("both wires should be probed, got %d calls", calls)
 	}
 }

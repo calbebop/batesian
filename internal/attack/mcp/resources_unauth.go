@@ -74,35 +74,34 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 
 	// A server may expose resources on both protocol wires, and need not gate them
 	// the same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session)
 	})
 }
 
-// probeSession runs the rule against one already-opened wire.
-func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) []attack.Finding {
-	var findings []attack.Finding
-
+// probeSession runs the rule against one already-opened wire. determined reports
+// whether the wire established anything; see classifyProbe.
+//
+// Only the listing decides that. The per-resource reads below feed the credential
+// escalation, and they run after the listing finding is already confirmed, so a
+// read that fails cannot turn a confirmed finding into "not tested".
+func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
 	// Step 1: resources/list - enumerate available resources
 	listResp, err := session.post(ctx, client, 3, "resources/list", nil)
-	if err != nil || !listResp.IsSuccess() {
-		return nil
-	}
-
-	var listBody map[string]interface{}
-	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil
+	verdict, listBody := classifyProbe(listResp, err)
+	if verdict != probeAnswered {
+		return nil, verdict == probeRejected
 	}
 
 	// JSON-RPC error means the endpoint exists but rejected the call - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil
+		return nil, true
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	resourcesRaw, _ := result["resources"].([]interface{})
 	if len(resourcesRaw) == 0 {
-		return nil
+		return nil, true
 	}
 
 	// Build a display list of resource URIs
@@ -138,7 +137,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	// server's choice, so the rule cannot let it decide the severity.
 	read, examined := e.readResources(ctx, client, session, uris)
 	if read == nil {
-		return findings
+		return findings, true
 	}
 
 	// Baseline: unauthenticated read of resource content is high. Escalate to
@@ -174,7 +173,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings
+	return findings, true
 }
 
 // resourceRead is one successfully read resource.
