@@ -43,9 +43,10 @@ func liveClient() *attack.HTTPClient {
 	return attack.NewUnauthHTTPClient(opts, attack.NewVars("", ""))
 }
 
-// A server that answers server/discover must be classified modern. If the
-// specification or the SDK changes the shape of that reply, this is where we
-// find out.
+// A server whose server/discover reply advertises the modern revision must be
+// classified modern. Detection reads that reply's supportedVersions rather than
+// the fact that it answered, so if the specification or the SDK changes the shape
+// of the field, this is where we find out.
 func TestDetectEra_LiveModernServer(t *testing.T) {
 	ep := liveEndpoint(t)
 

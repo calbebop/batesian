@@ -204,6 +204,87 @@ func TestOpenSessions_ModernOnly(t *testing.T) {
 	}
 }
 
+// discoveryOnlyServer serves the handshake wire, answers server/discover on any
+// version while naming only handshake-era versions, and rejects every modern
+// request with the plain-text 400 the Go SDK returns. Nothing is gated.
+//
+// This is the shape that made the modern wire look present when it is not: a
+// server built on the Go SDK without StreamableHTTPOptions.Stateless. Every
+// server must implement the discovery RPC, so answering it says nothing about
+// which wire is served.
+func discoveryOnlyServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		method, _ := body["method"].(string)
+		id := body["id"]
+
+		if method == "server/discover" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"resultType":        "complete",
+					"supportedVersions": []string{"2025-11-25", "2025-06-18", "2024-11-05"},
+					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+			return
+		}
+		if r.Header.Get("MCP-Protocol-Version") == modernEraVersion {
+			// Not a JSON-RPC error and not an authorization refusal: the version
+			// is simply not served here.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`Bad Request: protocol version "2026-07-28" is only supported on stateless HTTP servers`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18",
+					"serverInfo":      map[string]interface{}{"name": "discovery-only", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"name": "echo"}}},
+			})
+		}
+	}))
+}
+
+// A server that answers discovery without advertising the modern revision serves
+// one wire, so only one session may come back. A second, phantom session would
+// have every dual-wire rule probing a surface that answers HTTP 400 to
+// everything, and each of those 400s reads as a refusal.
+func TestOpenSessions_DiscoveryWithoutModernVersionIsLegacyOnly(t *testing.T) {
+	srv := discoveryOnlyServer(t)
+	defer srv.Close()
+
+	sessions, err := openSessions(context.Background(), wireClient(), srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Era != EraLegacy {
+		t.Fatalf("expected one legacy session, got %d: %+v", len(sessions), sessions)
+	}
+}
+
 func TestOpenSessions_NeitherWireIsInconclusive(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()

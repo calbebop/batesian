@@ -169,6 +169,65 @@ func TestEraDowngrade_SingleEraIsNotApplicable(t *testing.T) {
 	}
 }
 
+// The false positive this rule shipped with, reproduced. A server built on the
+// Go SDK without StreamableHTTPOptions.Stateless answers server/discover, as
+// every server must, advertises only handshake-era versions, and rejects a
+// 2026-07-28 request with a plain-text HTTP 400 saying the version needs a
+// stateless server. Nothing here is gated.
+//
+// Taking the discovery answer as a modern wire made that 400 the "refused" half
+// of an asymmetry, and the rule reported a critical authorization bypass against
+// a server enforcing no authorization at all.
+func TestEraDowngrade_DiscoveryWithoutModernVersionIsNotAnAsymmetry(t *testing.T) {
+	ts := discoveryOnLegacyServer(t)
+	defer ts.Close()
+
+	if findings := runEraDowngrade(t, ts); len(findings) != 0 {
+		t.Errorf("expected zero findings: the modern wire is absent, not gated. Got %d: %+v",
+			len(findings), findings)
+	}
+}
+
+func discoveryOnLegacyServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		method, _ := body["method"].(string)
+		id := body["id"]
+
+		if method == "server/discover" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"resultType": "complete",
+					"supportedVersions": []string{"2025-11-25", "2025-06-18"},
+					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}}}})
+			return
+		}
+		if r.Header.Get("MCP-Protocol-Version") == "2026-07-28" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`Bad Request: protocol version "2026-07-28" is only supported on stateless HTTP servers`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "s")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"protocolVersion": "2025-06-18",
+					"serverInfo":   map[string]interface{}{"name": "discovery-only", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"name": "echo"}}}})
+		}
+	}))
+}
+
 func TestEraDowngrade_NothingReachableIsNotTested(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()

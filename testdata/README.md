@@ -60,7 +60,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
 | `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s) |
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
-| `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (gates the handshake wire only) |
+| `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
 
 **Coverage.** 35 of the 36 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
@@ -72,9 +72,12 @@ unit tests via `net/http/httptest`; it is not a standalone server.
 vulnerable.** It is built on the official MCP Python SDK and speaks the
 2026-07-28 revision, so era detection (`internal/attack/mcp/era.go`) can be
 checked against a real modern server instead of against the specification alone.
-No rule fires against it, and a scan reporting nothing is the expected result.
-`.github/workflows/mcp-era-watch.yml` starts it weekly and runs the
-integration-tagged tests in `internal/attack/mcp/era_live_test.go` against it:
+It is not, however, a silent target: the SDK applies no authorization, so the
+unauth rules fire against it on both wires and report roughly ten findings. What
+this fixture proves is that the era is detected and driven correctly, not that a
+scan comes back clean. `.github/workflows/mcp-era-watch.yml` starts it weekly and
+runs the integration-tagged tests in `internal/attack/mcp/era_live_test.go`
+against it:
 
 ```sh
 python testdata/mcp_modern_era_server.py &
@@ -85,6 +88,24 @@ BATESIAN_LIVE_MCP_ENDPOINT=http://127.0.0.1:7799/mcp \
 Because the SDK serves both eras from one server, it also answers the 2025-era
 `initialize` handshake, which is why the existing rules still work against
 current deployments.
+
+**`mcp_era_downgrade_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_era_downgrade_server.py vulnerable      # rule must fire
+python testdata/mcp_era_downgrade_server.py discovery-only  # rule must stay silent
+```
+
+`discovery-only` serves one wire and gates nothing, while still answering
+`server/discover` (which every server implements whatever era it serves) with a
+`supportedVersions` list that names only handshake-era revisions. It is the
+posture a server built on the Go SDK has when `StreamableHTTPOptions.Stateless`
+is left false. It exists because era detection used to read "discovery answered"
+as "the modern wire is served", which turned that server's `400 Bad Request:
+protocol version "2026-07-28" is only supported on stateless HTTP servers` into
+the refused half of an authorization asymmetry and produced a critical
+`mcp-era-downgrade-001` finding against a target with no authorization at all.
 
 The multi-tenant and delegation fixtures exercise the chained rules: they require
 two principals supplied with `--principal name=...,token=...,tenant=...` (or a
