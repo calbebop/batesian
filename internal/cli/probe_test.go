@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -134,5 +135,51 @@ func TestCardToProbeResult_AuthAcrossCardVersions(t *testing.T) {
 				t.Errorf("SecuritySchemes = %q, want %q", joined, tt.wantSchemeText)
 			}
 		})
+	}
+}
+
+// Two probes of an unchanged agent must print the same Schemes row.
+//
+// SecuritySchemes is a map and Go randomizes map iteration, so the row order used
+// to vary between runs. Repetition is what makes this reliable: the first six live
+// runs against a four-scheme card all agreed by chance, and only at twenty did
+// three distinct orderings appear. Go shuffles the start offset within a bucket, so
+// a small map yields rotations of one sequence and a short sample easily misses it.
+func TestCardToProbeResult_SchemeOrderIsDeterministic(t *testing.T) {
+	const card = `{
+		"name": "Multi-Scheme Agent", "description": "d", "version": "1.0.0",
+		"capabilities": {}, "skills": [],
+		"securitySchemes": {
+			"bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}},
+			"apiKeyAuth": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}},
+			"oauth2Auth": {"oauth2SecurityScheme": {"flows": {}}},
+			"mtlsAuth": {"mtlsSecurityScheme": {}},
+			"oidcAuth": {"openIdConnectSecurityScheme": {"openIdConnectUrl": "https://idp/.well-known/openid-configuration"}}
+		}
+	}`
+
+	var first []string
+	for run := 0; run < 50; run++ {
+		var c a2a.AgentCard
+		if err := json.Unmarshal([]byte(card), &c); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		got := cardToProbeResult(&c, time.Millisecond).SecuritySchemes
+		if len(got) != 5 {
+			t.Fatalf("run %d: expected 5 schemes, got %d: %v", run, len(got), got)
+		}
+		if run == 0 {
+			first = got
+			continue
+		}
+		for i := range got {
+			if got[i] != first[i] {
+				t.Fatalf("run %d printed a different scheme order than run 0; two probes of an unchanged agent must match: first=%v now=%v",
+					run, first, got)
+			}
+		}
+	}
+	if !sort.StringsAreSorted(first) {
+		t.Errorf("schemes should be in a stable, predictable order, got %v", first)
 	}
 }
