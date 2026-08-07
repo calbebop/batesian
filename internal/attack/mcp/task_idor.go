@@ -56,6 +56,16 @@ type safeTool struct {
 	args map[string]interface{}
 }
 
+// authEvidence records what the discriminator established about the target's
+// authentication, so a finding describes the boundary it actually measured rather
+// than the one the rule originally assumed. enforcedOn names the surface a
+// credential is required for; anonProbe is the single anonymous request that
+// demonstrated it.
+type authEvidence struct {
+	enforcedOn string
+	anonProbe  string
+}
+
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// One transport, with credentials attached per request, so each session can
@@ -92,12 +102,37 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		return nil, nil
 	}
 
-	// Step 2: discriminator. If an anonymous caller can create a task too, the
-	// server enforces no authentication at all, which is a different (and more
-	// obvious) failure owned by mcp-tools-unauth-001. Do not call that an IDOR.
+	// Step 2: discriminator. This rule claims task reads are not bound to the
+	// creating authorization context, which presupposes there is an authorization
+	// context at all. A server that authenticates nothing is a different and more
+	// obvious failure, owned by mcp-tools-unauth-001, and must not be called an IDOR.
+	//
+	// "Authenticates nothing" has to be measured on the read surface too, not on
+	// creation alone. A server can leave a task-augmented tools/call open while
+	// gating tasks/get and tasks/result, and that gate is a real authorization
+	// boundary: an anonymous caller is refused, an authenticated one is not, and
+	// which tasks the authenticated one may read is exactly this rule's question.
+	// Suppressing on open creation alone hid that server completely.
+	// Each branch below records only what it actually observed, so no finding
+	// claims a probe that was skipped. The read probe runs only when creation was
+	// open, because a refused creation already proves a credential is required.
+	auth := authEvidence{
+		enforcedOn: "the MCP endpoint",
+		anonProbe:  "anonymous initialize: refused",
+	}
 	if anonSess, anonOK := e.initSession(ctx, client, vars.BaseURL, ""); anonOK {
+		auth = authEvidence{
+			enforcedOn: "task creation and reads",
+			anonProbe:  "anonymous task creation: refused",
+		}
 		if e.createTask(ctx, client, anonSess, "", tool) != "" {
-			return nil, nil
+			if _, anonCanRead := e.getTask(ctx, client, anonSess, "", taskID); anonCanRead {
+				return nil, nil // no credential is required anywhere
+			}
+			auth = authEvidence{
+				enforcedOn: "task reads only (anonymous task creation was accepted)",
+				anonProbe:  "anonymous tasks/get: refused",
+			}
 		}
 	}
 
@@ -111,13 +146,13 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Step 4: can B read A's task by id? A correctly-scoped server answers -32602.
 	if meta, ok := e.getTask(ctx, client, sessB, tokenB, taskID); ok {
-		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, crossPrincipal))
+		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, crossPrincipal, auth))
 
 		// Escalate if B can also read the result. tasks/result blocks until the
 		// task is terminal, so poll tasks/get first and stay inside the budget.
 		if e.pollTerminal(ctx, client, sessB, tokenB, taskID) {
 			if content, ok := e.getResult(ctx, client, sessB, tokenB, taskID); ok {
-				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, crossPrincipal))
+				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, crossPrincipal, auth))
 			}
 		}
 	}
@@ -129,7 +164,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// prior knowledge of the task id at all.
 	if tasksSupportsList(sessA.RawInit) {
 		if ids, ok := e.listTasks(ctx, client, sessB, tokenB); ok && containsTaskID(ids, taskID) {
-			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), crossPrincipal))
+			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), crossPrincipal, auth))
 		}
 	}
 
@@ -472,7 +507,7 @@ func requestorLabel(crossPrincipal bool) string {
 	return "a separate authenticated session"
 }
 
-func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState, crossPrincipal bool) attack.Finding {
+func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -480,21 +515,23 @@ func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState
 		Confidence: attack.ConfirmedExploit,
 		Title:      "MCP task readable by another authorization context (tasks/get IDOR)",
 		Description: fmt.Sprintf(
-			"tasks/get at %s returned task %s to %s that did not create it. The server rejected "+
-				"anonymous task creation, so authentication is enforced, yet task lookup is not bound to "+
-				"the creating context. The MCP spec requires receivers to reject tasks/get for tasks "+
-				"outside the requestor's authorization context, so any caller who learns or guesses a "+
-				"task id can track another context's work.", endpoint, taskID, requestorLabel(crossPrincipal)),
+			"tasks/get at %s returned task %s to %s that did not create it. Authentication is enforced "+
+				"on %s, so a credential is required, yet task lookup is not bound to the creating "+
+				"context. The MCP spec requires receivers to reject tasks/get for tasks outside the "+
+				"requestor's authorization context, so any caller who learns or guesses a task id can "+
+				"track another context's work.",
+			endpoint, taskID, requestorLabel(crossPrincipal), auth.enforcedOn),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntask: %s\nanonymous task creation: rejected (auth enforced)\n"+
-				"cross-context tasks/get: accepted\ndisclosed status: %s\nstatusMessage: %s\ncreatedAt: %s",
-			endpoint, taskID, st.Status, st.StatusMessage, st.CreatedAt),
+			"endpoint: %s\ntask: %s\nauthentication enforced on: %s\n%s\n"+
+				"cross-context tasks/get: accepted\n"+
+				"disclosed status: %s\nstatusMessage: %s\ncreatedAt: %s",
+			endpoint, taskID, auth.enforcedOn, auth.anonProbe, st.Status, st.StatusMessage, st.CreatedAt),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int, crossPrincipal bool) attack.Finding {
+func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -509,15 +546,15 @@ func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int
 				"context, and to not advertise the tasks.list capability at all when requestors cannot be "+
 				"identified.", endpoint, taskID, requestorLabel(crossPrincipal), total),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\nanonymous task creation: rejected (auth enforced)\n"+
+			"endpoint: %s\nauthentication enforced on: %s\n%s\n"+
 				"cross-context tasks/list: accepted\ntasks returned: %d\nincludes another context's task: %s",
-			endpoint, total, taskID),
+			endpoint, auth.enforcedOn, auth.anonProbe, total, taskID),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content string, crossPrincipal bool) attack.Finding {
+func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content string, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -531,9 +568,9 @@ func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content str
 				"receivers to reject tasks/result for tasks outside the requestor's authorization context.",
 			endpoint, taskID, requestorLabel(crossPrincipal), toolName),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntask: %s\ntool: %s\nanonymous task creation: rejected (auth enforced)\n"+
+			"endpoint: %s\ntask: %s\ntool: %s\nauthentication enforced on: %s\n%s\n"+
 				"cross-context tasks/result: accepted\ndisclosed result: %s",
-			endpoint, taskID, toolName, snippetMCP([]byte(content))),
+			endpoint, taskID, toolName, auth.enforcedOn, auth.anonProbe, snippetMCP([]byte(content))),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
