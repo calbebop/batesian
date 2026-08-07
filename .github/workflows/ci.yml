@@ -9,14 +9,23 @@ on:
     branches:
       - main
       - dev
-      # Same-repo feature work: CI on push without widening to arbitrary branch names.
-      - 'fix/**'
-      - 'feat/**'
-      - 'chore/**'
-      - 'docs/**'
     tags: ['v*']
   pull_request:
     branches: [main, dev]
+  # Manual trigger, for a branch with no open pull request yet and as the way in
+  # when event delivery is unavailable. During the 2026-08-06 Actions incident,
+  # webhooks were throttled to roughly 15% and neither a push nor a
+  # close/reopen produced a run, while the re-run endpoints deadlocked
+  # ("already running" against "has not yet queued"). workflow_dispatch is a
+  # direct API call and does not depend on webhook delivery.
+  workflow_dispatch:
+
+# One run per branch or pull request. A superseded run is cancelled rather than
+# left competing for a runner, which is what made the incident above worse.
+# Tag runs are never cancelled: that is the release path.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
@@ -85,7 +94,9 @@ jobs:
   release:
     name: Release (goreleaser)
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tag PUSH only. workflow_dispatch accepts any ref, including a tag, so a
+    # ref test alone would let a manual run re-publish an existing release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, lint, vuln]
     permissions:
       contents: write      # create GitHub releases and upload assets
