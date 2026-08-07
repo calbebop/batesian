@@ -128,7 +128,7 @@ func probeA2A(target, token string, timeoutSecs int, skipTLS bool, format report
 
 	result := cardToProbeResult(card, cardResult.Elapsed)
 
-	if card.Capabilities.ExtendedAgentCard {
+	if card.SupportsExtendedCard() {
 		printer.Verbose("Probing extended agent card (unauthenticated)...")
 		extResult, err := client.ProbeExtendedCard(ctx)
 		if err == nil && extResult.IsSuccess() {
@@ -176,9 +176,10 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 		Description:           card.Description,
 		URL:                   card.GetServiceURL(),
 		Version:               card.Version,
+		ProtocolVersion:       card.ProtocolVersion,
 		Streaming:             card.Capabilities.Streaming,
 		PushNotifications:     card.Capabilities.PushNotifications,
-		ExtendedCardAvailable: card.Capabilities.ExtendedAgentCard,
+		ExtendedCardAvailable: card.SupportsExtendedCard(),
 		AuthRequired:          card.RequiresAuth(),
 		Elapsed:               elapsed,
 	}

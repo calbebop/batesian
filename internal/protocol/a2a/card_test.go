@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -542,6 +543,86 @@ func TestSecurityScheme_V03APIKeyLocation(t *testing.T) {
 				t.Errorf("Location = %q, want cookie", s.APIKey.Location)
 			}
 		})
+	}
+}
+
+// TestAgentCard_SupportsExtendedCard covers both dialects' spelling of the
+// extended-card advertisement. probe gates two of its own checks on this, one of
+// them the fabricated-Bearer-token fetch, so reading only the v1.0 spelling meant
+// neither ran against a v0.3 agent.
+func TestAgentCard_SupportsExtendedCard(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+		why  string
+	}{
+		{
+			name: "v0.3 top-level flag",
+			body: `"supportsAuthenticatedExtendedCard":true`,
+			want: true,
+			why:  "v0.3 advertises it at the card top level, which is what a2a-go serves",
+		},
+		{
+			name: "v1.0 nested flag",
+			body: `"capabilities":{"extendedAgentCard":true}`,
+			want: true,
+			why:  "v1.0 moved it under capabilities",
+		},
+		{
+			name: "both spellings",
+			body: `"supportsAuthenticatedExtendedCard":true,"capabilities":{"extendedAgentCard":true}`,
+			want: true,
+			why:  "a card carrying both still advertises one extended card",
+		},
+		{
+			name: "neither",
+			body: `"capabilities":{"streaming":true}`,
+			want: false,
+			why:  "no advertisement means probe must not claim one",
+		},
+		{
+			name: "v0.3 flag explicitly false",
+			body: `"supportsAuthenticatedExtendedCard":false`,
+			want: false,
+			why:  "an explicit false is still no advertisement",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"name":"Agent","description":"d","version":"1.0.0","skills":[],` + tt.body + `}`
+			var card AgentCard
+			if err := json.Unmarshal([]byte(body), &card); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := card.SupportsExtendedCard(); got != tt.want {
+				t.Errorf("SupportsExtendedCard() = %v, want %v (%s)", got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// TestAgentCard_ProtocolVersionCaptured guards the field being read at all.
+// buildJSONOutput re-marshals the parsed card, so a field the struct does not
+// capture is dropped from probe's JSON output as well as its table.
+func TestAgentCard_ProtocolVersionCaptured(t *testing.T) {
+	const v03 = `{"name":"Agent","description":"d","version":"1.0.0","protocolVersion":"0.3.0",
+		"url":"http://127.0.0.1:1/","preferredTransport":"JSONRPC","capabilities":{},"skills":[]}`
+	var card AgentCard
+	if err := json.Unmarshal([]byte(v03), &card); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if card.ProtocolVersion != "0.3.0" {
+		t.Errorf("ProtocolVersion = %q, want %q", card.ProtocolVersion, "0.3.0")
+	}
+	// The JSON output path round-trips the card, so the field must survive that.
+	raw, err := json.Marshal(&card)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"protocolVersion":"0.3.0"`) {
+		t.Errorf("protocolVersion did not survive the round trip: %s", raw)
 	}
 }
 

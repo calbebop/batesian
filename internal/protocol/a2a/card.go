@@ -31,6 +31,17 @@ type AgentCard struct {
 	// (e.g. "JSONRPC", "GRPC").
 	PreferredTransport string `json:"preferredTransport,omitempty"`
 
+	// ProtocolVersion is the A2A revision the agent speaks ("0.3.0", "1.0"). It is
+	// the field that distinguishes the two card dialects from each other, so it is
+	// worth surfacing: every version-specific field below has a different name or
+	// shape depending on it.
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
+
+	// SupportsAuthenticatedExtendedCard is the v0.3 spelling of the extended-card
+	// advertisement, at the card top level. v1.0 moved it to
+	// capabilities.extendedAgentCard. Read both via SupportsExtendedCard.
+	SupportsAuthenticatedExtendedCard bool `json:"supportsAuthenticatedExtendedCard,omitempty"`
+
 	// URL is the v0.3 top-level service URL field. Still present in many deployed
 	// agents; usable as the JSON-RPC endpoint only when PreferredTransport is JSONRPC.
 	URL string `json:"url,omitempty"`
@@ -168,6 +179,20 @@ func (c *AgentCard) RequiresAuth() bool {
 		}
 	}
 	return true
+}
+
+// SupportsExtendedCard reports whether the card advertises an authenticated
+// extended Agent Card, in either dialect's spelling.
+//
+// v1.0 nests the flag as capabilities.extendedAgentCard; v0.3 puts it at the card
+// top level as supportsAuthenticatedExtendedCard. Reading only the v1.0 spelling
+// meant probe skipped both of its extended-card checks against every v0.3 agent,
+// including the one that fetches the endpoint with a fabricated Bearer token, so
+// an agent serving its extended card to anonymous callers was reported as having
+// no extended card at all. The scan rule probes the path unconditionally and was
+// unaffected.
+func (c *AgentCard) SupportsExtendedCard() bool {
+	return c.Capabilities.ExtendedAgentCard || c.SupportsAuthenticatedExtendedCard
 }
 
 // SecurityRequirement maps scheme names to required OAuth scopes.

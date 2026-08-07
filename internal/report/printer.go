@@ -90,6 +90,11 @@ type ProbeResult struct {
 	Version     string
 	Provider    string
 
+	// ProtocolVersion is the A2A revision the card declares. It is what
+	// distinguishes the two card dialects, and several card fields differ in name
+	// or shape between them, so it is worth showing rather than inferring.
+	ProtocolVersion string
+
 	// Capabilities
 	Streaming             bool
 	PushNotifications     bool
@@ -131,6 +136,9 @@ func (p *Printer) PrintProbeTable(r *ProbeResult) {
 	tw := tabwriter.NewWriter(p.w, 0, 0, 2, ' ', 0)
 	p.kvRow(tw, "Name", r.Name)
 	p.kvRow(tw, "Version", r.Version)
+	if r.ProtocolVersion != "" {
+		p.kvRow(tw, "Protocol", r.ProtocolVersion)
+	}
 	if r.Description != "" {
 		p.kvRow(tw, "Description", truncate(r.Description, 80))
 	}
