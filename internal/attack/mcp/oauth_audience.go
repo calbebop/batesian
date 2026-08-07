@@ -319,9 +319,17 @@ func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, m
 }
 
 // runProbesAgainstEndpoint sends every probe to each candidate endpoint and
-// returns the outcomes for the first endpoint that produced any usable
-// response. Endpoints that error on every probe are skipped so a stray /api
-// path cannot hide a real /mcp finding.
+// returns the outcomes for the first endpoint that produced a usable response.
+//
+// "Usable" means the endpoint actually engaged with the token. A transport
+// failure does not count, and neither does a reply that only says the path is
+// not there: this loop used to accept any response that was not a transport
+// error, so an unrouted candidate answering 404 ended the walk immediately and
+// the real endpoint further down the list was never probed. Combined with 404
+// classifying as a rejection, that made the rule report a target secure on the
+// strength of four requests to a path that did not exist. A stray /api path must
+// not be able to hide a real /mcp finding, which is what the old comment here
+// claimed and the code did not do.
 func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string, probes []audienceProbe) (string, []probeOutcome, error) {
 	for _, ep := range endpointCandidates(baseURL) {
 		outcomes := make([]probeOutcome, 0, len(probes))
@@ -349,7 +357,9 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, ba
 				})
 				continue
 			}
-			anyResponse = true
+			if !endpointAbsent(resp) {
+				anyResponse = true
+			}
 			outcomes = append(outcomes, probeOutcome{
 				probe:    p,
 				verdict:  classifyResponse(resp),
@@ -389,11 +399,27 @@ func classifyResponse(resp *attack.Response) audVerdict {
 		return verdictInconclusive
 	case resp.StatusCode == 401, resp.StatusCode == 403:
 		return verdictRejected
+	case endpointAbsent(resp):
+		// There is no MCP endpoint at this path, so nothing examined the token.
+		// Calling it a rejection read a 404 as evidence that audience matching
+		// worked, which is how this rule reported a whole target secure on the
+		// strength of paths that did not exist.
+		return verdictInconclusive
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return verdictRejected
 	default:
 		return verdictInconclusive
 	}
+}
+
+// endpointAbsent reports whether a response says "there is nothing here to talk
+// to" rather than anything about the request that was made.
+//
+// 404 means the path is unrouted. 405 means it is routed but does not take the
+// POST an MCP call requires, so it is not an MCP endpoint either. Neither is a
+// verdict on the forged token, and neither should end the candidate walk.
+func endpointAbsent(resp *attack.Response) bool {
+	return resp.StatusCode == 404 || resp.StatusCode == 405
 }
 
 // isJSONRPCResult reports whether body parses as a JSON-RPC response with a

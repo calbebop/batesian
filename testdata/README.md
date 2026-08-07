@@ -46,7 +46,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
-| `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` |
+| `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
 | `mcp_new_rules_server.py` | 3100 | `mcp-prompt-unauth-001`, `mcp-tools-unauth-001`; `mcp-init-downgrade-001` needs the `downgrade` posture, see below |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
 | `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` |
@@ -78,8 +78,10 @@ when it is not, so check them before concluding a rule has regressed:
   specifically, not arbitrary names.
 - **Target.** The OAuth fixtures (`mcp_oauth_dcr_server.py`,
   `mcp_oauth_metadata_ssrf_server.py`, `mcp_confused_deputy_server.py`) are
-  scanned at the root, not at `/mcp`. `mcp_oauth_audience_server.py` also needs
-  `--audience-claim`.
+  scanned at the root, not at `/mcp`. `mcp_oauth_audience_server.py` is the
+  opposite: each bug class lives at its own sub-path, so the target must name the
+  endpoint (`http://127.0.0.1:7785/vulnerable-substring/mcp` and so on), and it
+  takes `--audience-claim`. Scanning its root correctly reports "not tested".
 - **Postures.** Several fixtures need a non-default argument, listed above.
 
 **`mcp_modern_era_server.py` is the one server here that is not deliberately
