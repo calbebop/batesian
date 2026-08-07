@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -269,6 +270,152 @@ func TestAgentCard_V03SecurityField(t *testing.T) {
 	}
 	if len(card.SecurityRequirements) != 0 {
 		t.Errorf("SecurityRequirements should be empty for a v0.3 card, got %d", len(card.SecurityRequirements))
+	}
+}
+
+// TestAgentCard_V1SecurityRequirementShapes covers the requirement entry shapes a
+// card can arrive in. The nested one is what both official SDKs serve, and
+// decoding straight into map[string][]string rejected it, which failed the whole
+// card because FetchAgentCard treats an unmarshal error as fatal.
+func TestAgentCard_V1SecurityRequirementShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		entry      string
+		wantScheme string
+		wantScopes []string
+		wantEmpty  bool
+		why        string
+	}{
+		{
+			name:       "v1.0 nested proto shape",
+			entry:      `{"schemes":{"bearerAuth":{"list":["a2a:invoke"]}}}`,
+			wantScheme: "bearerAuth",
+			wantScopes: []string{"a2a:invoke"},
+			why:        "SecurityRequirement is a proto message holding a schemes map of StringList",
+		},
+		{
+			name:       "v1.0 nested, no scopes",
+			entry:      `{"schemes":{"bearerAuth":{"list":[]}}}`,
+			wantScheme: "bearerAuth",
+			why:        "a required scheme need not demand any scope",
+		},
+		{
+			name:       "OpenAPI-flat shape",
+			entry:      `{"bearerAuth":["a2a:invoke"]}`,
+			wantScheme: "bearerAuth",
+			wantScopes: []string{"a2a:invoke"},
+			why:        "v0.3 cards and hand-rolled v1.0 cards use the flat shape",
+		},
+		{
+			name:      "empty entry",
+			entry:     `{}`,
+			wantEmpty: true,
+			why:       "an entry naming no scheme requires nothing",
+		},
+		{
+			name:      "empty schemes map",
+			entry:     `{"schemes":{}}`,
+			wantEmpty: true,
+			why:       "the v1.0 spelling of the same statement",
+		},
+		{
+			// A v0.3 card may name a scheme "schemes". Its value is a scope array
+			// rather than an object, which is what tells the shapes apart.
+			name:       "flat scheme literally named schemes",
+			entry:      `{"schemes":["read"]}`,
+			wantScheme: "schemes",
+			wantScopes: []string{"read"},
+			why:        "the shapes are distinguished by structure, not by the key name",
+		},
+		{
+			name:      "entry is not an object",
+			entry:     `"bearerAuth"`,
+			wantEmpty: true,
+			why:       "one malformed optional field must not sink an otherwise valid card",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"name":"Agent","description":"d","version":"1.0.0","capabilities":{},"skills":[],` +
+				`"securityRequirements":[` + tt.entry + `]}`
+			var card AgentCard
+			if err := json.Unmarshal([]byte(body), &card); err != nil {
+				t.Fatalf("card must parse (%s): %v", tt.why, err)
+			}
+			if card.Name != "Agent" {
+				t.Errorf("the rest of the card must survive, got name %q", card.Name)
+			}
+			if len(card.SecurityRequirements) != 1 {
+				t.Fatalf("SecurityRequirements len = %d, want 1", len(card.SecurityRequirements))
+			}
+			got := card.SecurityRequirements[0]
+			if tt.wantEmpty {
+				if len(got) != 0 {
+					t.Errorf("requirement = %v, want empty (%s)", got, tt.why)
+				}
+				return
+			}
+			scopes, present := got[tt.wantScheme]
+			if !present {
+				t.Fatalf("requirement %v does not name %q (%s)", got, tt.wantScheme, tt.why)
+			}
+			if len(scopes) != len(tt.wantScopes) {
+				t.Errorf("scopes = %v, want %v", scopes, tt.wantScopes)
+			}
+			for i := range tt.wantScopes {
+				if i < len(scopes) && scopes[i] != tt.wantScopes[i] {
+					t.Errorf("scopes = %v, want %v", scopes, tt.wantScopes)
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestFetchAgentCard_RealV1SecuredCard is the regression at the level the bug was
+// reported: probe fetching a real secured agent's card. It previously failed with
+// "is not valid JSON", so probe told the operator a correctly configured agent
+// was not an A2A agent.
+func TestFetchAgentCard_RealV1SecuredCard(t *testing.T) {
+	const securedCard = `{
+		"name": "Secured Echo Agent",
+		"description": "Agent that enforces bearer authorization",
+		"version": "1.0.0",
+		"capabilities": {"streaming": true},
+		"skills": [{"id": "echo", "name": "Echo", "description": "Echoes", "tags": ["echo"]}],
+		"supportedInterfaces": [{"url": "https://agent.example.com/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+		"securitySchemes": {"bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}},
+		"securityRequirements": [{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != WellKnownPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(securedCard))
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	card, _, err := client.FetchAgentCard(context.Background())
+	if err != nil {
+		t.Fatalf("a real v1.0 secured card must be fetchable: %v", err)
+	}
+	if card.Name != "Secured Echo Agent" {
+		t.Errorf("Name = %q", card.Name)
+	}
+	// This is what probe reports as "auth required".
+	if len(card.SecurityRequirements) == 0 {
+		t.Error("SecurityRequirements is empty, so probe would report the agent as unauthenticated")
+	}
+	if _, ok := card.SecurityRequirements[0]["bearerAuth"]; !ok {
+		t.Errorf("requirement should name bearerAuth, got %v", card.SecurityRequirements[0])
 	}
 }
 
