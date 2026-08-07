@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultTimeout = 10 * time.Second
-	maxBodyBytes   = 1 << 20 // 1 MB
+	maxBodyBytes   = 32 << 20 // 32 MB; see internal/attack.maxBody
 )
 
 // candidatePaths are tried in order when discovering the MCP endpoint.

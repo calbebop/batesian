@@ -61,6 +61,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s) |
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
 | `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
+| `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
 
 **Coverage.** 35 of the 36 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
@@ -88,6 +89,24 @@ BATESIAN_LIVE_MCP_ENDPOINT=http://127.0.0.1:7799/mcp \
 Because the SDK serves both eras from one server, it also answers the 2025-era
 `initialize` handshake, which is why the existing rules still work against
 current deployments.
+
+**`mcp_large_body_server.py` is a size test, not a new vulnerability.** It has no
+authentication at all, so it should produce the same findings any open server
+does. What it varies is response size: every listing and read is padded past the
+scanner's body read limit, which is what a real server does without trying once it
+has a few hundred tools or a config file worth reading.
+
+```sh
+python testdata/mcp_large_body_server.py            # ~1.33 MB responses
+python testdata/mcp_large_body_server.py 7801 8     # ~20 KB, the control
+```
+
+Both invocations must produce the same findings. They did not: the read limit was
+1 MB and truncated silently, the truncated JSON-RPC result was unparseable, and
+rules that treat an unparseable probe the same as a refused one reported those
+surfaces clean. The large server gave 1 finding where the small one gave 7, so a
+server could hide every unauthenticated-access finding by being large. If the two
+invocations ever disagree again, a body is being truncated somewhere.
 
 **`mcp_era_downgrade_server.py` takes a posture argument**, defaulting to
 `vulnerable`:

@@ -2,6 +2,7 @@ package attack_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,5 +209,55 @@ func TestHTTPClient_RedirectDoesNotForwardToken(t *testing.T) {
 		t.Fatalf("bearer token was forwarded to the redirect target (Authorization=%q); the client must not follow redirects", authz)
 	default:
 		// good: /sink was never reached, so the token stayed put
+	}
+}
+
+// A body that fits must arrive whole. The previous 1 MB cap truncated silently,
+// and a truncated JSON-RPC result is unparseable, which rules that treat an
+// unparseable probe the same as a refused one reported as a clean surface. A
+// wide-open MCP server was measured producing 1 finding with 1.33 MB responses
+// and 7 with 20 KB ones, with nothing else changed.
+func TestHTTPClient_LargeBodyIsNotTruncated(t *testing.T) {
+	// Comfortably past the old 1 MB limit, comfortably under the new one.
+	payload := `{"jsonrpc":"2.0","id":1,"result":{"pad":"` + strings.Repeat("x", 4<<20) + `"}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer srv.Close()
+
+	client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 30}, attack.NewVars(srv.URL, ""))
+	resp, err := client.POST(context.Background(), srv.URL, nil, map[string]interface{}{"jsonrpc": "2.0"})
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if len(resp.Body) != len(payload) {
+		t.Fatalf("body is %d bytes, want %d: a fitting body must not be shortened", len(resp.Body), len(payload))
+	}
+	// The point of not truncating: the result still parses, so the rule sees a
+	// success rather than what looks like a malformed reply.
+	if !resp.IsAccepted() {
+		t.Error("a large but valid JSON-RPC result must read as accepted")
+	}
+}
+
+// Over the limit is an explicit error, not a quietly shortened body. Returning a
+// truncated body would be indistinguishable from a server sending malformed JSON.
+func TestHTTPClient_OverLimitBodyIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 33 MB of payload, past the 32 MB ceiling.
+		_, _ = io.WriteString(w, `{"result":"`+strings.Repeat("x", 33<<20)+`"}`)
+	}))
+	defer srv.Close()
+
+	client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 60}, attack.NewVars(srv.URL, ""))
+	resp, err := client.POST(context.Background(), srv.URL, nil, map[string]interface{}{"jsonrpc": "2.0"})
+	if err == nil {
+		t.Fatalf("expected an error for an over-limit body, got a %d byte response", len(resp.Body))
+	}
+	if !strings.Contains(err.Error(), "read limit") {
+		t.Errorf("error should name the read limit, got: %v", err)
 	}
 }

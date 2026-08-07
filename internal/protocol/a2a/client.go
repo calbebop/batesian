@@ -24,7 +24,7 @@ const (
 	ExtendedCardPath = "/extendedAgentCard"
 
 	defaultTimeout = 10 * time.Second
-	maxBodyBytes   = 1 << 20 // 1 MB
+	maxBodyBytes   = 32 << 20 // 32 MB; see internal/attack.maxBody
 )
 
 // Client fetches and validates A2A endpoints.

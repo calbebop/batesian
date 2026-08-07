@@ -16,10 +16,16 @@ import (
 )
 
 // MaxBytes is the default cap on how many bytes a reader will consume from a
-// stream, matching the 1 MB body cap used by the scan and recon clients.
-const MaxBytes int64 = 1 << 20
+// stream, matching the body cap used by the scan and recon clients.
+const MaxBytes int64 = 32 << 20
 
-const defaultLineBytes = 1 << 20
+// defaultLineBytes caps a single line when no limit is supplied. initialLineBytes
+// is what the scanner starts with; it grows from there on demand, so the cap
+// costs nothing until a line actually approaches it.
+const (
+	defaultLineBytes = 32 << 20
+	initialLineBytes = 64 << 10
+)
 
 // Event is one dispatched SSE event.
 type Event struct {
@@ -53,7 +59,15 @@ func NewReaderSize(r io.Reader, maxLine int) *Reader {
 		maxLine = defaultLineBytes
 	}
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, maxLine), maxLine)
+	// Start small and let the scanner grow to maxLine only if a line needs it.
+	// Allocating maxLine up front made the ceiling cost real on every read: an
+	// SSE reply is the normal case for MCP streamable HTTP, so a large ceiling
+	// would allocate that much per response even for a few hundred bytes of data.
+	initial := initialLineBytes
+	if maxLine < initial {
+		initial = maxLine
+	}
+	sc.Buffer(make([]byte, initial), maxLine)
 	return &Reader{sc: sc}
 }
 
