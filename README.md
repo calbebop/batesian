@@ -80,8 +80,16 @@ batesian scan --target https://agent.example.com \
 
 batesian scan --target https://agent.example.com --dry-run
 
+batesian scan --target https://mcp.example.com --proxy 127.0.0.1:8080 --skip-tls
+
 batesian init
 ```
+
+`--proxy` routes every request through an intercepting proxy so a whole scan can be
+reviewed in Burp or ZAP, and pairs with `--skip-tls` because such proxies present
+their own CA. With no flag, `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honoured;
+note that Go does not send loopback targets through an environment proxy, so a scan
+against `127.0.0.1` needs the explicit flag.
 
 `probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
 

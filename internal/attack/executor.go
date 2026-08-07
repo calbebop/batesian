@@ -46,6 +46,16 @@ type Options struct {
 	// SkipTLS disables TLS certificate verification.
 	SkipTLS bool
 
+	// Proxy routes every request through an intercepting proxy, which is how a
+	// scan gets reviewed in Burp or ZAP. Empty means consult the environment
+	// (HTTPS_PROXY, HTTP_PROXY, NO_PROXY).
+	//
+	// An intercepting proxy presents its own CA, so this is normally paired with
+	// SkipTLS. It is deliberately not implied: quietly dropping certificate
+	// verification because a proxy was requested is the kind of surprise this
+	// tool should not spring.
+	Proxy string
+
 	// Verbose enables debug logging.
 	Verbose bool
 

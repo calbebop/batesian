@@ -261,3 +261,52 @@ func TestHTTPClient_OverLimitBodyIsAnError(t *testing.T) {
 		t.Errorf("error should name the read limit, got: %v", err)
 	}
 }
+
+// The scan client must route through the configured proxy. Every transport here
+// used to be a bare &http.Transport{}, which ignores even HTTPS_PROXY, while the
+// OAuth clients left Transport nil and so honoured it. An operator who set
+// HTTPS_PROXY captured the OAuth traffic and nothing else, and a capture that
+// looks complete but is not is worse than no proxy support.
+func TestTransport_RoutesThroughProxy(t *testing.T) {
+	var proxied []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied = append(proxied, r.Host)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer proxy.Close()
+
+	client := attack.NewUnauthHTTPClient(
+		attack.Options{TimeoutSeconds: 5, Proxy: strings.TrimPrefix(proxy.URL, "http://")},
+		attack.NewVars("http://target.invalid", ""))
+
+	// target.invalid does not resolve, so a response can only have come via the proxy.
+	resp, err := client.POST(context.Background(), "http://target.invalid/mcp", nil,
+		map[string]interface{}{"jsonrpc": "2.0"})
+	if err != nil {
+		t.Fatalf("request should have gone through the proxy: %v", err)
+	}
+	if !resp.IsAccepted() {
+		t.Errorf("expected the proxy's response, got HTTP %d %s", resp.StatusCode, resp.BodyString())
+	}
+	if len(proxied) != 1 || proxied[0] != "target.invalid" {
+		t.Errorf("proxy should have seen one request for target.invalid, saw %v", proxied)
+	}
+}
+
+// A mistyped proxy must fail loudly. Falling back to a direct connection would let
+// the operator believe they were intercepting when they were not.
+func TestTransport_UnusableProxyFailsRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"result":{}}`)
+	}))
+	defer srv.Close()
+
+	client := attack.NewUnauthHTTPClient(
+		attack.Options{TimeoutSeconds: 5, Proxy: "ftp://nope:21"},
+		attack.NewVars(srv.URL, ""))
+
+	if _, err := client.POST(context.Background(), srv.URL, nil, map[string]interface{}{}); err == nil {
+		t.Error("an unusable proxy must fail the request, not silently connect directly")
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/calbebop/batesian/internal/auth"
 	"github.com/calbebop/batesian/internal/config"
 	"github.com/calbebop/batesian/internal/engine"
+	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
 	"github.com/spf13/cobra"
@@ -53,6 +54,7 @@ func init() {
 	scanCmd.Flags().String("token", "", "Bearer token for authenticated requests")
 	scanCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
 	scanCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
+	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")
 	// OAuth 2.0 flags for automatic token acquisition.
@@ -96,6 +98,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	token, _ := cmd.Flags().GetString("token")
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
+	proxy, _ := cmd.Flags().GetString("proxy")
 	oobURL, _ := cmd.Flags().GetString("oob-url")
 	audienceClaim, _ := cmd.Flags().GetString("audience-claim")
 	principalFlags, _ := cmd.Flags().GetStringArray("principal")
@@ -127,6 +130,18 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
 	skipTLS = effectiveSkipTLS(cmd.Flags().Changed("skip-tls"), skipTLS, cfg.SkipTLS)
+	// Same sentinel problem as skip-tls: an empty string is indistinguishable from
+	// "not passed", so the flag only wins when it was actually set. That lets
+	// --proxy="" force a direct connection over a config proxy.
+	if !cmd.Flags().Changed("proxy") {
+		proxy = cfg.Proxy
+	}
+	// Validate here rather than letting each rule fail its own requests. A broken
+	// proxy is one configuration mistake, and surfacing it as "31 of 36 rules could
+	// not reach a testable endpoint" reads as an unreachable target instead.
+	if _, err := httpx.ProxyFunc(proxy); err != nil {
+		return err
+	}
 	if oobURL == "" {
 		oobURL = cfg.OOBURL
 	}
@@ -226,6 +241,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		Token:          token,
 		TimeoutSeconds: timeoutSecs,
 		SkipTLS:        skipTLS,
+		Proxy:          proxy,
 		Verbose:        verbose,
 		AudienceClaim:  audienceClaim,
 		Principals:     principals,

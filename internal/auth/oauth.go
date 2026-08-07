@@ -13,9 +13,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/calbebop/batesian/internal/httpx"
 )
 
 // TokenResponse holds the fields returned by an OAuth 2.0 token endpoint.
@@ -40,6 +43,12 @@ type ClientCredentialsConfig struct {
 	Audience string
 	// Timeout is the HTTP timeout for the token request (default: 15s).
 	Timeout time.Duration
+
+	// Proxy routes the token exchange through an intercepting proxy. Empty means
+	// consult the environment, which these clients already did by leaving
+	// Transport nil; the field is what lets an explicit --proxy win over it, so
+	// the OAuth leg and the scan leg agree on where traffic goes.
+	Proxy string
 }
 
 // FetchClientCredentialsToken performs an OAuth 2.0 client credentials grant
@@ -79,7 +88,14 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 
 	httpClient := client
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: cfg.Timeout}
+		proxy, err := httpx.ProxyFunc(cfg.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		httpClient = &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: &http.Transport{Proxy: proxy},
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
@@ -152,6 +168,12 @@ type AuthCodeConfig struct {
 	PKCEVerifier string
 	// Timeout is the HTTP timeout for the token request.
 	Timeout time.Duration
+
+	// Proxy routes the token exchange through an intercepting proxy. Empty means
+	// consult the environment, which these clients already did by leaving
+	// Transport nil; the field is what lets an explicit --proxy win over it, so
+	// the OAuth leg and the scan leg agree on where traffic goes.
+	Proxy string
 }
 
 // ExchangeAuthCode exchanges an authorization code (plus PKCE verifier) for tokens.
@@ -183,7 +205,14 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 
 	httpClient := client
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: cfg.Timeout}
+		proxy, err := httpx.ProxyFunc(cfg.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		httpClient = &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: &http.Transport{Proxy: proxy},
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
