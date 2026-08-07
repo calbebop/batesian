@@ -19,7 +19,7 @@ Run:
 
 Endpoint: http://127.0.0.1:7802/mcp
 
-Expect: 502 reports the tools, prompts and resources rules as not tested; 401
+Expect: 502 reports the tools, prompts, resources and logging rules as not tested; 401
 reports them clean; ok reports findings. The three must differ from each other.
 """
 
@@ -41,9 +41,13 @@ TOOLS = [{"name": "echo", "description": "Echoes input",
 PROMPTS = [{"name": "greet", "description": "A prompt template"}]
 RESOURCES = [{"uri": "config://database", "name": "database", "mimeType": "text/plain"}]
 
+# logging/setLevel is in here so mcp-logging-unauth-001 is exercised too. Left to
+# fall through it answers -32601, which correctly reads as the method being absent,
+# so the mode would never reach that rule's gate.
 LISTING = {"tools/list": {"tools": TOOLS},
            "prompts/list": {"prompts": PROMPTS},
-           "resources/list": {"resources": RESOURCES}}
+           "resources/list": {"resources": RESOURCES},
+           "logging/setLevel": {}}
 
 
 async def mcp(request: Request):

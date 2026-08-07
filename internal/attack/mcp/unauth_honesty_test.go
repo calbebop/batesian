@@ -34,6 +34,10 @@ func listingServer(t *testing.T, mode string) *httptest.Server {
 		"prompts/list":        {"prompts": []interface{}{map[string]interface{}{"name": "greet"}}},
 		"resources/list":      {"resources": []interface{}{map[string]interface{}{"uri": "config://db"}}},
 		"completion/complete": {"completion": map[string]interface{}{"values": []interface{}{"alpha", "beta"}}},
+		// logging/setLevel is included for the same reason: left to fall through it
+		// answers -32601, which correctly reads as the method being absent, so the
+		// mode would never reach logging-unauth's gate.
+		"logging/setLevel": {},
 	}
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +119,7 @@ func unauthFamily() map[string]func(attack.RuleContext) attack.Executor {
 		"mcp-prompt-unauth-001":     func(rc attack.RuleContext) attack.Executor { return mcpattack.NewPromptUnauthExecutor(rc) },
 		"mcp-resources-unauth-001":  func(rc attack.RuleContext) attack.Executor { return mcpattack.NewResourcesUnauthExecutor(rc) },
 		"mcp-completion-unauth-001": func(rc attack.RuleContext) attack.Executor { return mcpattack.NewCompletionUnauthExecutor(rc) },
+		"mcp-logging-unauth-001":    func(rc attack.RuleContext) attack.Executor { return mcpattack.NewLoggingUnauthExecutor(rc) },
 	}
 }
 
@@ -163,7 +168,8 @@ func TestUnauthFamily_OpenServerStillFires(t *testing.T) {
 	srv := listingServer(t, "open")
 	defer srv.Close()
 
-	for _, id := range []string{"mcp-tools-unauth-001", "mcp-prompt-unauth-001", "mcp-resources-unauth-001"} {
+	for _, id := range []string{"mcp-tools-unauth-001", "mcp-prompt-unauth-001",
+		"mcp-resources-unauth-001", "mcp-logging-unauth-001"} {
 		t.Run(id, func(t *testing.T) {
 			exec := unauthFamily()[id](attack.RuleContext{ID: id, Name: id, Severity: "high"})
 			findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
