@@ -42,7 +42,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-EXPECTED_AUD = "https://api.example.com/mcp"
+# Deliberately mixed case. The case-canonicalization probe only produces a real
+# case variant when the expected value has something to vary: given an all
+# lowercase audience the rule falls back to a default-port variant
+# (https://api.example.com:443/mcp), which /vulnerable-casefold/mcp correctly
+# rejects because it compares aud.lower() to EXPECTED_AUD.lower(). That left the
+# casefold endpoint advertising a bug it could not demonstrate.
+EXPECTED_AUD = "https://API.example.com/mcp"
 PORT = 7785
 
 

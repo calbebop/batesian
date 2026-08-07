@@ -400,3 +400,85 @@ func TestOAuthAudience_UnreachableHost(t *testing.T) {
 
 	assertInconclusive(t, mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()), addr, optsWithAudience(testExpectedAud))
 }
+
+// unroutedThenVulnerableServer serves the vulnerable substring matcher at
+// /sub/mcp and 404s everything else, including /sub itself. Scanned at
+// srv.URL+"/sub", the first candidate is the base path, which is unrouted.
+//
+// The base is only a candidate when the target carries a path, which is why a
+// root-targeted test cannot reproduce this: there the walk starts at /mcp and
+// finds the endpoint immediately.
+//
+// The walk used to stop at the first path returning any response that was not a
+// transport error, so the 404 at /sub ended it and /sub/mcp was never probed.
+// Worse, a 404 classified as a rejected token, so four requests to a path that
+// did not exist read as evidence that audience matching worked.
+func unroutedThenVulnerableServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sub/mcp" {
+			// Unrouted, exactly as a real server answers a path it does not serve.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if str, ok := aud.(string); ok && strings.Contains(str, testExpectedAud) {
+			initializeOK(w)
+			return
+		}
+		challenge401(w)
+	}))
+}
+
+// A 404 at one candidate must not end the walk, and must not read as the server
+// rejecting the token.
+func TestOAuthAudience_UnroutedCandidateDoesNotHideFinding(t *testing.T) {
+	srv := unroutedThenVulnerableServer(t)
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL+"/sub", optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected the finding at /sub/mcp to survive the 404 at /sub, got %d", len(findings))
+	}
+	if !strings.Contains(findings[0].TargetURL, "/sub/mcp") {
+		t.Errorf("finding should name the endpoint that answered, got %q", findings[0].TargetURL)
+	}
+}
+
+// A target that 404s every candidate has said nothing about audience matching, so
+// the rule must report that it could not test rather than that the server is
+// secure. This is the shape that produced a false clean.
+func TestOAuthAudience_AllCandidatesUnroutedIsNotTested(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d", len(findings))
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("404s everywhere are not evidence of a secure audience check; want ErrInconclusive, got %v", err)
+	}
+}
+
+// 405 is the same class: the path exists but does not take the POST an MCP call
+// needs, so it is not an MCP endpoint and says nothing about the token.
+func TestOAuthAudience_MethodNotAllowedIsNotARejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	_, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("want ErrInconclusive for a target answering 405 everywhere, got %v", err)
+	}
+}
