@@ -9,22 +9,29 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ArtifactTamperExecutor tests whether an A2A server allows a client to
-// overwrite a task's content by re-submitting tasks/send with the same
-// task ID but different message content (rule a2a-artifact-tamper-001).
+// ArtifactTamperExecutor tests whether an A2A server lets a client overwrite a
+// task's stored content by re-submitting against the same task ID with different
+// message content (rule a2a-artifact-tamper-001).
 //
-// The only sound proof of tampering is a read-back: submit original content,
-// re-submit the SAME task ID with tampered content, then call tasks/get and
-// observe that the STORED content changed. The immediate echo of the tampered
-// text in the re-submission response proves nothing - every well-behaved server
-// echoes back the message it just processed, and the server may have silently
-// created a separate task or ignored the duplicate ID. Therefore:
-//   - ConfirmedExploit is reported ONLY when tasks/get shows the tampered text
-//     (full overwrite, or both texts = appended artifact injection).
-//   - A re-submission that is accepted but cannot be verified via tasks/get is a
-//     RiskIndicator, not a confirmed exploit.
-//   - A re-submission rejected by status code OR a JSON-RPC error envelope
-//     ("task already exists") means immutability is enforced => no finding.
+// The only sound proof is a read-back: submit original content, re-submit the SAME
+// task ID with tampered content, then read the task and observe that the STORED
+// content changed. The immediate echo of the tampered text proves nothing, since
+// every well-behaved server echoes the message it just processed and may have
+// created a separate task or ignored the duplicate ID.
+//
+// What counts as a finding is narrower than it looks, deliberately. REPLACEMENT is
+// a finding: the read-back shows the tampered text and the original is gone, so the
+// artifact was destroyed. APPENDING is not, because continuing a task by sending a
+// message carrying its taskId is exactly what the v1.0 and v0.3 wires define, so an
+// appended message is the protocol working. This probe uses a single principal and
+// cannot distinguish a conformant continuation from an injection; reading another
+// principal's task is a2a-task-idor-001 and a2a-multitenant-isolation-001 territory.
+// Claiming ConfirmedExploit for an append would fire against every conformant agent
+// that surfaces task history.
+//
+// Anything undeterminable is reported as not tested rather than as a clean pass or
+// an unverified indicator: no task could be created, the task could not be read
+// back, or the read-back surfaces neither marker.
 type ArtifactTamperExecutor struct {
 	rule attack.RuleContext
 }
@@ -46,98 +53,40 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
-	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
-	// Use a stable, recognizable task ID so the test is reproducible.
-	taskID := "batesian-tamper-" + vars.RandID
+	originalText := "batesian-original-" + vars.RandID
+	tamperedText := "batesian-tampered-" + vars.RandID
 
-	originalText := "batesian-original-content-" + vars.RandID
-	tamperedText := "batesian-TAMPERED-content-" + vars.RandID
-
-	// Step 1: submit the task with original content.
-	sendPayload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tasks/send",
-		"params": map[string]interface{}{
-			"id": taskID,
-			"message": map[string]interface{}{
-				"role":  "user",
-				"parts": []interface{}{map[string]interface{}{"type": "text", "text": originalText}},
-			},
-		},
+	// Step 1: create a task carrying the original marker.
+	taskID, wire, ok := e.createTask(ctx, client, endpoint, originalText, vars.RandID)
+	if !ok {
+		// No task exists to tamper with, so immutability was never exercised. This
+		// path used to return clean with the comment "not an A2A server", which
+		// resolveA2AEndpoint has already ruled out, and which meant a stale v0.2-only
+		// method name reported every real agent secure.
+		return nil, attack.ErrInconclusive
 	}
 
-	sendResp, err := client.POST(ctx, endpoint, a2aHeaders, sendPayload)
-	if err != nil || !sendResp.IsSuccess() {
-		// Try PascalCase (v0.3 compatibility)
-		sendPayload["method"] = "SendMessage"
-		sendPayload["params"] = map[string]interface{}{
-			"message": map[string]interface{}{
-				"role":  "user",
-				"parts": []interface{}{map[string]interface{}{"type": "text", "text": originalText}},
-			},
-		}
-		sendResp, err = client.POST(ctx, endpoint, nil, sendPayload)
-		if err != nil || !sendResp.IsSuccess() {
-			return nil, nil // not an A2A server
-		}
-	}
-
-	// Extract the task ID that the server assigned (may differ from what we sent).
-	var sendBody map[string]interface{}
-	_ = json.Unmarshal(sendResp.Body, &sendBody)
-	assignedID := extractTaskID(sendBody)
-	if assignedID == "" {
-		assignedID = taskID
-	}
-
-	// Step 2: re-submit with the SAME task ID but different (tampered) content.
-	tamperPayload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tasks/send",
-		"params": map[string]interface{}{
-			"id": assignedID,
-			"message": map[string]interface{}{
-				"role":  "user",
-				"parts": []interface{}{map[string]interface{}{"type": "text", "text": tamperedText}},
-			},
-		},
-	}
-
-	tamperResp, err := client.POST(ctx, endpoint, a2aHeaders, tamperPayload)
-	if err != nil {
+	// Step 2: re-submit against the SAME task ID with different content, on the
+	// wire that created it.
+	tamperResp, err := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
+	if err != nil || !tamperResp.IsAccepted() {
+		// Rejected on status or via a JSON-RPC error envelope ("task already
+		// exists"): immutability enforced.
 		return nil, nil
 	}
 
-	// A re-submission is "accepted" only on HTTP success WITHOUT a JSON-RPC error
-	// envelope. A 4xx, or a 200 carrying {"error": {...}} such as "task already
-	// exists", is a rejection => immutability enforced => no finding.
-	tamperAccepted := tamperResp.IsAccepted()
-	if !tamperAccepted {
-		return nil, nil
+	// Step 3: acceptance alone proves nothing. Read the task back.
+	getBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	if !ok {
+		// The re-submission was accepted but the stored content is unknown, so
+		// whether the artifact changed cannot be established either way.
+		return nil, attack.ErrInconclusive
 	}
 
-	// Step 3: the re-submission was accepted, but acceptance alone does not prove
-	// the stored task changed - the server may have created a separate task or
-	// idempotently ignored the duplicate ID. Read the task back to confirm.
-	getResp, getErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      3,
-		"method":  "tasks/get",
-		"params":  map[string]interface{}{"id": assignedID},
-	})
-
-	// Could not read the task back: report the accepted re-submission as an
-	// indicator (suspicious, but the overwrite is unproven).
-	if getErr != nil || getResp == nil || !getResp.IsAccepted() {
-		return []attack.Finding{e.indicator(endpoint, assignedID, tamperResp.StatusCode, tamperResp.BodyString())}, nil
-	}
-
-	getBody := getResp.BodyString()
-	hasTampered := strings.Contains(getBody, tamperedText)
-	hasOriginal := strings.Contains(getBody, originalText)
+	stored := string(getBody)
+	hasTampered := strings.Contains(stored, tamperedText)
+	hasOriginal := strings.Contains(stored, originalText)
 
 	switch {
 	case hasTampered && !hasOriginal:
@@ -147,74 +96,152 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 			Severity:   "critical",
 			Confidence: attack.ConfirmedExploit,
 			Title: fmt.Sprintf(
-				"A2A task %q content fully overwritten - tasks/get returns tampered content only",
-				assignedID),
+				"A2A task %q content fully overwritten - the stored task returns tampered content only",
+				taskID),
 			Description: fmt.Sprintf(
-				"tasks/get for task ID %q returns tampered content %q and no trace of the original "+
-					"content %q. The original task artifact was completely replaced. "+
-					"Any downstream agent reading this task's history will process poisoned content.",
-				assignedID, tamperedText, originalText),
+				"Reading task %q back returns tampered content %q and no trace of the original content "+
+					"%q. The original task artifact was replaced rather than preserved. Any downstream "+
+					"agent reading this task's history will process poisoned content.",
+				taskID, tamperedText, originalText),
 			Evidence: fmt.Sprintf(
-				"Task ID: %q\nOriginal text: %q (not found in tasks/get)\nTampered text: %q (found)\nResponse: %.300s",
-				assignedID, originalText, tamperedText, getBody),
+				"Task ID: %q\nWire: %s\nOriginal text: %q (absent from the read-back)\n"+
+					"Tampered text: %q (present)\nResponse: %.300s",
+				taskID, wire.name, originalText, tamperedText, stored),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 		}}, nil
 
-	case hasTampered && hasOriginal:
-		return []attack.Finding{{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
-			Title: fmt.Sprintf(
-				"A2A task %q has both original and tampered content - partial artifact injection",
-				assignedID),
-			Description: fmt.Sprintf(
-				"tasks/get for task ID %q contains both the original content %q and the tampered "+
-					"content %q. The re-submission appended attacker-controlled content to the task "+
-					"history rather than being rejected, indicating lack of immutability enforcement.",
-				assignedID, originalText, tamperedText),
-			Evidence: fmt.Sprintf(
-				"Task ID: %q\nBoth texts present in tasks/get response: %.300s",
-				assignedID, getBody),
-			Remediation: e.rule.Remediation,
-			TargetURL:   endpoint,
-		}}, nil
-
-	case hasOriginal && !hasTampered:
-		// The re-submission was accepted at the transport layer, but the stored
-		// task still holds the ORIGINAL content. The server preserved the
-		// artifact (separate task / idempotent no-op). Not a tampering bug.
+	case hasOriginal:
+		// The original survives. Whether the tampered message was appended or
+		// dropped, the artifact was not destroyed, and an appended continuation is
+		// conformant behaviour rather than a tampering bug.
 		return nil, nil
 
 	default:
-		// tasks/get succeeded but echoes neither marker (server does not surface
-		// message text), so the overwrite cannot be confirmed or refuted.
-		return []attack.Finding{e.indicator(endpoint, assignedID, tamperResp.StatusCode, tamperResp.BodyString())}, nil
+		// Neither marker is visible, so the server does not surface message text and
+		// the read-back can neither confirm nor refute an overwrite.
+		return nil, attack.ErrInconclusive
 	}
 }
 
-// indicator builds the unproven-but-suspicious RiskIndicator finding used when a
-// re-submission is accepted but the overwrite cannot be confirmed via tasks/get.
-func (e *ArtifactTamperExecutor) indicator(endpoint, assignedID string, status int, body string) attack.Finding {
-	return attack.Finding{
-		RuleID:     e.rule.ID,
-		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.RiskIndicator,
-		Title: fmt.Sprintf(
-			"A2A tasks/send accepted re-submission for existing task ID %q (overwrite unverified)", assignedID),
-		Description: fmt.Sprintf(
-			"Re-submitting tasks/send with task ID %q was accepted (HTTP %d) rather than rejected as a "+
-				"duplicate, but tasks/get did not surface the stored content so the overwrite could not be "+
-				"confirmed. Tasks should be immutable after creation; manually verify whether content changed.",
-			assignedID, status),
-		Evidence: fmt.Sprintf(
-			"Task ID: %q\nRe-submit HTTP %d\nResponse: %.300s",
-			assignedID, status, body),
-		Remediation: e.rule.Remediation,
-		TargetURL:   endpoint,
+// tamperWire is one protocol revision's shapes for creating and continuing a task.
+// The revisions disagree on the method name and on where the task id goes, and a
+// server answers a name it does not implement with -32601 at HTTP 200, so a
+// fallback keyed on HTTP status alone never advances past the first attempt.
+type tamperWire struct {
+	name            string
+	headers         map[string]string
+	continuePayload func(taskID, text, randID string) map[string]interface{}
+}
+
+// createTask submits the original marker, trying each revision until one is
+// accepted, and returns the task id together with the wire that worked.
+func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.HTTPClient,
+	endpoint, text, randID string) (string, tamperWire, bool) {
+	v1Headers := map[string]string{"A2A-Version": "1.0"}
+
+	attempts := []struct {
+		wire   tamperWire
+		create map[string]interface{}
+	}{
+		{
+			// v1.0: PascalCase plus the version header, and the task id rides in the
+			// message rather than in params.
+			wire: tamperWire{
+				name:    "v1.0 SendMessage",
+				headers: v1Headers,
+				continuePayload: func(taskID, text, randID string) map[string]interface{} {
+					return jsonRPCCall("SendMessage", map[string]interface{}{
+						"message": map[string]interface{}{
+							"messageId": "batesian-at-tamper-" + randID,
+							"role":      "ROLE_USER",
+							"taskId":    taskID,
+							"parts":     []interface{}{map[string]interface{}{"text": text}},
+						},
+					})
+				},
+			},
+			create: jsonRPCCall("SendMessage", map[string]interface{}{
+				"message": map[string]interface{}{
+					"messageId": "batesian-at-create-" + randID,
+					"role":      "ROLE_USER",
+					"parts":     []interface{}{map[string]interface{}{"text": text}},
+				},
+			}),
+		},
+		{
+			// v0.3: slash method, lowercase role, parts carry a kind.
+			wire: tamperWire{
+				name: "v0.3 message/send",
+				continuePayload: func(taskID, text, randID string) map[string]interface{} {
+					return jsonRPCCall("message/send", map[string]interface{}{
+						"message": map[string]interface{}{
+							"messageId": "batesian-at-tamper-" + randID,
+							"role":      "user",
+							"taskId":    taskID,
+							"parts":     []interface{}{map[string]interface{}{"kind": "text", "text": text}},
+						},
+					})
+				},
+			},
+			create: jsonRPCCall("message/send", map[string]interface{}{
+				"message": map[string]interface{}{
+					"messageId": "batesian-at-create-" + randID,
+					"role":      "user",
+					"parts":     []interface{}{map[string]interface{}{"kind": "text", "text": text}},
+				},
+			}),
+		},
+		{
+			// v0.2: the task id is a params field and re-submitting it IS the
+			// overwrite attempt. Kept last so a modern agent never sees it.
+			wire: tamperWire{
+				name: "v0.2 tasks/send",
+				continuePayload: func(taskID, text, randID string) map[string]interface{} {
+					return jsonRPCCall("tasks/send", map[string]interface{}{
+						"id": taskID,
+						"message": map[string]interface{}{
+							"role":  "user",
+							"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
+						},
+					})
+				},
+			},
+			create: jsonRPCCall("tasks/send", map[string]interface{}{
+				"id": "batesian-task-" + randID,
+				"message": map[string]interface{}{
+					"role":  "user",
+					"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
+				},
+			}),
+		},
+	}
+
+	for _, a := range attempts {
+		resp, err := client.POST(ctx, endpoint, a.wire.headers, a.create)
+		// IsAccepted, not IsSuccess: a -32601 for a method this revision does not
+		// define arrives at HTTP 200, and gating on status alone left the fallback
+		// unreachable.
+		if err != nil || !resp.IsAccepted() {
+			continue
+		}
+		var body map[string]interface{}
+		_ = json.Unmarshal(resp.Body, &body)
+		if id := extractTaskID(body); id != "" {
+			return id, a.wire, true
+		}
+	}
+	return "", tamperWire{}, false
+}
+
+// jsonRPCCall builds a JSON-RPC request object with a fixed id, which is all these
+// probes need.
+func jsonRPCCall(method string, params map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+		"params":  params,
 	}
 }
 
