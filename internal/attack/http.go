@@ -13,7 +13,20 @@ import (
 	"github.com/calbebop/batesian/internal/sse"
 )
 
-const maxBody = 1 << 20 // 1 MB
+// maxBody bounds how much of a response body is read into memory.
+//
+// It was 1 MB, which a real server exceeds without trying: a tools/list on a
+// server with a few hundred tools, or a resources/read of a config file, is
+// larger than that. The read truncated silently at the limit, the truncated JSON
+// failed to unmarshal, and rules that treat an unparseable probe the same as a
+// refused one reported those surfaces clean. A wide-open server was measured
+// producing 1 finding at 1.33 MB responses and 7 at 20 KB, with nothing else
+// changed.
+//
+// The engine runs rules sequentially, so the cost is one body at a time rather
+// than one per rule. Exceeding the limit is an explicit error (see the read in
+// do), never a quietly shortened body.
+const maxBody = 32 << 20 // 32 MB
 
 // Version is the build-time version string injected from main via attack.Version.
 // It is embedded in the User-Agent header on every outbound HTTP request.
@@ -240,9 +253,16 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 		// SSE streams never close; read only the first data event then stop.
 		respBody = readFirstSSEEvent(resp.Body)
 	} else {
-		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		// Read one byte past the limit so exceeding it is detectable. A plain
+		// LimitReader at maxBody returns a truncated body and no error, which
+		// reads downstream as malformed JSON from the server rather than as a
+		// body this scanner declined to finish reading.
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 		if err != nil {
 			return nil, fmt.Errorf("reading response from %s: %w", url, err)
+		}
+		if len(respBody) > maxBody {
+			return nil, fmt.Errorf("response body from %s exceeds the %d byte read limit", url, maxBody)
 		}
 	}
 
