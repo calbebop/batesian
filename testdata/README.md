@@ -47,7 +47,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` |
-| `mcp_new_rules_server.py` | 3100 | `mcp-init-downgrade-001`, `mcp-prompt-unauth-001`, `mcp-tools-unauth-001` |
+| `mcp_new_rules_server.py` | 3100 | `mcp-prompt-unauth-001`, `mcp-tools-unauth-001`; `mcp-init-downgrade-001` needs the `downgrade` posture, see below |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
 | `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` |
 | `mcp_sse_resume_replay_server.py` | 7790 | `mcp-sse-resume-replay-001` |
@@ -64,11 +64,23 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 
-**Coverage.** 35 of the 36 rules have a standalone Python fixture above. The
+**Coverage.** 35 of the 36 rules have a standalone Python fixture above, and each
+of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
 edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by
 unit tests via `net/http/httptest`; it is not a standalone server.
+
+A registry row is a claim, and claims rot. Three things make a fixture look broken
+when it is not, so check them before concluding a rule has regressed:
+
+- **Tokens.** The multi-principal fixtures expect `tok-a` and `tok-b`
+  specifically, not arbitrary names.
+- **Target.** The OAuth fixtures (`mcp_oauth_dcr_server.py`,
+  `mcp_oauth_metadata_ssrf_server.py`, `mcp_confused_deputy_server.py`) are
+  scanned at the root, not at `/mcp`. `mcp_oauth_audience_server.py` also needs
+  `--audience-claim`.
+- **Postures.** Several fixtures need a non-default argument, listed above.
 
 **`mcp_modern_era_server.py` is the one server here that is not deliberately
 vulnerable.** It is built on the official MCP Python SDK and speaks the
@@ -108,6 +120,26 @@ rules that treat an unparseable probe the same as a refused one reported those
 surfaces clean. The large server gave 1 finding where the small one gave 7, so a
 server could hide every unauthenticated-access finding by being large. If the two
 invocations ever disagree again, a body is being truncated somewhere.
+
+**`mcp_new_rules_server.py` takes a posture argument**, defaulting to `open`:
+
+```sh
+python testdata/mcp_new_rules_server.py            # prompt-unauth + tools-unauth
+python testdata/mcp_new_rules_server.py downgrade  # mcp-init-downgrade-001
+```
+
+`mcp-init-downgrade-001` needs its own posture because accepting an old protocol
+version is not the bug. Version negotiation permits a server to honour a supported
+older revision, so the rule requires an asymmetry: resources/list REJECTED under
+the modern version but GRANTED under the pre-auth 2024-11-05. The `open` posture
+enforces nothing and therefore grants both, which is
+`mcp-resources-unauth-001`'s finding rather than a downgrade, and the rule
+correctly stays silent.
+
+This row claimed `mcp-init-downgrade-001` for a long time while the rule could not
+possibly fire against the fixture, so a critical-severity rule had no standalone
+fixture at all and nobody could tell from the table. That is the failure the note
+below about confirming a rule actually fires is warning about.
 
 **`mcp_transient_failure_server.py` separates a failure from a refusal.** It has
 no authentication, and selects how its listing methods answer:
