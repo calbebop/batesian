@@ -470,20 +470,53 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 // printDryRunPlan writes the request plan captured during a dry run. Nothing was
 // sent; this is the preview an operator reviews before authorizing a real scan.
 // Requests are grouped by the rule that issued them, in execution order.
+//
+// The plan is an approximation, and it diverges in both directions, so it says so
+// rather than presenting a count as fact. Measured against
+// testdata/mcp_unauth_resources_server.py, 344 recorded against 221 actually sent:
+//
+//   - Too many endpoint probes. No candidate endpoint can answer in a dry run, so
+//     every endpoint-discovery walk runs to exhaustion. The real scan stops at the
+//     first endpoint that responds, so it contacted /mcp and never touched /mcp/api
+//     or /mcp/mcp at all. The fallback attempts are marked, since those are the
+//     ones a real scan mostly skips; the first attempt in each walk is not marked
+//     because it is the one that goes out.
+//   - Too few follow-ups. A rule that branches on response content cannot proceed
+//     past that branch, so its later requests never appear. The real scan sent 92
+//     POSTs to /mcp where the plan records 58.
+//
+// The exhaustive recording is deliberately kept: over-showing endpoint probes is
+// the safe bias for a review, and the alternative was measured. Making the
+// synthetic response a valid JSON-RPC result envelope, so acceptance-gated walks
+// short-circuit like they do live, brought the total closer (202 against 221) but
+// silently dropped 32 requests to /mcp/a2a and /mcp/a2a/jsonrpc that a real scan
+// does send. A plan used to authorize a scan must not hide traffic.
+//
+// The host list is exact, which is the part an operator authorizes on. Only the
+// counts are approximate.
 func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 	reqs := rec.Requests()
-	fmt.Fprintf(out, "\nDry run: nothing was sent. The following %d request(s) would be issued against %s:\n\n", len(reqs), target)
+	fmt.Fprintf(out, "\nDry run: nothing was sent. Planned requests against %s (%d recorded, see the notes below):\n\n",
+		target, len(reqs))
+
+	candidates := endpointCandidateProbes(reqs)
 
 	hosts := map[string]bool{}
 	rulesSeen := map[string]bool{}
+	marked := 0
 	lastRule := "\x00" // sentinel so the first rule (even "") prints a header
-	for _, r := range reqs {
+	for i, r := range reqs {
 		if r.RuleID != lastRule {
 			fmt.Fprintf(out, "[%s]\n", dryRunRuleLabel(r.RuleID))
 			lastRule = r.RuleID
 		}
 		rulesSeen[r.RuleID] = true
-		fmt.Fprintf(out, "  %s %s\n", r.Method, r.URL)
+		suffix := ""
+		if candidates[i] {
+			suffix = "   [fallback endpoint]"
+			marked++
+		}
+		fmt.Fprintf(out, "  %s %s%s\n", r.Method, r.URL, suffix)
 		if u, err := url.Parse(r.URL); err == nil && u.Host != "" {
 			hosts[u.Host] = true
 		}
@@ -495,8 +528,54 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 		}
 	}
 
-	fmt.Fprintf(out, "\n%d request(s) across %d rule(s) to %d host(s). Nothing was sent.\n", len(reqs), len(rulesSeen), len(hosts))
-	fmt.Fprintln(out, "Note: requests built from live responses (chained follow-ups, acquired tokens, OOB callbacks) are not expanded in a dry run.")
+	fmt.Fprintf(out, "\n%d request(s) recorded across %d rule(s) to %d host(s). Nothing was sent.\n",
+		len(reqs), len(rulesSeen), len(hosts))
+	fmt.Fprintln(out, "The host list above is exact. The counts are not, in both directions:")
+	if marked > 0 {
+		fmt.Fprintf(out, "  - %d marked [fallback endpoint]: a repeat of an earlier probe at another path.\n", marked)
+		fmt.Fprintln(out, "    A real scan stops at the first path that answers, so most of these are not sent.")
+	}
+	fmt.Fprintln(out, "  - Requests built from live responses (chained follow-ups, acquired tokens, OOB")
+	fmt.Fprintln(out, "    callbacks) cannot be expanded here, so a real scan sends more than this.")
+}
+
+// endpointCandidateProbes marks the recorded requests that are FALLBACK attempts in
+// an endpoint-discovery walk: the same rule sending the same method and body to a
+// further URL after an earlier one.
+//
+// Only the attempts after the first are marked, because the first is the one a real
+// scan sends. Marking the whole group would flag 97% of a typical plan and imply
+// that all of it is skipped, when in fact one probe per group goes out.
+//
+// This is derived from what was recorded rather than from any change in behaviour,
+// so the plan still lists every candidate. It exists because these entries are the
+// ones a real scan mostly does not send, and an unmarked plan invites an operator to
+// authorize traffic to paths that will never be contacted.
+func endpointCandidateProbes(reqs []attackpkg.RecordedRequest) map[int]bool {
+	type probeKey struct{ rule, method, body string }
+	urlsFor := map[probeKey]map[string]bool{}
+	for _, r := range reqs {
+		k := probeKey{r.RuleID, r.Method, r.Body}
+		if urlsFor[k] == nil {
+			urlsFor[k] = map[string]bool{}
+		}
+		urlsFor[k][r.URL] = true
+	}
+
+	marked := map[int]bool{}
+	seenFirst := map[probeKey]bool{}
+	for i, r := range reqs {
+		k := probeKey{r.RuleID, r.Method, r.Body}
+		if len(urlsFor[k]) < 2 {
+			continue // a single URL is not a walk
+		}
+		if !seenFirst[k] {
+			seenFirst[k] = true
+			continue // the first attempt is the one that is actually sent
+		}
+		marked[i] = true
+	}
+	return marked
 }
 
 // dryRunRuleLabel labels a recorded request's rule, naming the pre-rule setup
