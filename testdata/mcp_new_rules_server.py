@@ -1,13 +1,25 @@
 """
-Deliberately vulnerable MCP test server for validating:
-  - mcp-init-downgrade-001: accepts legacy protocol version 2024-11-05
+Deliberately vulnerable MCP test server. Two postures, selected by the first
+argument.
+
+`open` (the default) enforces nothing, and validates:
   - mcp-prompt-unauth-001: exposes prompt templates without auth
   - mcp-tools-unauth-001: exposes tools/list and tools/call dispatch without auth
 
-(May still carry a legacy CORS route from a pruned rule; only the rules listed
-above are part of the current rule set.)
+`downgrade` validates mcp-init-downgrade-001, and needs its own posture because
+accepting an old protocol version is NOT the bug. Version negotiation permits a
+server to honour a supported older revision, so the rule requires a
+discriminator: resources/list REJECTED under the modern version (authorization
+enforced) but GRANTED under the pre-auth 2024-11-05. A server with no
+authorization at all grants both, which is mcp-resources-unauth-001's finding
+rather than a downgrade, and the rule correctly stays silent.
 
-Run: python testdata/mcp_new_rules_server.py
+The `open` posture grants both, so it can never exhibit the downgrade bypass. It
+was listed in the registry as covering mcp-init-downgrade-001 for a long time
+while the rule could not possibly fire against it, which left the rule with no
+standalone fixture at all.
+
+Run: python testdata/mcp_new_rules_server.py [open|downgrade]
 """
 import json
 import sys
@@ -19,6 +31,14 @@ from starlette.routing import Route
 import uvicorn
 
 PORT = 3100
+
+POSTURES = ("open", "downgrade")
+POSTURE = sys.argv[1] if len(sys.argv) > 1 else "open"
+
+# The pre-authorization revision. Under `downgrade`, negotiating this version is
+# what skips the authorization check.
+LEGACY_VERSION = "2024-11-05"
+VALID_TOKEN = "Bearer letmein"
 
 TOOLS = [
     {"name": "echo", "description": "Echo the input", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
@@ -95,6 +115,19 @@ async def mcp_endpoint(request: Request) -> Response:
     if method == "notifications/initialized":
         return Response(status_code=202, headers=cors)
 
+    # Under `downgrade`, resources/list is gated unless the session negotiated the
+    # pre-auth revision. The scanner echoes the negotiated version back in
+    # MCP-Protocol-Version on every follow-up, which is what makes the two paths
+    # distinguishable without tracking sessions here.
+    if POSTURE == "downgrade" and method == "resources/list":
+        negotiated = request.headers.get("mcp-protocol-version", "")
+        authorized = request.headers.get("authorization", "") == VALID_TOKEN
+        if negotiated != LEGACY_VERSION and not authorized:
+            return Response(json.dumps({"jsonrpc": "2.0", "id": req_id,
+                                        "error": {"code": -32001, "message": "Unauthorized"}}),
+                            status_code=401, media_type="application/json",
+                            headers={**cors, "Content-Type": "application/json"})
+
     # All subsequent methods: no auth check (vulnerable)
     if method == "tools/list":
         result = {"tools": TOOLS}
@@ -136,6 +169,8 @@ app = Starlette(routes=[
 ])
 
 if __name__ == "__main__":
-    print(f"[*] MCP new-rules vulnerable server on port {PORT}", flush=True)
+    if POSTURE not in POSTURES:
+        sys.exit(f"unknown posture {POSTURE!r}; expected one of {', '.join(POSTURES)}")
+    print(f"[*] MCP new-rules vulnerable server ({POSTURE}) on port {PORT}", flush=True)
     print("[*] Vulnerabilities: protocol downgrade, CORS origin reflection, unauthenticated prompts and tools", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)
