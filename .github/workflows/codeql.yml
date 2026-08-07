@@ -16,9 +16,16 @@ on:
     # Weekly, Monday 06:15 UTC. Catches newly published CodeQL queries against
     # code that has not otherwise changed.
     - cron: '15 6 * * 1'
+  # Manual trigger, for the reason given in ci.yml: it does not depend on
+  # webhook delivery, so it still works when event delivery is degraded.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
