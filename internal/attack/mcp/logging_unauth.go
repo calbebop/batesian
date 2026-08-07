@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -66,13 +65,17 @@ func (e *LoggingUnauthExecutor) Execute(ctx context.Context, target string, opts
 		"method":  "logging/setLevel",
 		"params":  map[string]interface{}{"level": bogusLevel},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return nil, nil // auth gate (401/403) or unreachable
-	}
-
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return nil, nil
+	verdict, body := classifyProbe(resp, err)
+	if verdict != probeAnswered {
+		if verdict == probeRejected {
+			// An auth status, or a JSON-RPC error at a non-2xx: the surface is
+			// closed or absent, which is a genuine clean result.
+			return nil, nil
+		}
+		// Nothing was established. The request failed, or the reply carried no
+		// protocol-level verdict, so reporting this surface clean would claim it
+		// is secure when it was never tested.
+		return nil, attack.ErrInconclusive
 	}
 
 	reachable, reason := setLevelDispatchReachable(body)
