@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -31,42 +30,40 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 
 	// A server may expose prompts on both protocol wires, and need not gate them
 	// the same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session)
 	})
 }
 
-// probeSession runs the rule against one already-opened wire.
-func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) []attack.Finding {
+// probeSession runs the rule against one already-opened wire. determined reports
+// whether the wire established anything; see classifyProbe.
+func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
 	// Skip servers that do not advertise the prompts capability - probing them
 	// would produce meaningless noise. This reads the server capabilities from
 	// the handshake captured by initializeMCP (no redundant second initialize),
 	// and parses the structured capabilities object rather than substring-matching
 	// the whole body (which could false-match "prompts" in serverInfo/instructions).
 	if !session.ServerSupports("prompts") {
-		return nil
+		// Determined: the server says it has none, so none can be open.
+		return nil, true
 	}
 
 	// Call prompts/list without any auth token.
 	listResp, err := session.post(ctx, client, 3, "prompts/list", nil)
-	if err != nil || !listResp.IsSuccess() {
-		return nil
-	}
-
-	var listBody map[string]interface{}
-	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil
+	verdict, listBody := classifyProbe(listResp, err)
+	if verdict != probeAnswered {
+		return nil, verdict == probeRejected
 	}
 
 	// JSON-RPC error means auth is enforced - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil
+		return nil, true
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	promptsRaw, _ := result["prompts"].([]interface{})
 	if len(promptsRaw) == 0 {
-		return nil
+		return nil, true
 	}
 
 	// Collect prompt names for evidence.
@@ -78,8 +75,6 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			}
 		}
 	}
-
-	var findings []attack.Finding
 
 	findings = append(findings, attack.Finding{
 		RuleID:     e.rule.ID,
@@ -101,20 +96,17 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 
 	// Attempt to retrieve content of the first prompt via prompts/get.
 	if len(names) == 0 {
-		return findings
+		return findings, true
 	}
 
 	getResp, err := session.post(ctx, client, 4, "prompts/get", map[string]interface{}{"name": names[0]})
-	if err != nil || !getResp.IsSuccess() {
-		return findings
-	}
-
-	var getBody map[string]interface{}
-	if err := json.Unmarshal(getResp.Body, &getBody); err != nil {
-		return findings
+	getVerdict, getBody := classifyProbe(getResp, err)
+	if getVerdict != probeAnswered {
+		// The list finding stands: it was confirmed before this probe.
+		return findings, true
 	}
 	if _, hasErr := getBody["error"]; hasErr {
-		return findings
+		return findings, true
 	}
 
 	content := string(getResp.Body)
@@ -134,5 +126,5 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings
+	return findings, true
 }

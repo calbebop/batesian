@@ -62,6 +62,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
 | `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
+| `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 
 **Coverage.** 35 of the 36 rules have a standalone Python fixture above. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
@@ -107,6 +108,21 @@ rules that treat an unparseable probe the same as a refused one reported those
 surfaces clean. The large server gave 1 finding where the small one gave 7, so a
 server could hide every unauthenticated-access finding by being large. If the two
 invocations ever disagree again, a body is being truncated somewhere.
+
+**`mcp_transient_failure_server.py` separates a failure from a refusal.** It has
+no authentication, and selects how its listing methods answer:
+
+```sh
+python testdata/mcp_transient_failure_server.py 7802 ok    # findings
+python testdata/mcp_transient_failure_server.py 7802 401   # clean, auth enforced
+python testdata/mcp_transient_failure_server.py 7802 502   # not tested
+```
+
+All three must differ. They did not: the rules gated on
+`if err != nil || !resp.IsSuccess() { return nil }`, so a gateway 502 was
+indistinguishable from a 401 and both reported the surfaces clean. An operator
+could not tell "this server enforces auth" from "the scanner could not tell". If
+the 401 and 502 runs ever agree again, that conflation is back.
 
 **`mcp_era_downgrade_server.py` takes a posture argument**, defaulting to
 `vulnerable`:

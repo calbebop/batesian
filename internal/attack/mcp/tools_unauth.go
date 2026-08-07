@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -43,40 +42,40 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 
 	// A server may expose tools on both protocol wires, and need not gate them the
 	// same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) []attack.Finding {
+	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session, vars.RandID)
 	})
 }
 
-// probeSession runs the rule against one already-opened wire.
-func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) []attack.Finding {
+// probeSession runs the rule against one already-opened wire. determined reports
+// whether the wire established anything: a probe that failed in transport, or
+// whose answer carried no protocol-level verdict, proves nothing either way and
+// must not be reported as a clean surface.
+func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) (findings []attack.Finding, determined bool) {
 	// Skip servers that do not advertise the tools capability; probing them would
 	// produce meaningless noise. Read from the captured handshake capabilities
-	// rather than substring-matching the body.
+	// rather than substring-matching the body. This IS determined: the server said
+	// it has no tools, so there is nothing here to be open.
 	if !session.ServerSupports("tools") {
-		return nil
+		return nil, true
 	}
 
 	// Step 1: tools/list without any auth token.
 	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
-	if err != nil || !listResp.IsSuccess() {
-		return nil
-	}
-
-	var listBody map[string]interface{}
-	if err := json.Unmarshal(listResp.Body, &listBody); err != nil {
-		return nil
+	verdict, listBody := classifyProbe(listResp, err)
+	if verdict != probeAnswered {
+		return nil, verdict == probeRejected
 	}
 
 	// A JSON-RPC error means auth is enforced on tool methods - not vulnerable.
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil
+		return nil, true
 	}
 
 	result, _ := listBody["result"].(map[string]interface{})
 	toolsRaw, _ := result["tools"].([]interface{})
 	if len(toolsRaw) == 0 {
-		return nil
+		return nil, true
 	}
 
 	// Collect tool names for evidence.
@@ -89,7 +88,7 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 		}
 	}
 
-	findings := []attack.Finding{{
+	findings = []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "medium",
@@ -114,18 +113,15 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	bogusTool := "batesian-nonexistent-" + randID
 	callResp, err := session.post(ctx, client, 4, "tools/call",
 		map[string]interface{}{"name": bogusTool, "arguments": map[string]interface{}{}})
-	if err != nil || !callResp.IsSuccess() {
-		return findings // auth gate (401/403) or unreachable; the list finding stands
-	}
-
-	var callBody map[string]interface{}
-	if err := json.Unmarshal(callResp.Body, &callBody); err != nil {
-		return findings
+	callVerdict, callBody := classifyProbe(callResp, err)
+	if callVerdict != probeAnswered {
+		// The list finding stands either way: it was confirmed before this probe.
+		return findings, true
 	}
 
 	reachable, reason := callDispatchReachable(callBody)
 	if !reachable {
-		return findings
+		return findings, true
 	}
 
 	findings = append(findings, attack.Finding{
@@ -143,7 +139,7 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 		TargetURL:   session.Endpoint,
 	})
 
-	return findings
+	return findings, true
 }
 
 // callDispatchReachable reports whether a tools/call response for a non-existent
