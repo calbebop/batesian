@@ -3,6 +3,7 @@
 package a2a
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
 )
@@ -139,6 +140,84 @@ type AgentSkill struct {
 // SecurityRequirement maps scheme names to required OAuth scopes.
 // An empty slice means the scheme is required but no specific scopes are needed.
 type SecurityRequirement map[string][]string
+
+// UnmarshalJSON accepts both wire shapes a requirement entry appears in.
+//
+// v1.0 is proto-derived: SecurityRequirement is a message holding a single map
+// field named schemes, whose values are StringList messages, so an entry
+// serializes with the names one level down:
+//
+//	{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}
+//
+// v0.3 and OpenAPI put the names at the top level with scope arrays as values:
+//
+//	{"bearerAuth": ["a2a:invoke"]}
+//
+// Both official SDKs emit the first. Decoding straight into map[string][]string
+// accepted only the second, so json.Unmarshal failed on every real v1.0 card
+// that declared security, and because FetchAgentCard treats an unmarshal error
+// as fatal, probe reported those agents as not serving valid JSON. Agents that
+// declared nothing probed fine, so the failure landed only on the ones
+// configured correctly.
+//
+// The two are told apart by structure, not by which card field they came from: an
+// entry whose sole key is "schemes" mapping to an object is the proto shape. A
+// v0.3 card may declare a scheme actually named "schemes", but then its value is
+// a scope array rather than an object, so that card still reads correctly.
+//
+// A value that is neither a scope array nor a StringList map records the scheme
+// name with no scopes rather than failing. Refusing to decode would sink the
+// whole card over one optional field, which is the bug this method exists to
+// fix; a recon parser should show the operator what is there.
+func (s *SecurityRequirement) UnmarshalJSON(data []byte) error {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(data, &entry); err != nil {
+		// Not an object at all. Leave the requirement empty rather than failing
+		// the card: an entry that names no scheme requires nothing, which is
+		// also what an empty object means.
+		*s = SecurityRequirement{}
+		return nil
+	}
+
+	if inner, ok := protoSchemeMap(entry); ok {
+		*s = inner
+		return nil
+	}
+
+	out := make(SecurityRequirement, len(entry))
+	for name, raw := range entry {
+		var scopes []string
+		if err := json.Unmarshal(raw, &scopes); err != nil {
+			scopes = nil
+		}
+		out[name] = scopes
+	}
+	*s = out
+	return nil
+}
+
+// protoSchemeMap reads the v1.0 nested shape, returning ok false when entry is
+// not that shape and should be read as a flat OpenAPI-style requirement.
+func protoSchemeMap(entry map[string]json.RawMessage) (SecurityRequirement, bool) {
+	if len(entry) != 1 {
+		return nil, false
+	}
+	raw, present := entry["schemes"]
+	if !present {
+		return nil, false
+	}
+	var schemes map[string]struct {
+		List []string `json:"list"`
+	}
+	if err := json.Unmarshal(raw, &schemes); err != nil {
+		return nil, false
+	}
+	out := make(SecurityRequirement, len(schemes))
+	for name, list := range schemes {
+		out[name] = list.List
+	}
+	return out, true
+}
 
 // SecurityScheme is a discriminated union - exactly one nested scheme object is populated.
 // The discriminant is the JSON key name itself (apiKeySecurityScheme, httpAuthSecurityScheme, etc.),
