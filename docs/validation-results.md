@@ -32,6 +32,18 @@ against a server that genuinely exhibited the condition. A false negative in a
 security scanner is worse than a noisy one, and none of them were reachable from
 a self-authored fixture.
 
+A **negative control** is what the exercise was missing for a long time, and adding
+one found a third false negative. Running against an agent built to be vulnerable in
+one specific way, rather than against an open agent, showed
+`a2a-delegation-integrity-001` reporting that a delegated task's chain of custody
+held while the wrong principal was demonstrably continuing it. Its oracle compared
+identifiers in the reply, and read only the flat envelope: in A2A v1.0 a send-style
+reply is a `SendMessageResponse`, a protobuf oneof, so the Task arrives nested under
+`result.task`, while `GetTask` returns it flat. The read checks were therefore fine
+and the continuation check silently never matched. An open agent could not have
+surfaced it, because the rule's own discriminator suppresses on a server with no
+authorization at all.
+
 The same exercise has also caught a false positive before it shipped.
 `mcp-session-as-credential-001` passed every posture in its own harness, then
 reported the official MCP C# SDK's stateful sample as vulnerable. That sample
