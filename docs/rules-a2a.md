@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **17 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **18 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -77,14 +77,15 @@ evidence. A card rule with no card has nothing to say either way.
 
 ### Rules that need a task first
 
-Eight rules cannot say anything until they have created a task: `a2a-task-idor-001`,
+Nine rules cannot say anything until they have created a task: `a2a-task-idor-001`,
 `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-context-fixation-001`,
 `a2a-delegation-integrity-001`, `a2a-multitenant-isolation-001`,
-`a2a-push-binding-001` and `a2a-task-cancel-idor-001`. Against an agent that
-enforces authorization, whether they can depends on the credential the scan was
-given, so a failure to create one is reported as **not tested**, naming the refusal
-and whether the request carried a credential at all. A clean result there would
-claim the agent does not leak tasks across principals when no task ever existed.
+`a2a-push-binding-001`, `a2a-task-cancel-idor-001` and `a2a-task-enumeration-001`.
+Against an agent that enforces authorization, whether they can depends on the
+credential the scan was given, so a failure to create one is reported as **not
+tested**, naming the refusal and whether the request carried a credential at all. A
+clean result there would claim the agent does not leak tasks across principals when no
+task ever existed.
 
 Two things stay clean, deliberately. An agent that does not implement the surface
 (`-32601`, or A2A's own `-32003` push-not-supported and `-32004`
@@ -117,6 +118,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
+| `a2a-task-enumeration-001` | [ListTasks Enumerates Another Principal's Tasks](#a2a-task-enumeration-001) | High | confirmed | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
 
 ---
@@ -499,3 +501,55 @@ case, but only when the card promised authentication, making it an attributable
 contract violation (CWE-287 / CWE-306). It is distinct from `a2a-extcard-unauth-001`
 (the extended-card endpoint) and `a2a-card-trust-001` / `a2a-jws-algconf-001` (card
 signatures).
+
+---
+
+### a2a-task-enumeration-001
+
+**ListTasks Enumerates Another Principal's Tasks** | Severity: High | CWE-639 / CWE-200
+
+Tests whether one authenticated principal can enumerate another's tasks through
+`ListTasks`. The specification requires the opposite twice: section 3.1.4, on
+`ListTasks` itself, states that "Implementations **MUST** implement appropriate
+authorization scoping to ensure clients can only access authorized tasks", and section
+13.1 that "Servers **MUST** return only tasks visible to the authenticated client".
+
+Enumeration is worse than reading a task by id, because it needs no prior knowledge.
+One valid credential yields every task identifier on the server, and those identifiers
+are what the per-task read, cancel and push-notification-config surfaces take as input.
+
+**A distinct surface**, not a second look at an existing one.
+`a2a-multitenant-isolation-001` reads a task **by id**, so it only shows that a caller
+who already knows an identifier can fetch it. `a2a-task-idor-001` probes the REST list
+paths **anonymously**, so a server that correctly requires a credential passes it and
+can still hand every tenant's tasks to any authenticated caller. The listing is
+separate code from the per-task fetch, and a server can scope one and not the other:
+the fetch has an obvious owner to compare against, while the list has to be filtered.
+
+Two principals are required, and three controls keep it off servers where the listing
+is not what decided the outcome:
+
+1. Principal A creates a task. A refused creation is reported as **not tested**, naming
+   the refusal, rather than as a scoped listing that was never given anything to leak.
+2. Control: A lists its own tasks and must see the task it just created. No list method
+   at all (`-32601` on every spelling) is **clean**, the surface being absent. A refused
+   listing, or one that omits the owner's own task, is **not tested**: B seeing nothing
+   would prove nothing.
+3. Control: an **unauthenticated** `ListTasks`. If it returns A's task, the server
+   enforces no authorization on this surface at all, which is `a2a-task-idor-001`'s
+   finding; reporting it here too would count one defect twice.
+4. Principal B lists. A's task id appearing in B's response is the **confirmed**
+   finding.
+
+Identifiers are compared, never key names, and history is deliberately not requested
+(`historyLength` 0): the failure is that the identifiers came back, and pulling another
+tenant's conversation content to prove it would be gratuitous. `pageSize` is set high
+so a scoped server has no pagination excuse for omitting a task.
+
+Currency: `ListTasks` is a v1.0 JSON-RPC method. v0.3 defines `tasks/get`,
+`tasks/cancel`, `tasks/resubscribe` and the push-notification-config methods, and no
+list method, so a v0.3-only agent answers `-32601` and this reports not applicable. The
+v0.3 REST binding's list path is covered anonymously by `a2a-task-idor-001`; the
+authenticated case on that binding is not probed, because its prefix belongs to the
+deployment and guessing it is how earlier rules came to post at paths that never
+existed.

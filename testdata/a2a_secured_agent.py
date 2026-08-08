@@ -22,9 +22,11 @@ Postures, selected by the first argument:
             continuations, cancels and push-config writes. Any finding here is a
             FALSE POSITIVE.
   idor      a bearer token is required but ownership is NOT enforced: any valid
-            token may act on any task. a2a-multitenant-isolation-001,
-            a2a-delegation-integrity-001, a2a-task-cancel-idor-001 and
-            a2a-push-binding-001 MUST fire. Silence here is a false negative.
+            token may act on any task, and ListTasks returns every task rather than
+            the caller's. a2a-multitenant-isolation-001,
+            a2a-delegation-integrity-001, a2a-task-cancel-idor-001,
+            a2a-push-binding-001 and a2a-task-enumeration-001 MUST fire. Silence here
+            is a false negative.
 
 Ownership is the only difference between the two, which is what makes a diff
 between them mean something.
@@ -178,6 +180,30 @@ def _cancel(req_id, params, caller, v1):
                          "result": _task_body(task_id, v1, nest=False)})
 
 
+def _list(req_id, params, caller, v1):
+    """ListTasks. Scoped to the caller under `secured`, unscoped under `idor`.
+
+    The specification requires scoping twice: section 3.1.4 ("clients can only access
+    authorized tasks") and section 13.1 ("servers MUST return only tasks visible to
+    the authenticated client"). Under `idor` this returns every task, which is what
+    a2a-task-enumeration-001 must catch.
+    """
+    visible = [
+        {
+            "id": task_id,
+            "contextId": t["ctx"],
+            "status": {"state": f"TASK_STATE_{t['state'].upper()}" if v1 else t["state"]},
+        }
+        for task_id, t in TASKS.items()
+        if POSTURE == "idor" or t["owner"] == caller
+    ]
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
+        "tasks": visible,
+        "totalSize": len(visible),
+        "pageSize": (params or {}).get("pageSize", len(visible)),
+    }})
+
+
 def _set_push(req_id, params, caller):
     task_id = (params or {}).get("taskId") or ""
     if task_id not in TASKS:
@@ -231,6 +257,8 @@ async def jsonrpc(request: Request) -> Response:
         return _get(req_id, params, caller, v1=method == "GetTask")
     if method in ("CancelTask", "tasks/cancel"):
         return _cancel(req_id, params, caller, v1=method == "CancelTask")
+    if method in ("ListTasks", "tasks/list"):
+        return _list(req_id, params, caller, v1=method == "ListTasks")
     if method in ("CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set"):
         return _set_push(req_id, params, caller)
     return _error(req_id, -32601, "Method not found")
@@ -250,6 +278,6 @@ if __name__ == "__main__":
         print("[*] Expected: no findings. Any finding is a false positive.", flush=True)
     else:
         print("[*] Expected: multitenant-isolation, delegation-integrity, "
-              "task-cancel-idor and push-binding all fire.", flush=True)
+              "task-cancel-idor, push-binding and task-enumeration all fire.", flush=True)
     print("[*] Credentials: --token tok-a plus two principals (tok-a, tok-b)", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)
