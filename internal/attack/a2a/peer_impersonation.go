@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,33 +94,14 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 		return nil, fmt.Errorf("building forged JWT: %w", err)
 	}
 
-	msgBody := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "SendMessage",
-		"params": map[string]interface{}{
-			"message": map[string]interface{}{
-				"role":  1,
-				"parts": []interface{}{map[string]string{"text": "ping"}},
-			},
-			"configuration": map[string]interface{}{},
-		},
-	}
-
-	// Step 3: Forged-token probe.
-	forgedHeaders := map[string]string{
-		"A2A-Version":   "1.0",
-		"Authorization": "Bearer " + forgedToken,
-	}
-	forgedResp, err := client.POST(ctx, endpoint, forgedHeaders, msgBody)
-	if err != nil {
-		return nil, nil
-	}
-
-	// Step 4: Unauthenticated baseline - use unauthClient so opts.Token is not injected.
-	baselineResp, err := unauthClient.POST(ctx, endpoint, map[string]string{"A2A-Version": "1.0"}, msgBody)
-	if err != nil {
-		return nil, nil
+	// Steps 3 and 4: on each revision the agent might speak, send the forged probe
+	// and the unauthenticated baseline, and keep the first pair where the send
+	// method exists. The baseline uses unauthClient so opts.Token is not injected.
+	forgedResp, baselineResp, wire, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
+	if !ok {
+		return nil, fmt.Errorf("%w: no revision's send method is implemented at %s "+
+			"(tried v1.0 SendMessage and v0.3 message/send), so credential handling was never exercised",
+			attack.ErrInconclusive, endpoint)
 	}
 
 	// Acceptance = a 2xx carrying a JSON-RPC result envelope (IsAccepted).
@@ -152,8 +134,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
 				"Forged JWT (redacted): %s...[signature omitted]\niss: %s\nissuer source: %s\naud: %s\n"+
-					"Forged response: HTTP %d\nBaseline response: HTTP %d\n%s",
-				jwtHeader(forgedToken), claims.iss, claims.source, claims.aud,
+					"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\n%s",
+				jwtHeader(forgedToken), claims.iss, claims.source, claims.aud, wire,
 				forgedResp.StatusCode, baselineResp.StatusCode,
 				snippet(forgedResp.Body, 400)),
 			Remediation: e.rule.Remediation,
@@ -174,8 +156,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 					"making peer agent impersonation trivial for any caller.",
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
-				"Forged response: HTTP %d\nBaseline response: HTTP %d\n%s",
-				forgedResp.StatusCode, baselineResp.StatusCode,
+				"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\n%s",
+				wire, forgedResp.StatusCode, baselineResp.StatusCode,
 				snippet(forgedResp.Body, 400)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
@@ -195,6 +177,83 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	}
 
 	return findings, nil
+}
+
+// impersonationWire is one revision's send request, in the shape that revision
+// defines.
+type impersonationWire struct {
+	name    string
+	headers map[string]string
+	body    map[string]interface{}
+}
+
+// impersonationWires lists the send methods to try, newest first.
+//
+// The rule sent only v1.0 SendMessage and had no fallback, alone among the A2A
+// rules. A v0.3 agent answers that with -32601 at HTTP 200 for BOTH the forged and
+// the baseline probe, so neither was accepted, no switch case matched, and the rule
+// returned clean: a server that trusts a published issuer and never verifies a
+// signature was reported secure because the scanner spoke the wrong revision at it.
+// The rejection it saw came from the dispatcher, not the auth layer.
+func impersonationWires(randID string) []impersonationWire {
+	return []impersonationWire{
+		{
+			name:    "v1.0 SendMessage",
+			headers: map[string]string{"A2A-Version": "1.0"},
+			body: jsonRPCCall("SendMessage", map[string]interface{}{
+				"message": map[string]interface{}{
+					"messageId": "batesian-pi-" + randID,
+					"role":      "ROLE_USER",
+					"parts":     []interface{}{map[string]interface{}{"text": "ping"}},
+				},
+			}),
+		},
+		{
+			// v0.3: slash method, lowercase role, and parts carry a kind. messageId
+			// is required by the Message schema, which the previous body omitted.
+			name: "v0.3 message/send",
+			body: jsonRPCCall("message/send", map[string]interface{}{
+				"message": map[string]interface{}{
+					"messageId": "batesian-pi-" + randID,
+					"role":      "user",
+					"parts":     []interface{}{map[string]interface{}{"kind": "text", "text": "ping"}},
+				},
+			}),
+		},
+	}
+}
+
+// probeWires sends the forged and baseline probes on each revision and returns the
+// first pair where the method exists. A revision answering -32601 to both is not
+// implemented here and says nothing about credential handling.
+func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
+	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, ok bool) {
+	for _, w := range impersonationWires(randID) {
+		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
+		for k, v := range w.headers {
+			forgedHeaders[k] = v
+		}
+		fResp, err := client.POST(ctx, endpoint, forgedHeaders, w.body)
+		if err != nil {
+			continue
+		}
+		bResp, err := unauthClient.POST(ctx, endpoint, w.headers, w.body)
+		if err != nil {
+			continue
+		}
+		if methodAbsent(fResp) && methodAbsent(bResp) {
+			continue
+		}
+		return fResp, bResp, w.name, true
+	}
+	return nil, nil, "", false
+}
+
+// methodAbsent reports whether a response is a -32601, which real SDKs return at
+// HTTP 200 for a method name the revision does not define.
+func methodAbsent(resp *attack.Response) bool {
+	code, ok := jsonRPCErrorCode(resp.Body)
+	return ok && code == methodNotFound
 }
 
 // fallbackForgedIssuer is used only when the target publishes no issuer anywhere.
@@ -260,8 +319,21 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	if card == nil {
 		return out
 	}
-	for name, scheme := range card.SecuritySchemes {
-		if iss := issuerFromScheme(scheme); iss != "" {
+	// Sorted, not map order. Go randomizes map iteration, and both the forged
+	// token's iss and this evidence string come from whichever scheme is seen
+	// first, so a card declaring two issuer-bearing schemes (an openIdConnect and
+	// an oauth2 at different IdPs, normal during a migration) produced a different
+	// issuer per run. Measured on such a card: two distinct issuers across 30 runs,
+	// 25 to 5. Against an issuer-filtering server that decides whether the rule
+	// fires at all. oauthFlowEndpoints below was already sorted for this reason;
+	// the walk enclosing it was not.
+	names := make([]string, 0, len(card.SecuritySchemes))
+	for name := range card.SecuritySchemes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if iss := issuerFromScheme(card.SecuritySchemes[name]); iss != "" {
 			out.iss = iss
 			out.source = fmt.Sprintf("agent card securityScheme %q", name)
 			return out

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -345,5 +346,155 @@ func TestPeerImpersonation_NotA2AServer(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings on non-A2A server, got %d", len(findings))
+	}
+}
+
+// v03IssuerAllowlistServer is issuerAllowlistServer speaking v0.3 only: it answers
+// the v1.0 method name with -32601 at HTTP 200, the way a real SDK does.
+//
+// The rule sent only v1.0 SendMessage, so both probes were refused by the
+// DISPATCHER, neither was accepted, no switch case matched, and a server that
+// trusts a published issuer and never verifies a signature was reported clean.
+func v03IssuerAllowlistServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("v03-agent"))
+			return
+		}
+		var req struct {
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		if req.Method != "message/send" {
+			// This revision does not define that name.
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		parts := strings.Split(strings.TrimPrefix(auth, "Bearer "), ".")
+		if len(parts) != 3 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var claims struct {
+			Iss string `json:"iss"`
+		}
+		if json.Unmarshal(raw, &claims) != nil || claims.Iss != testIssuer {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+			"result": map[string]interface{}{"id": "task-v03", "status": map[string]interface{}{"state": "completed"}}})
+	}))
+}
+
+func TestPeerImpersonation_V03AgentIsStillTested(t *testing.T) {
+	ts := v03IssuerAllowlistServer(t)
+	defer ts.Close()
+
+	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected a finding: the v0.3 agent accepts a randomly signed token bearing its published issuer")
+	}
+	if !strings.Contains(findings[0].Evidence, "v0.3 message/send") {
+		t.Errorf("evidence should name the revision that answered, got: %s", findings[0].Evidence)
+	}
+}
+
+// An agent implementing neither send method tells us nothing about credential
+// handling, so it must be not-tested rather than clean.
+func TestPeerImpersonation_NoSendMethodIsInconclusive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("no-send"))
+			return
+		}
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+			"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
+	}))
+	defer ts.Close()
+
+	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive when no send method exists, got err=%v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected no findings, got %d", len(findings))
+	}
+}
+
+// Both the forged token's issuer and the finding's evidence come from a walk over
+// the card's securitySchemes map, and Go randomizes map order. A card declaring two
+// issuer-bearing schemes is normal during an IdP migration. Measured before the
+// fix: two distinct issuers across 30 runs.
+func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, map[string]interface{}{
+				"name": "two-idp", "version": "1.0",
+				"securitySchemes": map[string]interface{}{
+					"legacy-sso": map[string]interface{}{
+						"type":             "openIdConnect",
+						"openIdConnectUrl": "https://old-idp.example.test/.well-known/openid-configuration",
+					},
+					"new-sso": map[string]interface{}{
+						"type": "oauth2",
+						"flows": map[string]interface{}{
+							"clientCredentials": map[string]interface{}{
+								"tokenUrl": "https://new-idp.example.test/oauth/token",
+								"scopes":   map[string]interface{}{},
+							},
+						},
+					},
+				},
+			})
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+			"result": map[string]interface{}{"id": "t", "status": map[string]interface{}{"state": "completed"}}})
+	}))
+	defer srv.Close()
+
+	first := ""
+	for i := 0; i < 30; i++ {
+		exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+		f, err := exec.Execute(context.Background(), srv.URL, testOpts())
+		if err != nil || len(f) == 0 {
+			t.Fatalf("run %d: expected a finding, got %d findings err=%v", i, len(f), err)
+		}
+		var iss string
+		for _, line := range strings.Split(f[0].Evidence, "\n") {
+			if strings.HasPrefix(line, "iss: ") {
+				iss = line
+			}
+		}
+		if i == 0 {
+			first = iss
+			continue
+		}
+		if iss != first {
+			t.Fatalf("run %d derived %q but run 0 derived %q; the issuer must not depend on map order", i, iss, first)
+		}
 	}
 }

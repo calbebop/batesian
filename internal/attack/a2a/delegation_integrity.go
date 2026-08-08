@@ -187,8 +187,10 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 	if err != nil || !resp.IsAccepted() {
 		return false
 	}
-	// The continuation landed on A's task only if the result still references it.
-	return resp.ContainsAny(taskID, contextID, `"contextId"`)
+	// The continuation landed on A's task only if the result identifies it. See
+	// resultReferencesTask: the previous check also accepted the bare key name
+	// "contextId", which any Task envelope contains.
+	return resultReferencesTask(resp.Body, taskID, contextID)
 }
 
 // finding builds the confirmed delegation chain-of-custody break.
