@@ -109,6 +109,13 @@ func TestResolveA2AEndpoint_FromCard(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(strings.ReplaceAll(referenceCard, "HOST", host)))
 	})
+	// The declared interface has to answer. Serving only the card made this test
+	// assert the defect it was written before: discovery returned the card's path
+	// as reachable without ever contacting it.
+	mux.HandleFunc("/a2a/jsonrpc", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	host = strings.TrimPrefix(srv.URL, "http://")
@@ -261,5 +268,70 @@ func TestResolveA2AEndpoint_OriginTargetUnchanged(t *testing.T) {
 	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
 	if !ok || ep != srv.URL+"/a2a/jsonrpc" {
 		t.Errorf("endpoint = %q ok = %v, want %s/a2a/jsonrpc true", ep, ok, srv.URL)
+	}
+}
+
+// A card advertises the URL clients reach the agent on, which for anything behind
+// a proxy is not the path the operator is scanning: an agent published at
+// https://public.example/a2a/v1 may be mounted at / on the origin. The card URL
+// was returned as reachable without ever being contacted, so the candidate walk
+// that would have found / was skipped and ok=true told a dozen rules their failed
+// probes were a tested-clean result.
+func TestResolveA2AEndpoint_CardPathThatDoesNotAnswerFallsBack(t *testing.T) {
+	var hits []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Declares an external path that is not mounted at this origin.
+		_, _ = w.Write([]byte(`{"name":"proxied","version":"1.0",` +
+			`"url":"https://public.example.test/a2a/v1","preferredTransport":"JSONRPC"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// "/" is a catch-all in ServeMux, so the declared /a2a/v1 must be refused
+		// explicitly or it would appear to answer and the test would prove nothing.
+		if r.URL.Path != "/" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		// The real handler, answering a task-shaped probe.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok {
+		t.Fatal("expected discovery to fall back to the conventional paths and find the handler")
+	}
+	if ep != srv.URL+"/" {
+		t.Errorf("endpoint = %q, want the path that actually answered (%s/)", ep, srv.URL)
+	}
+	if len(hits) == 0 {
+		t.Error("the real handler was never contacted; the card's claim was taken on trust")
+	}
+}
+
+// An auth-gated card path must still be accepted, or securing an agent would make
+// it look undiscoverable. probeJSONRPCEndpoint treats 401/403 as found.
+func TestResolveA2AEndpoint_CardPathBehindAuthIsAccepted(t *testing.T) {
+	var host string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"secured","version":"1.0","url":"http://` + host +
+			`/a2a/v1","preferredTransport":"JSONRPC"}`))
+	})
+	mux.HandleFunc("/a2a/v1", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host = strings.TrimPrefix(srv.URL, "http://")
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok || ep != srv.URL+"/a2a/v1" {
+		t.Errorf("endpoint = %q ok = %v, want %s/a2a/v1 true (a 401 proves the endpoint exists)", ep, ok, srv.URL)
 	}
 }
