@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -139,5 +140,44 @@ func TestBatchBypass_NotA2A(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings, got %d", len(findings))
+	}
+}
+
+// A correctly secured agent: the single request is refused at the HTTP layer, and
+// every element of a batch is refused with a JSON-RPC error reading "Not
+// authorized". Nothing is bypassed.
+//
+// The A2A copy of the auth-keyword list omitted "authoriz", so that message was
+// not recognized as a refusal. a2aBatchDispatched's predicate is inverted, so an
+// unrecognized element error counted as proof the dispatcher had run, and the rule
+// emitted high/confirmed "A2A authentication bypassed by JSON-RPC batch wrapping"
+// with evidence reading "batch [request]: HTTP 200 (processed)".
+func TestBatchBypass_AuthRefusalWordingIsRecognized(t *testing.T) {
+	for _, msg := range []string{"Not authorized", "Access denied", "Login required", "Invalid token"} {
+		t.Run(msg, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, ".well-known") {
+					writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+					// Batch: every element refused for auth.
+					_, _ = w.Write([]byte(`[{"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"` + msg + `"}}]`))
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"` + msg + `"}}`))
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+			findings, _ := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 {
+				t.Errorf("FALSE POSITIVE for %q: the batch was refused for auth, got %q",
+					msg, findings[0].Title)
+			}
+		})
 	}
 }
