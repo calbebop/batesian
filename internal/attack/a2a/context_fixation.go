@@ -72,10 +72,17 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	marker := "batesian-secret-" + vars.RandID
 
 	// Step 1: as A, send under a client-chosen contextId.
-	taskA, returnedCtx := e.sendUnderContext(ctx, clientA, endpoint, a.Headers, fixedCtx, "batesian ctx-fix probe "+vars.RandID, vars.RandID)
-	if taskA == "" || returnedCtx != fixedCtx {
-		// Either not a responsive A2A server, or the server minted its own
-		// contextId (did not honor the client-supplied one) - secure.
+	taskA, returnedCtx, obsA := e.sendUnderContext(ctx, clientA, endpoint, a.Headers, fixedCtx,
+		"batesian ctx-fix probe "+vars.RandID, vars.RandID, "sending a message as principal "+a.Name)
+	if taskA == "" {
+		// No task at all. A server that refuses a client-chosen contextId outright is
+		// behaving correctly, so only an authorization refusal means this rule did not
+		// get to test anything; see errIfAuthRefused.
+		return nil, obsA.errIfAuthRefused()
+	}
+	if returnedCtx != fixedCtx {
+		// The server minted its own contextId rather than honouring the client's, which
+		// is the secure behaviour and a real tested result.
 		return nil, nil
 	}
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactContextID, Value: fixedCtx, Principal: a.Name, Producer: e.rule.ID})
@@ -83,14 +90,18 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 2: open-server discriminator. An unauthenticated message under the
 	// fixed context must be rejected; if it is accepted, the server enforces no
 	// auth at all (not fixation).
-	if anonTask, _ := e.sendUnderContext(ctx, unauthClient, endpoint, nil, fixedCtx, "batesian anon "+vars.RandID, vars.RandID); anonTask != "" {
+	if anonTask, _, _ := e.sendUnderContext(ctx, unauthClient, endpoint, nil, fixedCtx,
+		"batesian anon "+vars.RandID, vars.RandID, "sending an unauthenticated message"); anonTask != "" {
 		return nil, nil
 	}
 
 	// Step 3: as victim B, send a secret marker under the SAME fixed context.
-	taskB, _ := e.sendUnderContext(ctx, clientB, endpoint, b.Headers, fixedCtx, marker, vars.RandID)
+	taskB, _, obsB := e.sendUnderContext(ctx, clientB, endpoint, b.Headers, fixedCtx, marker, vars.RandID,
+		"sending the victim's message as principal "+b.Name)
 	if taskB == "" {
-		return nil, nil // B could not post (invalid creds) - cannot confirm a merge
+		// B could not post, so no merge could be confirmed either way. This returned a
+		// clean result while its own comment said the credentials might be invalid.
+		return nil, obsB.err()
 	}
 
 	// Step 4: as A, read the context back. Confirmed only if A can see B's marker.
@@ -104,7 +115,12 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 // sendUnderContext sends a SendMessage carrying a client-supplied contextId,
 // trying the A2A v1.0 shape first then the v0.3 slash-method shape. It returns
 // the created task id and the contextId the server associated with it.
-func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, contextID, text, randID string) (taskID, returnedCtx string) {
+// what names the attempt for the reason a caller may have to report. The
+// observation covers both wires: losing the first would let a v1.0-only agent that
+// refuses for auth reasons look like one with no task surface, since the v0.3
+// fallback answers -32601 and that maps to a clean result.
+func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	extraHeaders map[string]string, contextID, text, randID, what string) (taskID, returnedCtx string, obs setupObservation) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
@@ -123,6 +139,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		},
 	})
 	if err != nil || !resp.IsAccepted() {
+		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-ctxfix-send-" + randID,
@@ -138,10 +155,14 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		})
 	}
 	if err != nil || !resp.IsAccepted() {
-		return "", ""
+		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+		return "", "", obs
 	}
 	taskID, returnedCtx = extractTaskContext(resp.Body)
-	return taskID, returnedCtx
+	if taskID == "" {
+		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+	}
+	return taskID, returnedCtx, obs
 }
 
 // taskHistoryContains reads a task via GetTask (v1.0) / tasks/get (v0.3) and

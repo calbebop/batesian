@@ -45,3 +45,18 @@ func AuthFlavoredMessage(msg string) bool {
 	}
 	return false
 }
+
+// CredentialNote completes an unauthorized-refusal message with what the refused
+// request actually presented, which is the part an operator acts on.
+//
+// It lives here, beside AuthFlavoredMessage, because both protocol packages report
+// this and a second copy would drift the way the keyword list did. It states the
+// fact and prescribes no flag: whether passing a credential would change anything
+// is a per-rule question, and several rules send none by design.
+func CredentialNote(credentialed bool) string {
+	if credentialed {
+		return "even though the request presented the credential this scan was given, " +
+			"so that credential is not accepted here"
+	}
+	return "and the request presented no credential"
+}

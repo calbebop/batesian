@@ -75,6 +75,30 @@ The three card-analysis rules (`a2a-card-trust-001`, `a2a-jws-algconf-001`,
 no card is served, even against a target that is plainly an agent by other
 evidence. A card rule with no card has nothing to say either way.
 
+### Rules that need a task first
+
+Eight rules cannot say anything until they have created a task: `a2a-task-idor-001`,
+`a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-context-fixation-001`,
+`a2a-delegation-integrity-001`, `a2a-multitenant-isolation-001`,
+`a2a-push-binding-001` and `a2a-task-cancel-idor-001`. Against an agent that
+enforces authorization, whether they can depends on the credential the scan was
+given, so a failure to create one is reported as **not tested**, naming the refusal
+and whether the request carried a credential at all. A clean result there would
+claim the agent does not leak tasks across principals when no task ever existed.
+
+Two things stay clean, deliberately. An agent that does not implement the surface
+(`-32601`, or A2A's own `-32003` push-not-supported and `-32004`
+unsupported-operation) is not applicable rather than untested, the same call the
+OAuth-gated MCP rules make for a server exposing no OAuth. And where the request is
+one the agent is *supposed* to refuse, that refusal is the pass being looked for:
+`a2a-session-smuggle-001` sends a message claiming the agent role, and
+`a2a-context-fixation-001` sends a client-chosen `contextId`. For those two, only an
+authorization refusal counts as untested.
+
+Note that `a2a-task-idor-001`, `a2a-push-ssrf-001` and `a2a-session-smuggle-001` use
+`--token` rather than `--principal`, so a scan that passes only principals will
+report them not tested against a secured agent, and say so.
+
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |

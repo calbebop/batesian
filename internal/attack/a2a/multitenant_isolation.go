@@ -67,10 +67,15 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 
 	// Step 1: each principal creates its own task. Both must succeed to prove two
 	// valid, distinct identities.
-	taskA, ctxA, okA := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
-	taskB, ctxB, okB := e.createTask(ctx, clientB, endpoint, b, vars.RandID)
+	taskA, ctxA, okA, obsA := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+	taskB, ctxB, okB, obsB := e.createTask(ctx, clientB, endpoint, b, vars.RandID)
 	if !okA || !okB {
-		return nil, nil
+		// Neither identity's task can be skipped: this rule compares one principal's
+		// task against the other's. Report the failure that explains most, and only
+		// call it clean when the agent implements no task surface at all.
+		obs := obsA
+		obs.observe(obsB)
+		return nil, obs.err()
 	}
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: a.Token, Principal: a.Name, Producer: e.rule.ID})
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: b.Token, Principal: b.Name, Producer: e.rule.ID})
@@ -98,7 +103,10 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 // createTask issues a SendMessage create as the given principal, trying the A2A
 // v1.0 PascalCase shape first and falling back to the v0.3 slash-method shape.
 // It returns the created task/context IDs and whether the creation was accepted.
-func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string, p attack.Principal, randID string) (taskID, contextID string, accepted bool) {
+// The observation is returned so a caller that got no task can say why. Both wires
+// are classified, and the one that explains most wins.
+func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range p.Headers {
 		v1Headers[k] = v
@@ -116,6 +124,8 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 		},
 	})
 	if err != nil || !resp.IsAccepted() {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
 		slashHeaders := map[string]string{}
 		for k, v := range p.Headers {
 			slashHeaders[k] = v
@@ -134,10 +144,16 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 		})
 	}
 	if err != nil || !resp.IsAccepted() {
-		return "", "", false
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
-	return taskID, contextID, taskID != ""
+	if taskID == "" {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+	}
+	return taskID, contextID, taskID != "", obs
 }
 
 // readTask attempts a GetTask for taskID over the given client (carrying its own

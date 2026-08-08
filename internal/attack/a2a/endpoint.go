@@ -366,6 +366,21 @@ func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoi
 	return resp.ContainsAny(`"protocolVersion"`)
 }
 
+// jsonRPCErrorMessage extracts the message from a JSON-RPC error envelope, or ""
+// when there is none. A2A defines no numeric auth code, so the message is what
+// decides whether a refusal was about authorization.
+func jsonRPCErrorMessage(body []byte) string {
+	var envelope struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error == nil {
+		return ""
+	}
+	return envelope.Error.Message
+}
+
 // jsonRPCErrorCode extracts the numeric code from a JSON-RPC error envelope. ok
 // is false when the body is not JSON, carries no error object, or the error has
 // no numeric code.
