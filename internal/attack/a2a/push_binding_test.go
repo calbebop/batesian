@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -212,7 +213,14 @@ func TestPushBinding_InsufficientPrincipals(t *testing.T) {
 	ts := pushServer("unbound")
 	defer ts.Close()
 
-	if findings := runPushBinding(t, ts, pushPrincipals()[:1]); len(findings) != 0 {
-		t.Errorf("expected zero findings with <2 principals, got %d", len(findings))
+	// Not via runPushBinding: that helper fatals on any error, and the point here is
+	// which error comes back.
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()[:1]})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("one principal cannot exercise a cross-principal rule; want ErrInconclusive, got %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }

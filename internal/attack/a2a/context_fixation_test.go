@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -203,10 +204,13 @@ func TestContextFixation_RequiresTwoPrincipals(t *testing.T) {
 
 	findings, err := a2a.NewContextFixationExecutor(testRuleCtx()).
 		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()[:1]...))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// A rule that sends no packets has not tested anything. This used to assert
+	// err == nil, which under the project's convention means "tested, and the target
+	// is secure" - about a deliberately vulnerable fixture, with zero requests sent.
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("one principal cannot exercise a cross-principal rule; want ErrInconclusive, got %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected clean skip with one principal, got %d findings", len(findings))
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }
