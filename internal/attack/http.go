@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -37,7 +38,50 @@ var Version = "dev"
 type HTTPClient struct {
 	inner *http.Client
 	vars  Vars
-	token string // bearer token injected into every request when set
+	token string // bearer token injected into requests to targetHost when set
+	// targetHost is the host:port of the scan target. The auto-injected token is
+	// withheld from any other host; see tokenAllowedFor.
+	targetHost string
+}
+
+// tokenAllowedFor reports whether the auto-injected bearer token may be sent to
+// this URL. It may not leave the scan target's host.
+//
+// The operator supplies one credential, for one target. Several rules follow URLs
+// the TARGET chooses: the resource_metadata parameter of its own WWW-Authenticate
+// challenge, a registration_endpoint out of its OAuth metadata, a push-notification
+// callback. A target that names another host and receives the operator's token has
+// harvested a credential it was never issued, and it does so by answering a normal
+// discovery request. Demonstrated against a server whose WWW-Authenticate pointed
+// resource_metadata at a collector on another port: the collector received
+// "Authorization: Bearer <operator token>".
+//
+// This guard is deliberately at the transport, not at the call sites. The call
+// sites are the thing that keeps getting this wrong, and one of them shipped.
+// An explicit per-request Authorization header still wins, because that is an
+// author stating intent (principal tokens, forged tokens) rather than ambient
+// injection.
+//
+// When the target host is unknown the token is sent, preserving the previous
+// behaviour rather than silently dropping credentials.
+func (c *HTTPClient) tokenAllowedFor(rawURL string) bool {
+	if c.targetHost == "" {
+		return true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return true
+	}
+	return strings.EqualFold(u.Host, c.targetHost)
+}
+
+// hostOf returns the host:port of a URL, or "" when it cannot be determined.
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // NewUnauthHTTPClient creates an attack HTTP client with no bearer token.
@@ -72,8 +116,9 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 			// redirects during the authorization-code flow.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		vars:  vars,
-		token: opts.Token,
+		vars:       vars,
+		token:      opts.Token,
+		targetHost: hostOf(vars.BaseURL),
 	}
 }
 
@@ -224,8 +269,9 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 	req.Header.Set("User-Agent", "batesian/"+Version+" (https://github.com/calbebop/batesian)")
 	// MCP streamable HTTP requires text/event-stream in Accept; A2A servers ignore it.
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	// Inject the bearer token unless the caller overrides Authorization explicitly.
-	if c.token != "" {
+	// Inject the bearer token unless the caller overrides Authorization explicitly,
+	// and never to a host other than the scan target: see tokenAllowedFor.
+	if c.token != "" && c.tokenAllowedFor(url) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	for k, v := range headers {

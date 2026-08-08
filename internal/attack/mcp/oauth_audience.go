@@ -81,7 +81,7 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 
 	expected := strings.TrimSpace(opts.AudienceClaim)
 	if expected == "" {
-		discovered, mcpReached := discoverExpectedAudience(ctx, client, vars.BaseURL)
+		discovered, mcpReached := discoverExpectedAudience(ctx, client, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
 			// resource metadata. Operators who want this rule to run should pass
@@ -235,15 +235,16 @@ func hasUpper(s string) bool {
 //
 // Returns the resource URI on success, or an empty string if nothing
 // usable was found (caller treats that as "skip").
-func discoverExpectedAudience(ctx context.Context, client *attack.HTTPClient, baseURL string) (audience string, mcpReached bool) {
+// metaClient is unauthenticated because step 2 follows a URL the target chose.
+func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient, baseURL string) (audience string, mcpReached bool) {
 	metaURL, mcpReached := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
 	if metaURL != "" {
-		if resource := fetchResourceFromMetadata(ctx, client, metaURL); resource != "" {
+		if resource := fetchResourceFromMetadata(ctx, metaClient, metaURL); resource != "" {
 			return resource, mcpReached
 		}
 	}
 	wellKnown := baseURL + "/.well-known/oauth-protected-resource"
-	return fetchResourceFromMetadata(ctx, client, wellKnown), mcpReached
+	return fetchResourceFromMetadata(ctx, metaClient, wellKnown), mcpReached
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to
@@ -302,6 +303,13 @@ func parseResourceMetadataURL(header string) string {
 
 // fetchResourceFromMetadata GETs the metadata document and returns the
 // `resource` field if present and absolute.
+//
+// metaURL may come from the target's own WWW-Authenticate challenge, so it can
+// name any host. Protected-resource metadata is public per RFC 9728 and needs no
+// credential, and the caller therefore passes an unauthenticated client: a target
+// that points resource_metadata at a host it controls must not be handed the
+// operator's bearer token. The transport enforces this as well, so this is
+// defence in depth plus a statement of intent at the call site.
 func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string) string {
 	resp, err := client.GET(ctx, metaURL, nil)
 	if err != nil || !resp.IsSuccess() {
