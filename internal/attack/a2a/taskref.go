@@ -1,6 +1,9 @@
 package a2a
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // resultReferencesTask reports whether a JSON-RPC result really is the task
 // identified by taskID/contextID, by comparing the identifiers rather than
@@ -70,4 +73,48 @@ func resultReferencesTask(body []byte, taskID, contextID string) bool {
 		}
 	}
 	return false
+}
+
+// countListedTasks returns how many tasks a task-list response actually carried.
+//
+// The oracle it replaced was ContainsAny(`"tasks"`, `"contextId"`, `"history"`) over
+// the raw body, which are KEY NAMES. A server that scopes its list correctly and
+// answers an anonymous caller with {"tasks":[],"totalSize":0} contains `"tasks"`, so
+// it matched, and a2a-task-idor-001 reported "server-wide task disclosure" at
+// critical/confirmed against a server that disclosed nothing at all. That is the same
+// vacuous-needle class as the checks corrected in PR #163 and PR #169, and the
+// highest-severity instance of it.
+//
+// Both shapes are counted: the documented {"tasks":[...]} envelope, and the bare
+// array some REST bindings return. An element counts only when it is an object with
+// at least one non-empty field, so an empty list, a list of empty objects, and a
+// bare count all fail to qualify. Something has to have been disclosed before this
+// says something was disclosed.
+func countListedTasks(body []byte) int {
+	var envelope struct {
+		Tasks []map[string]json.RawMessage `json:"tasks"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Tasks != nil {
+		return countNonEmpty(envelope.Tasks)
+	}
+	var bare []map[string]json.RawMessage
+	if json.Unmarshal(body, &bare) == nil {
+		return countNonEmpty(bare)
+	}
+	return 0
+}
+
+// countNonEmpty counts objects carrying at least one field with a non-empty value.
+func countNonEmpty(items []map[string]json.RawMessage) int {
+	n := 0
+	for _, item := range items {
+		for _, v := range item {
+			s := strings.TrimSpace(string(v))
+			if s != "" && s != "null" && s != `""` && s != "{}" && s != "[]" {
+				n++
+				break
+			}
+		}
+	}
+	return n
 }
