@@ -109,9 +109,9 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	// Session A, which also discovers the endpoint.
-	sessA, ok := e.initSession(ctx, client, vars.BaseURL, tokenA)
-	if !ok {
-		return nil, attack.ErrInconclusive // not an MCP server
+	sessA, initErr := e.initSession(ctx, client, vars.BaseURL, tokenA)
+	if initErr != nil {
+		return nil, inconclusive(initErr) // not an MCP server, and why
 	}
 
 	// Gate on the tasks capability and on task-augmented tools/call specifically.
@@ -159,7 +159,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		enforcedOn: "the MCP endpoint",
 		anonProbe:  "anonymous initialize: refused",
 	}
-	if anonSess, anonOK := e.initSession(ctx, client, vars.BaseURL, ""); anonOK {
+	if anonSess, anonErr := e.initSession(ctx, client, vars.BaseURL, ""); anonErr == nil {
 		auth = authEvidence{
 			enforcedOn: "task creation and reads",
 			anonProbe:  "anonymous task creation: refused",
@@ -176,8 +176,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	// Step 3: a second session, as principal B, tries to read A's task.
-	sessB, ok := e.initSession(ctx, client, vars.BaseURL, tokenB)
-	if !ok || sessB.SessionID == sessA.SessionID {
+	sessB, errB := e.initSession(ctx, client, vars.BaseURL, tokenB)
+	if errB != nil || sessB.SessionID == sessA.SessionID {
 		return nil, nil // need a distinct session to demonstrate the boundary
 	}
 
@@ -212,7 +212,10 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 // initSession performs an initialize handshake as the given token, discovering
 // the endpoint across the candidate paths, and returns the resulting session.
-func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPClient, baseURL, token string) (mcpSession, bool) {
+func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPClient, baseURL, token string) (mcpSession, error) {
+	// Why the walk failed, classified from the responses this loop already has, so a
+	// rule that could not run says what happened instead of blaming the network.
+	var observed initObservation
 	for _, ep := range endpointCandidates(baseURL) {
 		headers := map[string]string{}
 		if token != "" {
@@ -232,10 +235,13 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 				"clientInfo": map[string]interface{}{"name": "batesian", "version": "1.0"},
 			},
 		})
-		if err != nil || !resp.IsSuccess() {
-			continue
+		if err != nil {
+			continue // transport failure: nothing answered, so nothing to explain
 		}
-		if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+			// This rule presents a token explicitly, so the client's ambient
+			// credential is not what decides whether the request carried one.
+			observed.observe(classifyInitFailure(ep, token != "", resp))
 			continue
 		}
 		session := mcpSession{
@@ -248,9 +254,12 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
-		return session, true
+		return session, nil
 	}
-	return mcpSession{}, false
+	if observed.rank > rankNothing {
+		return mcpSession{}, handshakeRefusal{observed.reason}
+	}
+	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)
 }
 
 // headers builds the per-request headers for a session and principal.

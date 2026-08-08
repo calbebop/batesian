@@ -92,7 +92,8 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	expected := strings.TrimSpace(opts.AudienceClaim)
 	operatorSupplied := expected != ""
 	if !operatorSupplied {
-		discovered, mcpReached := discoverExpectedAudience(ctx, client, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+		discovered, mcpReached, observed := discoverExpectedAudience(ctx, client,
+			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
 			// resource metadata. Operators who want this rule to run should pass
@@ -104,6 +105,9 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 			// was never exercised, and clean there would claim coverage the scan
 			// does not have.
 			if !mcpReached {
+				if observed.rank > rankNothing {
+					return nil, inconclusive(handshakeRefusal{observed.reason})
+				}
 				return nil, attack.ErrInconclusive
 			}
 			return nil, nil
@@ -133,7 +137,7 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	// scan that found something needs no premise check, and a disagreement is not
 	// a reason to withhold a finding the server demonstrated.
 	if operatorSupplied {
-		if advertised, _ := discoverExpectedAudience(ctx, client,
+		if advertised, _, _ := discoverExpectedAudience(ctx, client,
 			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL); advertised != "" && advertised != expected {
 			return nil, fmt.Errorf("%w: the probes were built from the --audience-claim value %q, "+
 				"but %s advertises %q as its resource audience; RFC 7519 section 4.1.3 compares the "+
@@ -264,15 +268,16 @@ func hasUpper(s string) bool {
 // Returns the resource URI on success, or an empty string if nothing
 // usable was found (caller treats that as "skip").
 // metaClient is unauthenticated because step 2 follows a URL the target chose.
-func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient, baseURL string) (audience string, mcpReached bool) {
-	metaURL, mcpReached := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
+func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient,
+	baseURL string) (audience string, mcpReached bool, observed initObservation) {
+	metaURL, mcpReached, observed := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
 	if metaURL != "" {
 		if resource := fetchResourceFromMetadata(ctx, metaClient, metaURL); resource != "" {
-			return resource, mcpReached
+			return resource, mcpReached, observed
 		}
 	}
 	wellKnown := baseURL + "/.well-known/oauth-protected-resource"
-	return fetchResourceFromMetadata(ctx, metaClient, wellKnown), mcpReached
+	return fetchResourceFromMetadata(ctx, metaClient, wellKnown), mcpReached, observed
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to
@@ -282,7 +287,8 @@ func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HT
 // separates "this MCP server exposes no OAuth" from "nothing here answered at
 // all". The first is a clean result for an OAuth-gated rule; the second is a
 // target that was never tested.
-func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HTTPClient, baseURL string) (metadataURL string, mcpReached bool) {
+func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HTTPClient,
+	baseURL string) (metadataURL string, mcpReached bool, observed initObservation) {
 	body := json.RawMessage(mcpInitBody)
 	for _, ep := range endpointCandidates(baseURL) {
 		// Use no Authorization header (override any opts.Token) so the server
@@ -298,16 +304,21 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		// header on 403. We accept any response that carries the header.
 		if u := parseResourceMetadataURL(resp.Headers.Get("WWW-Authenticate")); u != "" {
 			// A challenge is itself proof the endpoint is live and gated.
-			return u, true
+			return u, true, observed
 		}
 		// An endpoint that answered the handshake is the server, and it issued no
 		// challenge. The remaining candidates are the same server at paths it does
 		// not serve, so walking them only adds 404s.
 		if isMCPInitialize(resp) {
-			return "", true
+			return "", true, observed
 		}
+		// It answered and it was neither a challenge nor a handshake. Record why, so
+		// a rule that ends up reporting nothing can say what it met. This probe is
+		// deliberately unauthenticated, so a refusal here is about the anonymous
+		// request rather than about any credential the operator supplied.
+		observed.observe(classifyInitFailure(ep, false, resp))
 	}
-	return "", false
+	return "", false, observed
 }
 
 // resourceMetadataRE extracts the resource_metadata="..." parameter from a

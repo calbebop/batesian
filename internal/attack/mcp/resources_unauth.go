@@ -272,7 +272,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			continue // transport failure: nothing answered, so nothing to explain
 		}
 		if !initResp.IsSuccess() || !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
-			observed.observe(classifyInitFailure(ep, initResp))
+			observed.observe(classifyInitFailure(ep, client.PresentsCredential(ep), initResp))
 			continue
 		}
 

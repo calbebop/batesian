@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -44,14 +45,27 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
 	}
 
-	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probe(ctx, client, raw, ep, tokenA, tokenB)
+	// Why no candidate could be exercised, classified from the handshake responses
+	// the probe already has, so this reports what happened rather than blaming the
+	// network. The closure captures it, which keeps probeCandidates unchanged for
+	// the five other rules that share it.
+	var observed initObservation
+	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		return e.probe(ctx, client, raw, ep, tokenA, tokenB, &observed)
 	})
+	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
+		return nil, inconclusive(handshakeRefusal{observed.reason})
+	}
+	return findings, err
 }
 
-func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string) ([]attack.Finding, bool) {
-	sessionA, ok := e.initialize(ctx, client, ep, tokenA)
+func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string,
+	observed *initObservation) ([]attack.Finding, bool) {
+	sessionA, ok, resp := e.initialize(ctx, client, ep, tokenA)
 	if !ok {
+		if resp != nil {
+			observed.observe(classifyInitFailure(ep, tokenA != "" || client.PresentsCredential(ep), resp))
+		}
 		return nil, false // not a responsive MCP endpoint
 	}
 	if sessionA == "" {
@@ -69,7 +83,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil, true // no resumable event surface to test
 	}
 
-	sessionB, ok := e.initialize(ctx, client, ep, tokenB)
+	sessionB, ok, _ := e.initialize(ctx, client, ep, tokenB)
 	if !ok || sessionB == "" || sessionB == sessionA {
 		return nil, true // need a second, distinct server-minted session
 	}
@@ -108,7 +122,10 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 
 // initialize performs an MCP initialize as the given token and returns the
 // server-minted session id.
-func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (string, bool) {
+// The failing response is returned alongside the verdict so a walk that never
+// established a session can say why. It is nil when nothing answered, which is the
+// one case there is nothing to explain.
+func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (string, bool, *attack.Response) {
 	headers := map[string]string{}
 	if token != "" {
 		headers["Authorization"] = "Bearer " + token
@@ -123,11 +140,11 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return "", false
+	if err != nil {
+		return "", false, nil
 	}
-	if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
-		return "", false
+	if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		return "", false, resp
 	}
 	sid := resp.Headers.Get("Mcp-Session-Id")
 	inited := map[string]string{"Mcp-Protocol-Version": latestStable}
@@ -138,7 +155,7 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 		inited["Mcp-Session-Id"] = sid
 	}
 	_, _ = client.POST(ctx, ep, inited, map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	return sid, true
+	return sid, true, resp
 }
 
 // sseCollect issues a GET for an SSE stream and returns the events read within
