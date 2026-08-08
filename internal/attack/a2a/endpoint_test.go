@@ -3,6 +3,8 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -333,5 +335,89 @@ func TestResolveA2AEndpoint_CardPathBehindAuthIsAccepted(t *testing.T) {
 	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
 	if !ok || ep != srv.URL+"/a2a/v1" {
 		t.Errorf("endpoint = %q ok = %v, want %s/a2a/v1 true (a 401 proves the endpoint exists)", ep, ok, srv.URL)
+	}
+}
+
+// An MCP server is not an A2A endpoint, and both of these shapes were measured
+// being accepted as one against the official MCP C# SDK. Roughly a dozen A2A rules
+// then reported the target tested-and-clean.
+func TestResolveA2AEndpoint_MCPServerShapesAreRejected(t *testing.T) {
+	t.Run("session error naming Mcp-Session-Id", func(t *testing.T) {
+		// The C# SDK's answer to an A2A tasks/get. The code is -32000, not -32601,
+		// so it bypassed the method-not-found branch where the MCP check lived, and
+		// the body contains "jsonrpc" like every JSON-RPC message.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				Method string `json:"method"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &req)
+			w.Header().Set("Content-Type", "application/json")
+			if req.Method == "initialize" {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18",` +
+					`"serverInfo":{"name":"csharp","version":"1"},"capabilities":{}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"d","error":{"code":-32000,"message":` +
+				`"Bad Request: A new session can only be created by an initialize request. ` +
+				`Include a valid Mcp-Session-Id header for non-initialize requests."}}`))
+		}))
+		defer srv.Close()
+
+		if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
+			t.Error("an MCP server that answers initialize must not be accepted as an A2A endpoint")
+		}
+	})
+
+	t.Run("OAuth-protected, 401 to everything", func(t *testing.T) {
+		// The C# SDK's ProtectedMcpServer sample. It refuses every unauthenticated
+		// request, so there is no A2A evidence at all; a bare 401 used to be accepted
+		// outright. RFC 9728 protected-resource metadata is what identifies it, and
+		// A2A does not use that mechanism.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "oauth-protected-resource") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"resource":"http://x/","authorization_servers":["http://as"]}`))
+				return
+			}
+			w.Header().Set("WWW-Authenticate",
+				`Bearer resource_metadata="http://`+r.Host+`/.well-known/oauth-protected-resource/"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+
+		if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
+			t.Error("an OAuth-protected MCP server must not be accepted as an A2A endpoint on a bare 401")
+		}
+	})
+}
+
+// The negative check must stay negative: an auth-gated A2A agent that publishes no
+// MCP discovery is still a candidate, or securing an agent would make every A2A
+// rule report not-tested against it.
+func TestResolveA2AEndpoint_AuthGatedNonMCPIsStillACandidate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No agent card, no OAuth metadata, no MCP handshake: just a 401.
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok {
+		t.Errorf("a bare auth-gated JSON-RPC service is still an A2A candidate; got ep=%q ok=false", ep)
+	}
+}
+
+// A2A's own error codes are strong evidence and need no disambiguation, because
+// only an A2A implementation emits them.
+func TestResolveA2AEndpoint_A2AErrorCodeIsStrongEvidence(t *testing.T) {
+	for _, code := range []int{-32001, -32004, -32006} {
+		srv := jsonRPCServer(func(string) string {
+			return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":%d,"message":"A2A error"}}`, code)
+		})
+		if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); !ok {
+			t.Errorf("error code %d is A2A-specific and must be accepted", code)
+		}
+		srv.Close()
 	}
 }

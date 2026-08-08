@@ -94,22 +94,81 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 			// that shape: two POSTs to the dead path, nothing reached the handler,
 			// and a-task-idor reported clean.
 			//
-			// probeJSONRPCEndpoint accepts a 401/403, so an auth-gated card path is
-			// still recognized and this does not narrow what counts as reachable.
+			// A card that declares a JSONRPC interface is itself A2A evidence, so the
+			// declared path only has to ANSWER; it need not prove A2A again. That
+			// keeps an auth-gated agent discoverable, since its 401 is weak evidence
+			// alone but the card corroborates it.
 			pinned := pinToTargetHost(cardURL, baseURL)
-			if probeJSONRPCEndpoint(ctx, client, pinned) {
+			if probeA2AEvidence(ctx, client, pinned) != a2aEvidenceNone {
 				return pinned, true
 			}
 			// Fall through: the card's claim did not hold at this host, so try the
 			// conventional paths rather than reporting an unreachable endpoint.
 		}
 	}
+	// Strong evidence is accepted outright. Weak evidence is remembered and
+	// corroborated afterwards, so a single ambiguous candidate cannot decide it.
+	weak := ""
 	for _, ep := range candidateEndpoints(baseURL) {
-		if probeJSONRPCEndpoint(ctx, client, ep) {
+		switch probeA2AEvidence(ctx, client, ep) {
+		case a2aEvidenceStrong:
 			return ep, true
+		case a2aEvidenceWeak:
+			if weak == "" {
+				weak = ep
+			}
 		}
 	}
+	if weak != "" && !looksLikeMCPServer(ctx, client, baseURL, weak) {
+		return weak, true
+	}
 	return baseURL + "/", false
+}
+
+// looksLikeMCPServer reports whether a path that gave only weak A2A evidence is in
+// fact an MCP server. Weak evidence is accepted for A2A unless this says no.
+//
+// The check stays negative on purpose. A2A servers exist that implement neither
+// task-get spelling, including two of this repository's own fixtures, so demanding
+// positive A2A proof would lose them. What the previous code got wrong was WHEN it
+// asked: only on the method-not-found branch, so a 401 and every other error code
+// bypassed it.
+//
+// Two signals, both cheap and both MCP-specific:
+//
+//   - The path answers an MCP initialize with a protocolVersion. Conclusive, but
+//     useless against a server that gates the handshake.
+//   - The host advertises RFC 9728 protected-resource metadata, at the well-known
+//     path or in a WWW-Authenticate challenge. That is the MCP authorization spec's
+//     discovery mechanism and A2A does not use it. It is what identifies the
+//     official C# SDK's OAuth-protected sample, which refuses every unauthenticated
+//     request with a 401 and so offers no other evidence at all.
+func looksLikeMCPServer(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
+	if answersMCPInitialize(ctx, client, endpoint) {
+		return true
+	}
+	return servesMCPResourceMetadata(ctx, client, baseURL, endpoint)
+}
+
+// servesMCPResourceMetadata reports whether the host advertises RFC 9728
+// protected-resource metadata, either at the well-known path or through a
+// WWW-Authenticate challenge on the endpoint itself.
+func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
+	if resp, err := client.GET(ctx, baseURL+"/.well-known/oauth-protected-resource", nil); err == nil &&
+		resp.IsSuccess() && resp.ContainsAny(`"resource"`, `"authorization_servers"`) {
+		return true
+	}
+	// The challenge itself carries the pointer, which is how the C# sample answers.
+	resp, err := client.POST(ctx, endpoint, nil, map[string]interface{}{
+		"jsonrpc": "2.0", "id": "batesian-a2a-mcp-check", "method": "initialize",
+		"params": map[string]interface{}{"protocolVersion": "2025-06-18",
+			"capabilities": map[string]interface{}{},
+			"clientInfo":   map[string]interface{}{"name": "batesian", "version": attack.Version}},
+	})
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(resp.Headers.Get("WWW-Authenticate")), "resource_metadata")
 }
 
 // fetchDiscoveryCard retrieves and parses the public agent card, trying the v1.0
@@ -197,17 +256,50 @@ const methodNotFound = -32601
 // JSON-RPC endpoint that handles the other. Probing only one method would miss
 // such servers.
 //
-// "Method not found" is treated as weak evidence rather than as proof. Any
-// JSON-RPC service answers an unknown method that way, so an MCP server was
-// being accepted here as an A2A agent: point the scanner at one and sixteen A2A
-// rules reported clean rather than skipped, which turns "could not test" into
-// "tested, nothing found". When that is all a candidate offers, the endpoint is
-// asked whether it is an MCP server before it is accepted.
+// Evidence is graded, because weak evidence let MCP servers through and that is
+// what this function's own history is about. "Method not found" was already
+// treated as weak, but two other shapes were not, and both were measured
+// accepting the official MCP C# SDK as an A2A agent:
 //
-// The check is deliberately negative rather than a stricter test for A2A. A2A
-// servers exist that implement neither task-get spelling, including two of this
-// repository's own fixtures, and requiring a task-shaped answer would lose them.
-func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoint string) bool {
+//   - Any JSON-RPC error other than -32601 was accepted, via a body check for the
+//     string "jsonrpc" that every JSON-RPC message contains. The SDK answers an
+//     A2A tasks/get with -32000 "Bad Request: A new session can only be created by
+//     an initialize request... Include a valid Mcp-Session-Id header", which named
+//     itself as MCP and was accepted anyway.
+//   - A 401 or 403 was accepted outright. The SDK's OAuth-protected sample refuses
+//     every unauthenticated request that way, so a secured MCP server was accepted
+//     with no A2A evidence at all.
+//
+// In both cases roughly a dozen A2A rules then reported the target tested-and-clean.
+//
+// Strong evidence is a JSON-RPC result, or an error in A2A's own -32001..-32006
+// range (TaskNotFound and friends) which only something implementing A2A produces.
+// Everything else is weak and has to be corroborated by the caller; see
+// resolveA2AEndpoint. The grading stays deliberately loose about requiring a
+// task-shaped answer, because A2A servers exist that implement neither task-get
+// spelling, including two of this repository's own fixtures.
+// a2aEvidence grades what a candidate path revealed about being an A2A endpoint.
+type a2aEvidence int
+
+const (
+	// a2aEvidenceNone: a 404 or a transport failure. Not the endpoint.
+	a2aEvidenceNone a2aEvidence = iota
+	// a2aEvidenceWeak: it answered, but in a way any JSON-RPC service could. An
+	// auth rejection, a method-not-found, a transport-level error envelope.
+	a2aEvidenceWeak
+	// a2aEvidenceStrong: an answer only an A2A implementation produces.
+	a2aEvidenceStrong
+)
+
+// a2aErrorCodeMin and a2aErrorCodeMax bound A2A's own application error codes
+// (TaskNotFound -32001 through InvalidAgentResponse -32006). Standard JSON-RPC
+// codes are excluded on purpose: every JSON-RPC service emits those.
+const (
+	a2aErrorCodeMax = -32001
+	a2aErrorCodeMin = -32006
+)
+
+func probeA2AEvidence(ctx context.Context, client *attack.HTTPClient, endpoint string) a2aEvidence {
 	probes := []struct {
 		method  string
 		headers map[string]string
@@ -216,7 +308,7 @@ func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoi
 		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
 	}
 
-	sawMethodNotFound := false
+	best := a2aEvidenceNone
 	for _, p := range probes {
 		resp, err := client.POST(ctx, endpoint, p.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -224,31 +316,29 @@ func probeJSONRPCEndpoint(ctx context.Context, client *attack.HTTPClient, endpoi
 			"method":  p.method,
 			"params":  map[string]interface{}{"id": "batesian-discovery-nonexistent", "historyLength": 1},
 		})
-		if err != nil {
+		if err != nil || resp.StatusCode == 404 {
 			continue
 		}
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			return true
-		}
-		if resp.StatusCode == 404 {
+			// Something is here and it wants credentials, but nothing says A2A.
+			if best < a2aEvidenceWeak {
+				best = a2aEvidenceWeak
+			}
 			continue
 		}
-		if code, ok := jsonRPCErrorCode(resp.Body); ok && code == methodNotFound {
-			sawMethodNotFound = true
-			continue
+		if resp.IsAccepted() {
+			return a2aEvidenceStrong
 		}
-		// Anything else on a JSON-RPC envelope is an answer only something
-		// implementing the method could give: a TaskNotFound, an invalid-params
-		// rejection of our probe's shape, or an actual result.
-		if isJSONRPCError(resp.Body) || resp.ContainsAny(`"jsonrpc"`, `"result"`) {
-			return true
+		if code, ok := jsonRPCErrorCode(resp.Body); ok {
+			if code >= a2aErrorCodeMin && code <= a2aErrorCodeMax {
+				return a2aEvidenceStrong
+			}
+			if best < a2aEvidenceWeak {
+				best = a2aEvidenceWeak
+			}
 		}
 	}
-
-	if sawMethodNotFound {
-		return !answersMCPInitialize(ctx, client, endpoint)
-	}
-	return false
+	return best
 }
 
 // answersMCPInitialize reports whether the endpoint identifies itself as an MCP
