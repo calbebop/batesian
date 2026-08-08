@@ -168,3 +168,59 @@ func TestHandshakeReason_RejectedCredentialSaysSo(t *testing.T) {
 		t.Errorf("a scan that carried a credential must not be told it carried none: %v", err)
 	}
 }
+
+// latestStable sat at 2025-06-18 for two revisions while its own comment said it
+// stays current. Offering a stale version costs coverage twice over: a strict server
+// rejects the handshake outright, which reads as unreachable, and a lenient one
+// negotiates down and never advertises the capabilities a later revision introduced.
+//
+// This server accepts only the newest handshake revision. If the offered version
+// drifts behind again, the handshake fails and the rule reports not tested, which is
+// exactly the silent false negative the constant exists to avoid.
+func TestOffersCurrentHandshakeRevision(t *testing.T) {
+	const current = "2025-11-25"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		params, _ := req["params"].(map[string]interface{})
+		offered, _ := params["protocolVersion"].(string)
+		method, _ := req["method"].(string)
+
+		if method == "initialize" && offered != current {
+			jsonRPCError(w, -32600, "Unsupported protocol version: "+offered)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"protocolVersion": current,
+					"serverInfo":      map[string]interface{}{"name": "strict", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"tools": []interface{}{map[string]interface{}{"name": "echo"}},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("a server accepting only %s refused the handshake, so the offered version "+
+			"is behind: %v", current, err)
+	}
+	if len(findings) == 0 {
+		t.Errorf("expected the open tool listing to be reported once the handshake succeeded")
+	}
+}

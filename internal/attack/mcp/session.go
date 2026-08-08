@@ -134,12 +134,20 @@ func (s mcpSession) header() map[string]string {
 	return h
 }
 
-// latestStable is the MCP protocol version offered in initialize requests. The
-// spec says clients should offer the latest version they support; the server
-// negotiates by responding with its own version. Offering a stale version risks
-// an "Unsupported protocol version" rejection on current servers (a silent
-// false negative), so this stays current.
-const latestStable = "2025-06-18"
+// latestStable is the MCP protocol version offered in initialize requests.
+//
+// It is the newest HANDSHAKE-BASED revision, which the specification's own
+// versioning page describes as "2025-11-25 and earlier". The current revision is
+// 2026-07-28, and it is deliberately not offered here: that era removes initialize
+// entirely, so these rules target the handshake wire and era detection reports a
+// modern-only server as speaking an unsupported version rather than as unreachable.
+//
+// Offering a stale version risks an "Unsupported protocol version" rejection on a
+// current server, which is a silent false negative, and it negotiates away
+// capabilities a later revision introduced. This sat at 2025-06-18, two revisions
+// behind, while its own comment said it stays current: hence
+// TestOffersCurrentHandshakeRevision, which fails if it drifts again.
+const latestStable = "2025-11-25"
 
 // negotiatedVersion reads the protocolVersion the server chose from its
 // initialize result body, falling back to latestStable if the server did not
