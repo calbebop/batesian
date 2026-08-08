@@ -66,11 +66,18 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	// Register a client with an off-origin redirect. We use a domain unrelated to
 	// the target's own origin so a server with a redirect allowlist rejects it.
 	registeredRedirect := fmt.Sprintf("https://batesian-%s-registered.invalid/cb", vars.RandID)
-	clientID, dcrEchoedRedirect := registerDCRClient(ctx, unauthClient, regEP, registeredRedirect, vars.RandID)
+	clientID, dcrEchoedRedirect, dcrResult := registerDCRClient(ctx, unauthClient, regEP, registeredRedirect, vars.RandID)
 	if clientID == "" {
-		// Registration was rejected or required auth: cannot drive the authorize
-		// probe, and an enforced-DCR server is correct behaviour. No finding.
-		return nil, nil
+		if dcrResult.redirectRefused {
+			// The allowlist refused our off-origin redirect. That is the mitigation
+			// this rule exists to look for, so a clean result is honest.
+			return nil, nil
+		}
+		// Registration could not be completed for an unrelated reason, so
+		// /authorize was never probed and its redirect validation is unknown.
+		return nil, fmt.Errorf("%w: dynamic client registration at %s issued no client_id (%s), "+
+			"so the authorize endpoint's redirect_uri validation was never probed",
+			attack.ErrInconclusive, regEP, dcrResult.detail)
 	}
 
 	// Authorize with a DIFFERENT, unregistered off-origin redirect.
@@ -144,21 +151,60 @@ func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, base
 }
 
 // registerDCRClient registers a client via DCR with the given redirect_uri and
-// returns the issued client_id plus whether the response echoed the off-origin
-// redirect back (i.e. DCR accepted an arbitrary external redirect target).
-func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI, randID string) (clientID string, echoedRedirect bool) {
+// returns the issued client_id, whether the response echoed the off-origin
+// redirect back (i.e. DCR accepted an arbitrary external redirect target), and
+// how the registration itself went.
+//
+// The outcome matters because a refused registration has two very different
+// meanings. A server that refuses to register an off-origin redirect_uri has
+// applied the very mitigation this rule is about: the confused-deputy chain needs
+// an attacker-controlled redirect registered, and the allowlist stopped it at step
+// one, so a clean result is honest. A server whose DCR requires an initial access
+// token (RFC 7591 section 3) and answers 401, or which fails for any unrelated
+// reason, has told us nothing about redirect validation, and reporting that clean
+// grades an endpoint the rule never reached.
+func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI, randID string) (clientID string, echoedRedirect bool, outcome dcrOutcome) {
 	resp, err := client.POST(ctx, registrationEndpoint, nil, map[string]interface{}{
 		"client_name":    "batesian-cd-" + randID,
 		"redirect_uris":  []string{redirectURI},
 		"grant_types":    []string{"authorization_code"},
 		"response_types": []string{"code"},
 	})
-	if err != nil || (resp.StatusCode != 200 && resp.StatusCode != 201) {
-		return "", false
+	if err != nil {
+		return "", false, dcrOutcome{unavailable: true, detail: "the registration request failed: " + err.Error()}
 	}
-	clientID = resp.JSONField("client_id")
-	echoedRedirect = strings.Contains(resp.BodyString(), redirectURI)
-	return clientID, echoedRedirect
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		clientID = resp.JSONField("client_id")
+		if clientID == "" {
+			return "", false, dcrOutcome{unavailable: true,
+				detail: fmt.Sprintf("registration returned HTTP %d with no client_id", resp.StatusCode)}
+		}
+		echoedRedirect = strings.Contains(resp.BodyString(), redirectURI)
+		return clientID, echoedRedirect, dcrOutcome{}
+	case http.StatusUnauthorized, http.StatusForbidden:
+		// DCR itself is credential-gated. Nothing about redirect policy follows.
+		return "", false, dcrOutcome{unavailable: true,
+			detail: fmt.Sprintf("registration requires credentials (HTTP %d)", resp.StatusCode)}
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		// A client-error rejection of the registration we sent. This is the
+		// allowlist doing its job, which is the mitigation, not an untested surface.
+		return "", false, dcrOutcome{redirectRefused: true}
+	default:
+		return "", false, dcrOutcome{unavailable: true,
+			detail: fmt.Sprintf("registration answered HTTP %d", resp.StatusCode)}
+	}
+}
+
+// dcrOutcome records why a registration produced no client_id.
+type dcrOutcome struct {
+	// redirectRefused: the server rejected the registration we sent, which for an
+	// off-origin redirect_uri is the mitigation this rule looks for.
+	redirectRefused bool
+	// unavailable: registration could not be completed for reasons unrelated to
+	// redirect policy, so the authorize endpoint was never probed.
+	unavailable bool
+	detail      string
 }
 
 // authorizeRedirectProbe issues a single authorization request with the given

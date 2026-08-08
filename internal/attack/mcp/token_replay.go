@@ -148,6 +148,14 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	// Since the OAuth metadata confirmed this is an OAuth-protected MCP server,
 	// we try all standard candidate paths rather than doing an unauthenticated
 	// discover probe (which would fail because the endpoint requires a token).
+	// anyEndpoint records that at least one candidate answered as something other
+	// than an unrouted path. Without it the rule reported clean when every candidate
+	// 404'd: the MCP handler may be mounted at /sse + /messages, or at /v1/mcp,
+	// while the OAuth metadata sits at the root, and then no forged token was ever
+	// examined yet the server was reported as rejecting alg:none and forged
+	// signatures. oauth_audience took this fix in #148 against the same candidate
+	// list and the same init body; this rule did not.
+	anyEndpoint := false
 	var findings []attack.Finding
 	for _, p := range probes {
 		headers := map[string]string{
@@ -158,6 +166,9 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			resp, err := client.POST(ctx, ep, headers, json.RawMessage(mcpInitBody))
 			if err != nil {
 				continue // Network error is not a finding.
+			}
+			if !endpointAbsent(resp) {
+				anyEndpoint = true
 			}
 			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
 			// carries a JSON-RPC error is a protocol-layer rejection of the
@@ -182,6 +193,11 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		}
 	}
 
+	if len(findings) == 0 && !anyEndpoint {
+		return nil, fmt.Errorf("%w: %s publishes OAuth metadata but no MCP endpoint answered at "+
+			"any candidate path, so no forged token was ever examined",
+			attack.ErrInconclusive, vars.BaseURL)
+	}
 	return findings, nil
 }
 

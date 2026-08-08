@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -107,6 +108,16 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 			}}, nil
 		}
 		return nil, nil
+	}
+
+	// A registration the server refused means the metadata URLs were never stored,
+	// so no fetch could follow and there is nothing to conclude. The external-OOB
+	// branch above already gates on 200/201; this one did not, so a DCR endpoint
+	// answering 401 or 400 produced a clean "no metadata-fetch SSRF" verdict.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("%w: the registration at %s was refused with HTTP %d, so the "+
+			"registrant-supplied metadata URLs were never stored and no fetch could occur",
+			attack.ErrInconclusive, registrationEndpoint, resp.StatusCode)
 	}
 
 	// Local OOB: wait for the server to fetch one of the seeded URLs.
