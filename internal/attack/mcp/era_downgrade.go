@@ -62,21 +62,31 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 	legacyOutcome := e.probeList(ctx, client, *legacy)
 	modernOutcome := e.probeList(ctx, client, *modern)
 	if legacyOutcome.method == "" || modernOutcome.method == "" {
-		// Neither wire advertised a listable capability, so there is nothing whose
-		// gating could be compared.
+		// A wire advertising nothing listable leaves nothing whose gating could be
+		// compared, and that is a genuine not-applicable.
 		return nil, nil
+	}
+	if !legacyOutcome.comparable() || !modernOutcome.comparable() {
+		// One wire did not answer: a transport failure, a bare 202, a 429, a 502.
+		// The comparison is unavailable, and calling the silent wire "refused" is
+		// how this rule fabricated a critical against a server gating nothing.
+		return nil, fmt.Errorf("%w: the %s wire answered %s with HTTP %d, which is "+
+			"neither a result nor a refusal, so the two wires' gating could not be compared",
+			attack.ErrInconclusive, undeterminedEra(legacyOutcome, modernOutcome),
+			undeterminedMethod(legacyOutcome, modernOutcome),
+			undeterminedStatus(legacyOutcome, modernOutcome))
 	}
 
 	// Both granted means the server gates nothing, which is
 	// mcp-resources-unauth-001 and mcp-tools-unauth-001 territory rather than a
 	// difference between wires. Both refused is the secure outcome. Either way
 	// there is no asymmetry to report.
-	if legacyOutcome.granted == modernOutcome.granted {
+	if legacyOutcome.granted() == modernOutcome.granted() {
 		return nil, nil
 	}
 
 	open, closed := legacyOutcome, modernOutcome
-	if modernOutcome.granted {
+	if modernOutcome.granted() {
 		open, closed = modernOutcome, legacyOutcome
 	}
 	return []attack.Finding{e.finding(*legacy, open, closed)}, nil
@@ -88,9 +98,18 @@ type listOutcome struct {
 	method string // "" when the wire advertised nothing listable
 	status int
 	body   string
-	// granted is true when the call was answered with a JSON-RPC result rather
-	// than refused, which for an unauthenticated probe means no gate stopped it.
-	granted bool
+	// verdict is what the probe established: granted, refused, or neither. It used
+	// to be a bool derived from IsAccepted, which made every non-answer a refusal.
+	verdict accessVerdict
+}
+
+// granted reports whether the wire answered the unauthenticated call.
+func (o listOutcome) granted() bool { return o.verdict == accessGranted }
+
+// comparable reports whether this outcome can take part in a wire comparison. An
+// undetermined probe cannot: it says nothing about authorization.
+func (o listOutcome) comparable() bool {
+	return o.method != "" && o.verdict != accessUndetermined
 }
 
 // probeList asks one wire for a listing, choosing a method that wire advertises.
@@ -119,16 +138,17 @@ func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTT
 	}
 
 	resp, err := session.post(ctx, client, 2, out.method, nil)
+	out.verdict = classifyAccess(resp, err)
 	if err != nil {
-		// A transport failure is not a refusal, and treating it as one would invent
-		// an asymmetry out of a dropped connection. Leaving method set with granted
-		// false would do exactly that, so the outcome is blanked.
-		out.method = ""
+		// A transport failure is not a refusal. The method stays set so the caller
+		// can distinguish "this wire did not answer" from "this wire advertised
+		// nothing listable"; comparable() excludes it from the comparison either way.
+		// Blanking the method conflated the two, and Execute then reported clean
+		// under a comment claiming neither wire advertised a listable capability.
 		return out
 	}
 	out.status = resp.StatusCode
 	out.body = resp.BodyString()
-	out.granted = resp.IsAccepted()
 	return out
 }
 
@@ -154,4 +174,26 @@ func (e *EraDowngradeExecutor) finding(session mcpSession, open, closed listOutc
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}
+}
+
+// undeterminedEra names the wire that did not answer, for the inconclusive reason.
+func undeterminedEra(legacy, modern listOutcome) Era {
+	if !legacy.comparable() {
+		return legacy.era
+	}
+	return modern.era
+}
+
+func undeterminedMethod(legacy, modern listOutcome) string {
+	if !legacy.comparable() {
+		return legacy.method
+	}
+	return modern.method
+}
+
+func undeterminedStatus(legacy, modern listOutcome) int {
+	if !legacy.comparable() {
+		return legacy.status
+	}
+	return modern.status
 }
