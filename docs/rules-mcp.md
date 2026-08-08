@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **19 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **20 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -122,6 +122,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-confused-deputy-001` | [OAuth Confused Deputy via redirect_uri](#mcp-confused-deputy-001) | High / Medium | confirmed / indicator | CWE-441 |
 | `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
 | `mcp-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#mcp-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
+| `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
 
 ---
 
@@ -599,3 +600,58 @@ Currency: JSON-RPC batching is normative in revisions 2024-11-05 and 2025-03-26
 and was removed in 2025-06-18, so a compliant current server rejects batches. The
 rule targets servers on the earlier revisions and any later server that still
 processes batches (non-compliant), where the bypass is exploitable.
+
+---
+
+### mcp-session-as-credential-001
+
+**MCP Session ID Accepted as a Credential** | Severity: High | CWE-287 / CWE-565
+
+Tests whether a server treats its own `Mcp-Session-Id` as proof of identity. The
+Security Best Practices are explicit: "MCP servers that implement authorization
+MUST verify all inbound requests. MCP Servers MUST NOT use sessions for
+authentication." A server that authenticates by session has turned a header into
+a bearer token, and one that is not scoped, rotated or revocable the way a token
+is, travels in plaintext on every request, and is logged by every proxy in the
+path. Anyone who reads one out of a log replays the authenticated session, which
+is the specification's own Session Hijack Impersonation flow.
+
+The rule needs one working credential (`--token` or a principal), because it asks
+whether a session id can stand in for one, which cannot be asked without a
+credential to compare against. Without one it reports **inconclusive**, not clean.
+
+1. Handshake **with** the credential and capture the server-minted session id. No
+   session id means the server is stateless and the rule does not apply.
+2. `tools/list` with the session id **and** the credential must succeed, or the
+   session is not usable and there is nothing to strip.
+3. Control: attempt an **anonymous** handshake, and if it yields a session, call
+   `tools/list` with that session and no credential. A server that answers it has
+   served a caller who never presented a credential, so it implements no
+   authorization, the requirement above does not bind on it, and the surface
+   belongs to `mcp-tools-unauth-001`. An open handshake alone proves nothing: many
+   servers leave `initialize` ungated and authorize what follows. If the anonymous
+   handshake is accepted but issues no session, the rule stops, since a refusal
+   below could then be about the missing session rather than the missing credential.
+4. Control: `tools/list` with **no session and no credential**. A server that
+   answers it is open on this surface, so a later success cannot be attributed to
+   the session id.
+5. Control: `tools/list` presenting a **random, never-issued** session id and no
+   credential. A server that accepts this treats the presence of the header as
+   authorization, so the issued id is not what decided it.
+6. `tools/list` presenting the **real** session id and no credential.
+
+A **confirmed** finding is raised only when step 6 is answered. Steps 5 and 6 are
+the same request differing in one detail, so the session id is provably the
+deciding factor rather than an inference. When step 3 produced an anonymous
+session, steps 3 and 6 form a second and stronger such pair: both ids were minted
+by this server, and the only difference is whether a credential was presented when
+they were opened. Step 3 is what separates a server that
+authenticates by session from one that merely requires a session and authenticates
+nothing: both refuse steps 4 and 5, for different reasons. The official C# SDK's
+stateful sample is the second kind, and was reported as vulnerable until that
+control was added.
+
+Currency: `Mcp-Session-Id` is normative in revisions 2025-03-26 through
+2025-11-25. The 2026-07-28 revision removes protocol-level sessions, so a server
+on that revision returns no session id and the rule reports itself not applicable
+at step 1.

@@ -32,6 +32,17 @@ against a server that genuinely exhibited the condition. A false negative in a
 security scanner is worse than a noisy one, and none of them were reachable from
 a self-authored fixture.
 
+The same exercise has also caught a false positive before it shipped.
+`mcp-session-as-credential-001` passed every posture in its own harness, then
+reported the official MCP C# SDK's stateful sample as vulnerable. That sample
+implements no authorization at all, but requires an `Mcp-Session-Id` on every
+non-initialize request, so it refused each of the rule's unauthenticated controls
+for session reasons rather than credential ones and the controls read those
+refusals as an enforced authorization boundary. The rule now settles the question
+with an anonymous handshake before drawing any conclusion, and
+`testdata/mcp_session_as_credential_server.py session-presence-auth` reproduces
+that server's shape so the regression stays covered.
+
 ---
 
 ## MCP: `@modelcontextprotocol/server-everything`

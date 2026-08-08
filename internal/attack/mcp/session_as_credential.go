@@ -1,0 +1,238 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/calbebop/batesian/internal/attack"
+)
+
+// SessionAsCredentialExecutor tests whether an MCP server accepts its own
+// Mcp-Session-Id as proof of identity (rule mcp-session-as-credential-001).
+//
+// The Security Best Practices are explicit, and the second sentence is what this
+// rule tests: "MCP servers that implement authorization MUST verify all inbound
+// requests. MCP Servers MUST NOT use sessions for authentication."
+//
+// Note the condition on the first sentence. The requirement binds on servers that
+// implement authorization, so the rule has to establish that the server enforces
+// authorization at all before it can accuse it of authenticating by session. That
+// is what the unauthenticated control does; without it, a server with no
+// authorization anywhere would be reported here instead of by
+// mcp-tools-unauth-001, which owns that failure.
+//
+// The oracle is a pair of requests that differ in one detail. Both carry no
+// credential. One presents a session id the server issued, the other a random id
+// it never issued. If the first is answered and the second refused, the session id
+// alone authorized the call. That is the exploit performed rather than inferred,
+// and it is the spec's own Session Hijack Impersonation flow: anyone who reads a
+// session id out of a proxy log replays the authenticated session.
+type SessionAsCredentialExecutor struct {
+	rule attack.RuleContext
+}
+
+func init() {
+	attack.Register("mcp-session-as-credential", func(rc attack.RuleContext) attack.Executor {
+		return NewSessionAsCredentialExecutor(rc)
+	})
+}
+
+func NewSessionAsCredentialExecutor(r attack.RuleContext) *SessionAsCredentialExecutor {
+	return &SessionAsCredentialExecutor{rule: r}
+}
+
+func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	// A credential is the premise: the rule asks whether a session id can stand in
+	// for one, which cannot be asked without a working credential to compare
+	// against. Reporting clean without one would claim the server was tested.
+	token := credentialFor(opts)
+	if token == "" {
+		return nil, fmt.Errorf("%w: this rule needs one working credential, to establish a session "+
+			"that a later request can then present without it; pass --token or a principal",
+			attack.ErrInconclusive)
+	}
+
+	vars := attack.NewVars(target, opts.OOBListenerURL)
+	// No ambient token: every request here states its own credentials, because the
+	// whole measurement is which requests carry one.
+	client := attack.NewUnauthHTTPClient(opts, vars)
+
+	authed := map[string]string{"Authorization": "Bearer " + token}
+
+	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		// Step 1: handshake with the credential and capture the session id.
+		session, ok := e.initialize(ctx, client, ep, authed)
+		if !ok {
+			return nil, false // not a reachable MCP endpoint
+		}
+		if session == "" {
+			// Stateless, or a 2026-07-28 server, which removed protocol-level
+			// sessions. There is no session id to misuse.
+			return nil, true
+		}
+
+		// Step 2: the session must actually work when presented with the credential,
+		// or there is nothing to strip.
+		if !e.toolsList(ctx, client, ep, session, authed) {
+			return nil, true
+		}
+
+		// Step 3: control. Does this server implement authorization at all? The
+		// requirement is conditional on that, so it has to be established rather than
+		// assumed.
+		//
+		// Measured against the official MCP C# SDK's stateful sample, which has no
+		// authorization: it demands a session id for every non-initialize request and
+		// answers one without it with -32000 "A new session can only be created by an
+		// initialize request". So a request lacking a session is refused for SESSION
+		// reasons, and the later controls cannot tell that apart from a refusal for
+		// missing credentials. Every one of them passed and the rule reported a
+		// false positive on a server that authenticates nothing.
+		//
+		// An anonymous handshake settles it, but the handshake alone does not: plenty
+		// of servers leave initialize ungated and authorize the calls that follow, and
+		// reading an open handshake as "no authorization" would suppress exactly the
+		// servers this rule exists to find. What answers the question is whether the
+		// session the anonymous caller was given can then call tools/list.
+		var anonSession string
+		if s, anonOK := e.initialize(ctx, client, ep, nil); anonOK {
+			anonSession = s
+			if anonSession == "" {
+				// It handshakes anonymously but issues this caller no session, so there
+				// is no anonymous session to compare against, and a refusal below cannot
+				// be attributed to the missing credential rather than the missing
+				// session. Report nothing rather than guess.
+				return nil, true
+			}
+			if e.toolsList(ctx, client, ep, anonSession, nil) {
+				// A caller who presented no credential at any point reads the tool list.
+				// The server implements no authorization, the MUST NOT above does not
+				// bind on it, and mcp-tools-unauth-001 owns that surface.
+				return nil, true
+			}
+			// The anonymous session was refused while the credentialed one was
+			// accepted, on the same call with the same headers. That is the asymmetry
+			// this rule reports, and it is stronger evidence than the never-issued-id
+			// control below: both ids were minted by this server, and the only
+			// difference between them is the credential presented when they were
+			// opened.
+		}
+
+		// Step 4: control. No session, no credential. A server that answers this is
+		// open on the surface under test, so a later success cannot be attributed to
+		// the session id.
+		if e.toolsList(ctx, client, ep, "", nil) {
+			return nil, true
+		}
+
+		// Step 5: control. A random never-issued session id, no credential. A server
+		// that accepts this treats the presence of the header as authorization, so the
+		// issued id was not what decided it.
+		bogus := "batesian-never-issued-" + vars.RandID
+		if e.toolsList(ctx, client, ep, bogus, nil) {
+			return nil, true
+		}
+
+		// Step 6: the real session id, no credential.
+		if !e.toolsList(ctx, client, ep, session, nil) {
+			return nil, true // the session carries no authority: secure
+		}
+
+		return []attack.Finding{e.finding(ep, session, bogus, anonSession)}, true
+	})
+}
+
+// credentialFor returns the credential to establish the session with, preferring
+// an explicit principal so a multi-principal scan behaves predictably.
+func credentialFor(opts attack.Options) string {
+	for _, p := range opts.Principals {
+		if p.Token != "" {
+			return p.Token
+		}
+	}
+	return opts.Token
+}
+
+// initialize performs the handshake and returns the session id the server minted,
+// which is empty when the server assigns none.
+func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *attack.HTTPClient,
+	endpoint string, headers map[string]string) (session string, ok bool) {
+	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": latestStable,
+			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+			"clientInfo":      map[string]interface{}{"name": "batesian", "version": attack.Version},
+		},
+	})
+	if err != nil || !resp.IsAccepted() {
+		return "", false
+	}
+	return resp.Headers.Get("Mcp-Session-Id"), true
+}
+
+// toolsList reports whether tools/list was answered with a result under the given
+// session id and headers. An empty session omits the header entirely.
+//
+// It requires a result envelope, not merely a 2xx: a server refusing the call with
+// a JSON-RPC error at HTTP 200 has refused it, and reading that as success is the
+// mistake that produced fabricated findings elsewhere in this package.
+func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *attack.HTTPClient,
+	endpoint, session string, headers map[string]string) bool {
+	h := map[string]string{"Mcp-Protocol-Version": latestStable}
+	for k, v := range headers {
+		h[k] = v
+	}
+	if session != "" {
+		h["Mcp-Session-Id"] = session
+	}
+	resp, err := client.POST(ctx, endpoint, h, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+		"params":  map[string]interface{}{},
+	})
+	if err != nil {
+		return false
+	}
+	return resp.IsAccepted()
+}
+
+func (e *SessionAsCredentialExecutor) finding(endpoint, session, bogus, anonSession string) attack.Finding {
+	// The anonymous-handshake control reads differently depending on how the server
+	// answered it, and both readings are evidence, so state which one happened
+	// rather than asserting a refusal that may not have been the one observed.
+	anonLine := "initialize with no credential: refused, so the handshake is gated\n"
+	if anonSession != "" {
+		anonLine = fmt.Sprintf("tools/list with a session issued to an ANONYMOUS handshake (%s) "+
+			"and no credential: refused\n", anonSession)
+	}
+	return attack.Finding{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "high",
+		Confidence: attack.ConfirmedExploit,
+		Title:      "MCP server accepts its session ID as a credential (session used for authentication)",
+		Description: fmt.Sprintf(
+			"tools/list at %s was answered for a request carrying no credential, on the strength of "+
+				"the Mcp-Session-Id the server itself issued. The same request presenting a session id "+
+				"the server never issued was refused, and an unauthenticated request with no session at "+
+				"all was refused, so authorization is enforced and the session id is what satisfied it. "+
+				"The Security Best Practices require that servers implementing authorization verify all "+
+				"inbound requests and state that servers MUST NOT use sessions for authentication. A "+
+				"session id is a plaintext header logged by every proxy in the path, so anyone who reads "+
+				"one replays the authenticated session.", endpoint),
+		Evidence: fmt.Sprintf(
+			"endpoint: %s\nsession id issued to the credentialed handshake: %s\n"+
+				"tools/list with session + credential: answered\n"+
+				"%s"+
+				"tools/list with no session and no credential: refused\n"+
+				"tools/list with a never-issued session id (%s) and no credential: refused\n"+
+				"tools/list with the issued session id and NO credential: answered",
+			endpoint, session, anonLine, bogus),
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+	}
+}
