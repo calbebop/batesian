@@ -482,3 +482,99 @@ func TestOAuthAudience_MethodNotAllowedIsNotARejection(t *testing.T) {
 		t.Errorf("want ErrInconclusive for a target answering 405 everywhere, got %v", err)
 	}
 }
+
+// audienceServerAdvertising is an audienceServer that also serves RFC 9728
+// resource metadata naming `advertised`, so a test can put the operator's
+// --audience-claim and the server's own audience in disagreement.
+func audienceServerAdvertising(t *testing.T, advertised string, acceptFn func(aud interface{}) bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"resource":              advertised,
+			"authorization_servers": []string{"https://issuer.acme.com"},
+		})
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if acceptFn(aud) {
+			initializeOK(w)
+			return
+		}
+		challenge401(w)
+	})
+	return httptest.NewServer(mux)
+}
+
+// Every probe is derived from the expected audience, and RFC 7519 compares the
+// claim exactly, so a --audience-claim that does not byte-match what the server
+// uses turns all four probes into plain mismatches. The server refuses them
+// whether or not its matching logic is sound, and reporting that as clean claims
+// coverage the scan does not have.
+//
+// This server has the substring bug and would be caught with the right value.
+// Hostname case is the whole difference, which is the realistic mistake: DNS is
+// case-insensitive, audience comparison is not.
+func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
+	const advertised = "https://API.acme.com/mcp"
+	srv := audienceServerAdvertising(t, advertised, func(aud interface{}) bool {
+		s, ok := aud.(string)
+		return ok && strings.Contains(s, advertised)
+	})
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience("https://api.acme.com/mcp"))
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings from probes built on the wrong audience, got %d", len(findings))
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	// The operator cannot act on this without both values.
+	for _, want := range []string{"https://api.acme.com/mcp", advertised} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("reason should name %q; got: %v", want, err)
+		}
+	}
+}
+
+// A disagreement is not a reason to withhold a finding the server demonstrated.
+// This one accepts any forged token, which the control probe catches regardless
+// of which audience the traps were built from.
+func TestOAuthAudience_ClaimDisagreesButFindingStillReported(t *testing.T) {
+	srv := audienceServerAdvertising(t, "https://API.acme.com/mcp", func(aud interface{}) bool {
+		return true // accepts every forged token, audience irrelevant
+	})
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience("https://api.acme.com/mcp"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected the finding to survive the disagreement, got %d", len(findings))
+	}
+}
+
+// The premise check must not turn a genuine clean result into not tested. Same
+// server, same advertised audience, and the operator passed exactly that value.
+func TestOAuthAudience_ClaimMatchesAdvertisedStaysClean(t *testing.T) {
+	const advertised = "https://API.acme.com/mcp"
+	srv := audienceServerAdvertising(t, advertised, func(aud interface{}) bool {
+		s, ok := aud.(string)
+		return ok && s == advertised // strict, exact, case-sensitive
+	})
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(advertised))
+	if err != nil {
+		t.Fatalf("expected a clean result, got %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings on a strict server, got %d", len(findings))
+	}
+}

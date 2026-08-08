@@ -19,18 +19,19 @@ Endpoint matrix:
                                   per RFC 7519 section 4.1.3.
 
 The expected audience advertised by every endpoint is
-`https://api.example.com/mcp` (also exposed at
-`/.well-known/oauth-protected-resource`) so a Batesian scan run with
-`--audience-claim https://api.example.com/mcp` (or no claim, relying on RFC
-9728 auto-discovery) exercises every probe.
+`https://API.example.com/mcp` (also exposed at
+`/.well-known/oauth-protected-resource`). THE CASE MATTERS: every probe is built
+from the expected value the scan is given, and RFC 7519 section 4.1.3 compares the
+aud claim exactly, so an all-lowercase spelling makes the substring and case-fold
+probes plain mismatches this server refuses. Either omit `--audience-claim` and let
+RFC 9728 discovery supply the advertised value, or pass it verbatim.
 
 Run:
     python testdata/mcp_oauth_audience_server.py
 
-Then scan with the rule:
-    batesian scan --target http://127.0.0.1:7785 \
-                  --rule-ids mcp-oauth-audience-002 \
-                  --audience-claim https://api.example.com/mcp -v
+Then scan one bug class at a time (the root correctly reports "not tested"):
+    batesian scan --target http://127.0.0.1:7785/vulnerable-substring/mcp \
+                  --rule-ids mcp-oauth-audience-002 -v
 
 This server is intentionally misconfigured. Do not run on a public network.
 """

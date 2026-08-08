@@ -155,6 +155,16 @@ or RFC 9728 auto-discovery). Without one, the outcome depends on whether anythin
 answered: an MCP server that advertises no metadata has no audience to check
 against, so that is a **clean** result, while a target where nothing answered the
 handshake is reported as **not tested**.
+
+Every probe is derived from that expected value, and RFC 7519 section 4.1.3
+compares the `aud` claim exactly, so a `--audience-claim` that does not byte-match
+what the server uses makes all four probes plain mismatches: the server refuses
+them whether or not its matching logic is sound. Before reporting clean on an
+operator-supplied value, the rule therefore checks it against the audience the
+server advertises and reports **not tested** when the two disagree, naming both.
+A finding is never withheld for a disagreement. Hostname case is the likeliest way
+to hit this, since DNS is case-insensitive and audience comparison is not.
+
 It submits a **negative control** plus three trap probes as forged HS256 JWTs:
 
 - `aud-control-unrelated` - isolates the audience logic from blanket signature

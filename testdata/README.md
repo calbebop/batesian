@@ -87,8 +87,15 @@ when it is not, so check them before concluding a rule has regressed:
   `mcp_oauth_metadata_ssrf_server.py`, `mcp_confused_deputy_server.py`) are
   scanned at the root, not at `/mcp`. `mcp_oauth_audience_server.py` is the
   opposite: each bug class lives at its own sub-path, so the target must name the
-  endpoint (`http://127.0.0.1:7785/vulnerable-substring/mcp` and so on), and it
-  takes `--audience-claim`. Scanning its root correctly reports "not tested".
+  endpoint (`http://127.0.0.1:7785/vulnerable-substring/mcp` and so on). Scanning
+  its root correctly reports "not tested".
+- **Audience case.** `mcp_oauth_audience_server.py` advertises
+  `https://API.example.com/mcp`, mixed case on purpose so the case-fold endpoint
+  has something to vary. Either omit `--audience-claim` and let RFC 9728 discovery
+  supply it, or pass that exact value. Passing an all-lowercase spelling used to
+  silently disable the substring and case-fold probes, because every probe is built
+  from the value given and RFC 7519 compares the claim exactly; the rule now
+  reports "not tested" and names both values instead.
 - **Postures.** Several fixtures need a non-default argument, listed above.
 
 **`mcp_modern_era_server.py` is the one server here that is not deliberately
