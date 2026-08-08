@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -299,5 +300,72 @@ func TestTaskIDOR_UnauthTaskList(t *testing.T) {
 	}
 	if findings[0].Severity != "critical" {
 		t.Errorf("want critical severity, got %q", findings[0].Severity)
+	}
+}
+
+// taskListServer serves an A2A card and answers the REST task-list paths with body.
+// Everything else is a JSON-RPC method-not-found, so the rule reaches the list probe.
+func taskListServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"name":"List Agent","description":"d","version":"1.0.0",`+
+				`"protocolVersion":"1.0","capabilities":{},"skills":[],`+
+				`"supportedInterfaces":[{"url":"http://`+r.Host+`/","protocolBinding":"JSONRPC","protocolVersion":"1.0"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/tasks" || r.URL.Path == "/v1/tasks" {
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`)
+	}))
+}
+
+// A server that scopes its task list correctly and returns nothing to an anonymous
+// caller has disclosed nothing. This reported "server-wide task disclosure" at
+// critical/confirmed, because the oracle matched the KEY NAME "tasks" in an empty
+// envelope.
+func TestTaskIDOR_EmptyTaskListIsNotDisclosure(t *testing.T) {
+	srv := taskListServer(t, `{"tasks":[],"totalSize":0}`)
+	defer srv.Close()
+
+	exec := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001", Severity: "high"})
+	findings, _ := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	for _, f := range findings {
+		if strings.Contains(f.Title, "tasks/list") {
+			t.Fatalf("an empty list is the secure answer, not a critical disclosure: %s\n%s",
+				f.Title, f.Evidence)
+		}
+	}
+}
+
+// The true positive must survive the fix: a list that really does hand another
+// caller's tasks to an anonymous request is the finding, and the count is evidence.
+func TestTaskIDOR_PopulatedTaskListIsDisclosure(t *testing.T) {
+	srv := taskListServer(t, `{"tasks":[{"id":"t1","contextId":"c1"},{"id":"t2","contextId":"c2"}],"totalSize":2}`)
+	defer srv.Close()
+
+	exec := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001", Severity: "high"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var found *attack.Finding
+	for i := range findings {
+		if strings.Contains(findings[i].Title, "tasks/list") {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected the unauthenticated task-list disclosure, got %d finding(s)", len(findings))
+	}
+	if found.Severity != "critical" || found.Confidence != attack.ConfirmedExploit {
+		t.Errorf("want critical/confirmed, got %s/%s", found.Severity, found.Confidence)
+	}
+	if !strings.Contains(found.Evidence, "tasks returned to an unauthenticated caller: 2") {
+		t.Errorf("evidence should count what was disclosed; got:\n%s", found.Evidence)
 	}
 }

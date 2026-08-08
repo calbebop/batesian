@@ -191,21 +191,30 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient *atta
 		if err == nil && listResp.StatusCode != 404 {
 			reached = true
 		}
-		if err == nil && listResp.IsSuccess() && listResp.ContainsAny(`"tasks"`, `"contextId"`, `"history"`) {
-			return []attack.Finding{{
-				RuleID:     e.rule.ID,
-				RuleName:   e.rule.Name,
-				Severity:   "critical",
-				Confidence: attack.ConfirmedExploit,
-				Title:      "A2A server exposes tasks/list without authentication - server-wide task disclosure",
-				Description: fmt.Sprintf(
-					"GET %s returned a list of tasks without authentication. This exposes all task "+
-						"IDs, context IDs, and potentially conversation history for every session on "+
-						"the server.", le),
-				Evidence:    fmt.Sprintf("HTTP %d from %s\n%s", listResp.StatusCode, le, snippet(listResp.Body, 400)),
-				Remediation: e.rule.Remediation,
-				TargetURL:   le,
-			}}, reached
+		// Count the tasks actually returned. The check here used to be
+		// ContainsAny(`"tasks"`, `"contextId"`, `"history"`) over the raw body, which
+		// are key names: a server that scopes its list correctly and answers an
+		// anonymous caller with {"tasks":[],"totalSize":0} matched, and this reported
+		// server-wide disclosure at critical/confirmed about a server that disclosed
+		// nothing. An empty list is the secure answer, not the finding.
+		if err == nil && listResp.IsSuccess() {
+			if n := countListedTasks(listResp.Body); n > 0 {
+				return []attack.Finding{{
+					RuleID:     e.rule.ID,
+					RuleName:   e.rule.Name,
+					Severity:   "critical",
+					Confidence: attack.ConfirmedExploit,
+					Title:      "A2A server exposes tasks/list without authentication - server-wide task disclosure",
+					Description: fmt.Sprintf(
+						"GET %s returned %d task(s) without authentication. This exposes task IDs, "+
+							"context IDs, and potentially conversation history for sessions the caller "+
+							"has no claim to.", le, n),
+					Evidence: fmt.Sprintf("HTTP %d from %s\ntasks returned to an unauthenticated caller: %d\n%s",
+						listResp.StatusCode, le, n, snippet(listResp.Body, 400)),
+					Remediation: e.rule.Remediation,
+					TargetURL:   le,
+				}}, reached
+			}
 		}
 	}
 	return nil, reached
