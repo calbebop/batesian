@@ -71,8 +71,9 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 
 	// Build a registration whose URL metadata fields all target the OOB listener,
 	// each with a field-specific marker path.
+	clientName := "batesian-ssrf-" + vars.RandID
 	body := map[string]interface{}{
-		"client_name":    "batesian-ssrf-" + vars.RandID,
+		"client_name":    clientName,
 		"redirect_uris":  []string{"https://batesian.invalid/callback"},
 		"grant_types":    []string{"authorization_code"},
 		"response_types": []string{"code"},
@@ -121,7 +122,12 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	}
 
 	// Local OOB: wait for the server to fetch one of the seeded URLs.
+	//
+	// The registration IS the payload here, so the client cannot be removed until the
+	// wait is over: deleting it first could cancel the very fetch this rule is
+	// listening for, trading a real finding for a tidier target.
 	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "batesian-"+vars.RandID)
+	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, resp)
 	if !received {
 		return nil, nil
 	}
@@ -136,8 +142,8 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 			"URL (field %q) during dynamic client registration. A registrant can point this field at internal "+
 			"services, cloud metadata endpoints, or other private resources, so the OAuth discovery chain is an SSRF "+
 			"vector.", registrationEndpoint, field),
-		Evidence: fmt.Sprintf("Registration endpoint: %s\nOOB callback: %s %s\nFetched field: %s",
-			registrationEndpoint, cb.Method, cb.URL, field),
+		Evidence: fmt.Sprintf("Registration endpoint: %s\nOOB callback: %s %s\nFetched field: %s\n%s",
+			registrationEndpoint, cb.Method, cb.URL, field, cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
 	}}, nil

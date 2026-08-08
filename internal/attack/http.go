@@ -263,6 +263,14 @@ func (c *HTTPClient) OPTIONS(ctx context.Context, urlTpl string, headers map[str
 	return c.do(ctx, http.MethodOptions, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
 }
 
+// DELETE sends a DELETE request. The OAuth rules use it to remove the client
+// registrations they create (RFC 7592), so a scan does not leave them on the target.
+// It runs through the same transport as every other verb, so a dry run records it and
+// sends nothing.
+func (c *HTTPClient) DELETE(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
+	return c.do(ctx, http.MethodDelete, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
+}
+
 // POST sends a POST request with a JSON body. body may be a map or struct.
 func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
 	jsonBytes, err := marshalBody(body, c.vars)

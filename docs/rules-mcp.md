@@ -83,6 +83,25 @@ settled with a single `initialize` per candidate, on the bail path only, and a
 2026-07-28 server is reported as speaking an unsupported protocol version rather
 than as unreachable.
 
+### Client registrations are cleaned up
+
+Three of them register an OAuth client, because what DCR accepts cannot be tested
+without asking it to accept something: `mcp-confused-deputy-001` registers one whose
+`redirect_uri` points off-origin, `mcp-oauth-dcr-001` one requesting privileged
+scopes, and `mcp-oauth-metadata-ssrf-001` one whose metadata URLs point at the scan's
+OOB listener. All three delete the client afterwards via RFC 7592 client management,
+authenticated with the `registration_access_token` the server itself issued.
+
+Cleanup is best effort and never changes a verdict. A server that returns no
+`registration_client_uri`, no `registration_access_token`, or refuses the delete keeps
+the client, and the finding's evidence says so and names it: every client is prefixed
+`batesian-`, so leftovers are findable. A `registration_client_uri` on a different
+host is reported rather than followed, for the same reason the operator's token is
+never sent off-host.
+
+The SSRF rule deletes only after its OOB wait, because there the registration *is* the
+payload and removing the client first could cancel the fetch being listened for.
+
 ## Both protocol wires
 
 A server built on the current SDKs answers **both** the handshake-based revisions

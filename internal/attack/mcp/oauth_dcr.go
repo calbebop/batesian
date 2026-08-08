@@ -69,8 +69,9 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Step 2: Unauthenticated registration requesting admin/write scopes.
 	escalatedScope := "tools:read tools:write resources:write prompts:write admin superuser"
+	clientName := "batesian-probe-" + vars.RandID + "-esc"
 	escalatedResp, err := unauthClient.POST(ctx, registrationEndpoint, nil, map[string]interface{}{
-		"client_name":    "batesian-probe-" + vars.RandID + "-esc",
+		"client_name":    clientName,
 		"redirect_uris":  []string{"https://batesian.invalid/callback"},
 		"grant_types":    []string{"authorization_code"},
 		"response_types": []string{"code"},
@@ -79,6 +80,12 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	if err != nil {
 		return nil, fmt.Errorf("DCR registration request failed: %w", err)
 	}
+
+	// This rule reads everything it needs out of the registration response, so the
+	// client it just created can go straight away. Leaving it there would leave an
+	// anonymously registered client holding whatever privileged scopes the server was
+	// willing to grant, which is the very thing being reported.
+	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, escalatedResp)
 
 	// Step 3: Fire only when registration succeeded AND the server registered a
 	// privileged scope. A rejected registration (auth required / scope policy)
@@ -105,7 +112,9 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 			"actually issued depends on the grant/consent step, so manually verify whether the authorization "+
 			"server issues a token with these scopes to the anonymous client.",
 			registrationEndpoint, granted),
-		Evidence:    fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\n%s", escalatedScope, grantedScope, granted, escalatedResp.StatusCode, registrationEndpoint, snippetMCP(escalatedResp.Body)),
+		Evidence: fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\n%s\n%s",
+			escalatedScope, grantedScope, granted, escalatedResp.StatusCode, registrationEndpoint,
+			snippetMCP(escalatedResp.Body), cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
 	}}, nil

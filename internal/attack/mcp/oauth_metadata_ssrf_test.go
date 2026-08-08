@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,9 +24,24 @@ func omRuleCtx() attack.RuleContext {
 //   - "fetch":   fetches the registrant-supplied jwks_uri (vulnerable SSRF)
 //   - "nofetch": stores metadata without fetching (safe)
 //   - "no-oauth": serves no authorization-server metadata
-func metadataSSRFServer(mode string) *httptest.Server {
+//   - "fetch-managed": as "fetch", and implements RFC 7592 client management
+//
+// deleted, when non-nil, receives each client_id the server deregisters.
+func metadataSSRFServerManaged(mode string, deleted *[]string) *httptest.Server {
 	mux := http.NewServeMux()
 	ts := httptest.NewServer(mux)
+	if mode == "fetch-managed" {
+		mux.HandleFunc("/register/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if deleted != nil {
+				*deleted = append(*deleted, r.URL.Path)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
 
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		if mode == "no-oauth" {
@@ -44,7 +60,7 @@ func metadataSSRFServer(mode string) *httptest.Server {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 
-		if mode == "fetch" {
+		if mode == "fetch" || mode == "fetch-managed" {
 			if u, _ := body["jwks_uri"].(string); u != "" {
 				// VULNERABLE: fetch the registrant-supplied URL server-side.
 				c := &http.Client{Timeout: 3 * time.Second}
@@ -55,12 +71,23 @@ func metadataSSRFServer(mode string) *httptest.Server {
 				}
 			}
 		}
+		out := map[string]interface{}{"client_id": "c-123", "client_name": body["client_name"]}
+		if mode == "fetch-managed" {
+			out["registration_client_uri"] = ts.URL + "/register/c-123"
+			out["registration_access_token"] = "rat-c-123"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"client_id": "c-123", "client_name": body["client_name"]})
+		_ = json.NewEncoder(w).Encode(out)
 	})
 
 	return ts
+}
+
+// metadataSSRFServer keeps the original signature for the tests that do not care
+// about client management.
+func metadataSSRFServer(mode string) *httptest.Server {
+	return metadataSSRFServerManaged(mode, nil)
 }
 
 func runMetadataSSRF(t *testing.T, ts *httptest.Server) []attack.Finding {
@@ -116,5 +143,26 @@ func TestMetadataSSRF_NothingReachableIsNotTested(t *testing.T) {
 		Execute(context.Background(), ts.URL, testOpts())
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive when nothing answered, got err=%v", err)
+	}
+}
+
+// This rule's payload IS the registration, so the client cannot be removed until the
+// OOB wait is over: deleting it first risks cancelling the very fetch being listened
+// for. Both halves are asserted here, because getting the order wrong would trade a
+// real finding for a tidier target and the finding is the point.
+func TestMetadataSSRF_ClientRemovedWithoutLosingTheFinding(t *testing.T) {
+	var deleted []string
+	ts := metadataSSRFServerManaged("fetch-managed", &deleted)
+	defer ts.Close()
+
+	findings := runMetadataSSRF(t, ts)
+	if len(findings) != 1 {
+		t.Fatalf("cleanup must not cost the finding, got %d: %+v", len(findings), findings)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected the registered client to be deleted once, saw %d: %v", len(deleted), deleted)
+	}
+	if !strings.Contains(findings[0].Evidence, "deleted afterwards via RFC 7592") {
+		t.Errorf("the finding should record the cleanup; got:\n%s", findings[0].Evidence)
 	}
 }
