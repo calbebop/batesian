@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
@@ -75,5 +76,55 @@ func TestPrintScanSummary_CleanWhenAllRan(t *testing.T) {
 	})
 	if !strings.Contains(buf.String(), "appears clean") {
 		t.Errorf("expected 'appears clean' when rules ran with no findings, got:\n%s", buf.String())
+	}
+}
+
+// A finding whose severity is not one of the recognized values used to be counted
+// in the header and then never printed: the loop iterated a hardcoded list and
+// skipped every other key. Rule YAML can no longer express one, but an executor
+// sets its finding's severity as a plain string, so the report must not rely on
+// that being correct.
+func TestPrintScanSummary_UnknownSeverityIsStillPrinted(t *testing.T) {
+	var buf bytes.Buffer
+	report.New(&buf, false).PrintScanSummary([]engine.RunResult{
+		{Rule: &rules.Rule{ID: "custom-001"}, Findings: []attackpkg.Finding{
+			{RuleID: "custom-001", Severity: "Critical", Title: "typo-cased severity"},
+			{RuleID: "custom-001", Severity: "sev1", Title: "wholly unknown severity"},
+		}},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "typo-cased severity") {
+		t.Errorf("a severity differing only in case must still print:\n%s", out)
+	}
+	if !strings.Contains(out, "wholly unknown severity") {
+		t.Errorf("an unrecognized severity must still print rather than vanish:\n%s", out)
+	}
+	// And it must not be relabelled as the least severe.
+	if strings.Contains(out, "INFO") {
+		t.Errorf("an unplaceable severity must not be shown as INFO:\n%s", out)
+	}
+}
+
+// Two severities that fold to the same canonical value must print in a stable
+// order. Grouping walks a map, and map order is randomized, which is what made
+// scans undiffable in the host-injection rule.
+func TestPrintScanSummary_GroupingIsDeterministic(t *testing.T) {
+	build := func() string {
+		var buf bytes.Buffer
+		report.New(&buf, false).PrintScanSummary([]engine.RunResult{
+			{Rule: &rules.Rule{ID: "r"}, Findings: []attackpkg.Finding{
+				{RuleID: "r", Severity: "high", Title: "lower-high"},
+				{RuleID: "r", Severity: "High", Title: "upper-high"},
+				{RuleID: "r", Severity: "zzz", Title: "unknown-one"},
+				{RuleID: "r", Severity: "aaa", Title: "unknown-two"},
+			}},
+		})
+		return buf.String()
+	}
+	first := build()
+	for i := 0; i < 40; i++ {
+		if got := build(); got != first {
+			t.Fatalf("output differed between runs (iteration %d); grouping is not deterministic", i)
+		}
 	}
 }

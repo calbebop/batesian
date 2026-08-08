@@ -1,6 +1,12 @@
 // Package rules loads, validates, and provides attack rules from YAML files.
 package rules
 
+import (
+	"fmt"
+
+	"github.com/calbebop/batesian/internal/severity"
+)
+
 // Rule is the catalog entry for a Batesian attack. Rules live in rules/a2a/ or
 // rules/mcp/ as YAML files and carry metadata only: the executor logic lives in
 // Go (internal/attack/...), and attack.Type is the key that binds a rule to its
@@ -46,8 +52,15 @@ func (r *Rule) Validate() error {
 	if r.Info.Name == "" {
 		errs = append(errs, "missing info.name")
 	}
+	// An unrecognized severity has to fail here. Downstream, findings are grouped
+	// by severity against a fixed set, so a value outside it was counted in the
+	// report header and then never printed. Failing at load names the rule and the
+	// bad value instead of losing its findings silently at output time.
 	if r.Info.Severity == "" {
 		errs = append(errs, "missing info.severity")
+	} else if !severity.Valid(r.Info.Severity) {
+		errs = append(errs, fmt.Sprintf("info.severity %q is not a severity (want one of: %s)",
+			r.Info.Severity, severity.List()))
 	}
 	if r.Attack.Protocol == "" {
 		errs = append(errs, "missing attack.protocol")
@@ -61,21 +74,10 @@ func (r *Rule) Validate() error {
 	return nil
 }
 
-// SeverityRank returns a numeric rank for sorting (higher = more severe).
-func (r *Rule) SeverityRank() int {
-	switch r.Info.Severity {
-	case "critical":
-		return 4
-	case "high":
-		return 3
-	case "medium":
-		return 2
-	case "low":
-		return 1
-	default:
-		return 0
-	}
-}
+// SeverityRank was a fifth independent copy of the severity ordering, keyed on the
+// raw string so it disagreed with the engine's rank on case, and it had no callers
+// at all. Removed rather than rewired: internal/severity.Rank is the one ranking
+// function, and a duplicate with no consumers is how these drift apart.
 
 // ValidationError is returned when a rule fails validation.
 type ValidationError struct {

@@ -8,6 +8,7 @@ import (
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
+	"github.com/calbebop/batesian/internal/severity"
 )
 
 // SARIF v2.1.0 output for SARIF consumers (DAST viewers, dashboards) and CI.
@@ -198,7 +199,10 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 //	warning -> Medium
 //	note    -> Low/Info
 func severityLevel(sev string) string {
-	switch sev {
+	// Canonicalize first. This switch compared the raw string, so a severity that
+	// differed only in case was demoted to "note" here while the engine ranked it
+	// as the worst severity there.
+	switch severity.Canonical(sev) {
 	case "critical", "high":
 		return "error"
 	case "medium":
@@ -208,19 +212,10 @@ func severityLevel(sev string) string {
 	}
 }
 
-// severityScore maps severity to a CVSS-like numeric string for GitHub's security-severity tag.
-// GitHub uses this to categorize findings as Critical/High/Medium/Low.
-func severityScore(sev string) string {
-	switch sev {
-	case "critical":
-		return "9.5"
-	case "high":
-		return "7.5"
-	case "medium":
-		return "5.0"
-	case "low":
-		return "3.0"
-	default:
-		return "1.0"
-	}
-}
+// severityScore maps severity to a CVSS-like numeric string for GitHub's
+// security-severity tag, which GitHub uses to categorize findings.
+//
+// It defers to internal/severity. This copy compared the raw string while the
+// engine's rank lowercased first, so a severity that differed only in case scored
+// as the least severe here and ranked as the worst there.
+func severityScore(sev string) string { return severity.SARIFScore(sev) }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/severity"
 )
 
 // vulnClass maps a rule ID to a coalescing class. Two rules in the SAME class
@@ -128,17 +129,8 @@ func confidenceLabel(c attackpkg.Confidence) string {
 	return string(c)
 }
 
-func severityRank(s string) int {
-	switch strings.ToLower(s) {
-	case "critical":
-		return 4
-	case "high":
-		return 3
-	case "medium":
-		return 2
-	case "low":
-		return 1
-	default:
-		return 0
-	}
-}
+// severityRank defers to internal/severity so ranking, SARIF scoring and the
+// report's grouping order cannot disagree. This copy lowercased its input while
+// the SARIF copy did not, so "Critical" ranked as the worst severity here and as
+// the least severe there.
+func severityRank(s string) int { return severity.Rank(s) }
