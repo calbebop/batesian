@@ -15,13 +15,16 @@ import (
 
 const (
 	legacyVer = "2024-11-05"
-	modernVer = "2025-06-18"
 )
 
 // versionAwareServer models a server that tracks each session's negotiated
 // protocol version and enforces authorization on resources/list per version.
 // legacyAllows/modernAllows control whether resources/list is granted for a
 // session that initialized with the legacy/modern version respectively.
+// versionAwareServer gates resources/list on the protocol version the session
+// negotiated. Any version other than the pre-auth revision counts as modern, rather
+// than one hardcoded string: pinning the version the rule offers made a fully-open
+// server look like a critical downgrade bypass the moment that version was updated.
 func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
@@ -59,7 +62,7 @@ func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool) *httptest
 			mu.Lock()
 			version := sessions[r.Header.Get("Mcp-Session-Id")]
 			mu.Unlock()
-			allow := (version == legacyVer && legacyAllows) || (version == modernVer && modernAllows)
+			allow := (version == legacyVer && legacyAllows) || (version != legacyVer && modernAllows)
 			if !allow {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
@@ -145,7 +148,7 @@ func tokenGatedDowngradeServer(t *testing.T, validToken string) *httptest.Server
 			mu.Unlock()
 			hasValidToken := r.Header.Get("Authorization") == "Bearer "+validToken
 			// Legacy path skips auth (the bug); modern path requires the token.
-			allow := version == legacyVer || (version == modernVer && hasValidToken)
+			allow := version == legacyVer || hasValidToken
 			if !allow {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
@@ -252,4 +255,63 @@ func TestInitDowngrade_NotMCPServer(t *testing.T) {
 
 	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
 	assertInconclusive(t, exec, srv.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+// An OLD server: it supports the pre-auth revision and nothing newer, and it enforces
+// no authorization at all. Offering a current revision means the modern probe is
+// refused at initialize while the legacy one succeeds, which is the exact shape of a
+// downgrade bypass without being one.
+//
+// This matters more the further the offered version moves ahead: every server that
+// predates it answers this way. The rule is safe because it requires the modern
+// handshake to SUCCEED before comparing the two paths, and this pins that.
+func TestInitDowngrade_OldServerRejectingModernIsNotABypass(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		params, _ := req["params"].(map[string]interface{})
+		version, _ := params["protocolVersion"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case "initialize":
+			if version != legacyVer {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req["id"],
+					"error": map[string]interface{}{"code": -32602, "message": "Unsupported protocol version"},
+				})
+				return
+			}
+			w.Header().Set("Mcp-Session-Id", "s1")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"protocolVersion": legacyVer,
+					"serverInfo":      map[string]interface{}{"name": "old", "version": "1"},
+					"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+				},
+			})
+		case "resources/list":
+			// Wide open, which is what makes this a false-positive risk rather than a
+			// missed finding: the legacy path returns data.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"resources": []interface{}{
+					map[string]interface{}{"uri": "file:///x", "name": "x"}}},
+			})
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("a server that simply does not support the offered revision is not a "+
+			"downgrade bypass; got %d finding(s): %v", len(findings), findings)
+	}
 }

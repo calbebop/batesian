@@ -41,8 +41,14 @@ func NewInitDowngradeExecutor(r attack.RuleContext) *InitDowngradeExecutor {
 }
 
 // legacyVersion is the pre-OAuth MCP spec version published before authorization
-// was mandated. modernVersion is the version that introduced the authorization
-// spec, used as the auth-enforcing baseline.
+// was mandated. modernVersion is the auth-enforcing baseline it is compared
+// against: the current handshake revision, which specifies authorization.
+//
+// It tracks latestStable rather than naming a revision, because what the oracle
+// needs is a version that mandates authorization AND that a current server will
+// accept, and those are the same thing. The comment here used to call it "the
+// version that introduced the authorization spec", which it was not: authorization
+// arrived before the revision this then pointed at.
 const (
 	legacyVersion = "2024-11-05"
 	modernVersion = latestStable

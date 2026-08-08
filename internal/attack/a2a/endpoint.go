@@ -161,7 +161,7 @@ func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, b
 	// The challenge itself carries the pointer, which is how the C# sample answers.
 	resp, err := client.POST(ctx, endpoint, nil, map[string]interface{}{
 		"jsonrpc": "2.0", "id": "batesian-a2a-mcp-check", "method": "initialize",
-		"params": map[string]interface{}{"protocolVersion": "2025-06-18",
+		"params": map[string]interface{}{"protocolVersion": mcpProbeVersion,
 			"capabilities": map[string]interface{}{},
 			"clientInfo":   map[string]interface{}{"name": "batesian", "version": attack.Version}},
 	})
@@ -355,7 +355,7 @@ func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoi
 		"id":      "batesian-a2a-discovery-mcp",
 		"method":  "initialize",
 		"params": map[string]interface{}{
-			"protocolVersion": "2025-06-18",
+			"protocolVersion": mcpProbeVersion,
 			"capabilities":    map[string]interface{}{},
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": attack.Version},
 		},
@@ -365,6 +365,15 @@ func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoi
 	}
 	return resp.ContainsAny(`"protocolVersion"`)
 }
+
+// mcpProbeVersion is the MCP revision these probes offer when asking whether a
+// candidate is an MCP server rather than an A2A agent. It mirrors the mcp package's
+// latestStable, duplicated because that constant is unexported and this is a
+// different package. A stale value is less harmful here than there, since
+// answersMCPInitialize counts a version rejection as proof the endpoint speaks MCP,
+// but offering the current handshake revision keeps the two probes saying the same
+// thing about the same server.
+const mcpProbeVersion = "2025-11-25"
 
 // jsonRPCErrorMessage extracts the message from a JSON-RPC error envelope, or ""
 // when there is none. A2A defines no numeric auth code, so the message is what
