@@ -13,6 +13,8 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 >
 > **Secrets and TLS.** Prefer `BATESIAN_TOKEN` or your secret manager over embedding long-lived bearer material in shared terminals, config repos, or CI logs. Use `--skip-tls` only when you must hit a host with intentionally broken TLS, such as a local lab on self-signed certificates.
 >
+> **State on the target.** Three OAuth rules register a client on the authorization server, because that is the only way to test what dynamic client registration will accept. Each one deletes its client afterwards via RFC 7592 client management. A server that does not implement that protocol keeps the registration: the scan says so in the finding's evidence and names the client, which is always prefixed `batesian-`, so leftovers can be found and removed. Nothing else a scan does persists.
+>
 > **Artifacts.** JSON and SARIF can contain URLs, snippets, and evidence. Treat exports the same way you treat other sensitive scanner output in shared pipelines.
 >
 > **Custom rules.** `--rules-dir` loads YAML from disk. Treat rule packs as untrusted input: they define what gets sent to the target.

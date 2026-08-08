@@ -66,7 +66,23 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	// Register a client with an off-origin redirect. We use a domain unrelated to
 	// the target's own origin so a server with a redirect allowlist rejects it.
 	registeredRedirect := fmt.Sprintf("https://batesian-%s-registered.invalid/cb", vars.RandID)
-	clientID, dcrEchoedRedirect, dcrResult := registerDCRClient(ctx, unauthClient, regEP, registeredRedirect, vars.RandID)
+	clientName := "batesian-cd-" + vars.RandID
+	clientID, dcrEchoedRedirect, dcrResult, regResp := registerDCRClient(ctx, unauthClient, regEP, registeredRedirect, vars.RandID)
+
+	// Remove the client this probe created, whatever the outcome below. The deferred
+	// call is the guarantee; cleanup runs before the findings are built so its result
+	// can be reported in their evidence, and the flag keeps the two from duplicating.
+	var cleanup dcrCleanup
+	cleanedUp := false
+	removeClient := func() {
+		if cleanedUp || clientID == "" {
+			return
+		}
+		cleanup = deregisterDCRClient(ctx, unauthClient, regEP, clientName, regResp)
+		cleanedUp = true
+	}
+	defer removeClient()
+
 	if clientID == "" {
 		if dcrResult.redirectRefused {
 			// The allowlist refused our off-origin redirect. That is the mitigation
@@ -85,6 +101,10 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	attackerRedirect := "https://" + attackerHost + "/cb"
 	loc, status := authorizeRedirectProbe(ctx, opts, authEP, clientID, attackerRedirect, vars.RandID)
 
+	// The client_id has served its purpose, so remove the registration before
+	// reporting, which is what lets the report say whether anything was left behind.
+	removeClient()
+
 	if redirectsToHost(status, loc, attackerHost) {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
@@ -101,8 +121,8 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 				"takeover primitive.",
 			Evidence: fmt.Sprintf(
 				"authorization_endpoint: %s\nregistered redirect_uri: %s\nunregistered redirect_uri sent: %s\n"+
-					"server response: HTTP %d, Location: %s",
-				authEP, registeredRedirect, attackerRedirect, status, loc),
+					"server response: HTTP %d, Location: %s\n%s",
+				authEP, registeredRedirect, attackerRedirect, status, loc, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   authEP,
 		}}, nil
@@ -122,8 +142,9 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 				"disproven. Manually verify that the proxy stores per-client consent and does not skip the " +
 				"upstream consent screen for the static client_id.",
 			Evidence: fmt.Sprintf(
-				"registration_endpoint: %s\naccepted off-origin redirect_uri: %s\nauthorize probe: HTTP %d, Location: %s",
-				regEP, registeredRedirect, status, loc),
+				"registration_endpoint: %s\naccepted off-origin redirect_uri: %s\nauthorize probe: HTTP %d, "+
+					"Location: %s\n%s",
+				regEP, registeredRedirect, status, loc, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   regEP,
 		}}, nil
@@ -163,7 +184,13 @@ func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, base
 // token (RFC 7591 section 3) and answers 401, or which fails for any unrelated
 // reason, has told us nothing about redirect validation, and reporting that clean
 // grades an endpoint the rule never reached.
-func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI, randID string) (clientID string, echoedRedirect bool, outcome dcrOutcome) {
+//
+// The registration response is returned as well, so the caller can deregister the
+// client it just created once the client_id has served its purpose. See
+// deregisterDCRClient: a scan that registers a client with an attacker-shaped
+// redirect_uri and leaves it there has changed the target and not changed it back.
+func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI,
+	randID string) (clientID string, echoedRedirect bool, outcome dcrOutcome, reg *attack.Response) {
 	resp, err := client.POST(ctx, registrationEndpoint, nil, map[string]interface{}{
 		"client_name":    "batesian-cd-" + randID,
 		"redirect_uris":  []string{redirectURI},
@@ -171,28 +198,28 @@ func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrat
 		"response_types": []string{"code"},
 	})
 	if err != nil {
-		return "", false, dcrOutcome{unavailable: true, detail: "the registration request failed: " + err.Error()}
+		return "", false, dcrOutcome{unavailable: true, detail: "the registration request failed: " + err.Error()}, nil
 	}
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		clientID = resp.JSONField("client_id")
 		if clientID == "" {
 			return "", false, dcrOutcome{unavailable: true,
-				detail: fmt.Sprintf("registration returned HTTP %d with no client_id", resp.StatusCode)}
+				detail: fmt.Sprintf("registration returned HTTP %d with no client_id", resp.StatusCode)}, resp
 		}
 		echoedRedirect = strings.Contains(resp.BodyString(), redirectURI)
-		return clientID, echoedRedirect, dcrOutcome{}
+		return clientID, echoedRedirect, dcrOutcome{}, resp
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// DCR itself is credential-gated. Nothing about redirect policy follows.
 		return "", false, dcrOutcome{unavailable: true,
-			detail: fmt.Sprintf("registration requires credentials (HTTP %d)", resp.StatusCode)}
+			detail: fmt.Sprintf("registration requires credentials (HTTP %d)", resp.StatusCode)}, resp
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		// A client-error rejection of the registration we sent. This is the
 		// allowlist doing its job, which is the mitigation, not an untested surface.
-		return "", false, dcrOutcome{redirectRefused: true}
+		return "", false, dcrOutcome{redirectRefused: true}, resp
 	default:
 		return "", false, dcrOutcome{unavailable: true,
-			detail: fmt.Sprintf("registration answered HTTP %d", resp.StatusCode)}
+			detail: fmt.Sprintf("registration answered HTTP %d", resp.StatusCode)}, resp
 	}
 }
 

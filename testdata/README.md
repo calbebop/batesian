@@ -52,7 +52,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `a2a_secured_agent.py` | 3111 | negative control, two postures: NO rule may fire on `secured`; `a2a-multitenant-isolation-001`, `a2a-delegation-integrity-001`, `a2a-task-cancel-idor-001` and `a2a-push-binding-001` must all fire on `idor` (needs `--token tok-a` and two principals, see below) |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
-| `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
+| `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` (two postures, see below; tracks registrations at `/__clients`) |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
 | `mcp_new_rules_server.py` | 3100 | `mcp-prompt-unauth-001`, `mcp-tools-unauth-001`; `mcp-init-downgrade-001` needs the `downgrade` posture, see below |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
@@ -206,6 +206,21 @@ as "the modern wire is served", which turned that server's `400 Bad Request:
 protocol version "2026-07-28" is only supported on stateless HTTP servers` into
 the refused half of an authorization asymmetry and produced a critical
 `mcp-era-downgrade-001` finding against a target with no authorization at all.
+
+**`mcp_oauth_dcr_server.py` takes a posture argument**, defaulting to `managed`, and
+the two differ only in whether the server implements RFC 7592 client management:
+
+```sh
+python testdata/mcp_oauth_dcr_server.py managed    # the scan must leave 0 clients behind
+python testdata/mcp_oauth_dcr_server.py unmanaged  # the scan cannot clean up, and must say so
+```
+
+Testing what dynamic client registration accepts means asking it to accept something,
+so three rules necessarily create a client here: `mcp-oauth-dcr-001`,
+`mcp-confused-deputy-001` and `mcp-oauth-metadata-ssrf-001`. `GET /__clients` reports
+what is still registered, which is a validation helper and no part of any OAuth spec.
+Measured across the two postures: `managed` ends with `{"count":0}`, `unmanaged` ends
+with three `batesian-*` clients and three findings that say so in their evidence.
 
 **`a2a_secured_agent.py` is the only fixture here that ENFORCES AUTHORIZATION**, and
 it is a negative control rather than a target. Every other A2A fixture enforces
