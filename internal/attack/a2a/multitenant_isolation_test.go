@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -169,11 +170,14 @@ func TestMultiTenant_RequiresTwoPrincipals(t *testing.T) {
 
 	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
 		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()[:1]...))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// A rule that sends no packets has not tested anything. This used to assert
+	// err == nil, which under the project's convention means "tested, and the target
+	// is secure" - about a deliberately vulnerable fixture, with zero requests sent.
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("one principal cannot exercise a cross-principal rule; want ErrInconclusive, got %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected clean skip with one principal, got %d findings", len(findings))
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }
 
@@ -189,10 +193,11 @@ func TestMultiTenant_SameTokenSkips(t *testing.T) {
 	}
 	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
 		Execute(context.Background(), ts.URL, mtOpts(same...))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("two principals sharing a token are one identity, so there is no boundary to "+
+			"cross; want ErrInconclusive, got %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected clean skip when principals share a token, got %d findings", len(findings))
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }

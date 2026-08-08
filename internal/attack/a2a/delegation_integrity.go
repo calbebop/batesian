@@ -48,12 +48,13 @@ func (e *DelegationIntegrityExecutor) Execute(ctx context.Context, target string
 
 // ExecuteChained runs the delegation chain-of-custody check.
 func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
-	if len(opts.Principals) < 2 {
-		return nil, nil
-	}
-	a, b := opts.Principals[0], opts.Principals[1]
-	if a.Token == b.Token {
-		return nil, nil // same identity cannot demonstrate a wrong-principal continuation
+	// Two distinct identities are this rule's premise; without them it cannot run.
+	// See twoPrincipals: all five cross-principal rules used to report clean here,
+	// so a scan with no --principal flags called 29 percent of the A2A set secure
+	// without sending a packet.
+	a, b, err := twoPrincipals(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
