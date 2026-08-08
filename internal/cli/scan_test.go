@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/config"
@@ -31,6 +32,59 @@ func TestParsePrincipalFlag_UnknownKey(t *testing.T) {
 func TestParsePrincipalFlag_InvalidSegment(t *testing.T) {
 	if _, err := parsePrincipalFlag("name=a,justakey"); err == nil {
 		t.Error("expected error for key without =, got nil")
+	}
+}
+
+// Five multi-principal A2A rules send Principal.Headers. Multi-tenant deployments
+// commonly resolve the tenant at a gateway and pass it downstream in a header, so a
+// flag that cannot express one cannot describe the identities it is comparing.
+// Against a header-scoped agent that isolates correctly, the headerless form
+// produced two false-positive cross-tenant findings.
+func TestParsePrincipalFlag_HeadersAreRepeatable(t *testing.T) {
+	p, err := parsePrincipalFlag("name=a,token=t,tenant=A,header=X-Tenant-Id:A,header=X-Env:prod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(p.Headers) != 2 {
+		t.Fatalf("expected both headers, got %+v", p.Headers)
+	}
+	if p.Headers["X-Tenant-Id"] != "A" || p.Headers["X-Env"] != "prod" {
+		t.Errorf("header values mismatch: %+v", p.Headers)
+	}
+	// The other fields must still parse alongside.
+	if p.Name != "a" || p.Token != "t" || p.Tenant != "A" {
+		t.Errorf("non-header fields mismatch: %+v", p)
+	}
+}
+
+// A header value may itself contain colons, e.g. a URL, so only the first splits.
+func TestParsePrincipalFlag_HeaderValueKeepsLaterColons(t *testing.T) {
+	p, err := parsePrincipalFlag("name=a,header=X-Origin:https://tenant-a.example.test:8443")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.Headers["X-Origin"]; got != "https://tenant-a.example.test:8443" {
+		t.Errorf("value should keep everything after the first colon, got %q", got)
+	}
+}
+
+func TestParsePrincipalFlag_HeaderNeedsNameAndValue(t *testing.T) {
+	for _, bad := range []string{"name=a,header=NoColon", "name=a,header=:justvalue"} {
+		if _, err := parsePrincipalFlag(bad); err == nil {
+			t.Errorf("expected an error for %q, got nil", bad)
+		}
+	}
+}
+
+// The config file spells this as a `headers:` map, so it is the first thing an
+// operator reaches for here. The error has to point at the form that works.
+func TestParsePrincipalFlag_PluralHeadersIsGuided(t *testing.T) {
+	_, err := parsePrincipalFlag("name=a,headers=X-Tenant-Id:A")
+	if err == nil {
+		t.Fatal("expected an error for headers=, got nil")
+	}
+	if !strings.Contains(err.Error(), "header=Name:Value") {
+		t.Errorf("error should name the working form, got: %v", err)
 	}
 }
 

@@ -73,7 +73,7 @@ func init() {
 	scanCmd.Flags().String("audience-claim", "", "Expected JWT aud value for the target MCP server (used by mcp-oauth-audience-002)")
 	// Multi-principal identities for cross-tenant / handoff chained rules.
 	// Repeatable; appended to any principals defined in the config file.
-	scanCmd.Flags().StringArray("principal", nil, "Extra identity as name=...,token=...,tenant=... (repeatable; for multi-tenant rules)")
+	scanCmd.Flags().StringArray("principal", nil, "Extra identity as name=...,token=...,tenant=...,header=Name:Value (repeatable, and header= repeats per identity; for multi-tenant rules)")
 	scanCmd.Flags().Bool("no-coalesce", false, "Do not coalesce overlapping findings from rules in the same vulnerability class")
 	scanCmd.Flags().Bool("dry-run", false, "Print the requests each rule would send and exit without sending any traffic")
 	rootCmd.AddCommand(scanCmd)
@@ -365,8 +365,25 @@ func buildPrincipals(cfgPrincipals []config.PrincipalConfig, flags []string) ([]
 }
 
 // parsePrincipalFlag parses a --principal value of the form
-// "name=tenant-a,token=eyJ...,tenant=A" into an attackpkg.Principal. Recognized
-// keys are name, token, and tenant; an unknown key is an error.
+// "name=tenant-a,token=eyJ...,tenant=A,header=X-Tenant-Id:A" into an
+// attackpkg.Principal. Recognized keys are name, token, tenant and header; an
+// unknown key is an error.
+//
+// header= is repeatable and each occurrence adds one entry, so a routing header
+// does not need a second level of delimiters inside a comma-separated value. The
+// value keeps everything after the first colon, which is what lets a header carry
+// a URL.
+//
+// A principal's headers were reachable from the config file but not from this
+// flag, even though five multi-principal A2A rules send them. Multi-tenant
+// deployments commonly resolve the tenant at a gateway and pass it downstream in a
+// header, so without this the CLI could not describe the identities it was asked
+// to compare. Measured against an agent that scopes tasks by X-Tenant-Id and
+// isolates them correctly: two false-positive cross-tenant findings from the flag
+// form, none from the equivalent config file.
+//
+// One shape still needs the config file: a header value containing a comma, since
+// the comma separates segments here.
 func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 	var p attackpkg.Principal
 	for _, part := range strings.Split(raw, ",") {
@@ -387,8 +404,22 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 			p.Token = v
 		case "tenant":
 			p.Tenant = v
+		case "header":
+			hk, hv, found := strings.Cut(v, ":")
+			hk = strings.TrimSpace(hk)
+			if !found || hk == "" {
+				return p, fmt.Errorf("invalid --principal header %q; expected header=Name:Value", v)
+			}
+			if p.Headers == nil {
+				p.Headers = map[string]string{}
+			}
+			p.Headers[hk] = strings.TrimSpace(hv)
+		case "headers":
+			// The config file spells this as a `headers:` map, so it is the first
+			// thing an operator tries here.
+			return p, fmt.Errorf("use header=Name:Value (repeatable) rather than headers= in --principal")
 		default:
-			return p, fmt.Errorf("unknown --principal key %q (valid: name, token, tenant)", k)
+			return p, fmt.Errorf("unknown --principal key %q (valid: name, token, tenant, header)", k)
 		}
 	}
 	if p.Name == "" {
