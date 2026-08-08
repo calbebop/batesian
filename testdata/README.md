@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **17 A2A + 19 MCP = 36 rules**. Every rule's primary
+The bundled rule set is **17 A2A + 20 MCP = 37 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -69,8 +69,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
+| `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 
-**Coverage.** 35 of the 36 rules have a standalone Python fixture above, and each
+**Coverage.** 36 of the 37 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -197,6 +198,31 @@ as "the modern wire is served", which turned that server's `400 Bad Request:
 protocol version "2026-07-28" is only supported on stateless HTTP servers` into
 the refused half of an authorization asymmetry and produced a critical
 `mcp-era-downgrade-001` finding against a target with no authorization at all.
+
+**`mcp_session_as_credential_server.py` takes a posture argument**, defaulting to
+`vulnerable`, and needs `--token tok-a`:
+
+```sh
+python testdata/mcp_session_as_credential_server.py vulnerable             # rule must fire
+python testdata/mcp_session_as_credential_server.py open-handshake         # rule must fire
+python testdata/mcp_session_as_credential_server.py patched                # rule must stay silent
+python testdata/mcp_session_as_credential_server.py session-presence-auth  # rule must stay silent
+```
+
+All four are stateful and reject a session id they never issued, which is what
+lets the rule attribute a success to the issued id. `open-handshake` is the same
+bug as `vulnerable` on a server that gates nothing at `initialize`: the session
+remembers who opened it, and that memory authorizes later calls that carry no
+credential. It exists because an open handshake is not the same thing as no
+authorization, and a rule that treats it as such reports nothing here.
+`patched` authenticates every request on its own credential.
+`session-presence-auth` authenticates nothing but
+demands a session id on every non-initialize request, so a stripped request is
+refused for session reasons rather than credential ones; it is the shape of the
+official MCP C# SDK's stateful sample, which this rule reported as vulnerable
+until the anonymous-handshake control was added. Without `--token` the rule
+reports inconclusive against all three, since it cannot ask whether a session id
+substitutes for a credential it was never given.
 
 The multi-tenant and delegation fixtures exercise the chained rules: they require
 two principals supplied with `--principal name=...,token=...,tenant=...` (or a
