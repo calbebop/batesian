@@ -19,6 +19,16 @@ import (
 // audience value is known. The expected value is taken from
 // opts.AudienceClaim or, when unset, RFC 9728 protected-resource-metadata.
 //
+// Every probe is derived from that value, so it decides whether the rule tests
+// anything at all: the server compares the forged `aud` against its OWN
+// configured audience, and RFC 7519 section 4.1.3 makes that comparison exact.
+// A value that does not byte-match is a plain mismatch the server refuses
+// whether or not its matching logic is sound, which reads as a clean result. So
+// before reporting clean on an operator-supplied value, the rule checks it
+// against what the server advertises and reports not tested when they disagree.
+// Hostname case is the likeliest way for that to happen, since DNS is
+// case-insensitive and audience comparison is not.
+//
 // Because probes are forged HS256 self-signed tokens, acceptance indicates a
 // compound failure: signature validation AND audience matching both inadequate.
 // The "validly signed cross-resource token" class (Parse CVE-2026-30863) is
@@ -80,7 +90,8 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	client := attack.NewHTTPClient(opts, vars)
 
 	expected := strings.TrimSpace(opts.AudienceClaim)
-	if expected == "" {
+	operatorSupplied := expected != ""
+	if !operatorSupplied {
 		discovered, mcpReached := discoverExpectedAudience(ctx, client, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
@@ -112,10 +123,27 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	}
 
 	finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes)
-	if finding == nil {
-		return nil, nil
+	if finding != nil {
+		return []attack.Finding{*finding}, nil
 	}
-	return []attack.Finding{*finding}, nil
+
+	// Nothing was accepted. That is only a clean result if the probes were built
+	// from the audience this server actually uses, so verify the premise before
+	// reporting one. The check runs here rather than up front for two reasons: a
+	// scan that found something needs no premise check, and a disagreement is not
+	// a reason to withhold a finding the server demonstrated.
+	if operatorSupplied {
+		if advertised, _ := discoverExpectedAudience(ctx, client,
+			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL); advertised != "" && advertised != expected {
+			return nil, fmt.Errorf("%w: the probes were built from the --audience-claim value %q, "+
+				"but %s advertises %q as its resource audience; RFC 7519 section 4.1.3 compares the "+
+				"aud claim exactly, so every probe was a plain mismatch this server refuses whether "+
+				"or not its audience matching is sound; rerun with the advertised value, or with no "+
+				"--audience-claim to use it automatically",
+				attack.ErrInconclusive, expected, endpoint, advertised)
+		}
+	}
+	return nil, nil
 }
 
 // buildProbes constructs the v1 probe set from the operator's expected audience.
