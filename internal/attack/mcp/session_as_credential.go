@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -59,10 +60,18 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 
 	authed := map[string]string{"Authorization": "Bearer " + token}
 
-	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+	// Why no candidate could be exercised. The credential is this rule's premise, so
+	// the most likely failure is that the one it was given is not accepted, and
+	// saying "could not reach a testable endpoint" about a server that answered and
+	// refused it sends the operator to the wrong place.
+	var observed initObservation
+	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
 		// Step 1: handshake with the credential and capture the session id.
-		session, ok := e.initialize(ctx, client, ep, authed)
+		session, ok, resp := e.initialize(ctx, client, ep, authed)
 		if !ok {
+			if resp != nil {
+				observed.observe(classifyInitFailure(ep, true, resp))
+			}
 			return nil, false // not a reachable MCP endpoint
 		}
 		if session == "" {
@@ -95,7 +104,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// servers this rule exists to find. What answers the question is whether the
 		// session the anonymous caller was given can then call tools/list.
 		var anonSession string
-		if s, anonOK := e.initialize(ctx, client, ep, nil); anonOK {
+		if s, anonOK, _ := e.initialize(ctx, client, ep, nil); anonOK {
 			anonSession = s
 			if anonSession == "" {
 				// It handshakes anonymously but issues this caller no session, so there
@@ -140,6 +149,10 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 
 		return []attack.Finding{e.finding(ep, session, bogus, anonSession)}, true
 	})
+	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
+		return nil, inconclusive(handshakeRefusal{observed.reason})
+	}
+	return findings, err
 }
 
 // credentialFor returns the credential to establish the session with, preferring
@@ -155,8 +168,10 @@ func credentialFor(opts attack.Options) string {
 
 // initialize performs the handshake and returns the session id the server minted,
 // which is empty when the server assigns none.
+// The response is returned alongside the verdict so a walk that established no
+// session can say why. It is nil when nothing answered.
 func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *attack.HTTPClient,
-	endpoint string, headers map[string]string) (session string, ok bool) {
+	endpoint string, headers map[string]string) (session string, ok bool, resp *attack.Response) {
 	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -167,10 +182,13 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": attack.Version},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		return "", false
+	if err != nil {
+		return "", false, nil
 	}
-	return resp.Headers.Get("Mcp-Session-Id"), true
+	if !resp.IsAccepted() {
+		return "", false, resp
+	}
+	return resp.Headers.Get("Mcp-Session-Id"), true, resp
 }
 
 // toolsList reports whether tools/list was answered with a result under the given

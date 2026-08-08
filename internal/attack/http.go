@@ -76,6 +76,21 @@ func (c *HTTPClient) tokenAllowedFor(rawURL string) bool {
 	return strings.EqualFold(u.Host, c.targetHost)
 }
 
+// PresentsCredential reports whether a request this client sends to rawURL will
+// carry the operator's bearer token.
+//
+// It exists so a rule that could not run can say which of two things happened: a
+// server refused an anonymous handshake, or it refused the credential the scan was
+// given. Those call for opposite actions, and telling an operator to pass --token
+// when they already did is worse than saying nothing. It answers the same question
+// the injection site asks, including the off-host guard, so the two cannot drift.
+//
+// An explicit per-request Authorization header still overrides this, so a caller
+// that sets its own header knows more than this reports.
+func (c *HTTPClient) PresentsCredential(rawURL string) bool {
+	return c.token != "" && c.tokenAllowedFor(rawURL)
+}
+
 // hostOf returns the host:port of a URL, or "" when it cannot be determined.
 func hostOf(rawURL string) string {
 	u, err := url.Parse(rawURL)

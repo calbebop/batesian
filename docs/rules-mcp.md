@@ -58,13 +58,15 @@ or skip**, never a clean pass. A target that could not be exercised is reported
 as not tested rather than as secure.
 
 A skip names the reason where the handshake explained itself, because the actions
-they call for differ. The common one is a server that requires a credential
-scanned without one: it answers every request and refuses the handshake, so the
-skip says so and points at `--token`, rather than reporting a target that is
-plainly reachable as unreachable. An endpoint that answers but does not implement
-`initialize` is reported as not speaking MCP. `could not reach a testable
-endpoint` is now reserved for what it says: nothing answered, or no candidate path
-is served.
+they call for differ. The common one is a server that requires a credential: it
+answers every request and refuses the handshake, so the skip says so rather than
+reporting a plainly reachable target as unreachable. It also distinguishes a
+refused **anonymous** handshake from a **rejected credential**, since telling an
+operator to pass `--token` when they already did is worse than saying nothing, and
+several of these rules send no credential by design so that `--token` would change
+nothing. An endpoint that answers but does not implement `initialize` is reported
+as not speaking MCP. `could not reach a testable endpoint` means what it says:
+nothing answered, or no candidate path is served.
 
 ## OAuth-gated rules
 

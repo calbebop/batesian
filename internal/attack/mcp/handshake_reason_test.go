@@ -44,44 +44,46 @@ func assertReason(t *testing.T, err error, want ...string) {
 	}
 }
 
-// jsonRPCError writes a JSON-RPC error envelope at the given HTTP status.
-func jsonRPCError(w http.ResponseWriter, status, code int, msg string) {
+// jsonRPCError writes a JSON-RPC error envelope at HTTP 200, which is how the real
+// SDKs deliver one and the shape a status-only classifier would miss.
+func jsonRPCError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"jsonrpc": "2.0", "id": 1,
 		"error": map[string]interface{}{"code": code, "message": msg},
 	})
 }
 
-// A credential-gated server answering with an HTTP status. The reason has to name
-// the credential, because that is the operator's next action.
+// A credential-gated server answering with an HTTP status. The reason has to say
+// the request carried no credential, because that is what the operator acts on.
 func TestHandshakeReason_UnauthorizedByStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 
-	assertReason(t, toolsUnauthErr(t, srv.URL), "HTTP 401", "requires a credential", "--token")
+	assertReason(t, toolsUnauthErr(t, srv.URL),
+		"HTTP 401", "presented no credential", "does not serve MCP anonymously")
 }
 
 // The same refusal as the real SDKs deliver it: a JSON-RPC error at HTTP 200.
 // Gating on the status alone would miss every one of them.
 func TestHandshakeReason_UnauthorizedByJSONRPCErrorAt200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		jsonRPCError(w, http.StatusOK, -32000, "authentication required")
+		jsonRPCError(w, -32000, "authentication required")
 	}))
 	defer srv.Close()
 
 	assertReason(t, toolsUnauthErr(t, srv.URL),
-		"refused as unauthorized", "authentication required", "--token")
+		"refused as unauthorized", "authentication required", "presented no credential")
 }
 
 // Something is listening and it is not MCP. That is a different fact from
 // unreachable, and the operator should not go looking at their network for it.
 func TestHandshakeReason_AnsweredButNotMCP(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		jsonRPCError(w, http.StatusOK, -32601, "Method not found")
+		jsonRPCError(w, -32601, "Method not found")
 	}))
 	defer srv.Close()
 
@@ -134,7 +136,7 @@ func TestHandshakeReason_NothingListeningStaysGeneric(t *testing.T) {
 func TestHandshakeReason_RefusalOutranksALesserAnswer(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
-		jsonRPCError(w, http.StatusOK, -32000, "authentication required")
+		jsonRPCError(w, -32000, "authentication required")
 	})
 	// ServeMux treats "/" as a catch-all, so /mcp lands here too, which is what
 	// gives both earlier candidates the lesser answer.
@@ -144,5 +146,25 @@ func TestHandshakeReason_RefusalOutranksALesserAnswer(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	assertReason(t, toolsUnauthErr(t, srv.URL), "/api", "requires a credential")
+	assertReason(t, toolsUnauthErr(t, srv.URL), "/api", "refused as unauthorized")
+}
+
+// The distinction that matters once a token IS configured: this server refuses it.
+// Reporting "the request presented no credential", or advising --token, would send
+// the operator to add a flag they already passed. mcp-session-fixation-001 uses the
+// authenticated client, so it is the rule that exposes this.
+func TestHandshakeReason_RejectedCredentialSaysSo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonRPCError(w, -32000, "authentication required")
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewSessionFixationExecutor(attack.RuleContext{ID: "mcp-session-fixation-001"})
+	_, err := exec.Execute(context.Background(), srv.URL,
+		attack.Options{TimeoutSeconds: 5, Token: "a-token-this-server-rejects"})
+
+	assertReason(t, err, "presented the credential this scan was given", "not accepted here")
+	if strings.Contains(err.Error(), "presented no credential") {
+		t.Errorf("a scan that carried a credential must not be told it carried none: %v", err)
+	}
 }

@@ -70,6 +70,16 @@ type initObservation struct {
 	reason string
 }
 
+// credentialNote completes an unauthorized-refusal message with what the request
+// actually presented, which is the part an operator acts on.
+func credentialNote(credentialed bool) string {
+	if credentialed {
+		return "even though the request presented the credential this scan was given, " +
+			"so that credential is not accepted here"
+	}
+	return "and the request presented no credential, so this server does not serve MCP anonymously"
+}
+
 // observe keeps o when it explains more than what is already held.
 func (i *initObservation) observe(o initObservation) {
 	if o.rank > i.rank {
@@ -80,10 +90,16 @@ func (i *initObservation) observe(o initObservation) {
 // classifyInitFailure explains why one candidate did not complete a handshake.
 //
 // The ranking is about what an operator can do next. An unauthorized refusal is
-// the top rank because it names the fix; "answered but does not implement
+// the top rank because it points at the fix; "answered but does not implement
 // initialize" is above a bare status because it says the target is not MCP at all
 // rather than unreachable.
-func classifyInitFailure(endpoint string, resp *attack.Response) initObservation {
+//
+// credentialed says whether the refused request carried the operator's token,
+// because a server refusing an anonymous handshake and a server rejecting the
+// credential it was given call for opposite actions. The message states which
+// happened and does not prescribe a flag: whether --token would change anything
+// depends on the rule, and several of these rules send no credential by design.
+func classifyInitFailure(endpoint string, credentialed bool, resp *attack.Response) initObservation {
 	// A path the server does not serve explains nothing: the candidate walk exists
 	// precisely because the endpoint is unknown, so most of these 404s are the cost
 	// of looking rather than a fact about the target. Reporting one as the reason
@@ -101,15 +117,13 @@ func classifyInitFailure(endpoint string, resp *attack.Response) initObservation
 	// HTTP 200, which is what the real SDKs do, so both shapes are checked.
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return initObservation{rankUnauthorized, fmt.Sprintf(
-			"the MCP handshake at %s was refused with HTTP %d, so this server requires a "+
-				"credential and the scan carried none; pass --token or a --principal",
-			endpoint, resp.StatusCode)}
+			"the MCP handshake at %s was refused with HTTP %d %s",
+			endpoint, resp.StatusCode, credentialNote(credentialed))}
 	}
 	if hasErr && authFlavoredError(code, msg) {
 		return initObservation{rankUnauthorized, fmt.Sprintf(
-			"the MCP handshake at %s was refused as unauthorized (JSON-RPC %d: %q), so this "+
-				"server requires a credential and the scan carried none; pass --token or a --principal",
-			endpoint, code, msg)}
+			"the MCP handshake at %s was refused as unauthorized (JSON-RPC %d: %q) %s",
+			endpoint, code, msg, credentialNote(credentialed))}
 	}
 	if hasErr && code == mcpMethodNotFound {
 		return initObservation{rankNotMCP, fmt.Sprintf(
