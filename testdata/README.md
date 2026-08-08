@@ -215,6 +215,19 @@ does not exhibit what they test for:
 - `a2a-jws-algconf-001` analyses JWS signatures on the agent card. This fixture
   deliberately serves an unsigned card, so there is nothing to analyse.
 
+**`a2a-peer-impersonation-001` reports "not tested" against most fixtures here, and
+that is correct.** The rule forges a JWT and asks whether the server accepts it. To
+mean anything, the forged token has to carry the issuer the target actually trusts:
+a server that checks the issuer against an allowlist before verifying the signature
+refuses an unknown issuer with a 401, which looks exactly like a server that
+verified the signature and rejected it. The rule therefore discovers the issuer from
+RFC 9728 protected-resource metadata or from an `openIdConnect` / `oauth2`
+securityScheme in the agent card. Six of the eleven A2A fixtures publish neither and
+refuse the forged token, so the rule cannot attribute the refusal and says so
+instead of reporting clean. Only `a2a_card_security_unenforced_server.py` publishes
+security schemes; the four fixtures where the rule fires do so because they accept
+the token, which needs no issuer at all.
+
 When adding a fixture, confirm the rule actually fires against it rather than
 assuming coverage from the registry table. `a2a-session-smuggle-001` was listed
 here for a long time while the fixture returned a hardcoded task history that
