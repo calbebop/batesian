@@ -14,12 +14,18 @@ They are intentionally misconfigured to be exploitable.
 pip install starlette uvicorn httpx "mcp>=2"
 ```
 
-Only `mcp_unauth_resources_server.py` uses the MCP Python SDK; the rest are plain
-Starlette. The SDK's v2 line is what `pip install mcp` now gives you, and it
-renamed `FastMCP` to `MCPServer` with no compatibility alias, so that fixture
-does not run on 1.x. The version is pinned above rather than left bare so a
-future major bump is a deliberate change here instead of a fixture that stops
-starting.
+Two fixtures use the MCP Python SDK, `mcp_unauth_resources_server.py` and
+`mcp_modern_era_server.py`; the rest are plain Starlette. Both import
+`mcp.server.mcpserver.MCPServer`, so both need the v2 line: it renamed `FastMCP`
+to `MCPServer` with no compatibility alias and neither fixture runs on 1.x. The
+version is pinned above rather than left bare so a future major bump is a
+deliberate change here instead of a fixture that stops starting.
+
+If either fails to start with `ModuleNotFoundError: No module named
+'mcp.server.mcpserver'`, the installed `mcp` is 1.x. Check with
+`python -c "import importlib.metadata as m; print(m.version('mcp'))"`. This is
+worth knowing before a sweep: a fixture that does not bind measures nothing, and
+a run that treats it as a clean result is reporting coverage it does not have.
 
 ---
 
