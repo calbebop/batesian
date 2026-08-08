@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
+	"github.com/calbebop/batesian/internal/severity"
 	"github.com/fatih/color"
 )
 
@@ -257,7 +259,8 @@ func boolDisplay(b bool) string {
 }
 
 func severityDisplay(sev string) (icon, label string) {
-	switch strings.ToLower(sev) {
+	canonical := severity.Canonical(sev)
+	switch canonical {
 	case "critical":
 		return BoldRed("[!]"), BoldRed("CRITICAL")
 	case "high":
@@ -266,9 +269,17 @@ func severityDisplay(sev string) (icon, label string) {
 		return Yellow("[~]"), Yellow("MEDIUM")
 	case "low":
 		return Cyan("[~]"), Cyan("LOW")
-	default:
+	case "info":
 		return Dim("[-]"), Dim("INFO")
 	}
+	// A severity we cannot place is shown as itself. Labelling it INFO would
+	// understate a finding whose real severity is simply misspelled, and the
+	// report now prints these rather than dropping them.
+	shown := strings.ToUpper(strings.TrimSpace(sev))
+	if shown == "" {
+		shown = "UNSPECIFIED"
+	}
+	return Yellow("[?]"), Yellow(shown)
 }
 
 // PrintScanSummary renders the scan results as a terminal table.
@@ -311,15 +322,44 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		return
 	}
 
-	// Print findings grouped by severity (critical first).
+	// Print findings grouped by severity, worst first, then anything whose severity
+	// is not one we recognize.
+	//
+	// This loop used to iterate a hardcoded list and skip every other key, so a
+	// finding carrying an unexpected severity was counted in the header above and
+	// then never printed: "Scan Results (1 finding(s))" followed by no finding.
+	// Rule YAML can no longer express one (rules.Validate rejects it), but an
+	// executor sets its finding's severity as a plain string, so the report must not
+	// depend on that being right. A severity we cannot place is printed last rather
+	// than dropped.
+	// Keys are walked in sorted order, not map order: two severities that fold to
+	// the same canonical value (say "high" and "High") would otherwise print in a
+	// different order on every run, which is the nondeterminism that made scans
+	// undiffable in the host-injection rule.
 	bySev := engine.FindingsBySeverity(results)
-	for _, sev := range []string{"critical", "high", "medium", "low", "info"} {
-		findings, ok := bySev[sev]
-		if !ok {
-			continue
-		}
-		for _, f := range findings {
+	keys := make([]string, 0, len(bySev))
+	for k := range bySev {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	printed := map[string]bool{}
+	printKey := func(key string) {
+		printed[key] = true
+		for _, f := range bySev[key] {
 			p.printFinding(f)
+		}
+	}
+	for _, sev := range severity.Ordered() {
+		for _, key := range keys {
+			if !printed[key] && severity.Canonical(key) == sev {
+				printKey(key)
+			}
+		}
+	}
+	for _, key := range keys {
+		if !printed[key] {
+			printKey(key)
 		}
 	}
 
