@@ -289,11 +289,22 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		}
 	}
 
+	// The summary counts rules that were not exercised but does not say why. Rules
+	// go unexercised for reasons that have nothing to do with reachability: an
+	// unsupported protocol revision, an agent card the target does not serve, a
+	// probe that established nothing after a successful handshake. Asserting
+	// "could not reach a testable endpoint" for all of them sent operators looking
+	// for a network fault. The per-rule reason is on each SKIP line, which -v shows.
 	if total == 0 {
 		if notExercised > 0 {
 			fmt.Fprintf(p.w, "  %s\n\n", Yellow(fmt.Sprintf(
-				"No findings, but %d of %d rule(s) could not reach a testable endpoint and were not exercised. The target was not fully tested.",
+				"No findings, but %d of %d rule(s) were not exercised, so the target was not fully tested. Run with -v to see why each was skipped.",
 				notExercised, len(results))))
+			// The per-rule reasons have to print here too. This branch used to
+			// return before reaching the loop below, so on a scan with no findings,
+			// which is exactly when an operator needs to know what went untested,
+			// the reasons were unreachable even with -v.
+			p.printSkipsAndErrors(results)
 		} else {
 			fmt.Fprintf(p.w, "  %s\n\n", Green("No findings. Target appears clean for the tested rules."))
 		}
@@ -312,7 +323,18 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		}
 	}
 
-	// Print rules that were skipped or errored.
+	p.printSkipsAndErrors(results)
+
+	if notExercised > 0 {
+		fmt.Fprintf(p.w, "\n  %s\n", Yellow(fmt.Sprintf(
+			"Note: %d of %d rule(s) were not exercised. Run with -v to see why each was skipped.",
+			notExercised, len(results))))
+	}
+}
+
+// printSkipsAndErrors reports, per rule, why it did not run. The skip reason is
+// the only place the actual cause appears, so both summary branches must reach it.
+func (p *Printer) printSkipsAndErrors(results []engine.RunResult) {
 	for _, r := range results {
 		if r.Skipped {
 			p.Verbose(fmt.Sprintf("SKIP %s: %s", r.Rule.ID, r.SkipMsg))
@@ -320,12 +342,6 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		if r.Err != nil {
 			p.Warn(fmt.Sprintf("ERROR running %s: %v", r.Rule.ID, r.Err))
 		}
-	}
-
-	if notExercised > 0 {
-		fmt.Fprintf(p.w, "\n  %s\n", Yellow(fmt.Sprintf(
-			"Note: %d of %d rule(s) could not reach a testable endpoint and were not exercised.",
-			notExercised, len(results))))
 	}
 }
 

@@ -64,11 +64,14 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	// Fetch the card. Without it there is no declared contract to test against.
 	cardBody, ok := fetchAgentCardBody(ctx, client, vars.BaseURL)
 	if !ok {
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: no agent card was served under %s, and this rule tests the "+
+			"card's declared security against what the endpoint actually enforces",
+			attack.ErrInconclusive, vars.BaseURL)
 	}
 	card, ok := parseCard(cardBody)
 	if !ok {
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: the agent card served by %s is not parseable JSON, so its "+
+			"declared security contract could not be read", attack.ErrInconclusive, vars.BaseURL)
 	}
 
 	// Only proceed when the card declares required auth with no anonymous option.

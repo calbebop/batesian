@@ -139,7 +139,9 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 	}
 
 	if len(findings) == 0 && !cardParsed {
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: no parseable agent card was served under %s for any injected "+
+			"host header, so there was no card body in which to look for a reflection",
+			attack.ErrInconclusive, vars.BaseURL)
 	}
 	return findings, nil
 }

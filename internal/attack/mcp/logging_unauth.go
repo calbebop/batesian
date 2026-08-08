@@ -74,8 +74,11 @@ func (e *LoggingUnauthExecutor) Execute(ctx context.Context, target string, opts
 		}
 		// Nothing was established. The request failed, or the reply carried no
 		// protocol-level verdict, so reporting this surface clean would claim it
-		// is secure when it was never tested.
-		return nil, attack.ErrInconclusive
+		// is secure when it was never tested. The handshake already succeeded, so
+		// this is not a reachability failure and must not be reported as one.
+		return nil, fmt.Errorf("%w: the MCP handshake succeeded at %s but the logging/setLevel "+
+			"probe returned no protocol-level verdict, so whether the surface is authenticated "+
+			"was never established", attack.ErrInconclusive, session.Endpoint)
 	}
 
 	reachable, reason := setLevelDispatchReachable(body)

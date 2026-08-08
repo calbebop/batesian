@@ -64,7 +64,9 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 		// path used to return clean with the comment "not an A2A server", which
 		// resolveA2AEndpoint has already ruled out, and which meant a stale v0.2-only
 		// method name reported every real agent secure.
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: the agent at %s accepted no task-creating request "+
+			"(SendMessage, message/send or tasks/send), so there was no task whose immutability "+
+			"could be tested", attack.ErrInconclusive, endpoint)
 	}
 
 	// Step 2: re-submit against the SAME task ID with different content, on the
@@ -81,7 +83,9 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	if !ok {
 		// The re-submission was accepted but the stored content is unknown, so
 		// whether the artifact changed cannot be established either way.
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: task %s was re-submitted and accepted, but reading it back "+
+			"returned no task history, so whether the stored artifact changed could not be "+
+			"established", attack.ErrInconclusive, taskID)
 	}
 
 	stored := string(getBody)
@@ -120,7 +124,9 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	default:
 		// Neither marker is visible, so the server does not surface message text and
 		// the read-back can neither confirm nor refute an overwrite.
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: task %s read back without either the original or the "+
+			"tampered marker, so this agent does not surface message text and an overwrite can "+
+			"be neither confirmed nor refuted", attack.ErrInconclusive, taskID)
 	}
 }
 
