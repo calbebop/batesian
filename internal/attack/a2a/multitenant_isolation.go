@@ -168,7 +168,9 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 	if err != nil || !resp.IsAccepted() {
 		return false
 	}
-	return resp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)
+	// Identifiers, not key names: "history" and "contextId" appear in every Task
+	// envelope. See resultReferencesTask.
+	return resultReferencesTask(resp.Body, taskID, contextID)
 }
 
 // finding builds the confirmed cross-tenant isolation breach finding. reader is

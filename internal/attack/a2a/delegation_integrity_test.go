@@ -2,6 +2,9 @@ package a2a_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,5 +217,63 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 	}
 	if c := findings[0].Chain; len(c) != 2 || !strings.Contains(c[0].Action, preTask) || !strings.Contains(c[0].Action, "consumed from blackboard") {
 		t.Errorf("expected hop 1 to cite the consumed blackboard task, got %+v", c)
+	}
+}
+
+// A server with tenant-scoped task stores. Principal B's continuation names A's
+// taskId, which B's store does not contain, so the server treats the message as a
+// NEW conversation and answers with a new task. It has correctly refused to expose
+// A's task, and there is no chain-of-custody break to report.
+//
+// This used to fire high/ConfirmedExploit: the acceptance oracle accepted the bare
+// key name "contextId", which the new task's envelope contains.
+func TestDelegationIntegrity_NewTaskForUnknownIDIsNotAContinuation(t *testing.T) {
+	var created int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, ".well-known") {
+			writeJSON(w, map[string]interface{}{"name": "scoped", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Method string `json:"method"`
+			Params struct {
+				Message struct {
+					TaskID string `json:"taskId"`
+				} `json:"message"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal(body, &req)
+
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if token == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Every send yields a task in the CALLER's own tenant namespace. A taskId
+		// the caller does not own is simply not continued.
+		created++
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": map[string]interface{}{
+			"id":        fmt.Sprintf("task-%s-%d", token, created),
+			"contextId": "ctx-" + token,
+			"status":    map[string]interface{}{"state": "working"},
+		}})
+	}))
+	defer srv.Close()
+
+	exec := a2a.NewDelegationIntegrityExecutor(testRuleCtx())
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "a", Token: "tok-a"},
+			{Name: "b", Token: "tok-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("FALSE POSITIVE: B got its own new task, not A's; got %d finding(s): %s",
+			len(findings), findings[0].Title)
 	}
 }
