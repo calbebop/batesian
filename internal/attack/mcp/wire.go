@@ -219,7 +219,12 @@ func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		out = append(out, labelEra(s, findings)...)
 	}
 	if len(out) == 0 && !anyDetermined {
-		return nil, attack.ErrInconclusive
+		// The handshake succeeded on at least one wire, so this is not a
+		// reachability failure. Every probe either failed in transport or answered
+		// without a protocol-level verdict.
+		return nil, fmt.Errorf("%w: the MCP handshake succeeded on %d wire(s) at %s but no probe "+
+			"returned a protocol-level verdict, so the surface was never actually assessed",
+			attack.ErrInconclusive, len(sessions), baseURL)
 	}
 	return out, nil
 }

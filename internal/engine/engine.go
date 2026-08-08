@@ -122,14 +122,20 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	// as a (misleading) clean result and not as an error.
 	if errors.Is(err, attackpkg.ErrInconclusive) {
 		// Executors may wrap ErrInconclusive with the reason the rule could not
-		// run (for example, the target speaks a protocol era these rules do not
-		// support). Surface that detail rather than discarding it: "not tested
-		// because your server speaks MCP 2026-07-28" is actionable, while a bare
-		// "could not reach a testable endpoint" invites the operator to assume a
-		// network problem. The generic prefix is preserved either way.
+		// run. Surface that detail rather than discarding it: "not tested because
+		// your server speaks MCP 2026-07-28" is actionable, while a bare "could
+		// not reach a testable endpoint" invites the operator to assume a network
+		// problem.
+		//
+		// When a reason is supplied it REPLACES the generic sentence instead of
+		// being appended to it. Most reasons describe a target that was reached
+		// and then could not be assessed (an unsupported protocol revision, an
+		// absent agent card, a probe that established nothing after a successful
+		// handshake), so prefixing them with a reachability claim produced a
+		// message that contradicted itself.
 		msg := "could not reach a testable endpoint"
 		if detail := inconclusiveDetail(err); detail != "" {
-			msg += ": " + detail
+			msg = "not tested: " + detail
 		}
 		return RunResult{
 			Rule:    r,

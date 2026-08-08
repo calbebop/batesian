@@ -54,7 +54,8 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 		// This rule analyses the card, so no card means it was not exercised.
 		// It used to return clean here, which reads as "the card is fine" for a
 		// target that served none.
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: no agent card was served at %s or %s, and this rule analyses "+
+			"the card's transport and caching headers", attack.ErrInconclusive, primaryURL, legacyURL)
 	}
 
 	// Use whichever path actually served a card as the basis for the cache and

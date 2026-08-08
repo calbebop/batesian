@@ -55,12 +55,14 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		// sound" for a target that served no card at all. This holds even when
 		// the target is plainly an A2A agent by other evidence: a card rule with
 		// no card has nothing to say either way.
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: no agent card was served at %s, and this rule analyses the "+
+			"JWS signatures on the card", attack.ErrInconclusive, cardURL)
 	}
 
 	var card map[string]interface{}
 	if err := json.Unmarshal(resp.Body, &card); err != nil {
-		return nil, attack.ErrInconclusive
+		return nil, fmt.Errorf("%w: the agent card at %s is not parseable JSON, so its JWS "+
+			"signatures could not be analysed", attack.ErrInconclusive, cardURL)
 	}
 
 	var findings []attack.Finding
