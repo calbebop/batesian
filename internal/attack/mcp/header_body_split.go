@@ -39,16 +39,20 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	// version that wire speaks. A wire that does enforce presence is tested on its
 	// merits and never sets this.
 	unawareAt := ""
+	blockedReason := ""
 	anyTested := false
 	var findings []attack.Finding
 	for _, session := range sessions {
-		f, unaware, tested := e.probe(ctx, client, session)
+		f, unaware, tested, blocked := e.probe(ctx, client, session)
 		findings = append(findings, labelEra(session, f)...)
 		if unaware != "" {
 			unawareAt = unaware
 		}
 		if tested {
 			anyTested = true
+		}
+		if blocked != "" && blockedReason == "" {
+			blockedReason = blocked
 		}
 	}
 	if len(findings) > 0 {
@@ -78,6 +82,14 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 		return nil, fmt.Errorf("%w: no SEP-2243 surface at MCP %s; Mcp-Method validation was introduced in %s",
 			attack.ErrInconclusive, unawareAt, headerValidationVersion)
 	}
+	// A run that could not reach the mismatch probe has not shown the header/body
+	// surface to be sound. This used to fall through to clean, so any server whose
+	// tools/list is credential-gated, or which answers -32601 because it exposes no
+	// tools, had its SEP-2243 handling reported as fine without a single mismatch
+	// being sent.
+	if blockedReason != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason)
+	}
 	return nil, nil
 }
 
@@ -91,26 +103,35 @@ const headerValidationVersion = modernEraVersion
 // carries the version that wire speaks. tested says whether the mismatch was
 // actually driven, which is what separates a clean result from one where the rule
 // never got far enough to judge.
-func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, unawareAt string, tested bool) {
+func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, unawareAt string, tested bool, blocked string) {
 	wireVersion := session.ProtocolVersion
 
-	// Probe 1: omit Mcp-Method. If the server still executes tools/list, it does
-	// not enforce header presence (not SEP-2243-aware) - nothing to confirm.
-	if e.toolsList(ctx, client, session, omitMethodHeader) {
-		return nil, wireVersion, false
+	// Probe 1: omit Mcp-Method. Executing tools/list anyway means the server does
+	// not enforce header presence (not SEP-2243-aware) and there is nothing to
+	// confirm. Only an explicit REFUSAL establishes that presence is enforced; a
+	// probe that merely failed to answer establishes nothing, so the rule stops
+	// rather than treating it as enforcement.
+	switch e.toolsList(ctx, client, session, omitMethodHeader) {
+	case accessGranted:
+		return nil, wireVersion, false, ""
+	case accessUndetermined:
+		return nil, "", false, "the tools/list probe with no Mcp-Method header " +
+			"returned neither a result nor a refusal, so whether the server enforces " +
+			"header presence could not be established"
 	}
 
 	// Probe 2: matching Mcp-Method. Must be accepted, otherwise we cannot drive
 	// the mismatch test (the endpoint may require headers we are not sending).
 	// Presence is enforced by this point, so the rule is testing a server that
 	// implements SEP-2243 whatever version it advertises.
-	if !e.toolsList(ctx, client, session, matchMethodHeader) {
-		return nil, "", false
+	if e.toolsList(ctx, client, session, matchMethodHeader) != accessGranted {
+		return nil, "", false, "tools/list was refused even with a matching Mcp-Method " +
+			"header, so the header/body mismatch could never be sent"
 	}
 
 	// Probe 3: mismatched Mcp-Method. A compliant server MUST reject; if it
 	// executes the body's tools/list, header value is not validated.
-	if e.toolsList(ctx, client, session, mismatchMethodHeader) {
+	if e.toolsList(ctx, client, session, mismatchMethodHeader) == accessGranted {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -132,9 +153,9 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 				session.Endpoint),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
-		}}, "", true
+		}}, "", true, ""
 	}
-	return nil, "", true
+	return nil, "", true, ""
 }
 
 // The two deliberate malformations. Omitting the header tests whether presence is
@@ -151,22 +172,33 @@ func mismatchMethodHeader(h map[string]string) { h["Mcp-Method"] = "tools/call" 
 // toolsList sends a tools/list body. methodHeader controls the Mcp-Method header:
 // nil omits it; otherwise it is set to the given (possibly mismatched) value. It
 // reports whether the server EXECUTED tools/list (returned a result.tools array).
-func (e *HeaderBodySplitExecutor) toolsList(ctx context.Context, client *attack.HTTPClient, session mcpSession, shape func(map[string]string)) bool {
+// toolsList grades one shaped tools/list call.
+//
+// This returned a bool, so a transport failure, a 502, a 429 and an unparseable
+// body were all indistinguishable from the server REFUSING the call. Probe 1's
+// failure is read as "the server enforces Mcp-Method presence", so one transient
+// failure on a legacy server carried the rule into probes 2 and 3, which succeed by
+// construction there because the header means nothing, and it emitted a
+// high/ConfirmedExploit finding asserting presence was enforced on a server with no
+// such requirement.
+func (e *HeaderBodySplitExecutor) toolsList(ctx context.Context, client *attack.HTTPClient, session mcpSession, shape func(map[string]string)) accessVerdict {
 	resp, err := session.postShaping(ctx, client, 2, "tools/list", nil, shape)
-	if err != nil || !resp.IsSuccess() {
-		return false
+	v := classifyAccess(resp, err)
+	if v != accessGranted {
+		return v
 	}
+	// A result envelope that is not a tools listing is not an execution of
+	// tools/list, and nothing follows from it either way.
 	var b map[string]interface{}
 	if json.Unmarshal(resp.Body, &b) != nil {
-		return false
-	}
-	if _, hasErr := b["error"]; hasErr {
-		return false
+		return accessUndetermined
 	}
 	result, ok := b["result"].(map[string]interface{})
 	if !ok {
-		return false
+		return accessUndetermined
 	}
-	_, hasTools := result["tools"]
-	return hasTools
+	if _, hasTools := result["tools"]; !hasTools {
+		return accessUndetermined
+	}
+	return accessGranted
 }
