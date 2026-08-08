@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -163,10 +162,6 @@ func a2aBatchDispatched(body []byte) bool {
 	return false
 }
 
-// authKeywords are substrings that mark a JSON-RPC error message as an auth
-// failure. A2A has no numeric auth error code, so classification is message-based.
-var authKeywords = []string{"unauth", "authentic", "forbidden", "credential", "permission"}
-
 func errMessageIsAuth(body []byte) bool {
 	var obj struct {
 		Error json.RawMessage `json:"error"`
@@ -184,11 +179,9 @@ func errMessageIsAuthRaw(rawErr json.RawMessage) bool {
 	if err := json.Unmarshal(rawErr, &e); err != nil {
 		return false
 	}
-	msg := strings.ToLower(e.Message)
-	for _, kw := range authKeywords {
-		if strings.Contains(msg, kw) {
-			return true
-		}
-	}
-	return false
+	// A2A defines no numeric auth error code, so this is message-based. The list
+	// lives in internal/attack: the copy that used to be here omitted "authoriz",
+	// "access denied" and "login", so a batch refused with "Not authorized" was read
+	// as dispatched and the rule accused a correctly secured agent of a bypass.
+	return attack.AuthFlavoredMessage(e.Message)
 }

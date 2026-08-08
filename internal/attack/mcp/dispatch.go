@@ -3,7 +3,6 @@ package mcp
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -93,30 +92,9 @@ func authFlavoredError(code int, msg string) bool {
 	case -32001, -32002: // unauthenticated / forbidden (project convention)
 		return true
 	}
-	m := strings.ToLower(msg)
-	for _, kw := range authErrorKeywords {
-		if strings.Contains(m, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// authErrorKeywords are message substrings that unambiguously indicate an auth
-// rejection. Kept specific to avoid suppressing real findings.
-var authErrorKeywords = []string{
-	"unauth",
-	"authentic",
-	"authoriz",
-	"forbidden",
-	"credential",
-	"permission",
-	"access denied",
-	"not allowed",
-	"invalid token",
-	"missing token",
-	"log in",
-	"login",
+	// The keyword list lives in internal/attack so the A2A rules share it; three
+	// divergent copies is how a secured agent came to be accused of a bypass.
+	return attack.AuthFlavoredMessage(msg)
 }
 
 // dispatchSignal classifies how an unauthenticated probe response proves the

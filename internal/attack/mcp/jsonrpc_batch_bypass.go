@@ -187,17 +187,11 @@ func isAuthRejection(resp *attack.Response) bool {
 	if err := json.Unmarshal(resp.Body, &obj); err != nil || obj.Error == nil {
 		return false
 	}
-	// -32001/-32002 are the codes this project uses for unauthenticated/forbidden.
-	if obj.Error.Code == -32001 || obj.Error.Code == -32002 {
-		return true
-	}
-	msg := strings.ToLower(obj.Error.Message)
-	for _, kw := range []string{"unauth", "authentic", "authoriz", "forbidden", "token", "credential", "permission"} {
-		if strings.Contains(msg, kw) {
-			return true
-		}
-	}
-	return false
+	// authFlavoredError is this package's shared predicate. The inline list here
+	// diverged from it, notably by including bare "token", which the canonical list
+	// excludes so a validation message like "unexpected token" cannot pass as an
+	// auth refusal and trigger a bypass attempt against an ungated method.
+	return authFlavoredError(obj.Error.Code, obj.Error.Message)
 }
 
 // isMCPInitialize reports whether a response is a successful MCP initialize result.
