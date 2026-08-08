@@ -133,7 +133,90 @@ func responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bo
 	if err != nil || !resp.IsSuccess() {
 		return false
 	}
-	return looksJSONRPC(resp.BodyString())
+	return answersMCPInitialize(resp.Body)
+}
+
+// answersMCPInitialize reports whether a reply to an MCP initialize came from
+// something that actually implements MCP.
+//
+// This used to be looksJSONRPC, which matches any body containing "jsonrpc",
+// "result", "error" or "protocolVersion" — that is every JSON-RPC service in
+// existence. Since this oracle decides clean-versus-skipped for five rules, an A2A
+// agent answering `-32601 Method not found` to initialize was accepted as an MCP
+// server and mcp-oauth-dcr-001, mcp-confused-deputy-001,
+// mcp-oauth-metadata-ssrf-001, mcp-token-replay-001 and mcp-init-downgrade-001 all
+// reported it clean, with nothing skipped. The A2A side already guards the mirror
+// of this with answersMCPInitialize in a2a/endpoint.go; the MCP side never did.
+//
+// A version rejection still counts, deliberately: the endpoint speaks MCP and only
+// declined the offered revision, which is a reachable endpoint rather than an
+// untestable one. That is why this cannot simply require a result envelope.
+//
+// Uncertain cases resolve to false, so the rule reports not-tested rather than
+// clean. That is the direction this project errs in.
+// mcpMethodNotFound is the JSON-RPC code a server returns for a method it does
+// not implement. Real SDKs return it at HTTP 200.
+const mcpMethodNotFound = -32601
+
+func answersMCPInitialize(body []byte) bool {
+	// A successful handshake names the negotiated revision. This reads
+	// result.protocolVersion directly rather than calling negotiatedVersion, which
+	// falls back to latestStable when the server echoed nothing and so never
+	// reports absence. That fallback is correct for choosing a header value and
+	// wrong for detecting whether this is an MCP server at all.
+	var envelope struct {
+		Result *struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Result != nil &&
+		envelope.Result.ProtocolVersion != "" {
+		return true
+	}
+	code, hasErr := jsonRPCErrorCode(body)
+	if !hasErr {
+		return false
+	}
+	// Method not found is the answer from something that does not implement
+	// initialize at all, which is what an A2A agent or any other JSON-RPC service
+	// returns. It is not an MCP server.
+	if code == mcpMethodNotFound {
+		return false
+	}
+	// An error in the range the modern revision reserves is MCP-specific.
+	if code >= modernErrCodeMin && code <= modernErrCodeMax {
+		return true
+	}
+	// An auth rejection also proves an endpoint is listening and processing the
+	// request, which is what this oracle asks. Excluding it would give every
+	// credential-gated MCP server a spurious "not tested" on all five OAuth rules
+	// when the honest answer is that it publishes no OAuth metadata and there is
+	// nothing for them to test. Measured against
+	// testdata/mcp_secret_canary_server.py, which answers initialize with
+	// -32000 "authentication failed for token".
+	if authFlavoredError(code, jsonRPCErrorMessage(body)) {
+		return true
+	}
+	// Otherwise require the error to be about the protocol version, which is what
+	// a legacy server rejecting the offered revision says.
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "protocolversion") ||
+		strings.Contains(lower, "protocol version") ||
+		strings.Contains(lower, "unsupported protocol")
+}
+
+// jsonRPCErrorMessage extracts the error message from a JSON-RPC envelope, or ""
+// when there is none.
+func jsonRPCErrorMessage(body []byte) string {
+	var envelope struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Error == nil {
+		return ""
+	}
+	return envelope.Error.Message
 }
 
 // initAndList performs an MCP initialize with the given protocol version, sends

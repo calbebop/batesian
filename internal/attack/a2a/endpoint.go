@@ -81,7 +81,27 @@ func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
 	if card, found := fetchDiscoveryCard(ctx, client, baseURL); found {
 		if cardURL := selectJSONRPCURL(card); cardURL != "" {
-			return pinToTargetHost(cardURL, baseURL), true
+			// The card's path has to answer before it is returned as reachable.
+			//
+			// It used to be returned on trust, which broke the contract this
+			// function's own doc comment states. A card advertises the URL clients
+			// reach the agent on, which for anything behind a proxy is not the path
+			// the operator is scanning: an agent published at
+			// https://public.example/a2a/v1 may be mounted at / on the origin. The
+			// card URL then 404s, the candidate walk that would have found / was
+			// skipped, and ok=true told a dozen rules their failed probes were a
+			// tested-clean result. Measured against a wide-open agent in exactly
+			// that shape: two POSTs to the dead path, nothing reached the handler,
+			// and a-task-idor reported clean.
+			//
+			// probeJSONRPCEndpoint accepts a 401/403, so an auth-gated card path is
+			// still recognized and this does not narrow what counts as reachable.
+			pinned := pinToTargetHost(cardURL, baseURL)
+			if probeJSONRPCEndpoint(ctx, client, pinned) {
+				return pinned, true
+			}
+			// Fall through: the card's claim did not hold at this host, so try the
+			// conventional paths rather than reporting an unreachable endpoint.
 		}
 	}
 	for _, ep := range candidateEndpoints(baseURL) {
