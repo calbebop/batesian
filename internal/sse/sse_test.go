@@ -240,3 +240,60 @@ func (r *blockingAfterFirst) Read(p []byte) (int, error) {
 }
 
 func (r *blockingAfterFirst) unblock() { close(r.ch) }
+
+// FirstMatching must skip events the predicate rejects. Taking the first data
+// event was wrong for MCP Streamable HTTP, which lets a server interleave
+// notifications on the POST response stream ahead of the response.
+func TestFirstMatching_SkipsNonResponses(t *testing.T) {
+	stream := "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n" +
+		"data: {}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"method\":\"roots/list\"}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n"
+
+	got, found, err := FirstMatching(strings.NewReader(stream), 0, IsJSONRPCResponse)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected the response event to be found")
+	}
+	if !strings.Contains(string(got), `"result"`) {
+		t.Errorf("returned the wrong event: %s", got)
+	}
+}
+
+func TestFirstMatching_NoMatchReportsNotFound(t *testing.T) {
+	stream := "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n"
+	got, found, err := FirstMatching(strings.NewReader(stream), 0, IsJSONRPCResponse)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found || got != nil {
+		t.Errorf("expected found=false and no payload, got found=%v payload=%q", found, got)
+	}
+}
+
+// A nil predicate keeps the old first-data-event behaviour, for callers that want it.
+func TestFirstMatching_NilPredicateTakesFirst(t *testing.T) {
+	stream := "data: first\n\ndata: second\n\n"
+	got, found, err := FirstMatching(strings.NewReader(stream), 0, nil)
+	if err != nil || !found || string(got) != "first" {
+		t.Errorf("got %q found=%v err=%v, want \"first\"", got, found, err)
+	}
+}
+
+func TestIsJSONRPCResponse(t *testing.T) {
+	cases := map[string]bool{
+		`{"jsonrpc":"2.0","id":1,"result":{}}`:               true,
+		`{"jsonrpc":"2.0","id":1,"error":{"code":-32001}}`:   true,
+		`{"jsonrpc":"2.0","method":"notifications/message"}`: false,
+		`{"jsonrpc":"2.0","id":"s1","method":"roots/list"}`:  false,
+		`{}`:                                false,
+		`{"jsonrpc":"2.0","id":1,"result":`: true, // malformed: the server's answer, surfaced
+	}
+	for payload, want := range cases {
+		if got := IsJSONRPCResponse([]byte(payload)); got != want {
+			t.Errorf("IsJSONRPCResponse(%s) = %v, want %v", payload, got, want)
+		}
+	}
+}

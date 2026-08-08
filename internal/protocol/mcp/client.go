@@ -413,11 +413,20 @@ func readBody(resp *http.Response) []byte {
 	return b
 }
 
-// readFirstSSEData returns the joined payload of the first SSE event from r,
+// readFirstSSEData returns the JSON-RPC response carried on an SSE stream,
 // rejoining a payload split across several "data:" lines. The stream is not
-// drained. A read error maps to a nil body.
+// drained.
+//
+// It took the FIRST data event, which is wrong for MCP Streamable HTTP: the
+// binding permits the server to interleave notifications and server-initiated
+// requests on the POST response stream ahead of the response, so a progress
+// notification became the parsed handshake and probe reported the target as not an
+// MCP server. Same defect as the scan client had, same shared predicate.
+//
+// A read error still maps to a nil body here. The recon path treats a nil body as
+// "no usable answer" throughout, and changing that is a wider change than this.
 func readFirstSSEData(r io.Reader) []byte {
-	payload, _ := sse.FirstData(r, maxBodyBytes)
+	payload, _, _ := sse.FirstMatching(r, maxBodyBytes, sse.IsJSONRPCResponse)
 	return payload
 }
 

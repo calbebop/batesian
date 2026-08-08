@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -296,8 +297,11 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 	var respBody []byte
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
-		// SSE streams never close; read only the first data event then stop.
-		respBody = readFirstSSEEvent(resp.Body)
+		// SSE streams never close; read only up to the response event then stop.
+		respBody, err = readSSEResponse(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading SSE response from %s: %w", url, err)
+		}
 	} else {
 		// Read one byte past the limit so exceeding it is detectable. A plain
 		// LimitReader at maxBody returns a truncated body and no error, which
@@ -324,13 +328,40 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 // readFirstSSEEvent returns the joined payload of the first SSE event. The
 // stream is not drained: the parser stops after the first event so a stream the
 // server never closes (standard for MCP streamable HTTP) cannot block the scan.
-// A payload split across several "data:" lines is rejoined per spec. Errors
-// (an over-long line, a read failure) map to a nil body, which callers treat as
-// "no result".
-func readFirstSSEEvent(r io.Reader) []byte {
-	payload, _ := sse.FirstData(r, maxBody)
-	return payload
+// readSSEResponse returns the JSON-RPC response carried on an SSE stream. A
+// payload split across several "data:" lines is rejoined per spec.
+//
+// Two things this used to get wrong, both silent:
+//
+// It discarded sse.FirstData's error, so an over-long line or a mid-stream read
+// failure produced a nil body on an HTTP 200. Response.IsAccepted unmarshals the
+// body and returns false for nil, so a broken read was indistinguishable from the
+// server refusing the request, for every rule using that oracle. The JSON branch
+// beside it goes to deliberate lengths to make the same condition an explicit
+// error; this branch, which is the one every real MCP server takes, did not.
+//
+// It also took the FIRST data event as the answer. MCP Streamable HTTP permits the
+// server to send notifications and requests on the POST response stream before the
+// response, so a progress notification or a data-bearing keepalive arriving first
+// became the parsed reply: the real result was never seen, and a rule that gates on
+// a result envelope reported the surface clean.
+//
+// A stream that ends with no response event is reported as an error rather than an
+// empty body, because "the server sent no answer" and "the server refused" are
+// different claims.
+func readSSEResponse(r io.Reader) ([]byte, error) {
+	payload, found, err := sse.FirstMatching(r, maxBody, sse.IsJSONRPCResponse)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errNoSSEResponse
+	}
+	return payload, nil
 }
+
+// errNoSSEResponse means the stream carried no JSON-RPC response event.
+var errNoSSEResponse = errors.New("stream carried no JSON-RPC response event")
 
 // marshalBody encodes body as JSON with template variable expansion applied to string values.
 func marshalBody(body interface{}, vars Vars) ([]byte, error) {
