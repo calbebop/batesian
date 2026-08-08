@@ -2,10 +2,10 @@ package report_test
 
 import (
 	"bytes"
-	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"strings"
 	"testing"
 
+	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
