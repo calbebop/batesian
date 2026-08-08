@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -138,6 +139,13 @@ func TestUnauthFamily_GatewayFailureIsInconclusive(t *testing.T) {
 			}
 			if !errors.Is(err, attack.ErrInconclusive) {
 				t.Errorf("a 502 established nothing, so this must be inconclusive, got err=%v", err)
+			}
+			// The handshake succeeded here, so the reason must say what actually
+			// happened. Reported as bare unreachability, this sends the operator
+			// looking for a network fault when the server is answering fine.
+			if !strings.Contains(err.Error(), "handshake succeeded") {
+				t.Errorf("inconclusive reason should record that the handshake succeeded and the "+
+					"probe returned no verdict, got: %v", err)
 			}
 		})
 	}

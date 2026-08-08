@@ -73,9 +73,11 @@ func TestRun_ModernEraServerReportsUnsupportedProtocol(t *testing.T) {
 	if !res.Skipped {
 		t.Fatalf("expected a skipped result, got skipped=%v err=%v findings=%d", res.Skipped, res.Err, len(res.Findings))
 	}
-	// The generic prefix is preserved so existing reporting keeps working.
-	if !strings.Contains(res.SkipMsg, "could not reach") {
-		t.Errorf("skip message lost its generic prefix: %q", res.SkipMsg)
+	// A supplied reason replaces the generic sentence rather than being appended to
+	// it. This server was reached and answered; claiming it could not be reached is
+	// the network-fault misdirection this test's premise is about.
+	if strings.Contains(res.SkipMsg, "could not reach") {
+		t.Errorf("skip message claims the target was unreachable, but it answered the era probe: %q", res.SkipMsg)
 	}
 	// And the actionable detail is present.
 	if !strings.Contains(res.SkipMsg, "2026-07-28") {
