@@ -11,6 +11,7 @@ package sse
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"strings"
 )
@@ -166,4 +167,72 @@ func FirstData(r io.Reader, max int64) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(ev.Data), nil
+}
+
+// maxScannedEvents bounds how many events FirstMatching will look at. The byte
+// budget already bounds the read; this additionally bounds a stream that emits
+// many small non-matching events, so a keepalive loop cannot spin.
+const maxScannedEvents = 64
+
+// FirstMatching returns the joined payload of the first event whose data
+// satisfies want, skipping events that do not. It reads at most max bytes and
+// stops as soon as one matches, without draining the rest of the stream.
+//
+// This exists because taking the FIRST data event is wrong for MCP Streamable
+// HTTP. The binding permits a server to send notifications and requests on the
+// POST response stream before the response itself, so a progress notification or
+// a data-bearing keepalive arriving first was read as the answer to the request.
+//
+// found is false when the stream ended with no matching event, which the caller
+// must not confuse with an empty answer. A non-nil error means the stream could
+// not be read.
+func FirstMatching(r io.Reader, max int64, want func([]byte) bool) (data []byte, found bool, err error) {
+	if max <= 0 {
+		max = MaxBytes
+	}
+	rd := NewReaderSize(io.LimitReader(r, max), int(max))
+	for i := 0; i < maxScannedEvents; i++ {
+		ev, err := rd.Next()
+		if err == io.EOF {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if ev.Data == "" {
+			continue
+		}
+		payload := []byte(ev.Data)
+		if want == nil || want(payload) {
+			return payload, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// IsJSONRPCResponse reports whether an SSE payload is a reply to a request rather
+// than a server-initiated notification or a keepalive. Pass it to FirstMatching.
+//
+// This lives here, in the transport package, because both consumers of SSE in this
+// repository carry JSON-RPC over it: the scan client in internal/attack and the
+// recon client in internal/protocol/mcp. Both took the first data event and both
+// were wrong in the same way, and a second copy of this judgement is how three
+// other predicates in this codebase drifted apart.
+//
+// A response carries "result" or "error". A notification carries "method" and no
+// "id", which is exactly what MCP Streamable HTTP allows a server to interleave on
+// the POST response stream. An "id" with neither result nor error is a
+// server-initiated request, also permitted, and also not the caller's answer.
+//
+// Unparseable data returns true: a server sending malformed JSON has answered, and
+// that is a result the caller should see rather than something to scan past.
+func IsJSONRPCResponse(payload []byte) bool {
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil {
+		return true
+	}
+	return len(envelope.Result) > 0 || len(envelope.Error) > 0
 }
