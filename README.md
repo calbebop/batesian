@@ -78,6 +78,13 @@ batesian scan --target https://agent.example.com \
   --principal name=tenant-a,token="$TOKEN_A",tenant=A \
   --principal name=tenant-b,token="$TOKEN_B",tenant=B
 
+# When the target resolves the tenant from a routing header rather than the token,
+# give each identity its header, or the multi-tenant rules compare two identities
+# the server cannot tell apart. header= repeats per principal.
+batesian scan --target https://agent.example.com \
+  --principal name=tenant-a,token="$TOKEN_A",tenant=A,header=X-Tenant-Id:A \
+  --principal name=tenant-b,token="$TOKEN_B",tenant=B,header=X-Tenant-Id:B
+
 batesian scan --target https://agent.example.com --dry-run
 
 batesian scan --target https://mcp.example.com --proxy 127.0.0.1:8080 --skip-tls
