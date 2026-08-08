@@ -70,11 +70,14 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	// Step 1: obtain a task owned by delegator A. Prefer an upstream artifact
 	// (true cross-rule chaining); otherwise create one as A.
 	taskID, contextID, consumed := e.consumeOwnedTask(bb, a)
+	var obs setupObservation
 	if taskID == "" {
-		taskID, contextID, _ = e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+		taskID, contextID, _, obs = e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	}
 	if taskID == "" {
-		return nil, nil // could not establish a delegator-owned task
+		// No delegator-owned task, so the chain-of-custody boundary this rule reports
+		// on was never exercised. Clean only when the agent implements no task surface.
+		return nil, obs.err()
 	}
 
 	// Step 2: discriminator. An unauthenticated continuation of A's task must be
@@ -108,7 +111,12 @@ func (e *DelegationIntegrityExecutor) consumeOwnedTask(bb *attack.Blackboard, a 
 // createTask creates a task as the given principal, trying the A2A v1.0 shape
 // first and falling back to the v0.3 slash-method shape. Returns the created
 // task/context IDs and whether creation was accepted.
-func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string, p attack.Principal, randID string) (taskID, contextID string, accepted bool) {
+// The observation is returned so a caller that got no task can say why. Both wires
+// are classified, because losing the first would let a v1.0-only agent that refuses
+// for auth reasons look like an agent with no task surface: the v0.3 fallback
+// answers -32601, and that maps to a clean result.
+func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range p.Headers {
 		v1Headers[k] = v
@@ -126,6 +134,8 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 		},
 	})
 	if err != nil || !resp.IsAccepted() {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
@@ -140,10 +150,16 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 		})
 	}
 	if err != nil || !resp.IsAccepted() {
-		return "", "", false
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
-	return taskID, contextID, taskID != ""
+	if taskID == "" {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+	}
+	return taskID, contextID, taskID != "", obs
 }
 
 // continueTask sends a follow-up message that references an existing task/context

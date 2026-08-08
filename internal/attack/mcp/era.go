@@ -64,20 +64,22 @@ const (
 	rankUnauthorized
 )
 
+// mcpCredentialNote is the shared note plus what it means for MCP specifically: a
+// server that refuses an anonymous handshake does not serve the protocol
+// anonymously at all, which is worth saying once rather than leaving the operator
+// to infer it.
+func mcpCredentialNote(credentialed bool) string {
+	note := attack.CredentialNote(credentialed)
+	if !credentialed {
+		note += ", so this server does not serve MCP anonymously"
+	}
+	return note
+}
+
 // initObservation is the best explanation seen while walking the candidates.
 type initObservation struct {
 	rank   int
 	reason string
-}
-
-// credentialNote completes an unauthorized-refusal message with what the request
-// actually presented, which is the part an operator acts on.
-func credentialNote(credentialed bool) string {
-	if credentialed {
-		return "even though the request presented the credential this scan was given, " +
-			"so that credential is not accepted here"
-	}
-	return "and the request presented no credential, so this server does not serve MCP anonymously"
 }
 
 // observe keeps o when it explains more than what is already held.
@@ -118,12 +120,12 @@ func classifyInitFailure(endpoint string, credentialed bool, resp *attack.Respon
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return initObservation{rankUnauthorized, fmt.Sprintf(
 			"the MCP handshake at %s was refused with HTTP %d %s",
-			endpoint, resp.StatusCode, credentialNote(credentialed))}
+			endpoint, resp.StatusCode, mcpCredentialNote(credentialed))}
 	}
 	if hasErr && authFlavoredError(code, msg) {
 		return initObservation{rankUnauthorized, fmt.Sprintf(
 			"the MCP handshake at %s was refused as unauthorized (JSON-RPC %d: %q) %s",
-			endpoint, code, msg, credentialNote(credentialed))}
+			endpoint, code, msg, mcpCredentialNote(credentialed))}
 	}
 	if hasErr && code == mcpMethodNotFound {
 		return initObservation{rankNotMCP, fmt.Sprintf(

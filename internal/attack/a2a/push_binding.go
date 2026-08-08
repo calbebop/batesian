@@ -62,11 +62,13 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 
 	// Step 1: establish a task owned by A.
 	taskID, consumed := e.ownedTask(bb, a)
+	var obs setupObservation
 	if taskID == "" {
-		taskID = e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+		taskID, obs = e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	}
 	if taskID == "" {
-		return nil, nil
+		// No task owned by A, so the push-config binding was never tested.
+		return nil, obs.err()
 	}
 
 	// Step 1b: control - A configures a webhook with a unique marker URL. If even
@@ -104,7 +106,13 @@ func (e *PushBindingExecutor) ownedTask(bb *attack.Blackboard, a attack.Principa
 	return "", false
 }
 
-func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string, p attack.Principal, randID string) string {
+// The observation is returned so a caller that got no task can say why. Both wires
+// are classified, because losing the first would let a v1.0-only agent that refuses
+// for auth reasons look like an agent with no task surface: the v0.3 fallback
+// answers -32601, and that maps to a clean result.
+func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	p attack.Principal, randID string) (string, setupObservation) {
+	var obs setupObservation
 	headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range p.Headers {
 		headers[k] = v
@@ -122,6 +130,8 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 		},
 	})
 	if err != nil || !resp.IsAccepted() {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-pb-create-" + p.Name + "-" + randID,
@@ -136,10 +146,16 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 		})
 	}
 	if err != nil || !resp.IsAccepted() {
-		return ""
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
-	return taskID
+	if taskID == "" {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+	}
+	return taskID, obs
 }
 
 // setPush attempts to register a push-notification config for taskID, trying the

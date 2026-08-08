@@ -92,6 +92,14 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	if err == nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
+	// Why no binding accepted a push registration. Classified from the responses the
+	// attempts below already have, so a refused credential is not reported as "this
+	// agent does not fetch attacker-controlled callbacks".
+	var obs setupObservation
+	credentialed := client.PresentsCredential(endpoint)
+	if err != nil || !sendResp.IsAccepted() {
+		obs.observe(classifyTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
+	}
 	if err == nil && sendResp.IsAccepted() {
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
@@ -130,6 +138,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03SendRequest(callbackURL, token, vars.RandID))
 		if err2 == nil && sendResp2.StatusCode != 404 {
 			reached = true
+		}
+		if err2 != nil || !sendResp2.IsAccepted() {
+			obs.observe(classifyTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
 		}
 		if err2 == nil && sendResp2.IsAccepted() {
 			// A task id is what makes this a registration rather than a plain
@@ -203,7 +214,15 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		// reached only records a response that was not a 404, which any JSON-RPC
 		// service satisfies. Confirm the target is an A2A agent before calling
 		// this not applicable.
-		return nil, notTestableGiven(ctx, client, vars.BaseURL, endpointOK)
+		if err := notTestableGiven(ctx, client, vars.BaseURL, endpointOK); err != nil {
+			return nil, err
+		}
+		// It is an A2A agent that accepted no push registration. "Push is not
+		// supported here" is a genuine not-applicable and stays clean; a refused
+		// credential is not, because this rule's clean result claims the agent does
+		// not fetch attacker-controlled callback URLs and nothing was ever registered
+		// to find out.
+		return nil, obs.err()
 	}
 
 	// Wait for OOB callback.

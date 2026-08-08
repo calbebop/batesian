@@ -62,6 +62,9 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	marker := "batesian-roleinj-" + vars.RandID
 
 	reached := false
+	// Why no endpoint could be exercised, when the answer was an authorization
+	// refusal rather than the spec-required rejection of the forged role.
+	var obs setupObservation
 	for _, ep := range endpoints {
 		// Try both the v1.0 PascalCase method (SDK >=1.0.0) and the legacy slash
 		// method (SDK v0.3 compat), each carrying the marker as the message text.
@@ -98,8 +101,15 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 			reached = true
 		}
 
-		// Server rejected the agent-role message (per spec). Not vulnerable here.
+		// Server rejected the agent-role message (per spec). Not vulnerable here, which
+		// is a real pass: refusing a client-claimed agent role is what the
+		// specification requires. An AUTHORIZATION refusal is not that, though. It
+		// means the message never reached the role handling, so a clean result would
+		// claim this agent does not preserve a forged role without ever having offered
+		// it one.
 		if !resp.IsAccepted() || !looksLikeTask(resp.Body) {
+			obs.observe(classifyTaskSetup("sending a message claiming the agent role", ep,
+				client.PresentsCredential(ep), resp))
 			continue
 		}
 
@@ -117,7 +127,10 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	// reached only records that something answered without a 404, which any
 	// JSON-RPC service satisfies. Confirm the target is an A2A agent before
 	// reporting this as a clean result.
-	return nil, notTestableGiven(ctx, client, vars.BaseURL, endpointOK)
+	if err := notTestableGiven(ctx, client, vars.BaseURL, endpointOK); err != nil {
+		return nil, err
+	}
+	return nil, obs.errIfAuthRefused()
 }
 
 // evaluateAcceptance reads the created task's history and classifies the result.

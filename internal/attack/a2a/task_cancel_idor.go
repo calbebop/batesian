@@ -74,9 +74,12 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 
 	// Step 1: create a cancelable task owned by A.
-	taskID := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+	taskID, obs := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	if taskID == "" {
-		return nil, nil // not a responsive A2A server, or no task could be created
+		// No cancelable task, so the ownership boundary on cancel was never tested.
+		// The comment here used to read "or no task could be created" and returned a
+		// clean result for exactly that case.
+		return nil, obs.err()
 	}
 
 	// Step 2: discriminator. Attempt to cancel A's task with no credentials.
@@ -108,7 +111,13 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 // createTask creates a task as the given principal, trying the A2A v1.0 shape
 // first and falling back to the v0.3 slash-method shape. Returns the created task
 // id, or empty if creation was not accepted.
-func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string, p attack.Principal, randID string) string {
+// The observation is returned so a caller that got no task can say why. Both wires
+// are classified, because losing the first would let a v1.0-only agent that refuses
+// for auth reasons look like an agent with no task surface: the v0.3 fallback
+// answers -32601, and that maps to a clean result.
+func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	p attack.Principal, randID string) (string, setupObservation) {
+	var obs setupObservation
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range p.Headers {
 		v1Headers[k] = v
@@ -126,6 +135,8 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 		},
 	})
 	if err != nil || !resp.IsAccepted() {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
@@ -140,10 +151,16 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 		})
 	}
 	if err != nil || !resp.IsAccepted() {
-		return ""
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
-	return taskID
+	if taskID == "" {
+		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			c.PresentsCredential(endpoint), resp))
+	}
+	return taskID, obs
 }
 
 // cancelTask attempts to cancel taskID over the given client and classifies the

@@ -102,7 +102,11 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		if !ok && !restReached {
 			return nil, attack.ErrInconclusive
 		}
-		return nil, nil
+		// It answered, and no task was created. Only an agent that does not implement
+		// task creation is a clean result here; a refused credential means this rule
+		// never got to look at the ownership boundary it reports on.
+		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
+			authedClient.PresentsCredential(endpoint), ownerResp).err()
 	}
 	taskID, contextID := extractTaskContext(ownerResp.Body)
 	if taskID == "" {
@@ -115,7 +119,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		if !ok && !restReached {
 			return nil, attack.ErrInconclusive
 		}
-		return nil, nil
+		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
+			authedClient.PresentsCredential(endpoint), ownerResp).err()
 	}
 
 	// Step 2: Auth-enforcement discriminator. Attempt the same creation with no
