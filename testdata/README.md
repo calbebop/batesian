@@ -50,6 +50,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
+| `a2a_secured_agent.py` | 3111 | negative control, two postures: NO rule may fire on `secured`; `a2a-multitenant-isolation-001`, `a2a-delegation-integrity-001`, `a2a-task-cancel-idor-001` and `a2a-push-binding-001` must all fire on `idor` (needs `--token tok-a` and two principals, see below) |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
@@ -205,6 +206,33 @@ as "the modern wire is served", which turned that server's `400 Bad Request:
 protocol version "2026-07-28" is only supported on stateless HTTP servers` into
 the refused half of an authorization asymmetry and produced a critical
 `mcp-era-downgrade-001` finding against a target with no authorization at all.
+
+**`a2a_secured_agent.py` is the only fixture here that ENFORCES AUTHORIZATION**, and
+it is a negative control rather than a target. Every other A2A fixture enforces
+nothing, so the cross-principal rules were only ever exercised in the direction where
+they fire; three false negatives were found by pointing the scanner at an agent that
+enforces authorization and has one specific bug, and none of them was reachable from
+this directory.
+
+```sh
+python testdata/a2a_secured_agent.py secured  # NO rule may fire: any finding is a false positive
+python testdata/a2a_secured_agent.py idor     # the four ownership rules must all fire
+```
+
+Ownership enforcement is the only difference between the two postures, which is what
+makes a diff between them mean something. Both require a bearer token, so run it with
+`--token tok-a` and two principals; without them the rules report not tested, and say
+so. `a2a-peer-impersonation-001` reports not tested against both, because the fixture
+publishes no trusted issuer.
+
+Its wire shapes are reproduced from captured `a2a-sdk` responses rather than written
+from the specification, because a fixture built from the scanner's own assumptions
+vouches for the scanner instead of testing it. The shape that matters most is that
+v1.0 `SendMessage` nests the Task under `result.task` while v1.0 `GetTask` returns it
+flat; reading only the flat one is what hid a false negative in
+`a2a-delegation-integrity-001`. The equivalent check runs in CI as the Go posture
+matrix in `internal/attack/a2a/posture_matrix_test.go`, which covers the ownership
+axis in process; this fixture is the all-rules version, on a real socket.
 
 **`mcp_session_as_credential_server.py` takes a posture argument**, defaulting to
 `vulnerable`, and needs `--token tok-a`:
