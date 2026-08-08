@@ -57,6 +57,15 @@ against a server this rule set cannot handshake with they report **inconclusive
 or skip**, never a clean pass. A target that could not be exercised is reported
 as not tested rather than as secure.
 
+A skip names the reason where the handshake explained itself, because the actions
+they call for differ. The common one is a server that requires a credential
+scanned without one: it answers every request and refuses the handshake, so the
+skip says so and points at `--token`, rather than reporting a target that is
+plainly reachable as unreachable. An endpoint that answers but does not implement
+`initialize` is reported as not speaking MCP. `could not reach a testable
+endpoint` is now reserved for what it says: nothing answered, or no candidate path
+is served.
+
 ## OAuth-gated rules
 
 `mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-token-replay-001`,
