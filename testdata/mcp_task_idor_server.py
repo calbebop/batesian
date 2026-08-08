@@ -3,13 +3,19 @@ Deliberately vulnerable MCP test server for validating:
   - mcp-task-idor-001: MCP 2025-11-25 tasks are not bound to the authorization
     context that created them.
 
-The server enforces authentication on task creation (so the rule's
-discriminator passes) but applies no scoping to tasks/get or tasks/result, so
-any authenticated session can read another session's task and its result.
+Postures:
+  - "vulnerable" (default): authentication is enforced on task creation, but no
+    scoping is applied to tasks/get, tasks/result or tasks/list, so any
+    authenticated session can read another session's task and its result.
+  - "create-open": task creation needs no credentials, while the read methods
+    still require a Bearer token and are still unscoped. Authentication is
+    enforced on the surface the rule tests, so the cross-context read is still
+    an authorization failure and must still be reported.
 
-Run: python testdata/mcp_task_idor_server.py
+Run: python testdata/mcp_task_idor_server.py [posture]
 """
 import json
+import sys
 import uuid
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -18,6 +24,9 @@ from starlette.routing import Route
 import uvicorn
 
 PORT = 7798
+
+POSTURES = ("vulnerable", "create-open")
+POSTURE = sys.argv[1] if len(sys.argv) > 1 else "vulnerable"
 
 # taskId -> {"owner": session_id, "topic": str}
 TASKS = {}
@@ -76,9 +85,9 @@ async def mcp_endpoint(request: Request) -> Response:
     if method == "tools/call":
         if "task" not in params:
             return error(-32600, "Task augmentation required for this tool")
-        # Authentication IS enforced here, so this is an authorization failure
-        # rather than a missing-authentication one.
-        if not authed:
+        # Under the default posture authentication is enforced here. Under
+        # create-open it is not, and the read methods below carry the boundary.
+        if POSTURE != "create-open" and not authed:
             return Response(status_code=401)
         tid = uuid.uuid4().hex
         TASKS[tid] = {"owner": sid, "topic": params.get("arguments", {}).get("topic", "")}
@@ -87,6 +96,11 @@ async def mcp_endpoint(request: Request) -> Response:
             "createdAt": "2026-07-20T07:00:00Z", "lastUpdatedAt": "2026-07-20T07:00:00Z",
             "ttl": 60000, "pollInterval": 500,
         }})
+
+    # Under create-open the read methods are the only authenticated surface, so
+    # an anonymous caller must be refused here even though creation was open.
+    if POSTURE == "create-open" and method in ("tasks/get", "tasks/result", "tasks/list") and not authed:
+        return error(-32001, "Unauthorized")
 
     # Vulnerable: neither of the following checks the requesting session against
     # the task's owner, so any caller holding a task id can read it.
@@ -127,6 +141,10 @@ app = Starlette(routes=[
 ])
 
 if __name__ == "__main__":
-    print(f"[*] MCP task-IDOR vulnerable server on port {PORT}", flush=True)
+    if POSTURE not in POSTURES:
+        sys.exit(f"unknown posture {POSTURE!r}; expected one of {', '.join(POSTURES)}")
+    print(f"[*] MCP task-IDOR vulnerable server ({POSTURE}) on port {PORT}", flush=True)
     print("[*] Vulnerability: tasks/get and tasks/result are not scoped to the creating session", flush=True)
+    if POSTURE == "create-open":
+        print("[*] Task creation is open; the read methods require a Bearer token", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

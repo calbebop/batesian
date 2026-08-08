@@ -58,7 +58,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_batch_bypass_server.py` | 7795 | `mcp-jsonrpc-batch-bypass-001` |
 | `mcp_completion_unauth_server.py` | 7796 | `mcp-completion-unauth-001` |
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
-| `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s) |
+| `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s; two postures, see below) |
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
 | `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
@@ -122,6 +122,22 @@ rules that treat an unparseable probe the same as a refused one reported those
 surfaces clean. The large server gave 1 finding where the small one gave 7, so a
 server could hide every unauthenticated-access finding by being large. If the two
 invocations ever disagree again, a body is being truncated somewhere.
+
+**`mcp_task_idor_server.py` takes a posture argument**, defaulting to `vulnerable`:
+
+```sh
+python testdata/mcp_task_idor_server.py              # creation and reads authenticated
+python testdata/mcp_task_idor_server.py create-open  # only reads authenticated
+```
+
+Both postures must produce the same three findings. The rule suppresses itself when
+a server authenticates nothing, because that is `mcp-tools-unauth-001`'s failure
+rather than an IDOR, but it used to decide that from task creation alone. The
+`create-open` posture leaves a task-augmented `tools/call` open while `tasks/get`,
+`tasks/result` and `tasks/list` all require a Bearer token and none of them are
+scoped to the creator. That is a real authorization boundary on the exact surface
+the rule tests, and the scanner reported the server clean. Run both postures when
+touching the discriminator: agreement is the property under test.
 
 **`mcp_new_rules_server.py` takes a posture argument**, defaulting to `open`:
 

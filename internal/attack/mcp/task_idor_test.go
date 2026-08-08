@@ -22,8 +22,11 @@ import (
 //   - "metadata-only": tasks/get leaks across sessions but tasks/result is
 //     scoped => only the tasks/get finding.
 //   - "secure":        tasks are bound to the creating session => silent.
-//   - "no-auth":       task creation succeeds with no credentials, so the
-//     discriminator suppresses the finding => silent.
+//   - "no-auth":       nothing requires credentials, on creation or on reads, so
+//     the discriminator suppresses the finding => silent.
+//   - "create-open":   task creation needs no credentials but reads do, and reads
+//     are not scoped. Authentication really is enforced on the surface this rule
+//     tests, so the boundary B crosses is real => both findings.
 //   - "no-tasks-cap":  the tasks capability is absent => skip.
 //   - "unsafe-tool":   the only task-capable tool carries no safety annotations,
 //     so the rule refuses to invoke it => skip.
@@ -105,8 +108,8 @@ func taskIDORServer(mode string) *httptest.Server {
 				rpcErr(-32600, "task augmentation required")
 				return
 			}
-			// Every mode except no-auth requires credentials to create a task.
-			if mode != "no-auth" && !authed {
+			// Only no-auth and create-open let an anonymous caller create a task.
+			if mode != "no-auth" && mode != "create-open" && !authed {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -121,6 +124,11 @@ func taskIDORServer(mode string) *httptest.Server {
 			}})
 
 		case "tasks/get":
+			// create-open gates the read surface even though creation is open.
+			if mode == "create-open" && !authed {
+				rpcErr(-32001, "Unauthorized")
+				return
+			}
 			tid, _ := params["taskId"].(string)
 			mu.Lock()
 			own, exists := owner[tid]
@@ -137,6 +145,10 @@ func taskIDORServer(mode string) *httptest.Server {
 			})
 
 		case "tasks/result":
+			if mode == "create-open" && !authed {
+				rpcErr(-32001, "Unauthorized")
+				return
+			}
 			tid, _ := params["taskId"].(string)
 			mu.Lock()
 			own, exists := owner[tid]
@@ -151,6 +163,10 @@ func taskIDORServer(mode string) *httptest.Server {
 			})
 
 		case "tasks/list":
+			if mode == "create-open" && !authed {
+				rpcErr(-32001, "Unauthorized")
+				return
+			}
 			mu.Lock()
 			var listed []interface{}
 			for tid, own := range owner {
@@ -298,6 +314,61 @@ func TestTaskIDOR_NoAuthSuppressed(t *testing.T) {
 
 	if findings := runTaskIDOR(t, srv); len(findings) != 0 {
 		t.Errorf("expected 0 findings when the server enforces no auth at all, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestTaskIDOR_CreateOpenButReadsGated: task creation needs no credentials, but
+// tasks/get, tasks/result and tasks/list all refuse an anonymous caller and none
+// of them are scoped to the creator.
+//
+// Open creation alone used to suppress the whole rule, which lost this server. The
+// suppression exists to avoid reporting an IDOR against a server that authenticates
+// nothing, and this server does authenticate the surface the rule tests: anonymous
+// reads are refused, authenticated reads are not, and any authenticated principal
+// can read every other principal's task. That is the boundary the spec requires
+// receivers to enforce, so it is reportable.
+func TestTaskIDOR_CreateOpenButReadsGated(t *testing.T) {
+	srv := taskIDORServer("create-open")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) == 0 {
+		t.Fatal("expected findings: reads are gated and unscoped, so an authorization boundary was crossed")
+	}
+
+	// The evidence must describe the boundary that was actually measured. Here that
+	// is the refused anonymous read, not a refused creation, which did not happen.
+	for _, f := range findings {
+		if strings.Contains(f.Evidence, "anonymous task creation: refused") {
+			t.Errorf("evidence claims anonymous creation was refused, but this server accepts it: %s", f.Evidence)
+		}
+		if !strings.Contains(f.Evidence, "anonymous tasks/get: refused") {
+			t.Errorf("evidence should cite the anonymous read that was refused, got: %s", f.Evidence)
+		}
+		if !strings.Contains(f.Evidence, "task reads only (anonymous task creation was accepted)") {
+			t.Errorf("evidence should record that only reads are authenticated, got: %s", f.Evidence)
+		}
+	}
+}
+
+// The default posture refuses anonymous task creation, so the discriminator stops
+// there and never issues an anonymous read. The evidence must cite the refused
+// creation rather than a read it did not attempt.
+func TestTaskIDOR_EvidenceCitesTheProbeThatRan(t *testing.T) {
+	srv := taskIDORServer("vuln")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) == 0 {
+		t.Fatal("expected findings against the unscoped server")
+	}
+	for _, f := range findings {
+		if !strings.Contains(f.Evidence, "anonymous task creation: refused") {
+			t.Errorf("evidence should cite the refused creation, got: %s", f.Evidence)
+		}
+		if strings.Contains(f.Evidence, "anonymous tasks/get: refused") {
+			t.Errorf("no anonymous read was attempted, so the evidence must not cite one: %s", f.Evidence)
+		}
 	}
 }
 
