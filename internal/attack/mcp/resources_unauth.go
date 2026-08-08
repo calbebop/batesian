@@ -253,6 +253,10 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 // requests; omitting it causes 4xx errors that silently suppress findings.
 func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL string) (mcpSession, error) {
 	endpoints := endpointCandidates(baseURL)
+	// Why the walk failed, so a rule that could not run can say what happened
+	// instead of sending the operator to check their network. Classified from the
+	// responses this loop already has, so it costs no extra requests.
+	var observed initObservation
 	for _, ep := range endpoints {
 		initResp, err := client.POST(ctx, ep, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -264,10 +268,11 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 				"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 			},
 		})
-		if err != nil || !initResp.IsSuccess() {
-			continue
+		if err != nil {
+			continue // transport failure: nothing answered, so nothing to explain
 		}
-		if !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if !initResp.IsSuccess() || !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+			observed.observe(classifyInitFailure(ep, initResp))
 			continue
 		}
 
@@ -292,6 +297,13 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 	// which has no initialize method at all.
 	if err := modernEraReason(ctx, client, endpoints); err != nil {
 		return mcpSession{}, err
+	}
+
+	// Something answered and explained itself. Era detection still gets first say,
+	// because "your server speaks a revision we do not" is a better answer than the
+	// refusal that revision produced.
+	if observed.rank > rankNothing {
+		return mcpSession{}, handshakeRefusal{observed.reason}
 	}
 
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)

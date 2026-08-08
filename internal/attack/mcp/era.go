@@ -19,16 +19,118 @@ var errModernEra = errors.New("server implements a protocol era these rules do n
 // server rather than an unreachable one.
 func IsModernEraErr(err error) bool { return errors.Is(err, errModernEra) }
 
+// handshakeRefusal carries why an initialize handshake did not complete, in terms
+// an operator can act on.
+//
+// It is a distinct type so inconclusive can tell a diagnosis apart from an
+// internal error: only a refusal the walk actually classified reaches a scan
+// report, and anything else collapses to the generic reachability message rather
+// than leaking implementation detail as if it were a finding about the target.
+type handshakeRefusal struct{ reason string }
+
+func (h handshakeRefusal) Error() string { return h.reason }
+
 // inconclusive converts an initializeMCP failure into the error a rule should
 // return. Either way the rule was not exercised and the engine records it as
-// skipped rather than clean, but a modern-era target carries its reason forward
-// so the operator learns the protocol version is unsupported instead of being
-// told only that nothing was reachable.
+// skipped rather than clean, but a classified failure carries its reason forward
+// so the operator learns what actually happened.
+//
+// The default message, "could not reach a testable endpoint", sends an operator to
+// look at their network. That is right when nothing answered and wrong the rest of
+// the time, and the most common wrong case is the ordinary one: scanning a server
+// that requires a credential without passing one. The server answers every
+// request, refuses the handshake, and twelve rules used to report it as
+// unreachable.
 func inconclusive(err error) error {
 	if IsModernEraErr(err) {
 		return fmt.Errorf("%w: %s", attack.ErrInconclusive, err)
 	}
+	var refusal handshakeRefusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("%w: %s", attack.ErrInconclusive, refusal.reason)
+	}
 	return attack.ErrInconclusive
+}
+
+// How much a failed candidate tells us. The candidate list is walked in a fixed
+// order (/mcp, /, /api, /rpc), so a 404 from a path the server does not serve can
+// be seen before the auth refusal from the path it does. The reason therefore has
+// to be ranked rather than last-one-wins, or the message depends on path order.
+const (
+	rankNothing = iota
+	rankStatusOnly
+	rankNotMCP
+	rankRefused
+	rankUnauthorized
+)
+
+// initObservation is the best explanation seen while walking the candidates.
+type initObservation struct {
+	rank   int
+	reason string
+}
+
+// observe keeps o when it explains more than what is already held.
+func (i *initObservation) observe(o initObservation) {
+	if o.rank > i.rank {
+		*i = o
+	}
+}
+
+// classifyInitFailure explains why one candidate did not complete a handshake.
+//
+// The ranking is about what an operator can do next. An unauthorized refusal is
+// the top rank because it names the fix; "answered but does not implement
+// initialize" is above a bare status because it says the target is not MCP at all
+// rather than unreachable.
+func classifyInitFailure(endpoint string, resp *attack.Response) initObservation {
+	// A path the server does not serve explains nothing: the candidate walk exists
+	// precisely because the endpoint is unknown, so most of these 404s are the cost
+	// of looking rather than a fact about the target. Reporting one as the reason
+	// would name an arbitrary candidate and frame a routing miss as a refused
+	// handshake. When every candidate is absent, the generic reachability message is
+	// the honest answer.
+	if endpointAbsent(resp) {
+		return initObservation{}
+	}
+
+	code, hasErr := jsonRPCErrorCode(resp.Body)
+	msg := jsonRPCErrorMessage(resp.Body)
+
+	// An auth refusal can arrive either as an HTTP status or as a JSON-RPC error at
+	// HTTP 200, which is what the real SDKs do, so both shapes are checked.
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return initObservation{rankUnauthorized, fmt.Sprintf(
+			"the MCP handshake at %s was refused with HTTP %d, so this server requires a "+
+				"credential and the scan carried none; pass --token or a --principal",
+			endpoint, resp.StatusCode)}
+	}
+	if hasErr && authFlavoredError(code, msg) {
+		return initObservation{rankUnauthorized, fmt.Sprintf(
+			"the MCP handshake at %s was refused as unauthorized (JSON-RPC %d: %q), so this "+
+				"server requires a credential and the scan carried none; pass --token or a --principal",
+			endpoint, code, msg)}
+	}
+	if hasErr && code == mcpMethodNotFound {
+		return initObservation{rankNotMCP, fmt.Sprintf(
+			"%s answered but does not implement the MCP initialize method (JSON-RPC %d), so "+
+				"nothing at this target speaks MCP", endpoint, code)}
+	}
+	if hasErr {
+		return initObservation{rankRefused, fmt.Sprintf(
+			"the MCP handshake at %s was refused (JSON-RPC %d: %q)", endpoint, code, msg)}
+	}
+	if !resp.IsSuccess() {
+		return initObservation{rankStatusOnly, fmt.Sprintf(
+			"the MCP handshake at %s was answered with HTTP %d and no JSON-RPC error",
+			endpoint, resp.StatusCode)}
+	}
+	// HTTP 2xx, no JSON-RPC error, and yet not a handshake: something is there and
+	// it is not answering as an MCP server.
+	return initObservation{rankNotMCP, fmt.Sprintf(
+		"%s answered the handshake with HTTP %d but the reply carried no protocolVersion, "+
+			"serverInfo or capabilities, so it did not complete an MCP handshake",
+		endpoint, resp.StatusCode)}
 }
 
 // MCP split into two incompatible eras. Revisions up to 2025-11-25 ("legacy")
