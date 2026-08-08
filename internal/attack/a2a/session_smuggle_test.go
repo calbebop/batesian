@@ -2,8 +2,11 @@ package a2a_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -201,10 +204,16 @@ func TestSessionSmuggle_AcceptedButNormalized(t *testing.T) {
 	}
 }
 
-// TestSessionSmuggle_AcceptedUnverifiable: the server accepts the agent-role
-// message but exposes no retrievable history (GetTask errors). The rule MUST
-// report a RiskIndicator (accepted without rejection, exploitability unconfirmed).
-func TestSessionSmuggle_AcceptedUnverifiable(t *testing.T) {
+// The server accepts the agent-role message but exposes no retrievable history
+// (GetTask errors). This used to be a high/RiskIndicator finding, and it was a
+// finding produced BECAUSE nothing was determined.
+//
+// Acceptance on its own is not the failure. The specification defines the roles by
+// direction and carries no MUST or SHOULD requiring a server to validate or reject a
+// client-supplied role, and both official SDKs accept one, so the old finding rested
+// on a requirement that does not exist. What this rule reports is the STORED turn,
+// and without the history that cannot be established either way: not tested.
+func TestSessionSmuggle_AcceptedUnverifiableIsNotTested(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -223,13 +232,82 @@ func TestSessionSmuggle_AcceptedUnverifiable(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("acceptance alone is not a finding, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	// The reason has to say which half was missing, or an operator cannot act on it.
+	if !strings.Contains(err.Error(), "history could not be read back") {
+		t.Errorf("reason should name the unreadable history; got: %v", err)
+	}
+}
+
+// A2A permits answering a send with a Message rather than a Task. There is then no
+// history at all, so the same not-tested applies, and the reason has to say so
+// rather than blaming an unreadable history that was never involved.
+func TestSessionSmuggle_AcceptedWithNoTaskIsNotTested(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		body := readBody(r)
+		id := body["id"]
+		w.Header().Set("Content-Type", "application/json")
+		// A Message result: legal, and it carries no task identifiers. The state string
+		// keeps looksLikeTask satisfied, so this exercises the no-task path rather than
+		// being filtered out before it.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id,
+			"result": map[string]interface{}{
+				"messageId": "srv-1", "role": "ROLE_AGENT",
+				"parts": []interface{}{map[string]string{"text": "TASK_STATE_SUBMITTED"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("no task means no stored turn to report, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no task id") {
+		t.Errorf("reason should name the missing task; got: %v", err)
+	}
+}
+
+// History readable and the marker absent: the server persisted nothing, which is a
+// real result and a clean one. The old switch had no branch for it, so it fell
+// through to the indicator and reported a high-severity finding about a server that
+// stores no history at all. Found by the fixture sweep, on two fixtures written for
+// entirely different rules.
+func TestSessionSmuggle_ReadableHistoryWithoutTheMarkerIsClean(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		body := readBody(r)
+		id := body["id"]
+		w.Header().Set("Content-Type", "application/json")
+		// A minimal task, echoed back by tasks/get, carrying no history whatsoever.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id,
+			"result": map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"},
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("the history was readable, so this is a tested result: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected one indicator finding, got %d: %+v", len(findings), findings)
-	}
-	if findings[0].Confidence != attack.RiskIndicator {
-		t.Errorf("want RiskIndicator, got %q", findings[0].Confidence)
+	if len(findings) != 0 {
+		t.Errorf("nothing was persisted, so there is nothing to report; got %d: %+v", len(findings), findings)
 	}
 }

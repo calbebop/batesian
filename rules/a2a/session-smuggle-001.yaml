@@ -4,18 +4,23 @@ info:
   author: batesian
   severity: high
   description: |
-    Tests whether an A2A server accepts AND honors message/send requests where
-    the client sets role "agent" - a role the spec reserves exclusively for
-    server-originated messages. Honoring it from an arbitrary client injects fake
-    agent-side history into the LLM context of a session.
+    Tests whether an A2A server STORES a message the client sent with role
+    "agent". The specification defines the roles by direction: ROLE_USER is
+    client-to-server and ROLE_AGENT is server-to-client. A client-authored turn
+    persisted under the agent role is therefore indistinguishable from a genuine
+    agent turn to everything that reads the history back, which is how fake
+    agent-side history reaches a session's LLM context.
 
-    To avoid false positives, the rule confirms the injection landed: after the
-    server accepts the agent-role message it reads the task history back and only
-    reports a confirmed exploit when the message is stored as an agent-role turn.
-    If the server rejects the role (JSON-RPC -32602) or normalizes it to "user",
-    no finding is raised; if acceptance cannot be verified (no retrievable
-    history) it is reported as an indicator rather than confirmed. Cross-session
-    task-history disclosure is covered separately by a2a-task-idor-001.
+    What is reported is the STORED turn, not the acceptance. The specification
+    carries no MUST or SHOULD requiring a server to validate or reject a
+    client-supplied role, and both official SDKs accept one, so acceptance on its
+    own is not a finding. After the server accepts the message the rule reads the
+    task history back, and reports a confirmed exploit only when the message is
+    there under the agent role. A server that rejects the role, or normalizes it
+    to "user", or does not persist the message, is clean. When the history cannot
+    be read back at all, or the reply carried no task, the rule reports not tested:
+    its oracle never ran. Cross-session task-history disclosure is covered
+    separately by a2a-task-idor-001.
 
     Demonstrated by Palo Alto Networks Unit42 (Oct 2025) against Google ADK
     financial-assistant sample: achieved system prompt exfiltration and
@@ -25,7 +30,7 @@ info:
 
   references:
     - https://unit42.paloaltonetworks.com/ai-agent-security/
-    - https://a2aprotocol.ai/docs/specification#message-object
+    - https://a2a-protocol.org/latest/specification/
     - https://owasp.org/www-project-top-10-for-large-language-model-applications/
     - https://cwe.mitre.org/data/definitions/384.html
     - https://cwe.mitre.org/data/definitions/20.html

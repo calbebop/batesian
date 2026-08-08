@@ -104,11 +104,11 @@ report them not tested against a secured agent, and say so.
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |
 | `a2a-push-ssrf-001` | [Push Notification SSRF](#a2a-push-ssrf-001) | High | confirmed | CWE-918 |
 | `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High | confirmed | CWE-639 |
-| `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed / indicator | CWE-384 |
+| `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Algorithm Confusion](#a2a-jws-algconf-001) | Critical | indicator | CWE-327 |
 | `a2a-peer-impersonation-001` | [Peer Agent Impersonation via Forged JWT](#a2a-peer-impersonation-001) | Critical | confirmed | CWE-290 |
-| `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | High | confirmed / indicator | CWE-284 |
+| `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | High | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
@@ -197,12 +197,22 @@ task-list probe still runs.
 
 **Agent Role Injection / Session Smuggling** | Severity: High | CWE-384
 
-Sends a `message/send` request with `role: agent` - a role the spec reserves for
-server-originated messages - and then **reads the task history back** to confirm
-whether the injection actually landed. Only when the marker is stored as an
-agent-role turn is a **confirmed** exploit reported. If the server rejects the
-role (`-32602`) or normalizes it to `user`, no finding is raised; if acceptance
-cannot be verified from retrievable history, it is downgraded to an **indicator**.
+Sends a `message/send` request with `role: agent`, then **reads the task history
+back** to confirm whether the injection landed. Only when the marker is stored as an
+agent-role turn is a **confirmed** exploit reported.
+
+What is reported is the stored turn, not the acceptance. The specification defines
+the roles by direction (`ROLE_USER` client-to-server, `ROLE_AGENT` server-to-client)
+and carries no MUST or SHOULD requiring a server to validate or reject a
+client-supplied role; both official SDKs accept one. A client-authored turn
+*persisted* under the agent role is the failure, because anything reading that
+history back cannot tell it from a genuine agent turn.
+
+A server that rejects the role (`-32602`), normalizes it to `user`, or does not
+persist the message is **clean**. When the history cannot be read back, or the reply
+carried no task (A2A permits answering a send with a Message), the rule reports **not
+tested**: its oracle never ran. That case used to be reported as a high-severity
+indicator, which was a finding produced because nothing had been determined.
 
 Demonstrated by Palo Alto Networks Unit 42 (Oct 2025) against a Google ADK sample,
 achieving system-prompt exfiltration and an unauthorized action. Cross-session

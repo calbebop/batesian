@@ -22,13 +22,15 @@ import (
 // safe. The executor therefore confirms the injection landed:
 //
 //  1. Send a SendMessage carrying role=agent and a unique marker in the text.
-//  2. If the server rejects it (JSON-RPC error), it is behaving per spec: no
-//     finding.
+//  2. If the server rejects it (JSON-RPC error), no finding. The specification
+//     requires no rejection, so this is simply a server that validates more than
+//     it has to.
 //  3. If accepted, read the resulting task's history back and check whether the
 //     marker is stored as an AGENT-role message. If so the role was honored ->
-//     ConfirmedExploit. If the marker is present but stored as a user message,
-//     the server neutralized it -> no finding. If acceptance cannot be verified
-//     (stateless response / no retrievable history) -> RiskIndicator.
+//     ConfirmedExploit. If the marker is present but stored as a user message, or
+//     absent, the server did not persist a forged agent turn -> no finding. If the
+//     history cannot be read back, or the reply carried no task, nothing was
+//     determined -> ErrInconclusive.
 //
 // Cross-context task-history disclosure is intentionally NOT tested here; that
 // failure is covered rigorously by rule a2a-task-idor-001.
@@ -115,8 +117,12 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 
 		// Accepted. Confirm whether the agent role was honored by reading the
 		// task history back and checking how the marker message is stored.
-		if f := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars); f != nil {
+		f, evalErr := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars)
+		if f != nil {
 			return []attack.Finding{*f}, nil
+		}
+		if evalErr != nil {
+			return nil, evalErr
 		}
 		return nil, nil // accepted but neutralized (normalized to user role)
 	}
@@ -135,9 +141,28 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 
 // evaluateAcceptance reads the created task's history and classifies the result.
 // It returns a confirmed finding when the marker is stored as an agent-role
-// message, a RiskIndicator when acceptance cannot be verified, and nil when the
-// server demonstrably neutralized the role (stored the marker as a user message).
-func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string, sendBody []byte, marker string, vars attack.Vars) *attack.Finding {
+// message, and nil when the server demonstrably did not persist one.
+// The error is ErrInconclusive when the server accepted the message but the
+// injection could not be read back. That case used to be a high/indicator finding,
+// which is a finding produced BECAUSE nothing was determined: the shape PR #150
+// removed from a2a-artifact-tamper-001.
+//
+// What made it look defensible was a specification requirement that does not exist.
+// The finding read "instead of rejecting it with JSON-RPC -32602. The A2A spec
+// reserves the agent role for server-originated messages", but the specification
+// only defines the roles semantically (ROLE_USER is client-to-server, ROLE_AGENT is
+// server-to-client) and carries no MUST or SHOULD about validating or rejecting a
+// client-supplied role. The nearest normative text is a general "Servers MUST
+// validate all input parameters before processing" under error handling. Accepting
+// the message is therefore not itself a conformance failure, and both official SDKs
+// accept it.
+//
+// The confirmed path is untouched and needs no such mandate: it observes the
+// client-authored turn STORED in task history with the agent role, where anything
+// reading that history back cannot tell it from a genuine agent turn. That is the
+// injection Unit42 demonstrated.
+func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client *attack.HTTPClient, ep string,
+	headers map[string]string, sendBody []byte, marker string, vars attack.Vars) (*attack.Finding, error) {
 	taskID, _ := extractTaskContext(sendBody)
 
 	confirmed := attack.Finding{
@@ -147,11 +172,14 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A server honored a client-supplied role:\"agent\" message (history injection)",
 		Description: fmt.Sprintf(
-			"POST %s accepted a SendMessage with message.role=\"agent\" and stored it in task "+
-				"history as an agent-role message. The A2A spec reserves the agent role for "+
-				"server-originated messages; honoring it from a client lets an attacker inject "+
-				"fake agent-side turns into a session's LLM context, enabling data exfiltration "+
-				"and unauthorized tool invocation (Unit42, Oct 2025).", ep),
+			"POST %s accepted a SendMessage with message.role=\"agent\" and STORED it in task "+
+				"history as an agent-role message. The specification defines ROLE_AGENT as "+
+				"server-to-client, so a client-authored turn persisted under that role is "+
+				"indistinguishable from a genuine agent turn to anything that reads the history "+
+				"back. That is how an attacker injects fake agent-side turns into a session's LLM "+
+				"context, which Unit42 used for system-prompt exfiltration and an unauthorized "+
+				"stock purchase (Oct 2025). The stored turn is the finding, not the acceptance: "+
+				"the specification requires no rejection of a client-supplied role.", ep),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
 	}
@@ -162,33 +190,34 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 			switch {
 			case injectedAgentMessagePresent(history, marker):
 				confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(history, 400))
-				return &confirmed
+				return &confirmed, nil
 			case containsAnyStr(string(history), marker):
-				// Marker present but not as an agent message: the server
-				// normalized the role. Injection neutralized - no finding.
-				return nil
+				// Marker present but not as an agent message: the server normalized the
+				// role. Injection neutralized, and a real result: the history was read
+				// and the role had been rewritten.
+				return nil, nil
+			default:
+				// History readable and the marker is absent, so the message was not
+				// persisted. Nothing was injected.
+				return nil, nil
 			}
 		}
 	}
 
-	// Accepted without rejection, but we could not retrieve history to confirm
-	// whether the agent role was honored. Report as an indicator, not confirmed.
-	return &attack.Finding{
-		RuleID:     e.rule.ID,
-		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.RiskIndicator,
-		Title:      "A2A server accepted a client-supplied role:\"agent\" message without rejecting it",
-		Description: fmt.Sprintf(
-			"POST %s returned a task result for a SendMessage carrying message.role=\"agent\" "+
-				"instead of rejecting it with JSON-RPC -32602. The A2A spec reserves the agent "+
-				"role for server-originated messages. The injected message could not be read back "+
-				"to confirm it was stored as an agent turn, so exploitability is unconfirmed; "+
-				"verify manually whether agent-role content reaches the session's LLM context.", ep),
-		Evidence:    fmt.Sprintf("endpoint: %s\nmarker: %s\nsend response:\n%s", ep, marker, snippet(sendBody, 400)),
-		Remediation: e.rule.Remediation,
-		TargetURL:   ep,
+	// Accepted, and the injection could not be read back. The whole oracle of this
+	// rule is whether the client-authored turn is STORED with the agent role, so
+	// without the history nothing was determined and there is nothing to report.
+	// Acceptance on its own is not a finding: the specification requires no rejection.
+	why := "the task history could not be read back"
+	if taskID == "" {
+		// A2A permits answering a send with a Message rather than a Task, and then
+		// there is no history to inspect at all.
+		why = "the reply carried no task id, so there is no history to inspect"
 	}
+	return nil, fmt.Errorf("%w: %s accepted a message carrying the agent role, but %s, so whether "+
+		"the turn is stored as an agent turn could not be established; what this rule reports is the "+
+		"stored turn, not the acceptance",
+		attack.ErrInconclusive, ep, why)
 }
 
 // readTaskHistory fetches a task via GetTask (v1.0) or tasks/get (v0.3) and
