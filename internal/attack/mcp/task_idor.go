@@ -29,6 +29,35 @@ import (
 // skips entirely when no such tool exists.
 //
 // Tasks are marked experimental in 2025-11-25, so this rule is version-scoped.
+//
+// DO NOT PORT THIS CLAIM TO THE 2026-07-28 TASKS EXTENSION. In 2026-07-28 tasks
+// left the core spec for extension io.modelcontextprotocol/tasks, whose normative
+// text lives in the separate modelcontextprotocol/ext-tasks repository and releases
+// independently. That extension deliberately DROPPED the requirement this rule
+// tests. Its Security Considerations read, in full on this point:
+//
+//	"Task ID unguessability. A server MAY use task IDs as bearer tokens for a
+//	server's stored state. Servers MUST generate them with sufficient entropy that
+//	a third party cannot enumerate or guess them."
+//
+// So on the extension wire a server is EXPLICITLY PERMITTED to treat a
+// high-entropy task ID as a capability, and answering tasks/get for anyone holding
+// one is conformant. Reporting that as an IDOR would accuse a compliant server.
+// The extension also removes tasks/result and tasks/list outright, so the two
+// stronger findings here have no wire to sit on, and its own text notes that
+// without tasks/list "a server cannot inadvertently leak the existence of one
+// caller's tasks to another".
+//
+// What IS testable on the extension wire is the entropy MUST above, which is a
+// different rule with a different oracle: predict the next task ID, committed
+// before observation, and compare byte-for-byte.
+//
+// The 2025-11-25 requirement this rule does test is also conditional, which is why
+// the anonymous-access discriminator below is not optional: "If context-binding is
+// available, receivers MUST reject tasks/get, tasks/result, and tasks/cancel
+// requests for tasks that do not belong to the same authorization context as the
+// requestor." A server with no authorization context is held to the entropy
+// requirement instead, not to this one.
 type TaskIDORExecutor struct {
 	rule attack.RuleContext
 }
@@ -87,6 +116,16 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Gate on the tasks capability and on task-augmented tools/call specifically.
 	if !sessA.ServerSupports("tasks") || !tasksSupportsToolCall(sessA.RawInit) {
+		// A server carrying tasks under the 2026-07-28 extension advertises them
+		// somewhere this rule does not look and speaks a wire it does not drive, so
+		// the surface is present and untested rather than absent. Reporting clean
+		// would assert that task scoping is sound on a server whose task surface was
+		// never touched.
+		if tasksExtensionAdvertised(sessA.RawInit) || sessA.ProtocolVersion >= modernEraVersion {
+			return nil, fmt.Errorf("%w: %s carries tasks under the %s extension rather than the "+
+				"2025-11-25 core capability, and this rule drives the core wire only",
+				attack.ErrInconclusive, sessA.Endpoint, tasksExtensionName)
+		}
 		return nil, nil
 	}
 
@@ -574,4 +613,30 @@ func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content str
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
+}
+
+// tasksExtensionName is the identifier the 2026-07-28 tasks extension is
+// advertised under.
+const tasksExtensionName = "io.modelcontextprotocol/tasks"
+
+// tasksExtensionAdvertised reports whether the handshake declared the 2026-07-28
+// tasks extension, at capabilities.extensions["io.modelcontextprotocol/tasks"].
+//
+// A server advertising this is not one this rule can assess: the extension removed
+// tasks/result and tasks/list and dropped the context-binding requirement, so the
+// rule's oracle does not apply to it. Distinguishing it from a server with no tasks
+// at all is what keeps the report honest.
+func tasksExtensionAdvertised(rawInit []byte) bool {
+	var body struct {
+		Result struct {
+			Capabilities struct {
+				Extensions map[string]json.RawMessage `json:"extensions"`
+			} `json:"capabilities"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(rawInit, &body) != nil {
+		return false
+	}
+	_, ok := body.Result.Capabilities.Extensions[tasksExtensionName]
+	return ok
 }

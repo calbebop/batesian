@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -399,4 +400,72 @@ func TestTaskIDOR_NotMCP(t *testing.T) {
 	defer srv.Close()
 
 	assertInconclusive(t, mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}), srv.URL, testOpts())
+}
+
+// A server carrying tasks under the 2026-07-28 io.modelcontextprotocol/tasks
+// extension has a task surface this rule cannot assess: the extension removed
+// tasks/result and tasks/list and dropped the context-binding requirement the rule
+// tests, so its oracle does not apply. That is different from a server with no
+// tasks at all, and reporting it clean would assert task scoping is sound on a
+// surface never touched.
+func TestTaskIDOR_TasksExtensionIsNotTested(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		w.Header().Set("Content-Type", "application/json")
+		if method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "ext-1")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18",
+					"serverInfo":      map[string]interface{}{"name": "ext", "version": "1"},
+					// The extension shape: no core "tasks" capability at all.
+					"capabilities": map[string]interface{}{
+						"tools": map[string]interface{}{},
+						"extensions": map[string]interface{}{
+							"io.modelcontextprotocol/tasks": map[string]interface{}{},
+						},
+					},
+				}})
+			return
+		}
+		if method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+			"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d", len(findings))
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("the extension wire is untested, not clean; got err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "io.modelcontextprotocol/tasks") {
+		t.Errorf("the reason should name the extension, got: %v", err)
+	}
+}
+
+// A server with no tasks anywhere is genuinely not applicable, and must stay
+// clean. This is the control that keeps the check above from becoming a blanket
+// "any server without core tasks is untested".
+func TestTaskIDOR_NoTasksAnywhereStaysClean(t *testing.T) {
+	srv := taskIDORServer("no-tasks-cap")
+	defer srv.Close()
+
+	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("a server with no tasks capability is not applicable, which is clean: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected no findings, got %d", len(findings))
+	}
 }
