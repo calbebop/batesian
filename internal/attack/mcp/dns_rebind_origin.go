@@ -98,10 +98,9 @@ func (e *DNSRebindOriginExecutor) originAccepted(ctx context.Context, client *at
 	}
 
 	// legacyHandshakeBody, not mcpInitBody: the baseline this is paired against is the
-	// wire-opening handshake, and mcpInitBody offers a different protocol revision with
-	// different capabilities and clientInfo. A server that refuses the older revision
-	// refused this probe for a reason that has nothing to do with Origin, and the rule
-	// read that as Origin validation.
+	// wire-opening handshake, and mcpInitBody carries different capabilities and
+	// clientInfo. A server that refused this probe did so for a reason that had nothing
+	// to do with Origin, and the rule read that as Origin validation.
 	headers := map[string]string{"Content-Type": "application/json", "Origin": foreignOrigin}
 	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
 	if err != nil {
