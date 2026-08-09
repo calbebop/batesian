@@ -16,6 +16,15 @@ info:
        for tasks that do not belong to the same authorization context as the
        requestor."
 
+    The rule needs TWO DISTINCT CREDENTIALS, because the requirement binds tasks
+    to an authorization context and crossing that needs two of them. Pass two
+    --principal flags (or a config with two principals); with fewer, or with two
+    principals presenting the same credential, it reports not tested rather than
+    clean. Two identities differing only by a gateway-resolved header are two
+    contexts, and those headers are sent. Session ids are NOT authorization
+    contexts: a server that binds tasks to the credential but not additionally to
+    the session is conformant, so the rule does not compare session ids.
+
     The rule creates a task as one principal and attempts to read it from a
     separate session as another, reporting two distinct failures:
 

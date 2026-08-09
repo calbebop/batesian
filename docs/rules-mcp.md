@@ -371,6 +371,17 @@ Considerations require that "receivers MUST reject `tasks/get`, `tasks/result`,
 and `tasks/cancel` requests for tasks that do not belong to the same
 authorization context as the requestor".
 
+The rule needs **two distinct credentials**, because that requirement binds tasks
+to an *authorization context* and crossing it needs two of them. Pass two
+`--principal` flags (or a config with two principals); with fewer, or with two
+principals presenting the same credential, it reports **not tested** rather than
+clean. Two identities differing only by a gateway-resolved header are two
+contexts, and those headers are sent. Session ids are **not** authorization
+contexts, so the rule does not compare them: a server that binds tasks to the
+credential but not additionally to the session is conformant, and requiring the
+two session ids to differ also made the rule a silent no-op against every
+stateless deployment, which mints none.
+
 The rule creates a task as one principal and reads it from a separate session as
 another, reporting three failures, all **confirmed**:
 
@@ -392,6 +403,12 @@ different and more obvious failure owned by `mcp-tools-unauth-001`, and is
 suppressed here rather than mislabelled as broken object-level authorization. A
 server that scopes tasks to their creating context answers the cross-context read
 with `-32602` and produces no finding.
+
+Every precondition reports **not tested** rather than clean when it produced no
+verdict: a `tools/list` this principal cannot read, a task creation that was
+refused or errored, an anonymous control that returned no answer, and a
+cross-context read that never landed. Only a listing that was read and contained
+no safely-annotated tool is a genuine not-applicable.
 
 **Safety.** Creating a task requires invoking a real tool, which is unique among
 the rules in this package (`mcp-tools-unauth-001` deliberately calls a

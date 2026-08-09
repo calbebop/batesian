@@ -95,21 +95,99 @@ type authEvidence struct {
 	anonProbe  string
 }
 
+// taskPrincipal is one identity the rule acts as. Headers are carried alongside the
+// token because a multi-tenant deployment commonly resolves the tenant at a gateway
+// from a header, so two identities can differ by header and share a token. Ignoring
+// them collapsed such a pair into one identity, which is how the same-credential
+// false positive below could arise even from a correctly configured scan.
+type taskPrincipal struct {
+	name    string
+	token   string
+	headers map[string]string
+}
+
+// anonymous is the no-credential principal used by the discriminator.
+var anonymousPrincipal = taskPrincipal{name: "anonymous"}
+
+// taskPrincipals resolves the two identities this rule needs.
+//
+// It requires two DISTINCT credentials and reports not tested otherwise. The
+// requirement under test is "receivers MUST bind tasks to said [authorization]
+// context", so crossing it needs two contexts. The rule used to fall back to
+// opts.Token for both identities and run anyway: two sessions of the same credential
+// then satisfied the oracle, and a plain --token scan of a server that binds tasks to
+// the authorization context exactly as the spec requires reported an IDOR at high and
+// two more at critical. Session ids are not authorization contexts, so a server that
+// declines to additionally bind to the session is not in violation.
+//
+// Two identities differing only by header are still two contexts, so distinctness is
+// judged on the credential as sent, not on the token alone.
+func taskPrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
+	if len(opts.Principals) < 2 {
+		return a, b, fmt.Errorf("%w: this rule reads one authorization context's task as another "+
+			"and %d principal(s) were configured; pass two --principal flags (or a config with two "+
+			"principals) to run it", attack.ErrInconclusive, len(opts.Principals))
+	}
+	a = taskPrincipal{name: opts.Principals[0].Name, token: opts.Principals[0].Token,
+		headers: opts.Principals[0].Headers}
+	b = taskPrincipal{name: opts.Principals[1].Name, token: opts.Principals[1].Token,
+		headers: opts.Principals[1].Headers}
+	if a.token == b.token && sameHeaders(a.headers, b.headers) {
+		return a, b, fmt.Errorf("%w: principals %q and %q present the same credential, so there is "+
+			"no second authorization context for this rule to cross",
+			attack.ErrInconclusive, a.name, b.name)
+	}
+	return a, b, nil
+}
+
+func sameHeaders(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// taskPremise is why one of this rule's preconditions did or did not hold.
+//
+// The distinction is the whole difference between "this server has no task surface"
+// and "we could not find out". Both used to return clean, so a server whose tools/list
+// was scope-gated, or whose task creation hit a 403 or a gateway error, was reported as
+// having sound task scoping without a single task ever existing.
+type taskPremise int
+
+const (
+	// premiseMet: the precondition holds and the rule can continue.
+	premiseMet taskPremise = iota
+	// premiseAbsent: the feature genuinely is not here. Not applicable, so clean.
+	premiseAbsent
+	// premiseUndetermined: the probe returned no protocol-level verdict. Not tested.
+	premiseUndetermined
+)
+
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// One transport, with credentials attached per request, so each session can
 	// present a different principal.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	tokenA, tokenB := opts.Token, opts.Token
-	crossPrincipal := false
-	if len(opts.Principals) >= 2 && opts.Principals[0].Token != opts.Principals[1].Token {
-		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
-		crossPrincipal = true
+	// The credential check comes AFTER the capability gates below, deliberately. A
+	// server with no task surface is not applicable whatever credentials were passed,
+	// and telling an operator to add two principals when adding them would change
+	// nothing is worse than saying the feature is absent. So discovery runs as the best
+	// credential available, which is principal A whenever principals were configured.
+	princA, princB, credErr := taskPrincipals(opts)
+	discovery := princA
+	if credErr != nil {
+		discovery = taskPrincipal{name: "the configured credential", token: opts.Token}
 	}
 
 	// Session A, which also discovers the endpoint.
-	sessA, initErr := e.initSession(ctx, client, vars.BaseURL, tokenA)
+	sessA, initErr := e.initSession(ctx, client, vars.BaseURL, discovery)
 	if initErr != nil {
 		return nil, inconclusive(initErr) // not an MCP server, and why
 	}
@@ -129,16 +207,33 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		return nil, nil
 	}
 
+	// The task surface is present, so a missing second identity is now the reason the
+	// rule cannot run rather than a detail about a server it does not apply to.
+	if credErr != nil {
+		return nil, credErr
+	}
+
 	// Gate on finding a tool this rule is willing to invoke.
-	tool, ok := e.findSafeTaskTool(ctx, client, sessA, tokenA, vars.RandID)
-	if !ok {
-		return nil, nil
+	tool, toolPremise := e.findSafeTaskTool(ctx, client, sessA, princA, vars.RandID)
+	switch toolPremise {
+	case premiseAbsent:
+		return nil, nil // no tool declares itself safe to invoke: nothing to test, honestly
+	case premiseUndetermined:
+		return nil, fmt.Errorf("%w: tools/list at %s returned no usable answer for principal %s, so "+
+			"no task could be created and task scoping was never exercised",
+			attack.ErrInconclusive, sessA.Endpoint, princA.name)
 	}
 
 	// Step 1: create a task as principal A.
-	taskID := e.createTask(ctx, client, sessA, tokenA, tool)
-	if taskID == "" {
-		return nil, nil
+	taskID, createPremise := e.createTask(ctx, client, sessA, princA, tool)
+	if createPremise != premiseMet {
+		// Either way the rule's premise (a task exists to be read across a boundary)
+		// was never established, so there is nothing to call secure. This includes a
+		// server that advertised task-augmented tools/call and then answered without a
+		// taskId, which is a deviation rather than an absent feature.
+		return nil, fmt.Errorf("%w: principal %s could not create a task with %s at %s, so there was "+
+			"no task for another authorization context to read",
+			attack.ErrInconclusive, princA.name, tool.name, sessA.Endpoint)
 	}
 
 	// Step 2: discriminator. This rule claims task reads are not bound to the
@@ -155,43 +250,76 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// Each branch below records only what it actually observed, so no finding
 	// claims a probe that was skipped. The read probe runs only when creation was
 	// open, because a refused creation already proves a credential is required.
+	// Every branch records only what it observed. A control that produced no verdict
+	// stops the rule instead of being written down as a refusal: the evidence line
+	// "anonymous task creation: refused" used to be emitted whenever the anonymous
+	// create returned nothing, including when it failed in transport or hit a 429, so a
+	// finding asserted an authorization boundary the rule had not seen.
 	auth := authEvidence{
 		enforcedOn: "the MCP endpoint",
 		anonProbe:  "anonymous initialize: refused",
 	}
-	if anonSess, anonErr := e.initSession(ctx, client, vars.BaseURL, ""); anonErr == nil {
-		auth = authEvidence{
-			enforcedOn: "task creation and reads",
-			anonProbe:  "anonymous task creation: refused",
-		}
-		if e.createTask(ctx, client, anonSess, "", tool) != "" {
-			if _, anonCanRead := e.getTask(ctx, client, anonSess, "", taskID); anonCanRead {
-				return nil, nil // no credential is required anywhere
+	if anonSess, anonErr := e.initSession(ctx, client, vars.BaseURL, anonymousPrincipal); anonErr == nil {
+		anonTask, anonPremise := e.createTask(ctx, client, anonSess, anonymousPrincipal, tool)
+		switch anonPremise {
+		case premiseUndetermined:
+			return nil, fmt.Errorf("%w: the anonymous control at %s returned no verdict, so whether "+
+				"this server has an authorization context could not be established; the requirement "+
+				"under test binds only on servers that do",
+				attack.ErrInconclusive, sessA.Endpoint)
+		case premiseMet:
+			_ = anonTask
+			switch _, anonRead := e.getTask(ctx, client, anonSess, anonymousPrincipal, taskID); anonRead {
+			case probeAnswered:
+				return nil, nil // no credential is required anywhere: mcp-tools-unauth-001's surface
+			case probeInconclusive:
+				return nil, fmt.Errorf("%w: an anonymous caller could create a task at %s but the "+
+					"anonymous read of principal %s's task returned no verdict, so whether reads are "+
+					"gated at all could not be established",
+					attack.ErrInconclusive, sessA.Endpoint, princA.name)
 			}
 			auth = authEvidence{
 				enforcedOn: "task reads only (anonymous task creation was accepted)",
 				anonProbe:  "anonymous tasks/get: refused",
 			}
+		default:
+			auth = authEvidence{
+				enforcedOn: "task creation and reads",
+				anonProbe:  "anonymous task creation: refused",
+			}
 		}
 	}
 
 	// Step 3: a second session, as principal B, tries to read A's task.
-	sessB, errB := e.initSession(ctx, client, vars.BaseURL, tokenB)
-	if errB != nil || sessB.SessionID == sessA.SessionID {
-		return nil, nil // need a distinct session to demonstrate the boundary
+	//
+	// No session-id comparison. Session ids are not authorization contexts, and
+	// requiring them to differ made the rule a silent no-op against every stateless
+	// deployment: those mint no Mcp-Session-Id, both ids were empty, and the rule
+	// returned clean without sending step 4 at all.
+	sessB, errB := e.initSession(ctx, client, vars.BaseURL, princB)
+	if errB != nil {
+		return nil, fmt.Errorf("%w: principal %s could not open a session at %s (%v), so its access "+
+			"to principal %s's task was never tested",
+			attack.ErrInconclusive, princB.name, vars.BaseURL, errB, princA.name)
 	}
 
 	var findings []attack.Finding
 
 	// Step 4: can B read A's task by id? A correctly-scoped server answers -32602.
-	if meta, ok := e.getTask(ctx, client, sessB, tokenB, taskID); ok {
-		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, crossPrincipal, auth))
+	meta, readVerdict := e.getTask(ctx, client, sessB, princB, taskID)
+	switch readVerdict {
+	case probeInconclusive:
+		return nil, fmt.Errorf("%w: principal %s's read of principal %s's task %s at %s returned no "+
+			"verdict, so whether the task is bound to its creating context was never observed",
+			attack.ErrInconclusive, princB.name, princA.name, taskID, sessA.Endpoint)
+	case probeAnswered:
+		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, true, auth))
 
 		// Escalate if B can also read the result. tasks/result blocks until the
 		// task is terminal, so poll tasks/get first and stay inside the budget.
-		if e.pollTerminal(ctx, client, sessB, tokenB, taskID) {
-			if content, ok := e.getResult(ctx, client, sessB, tokenB, taskID); ok {
-				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, crossPrincipal, auth))
+		if e.pollTerminal(ctx, client, sessB, princB, taskID) {
+			if content, ok := e.getResult(ctx, client, sessB, princB, taskID); ok {
+				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, true, auth))
 			}
 		}
 	}
@@ -202,8 +330,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// leak the list. Enumeration is the stronger failure because it needs no
 	// prior knowledge of the task id at all.
 	if tasksSupportsList(sessA.RawInit) {
-		if ids, ok := e.listTasks(ctx, client, sessB, tokenB); ok && containsTaskID(ids, taskID) {
-			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), crossPrincipal, auth))
+		if ids, ok := e.listTasks(ctx, client, sessB, princB); ok && containsTaskID(ids, taskID) {
+			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), true, auth))
 		}
 	}
 
@@ -212,14 +340,17 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 // initSession performs an initialize handshake as the given token, discovering
 // the endpoint across the candidate paths, and returns the resulting session.
-func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPClient, baseURL, token string) (mcpSession, error) {
+func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) (mcpSession, error) {
 	// Why the walk failed, classified from the responses this loop already has, so a
 	// rule that could not run says what happened instead of blaming the network.
 	var observed initObservation
 	for _, ep := range endpointCandidates(baseURL) {
 		headers := map[string]string{}
-		if token != "" {
-			headers["Authorization"] = "Bearer " + token
+		if p.token != "" {
+			headers["Authorization"] = "Bearer " + p.token
+		}
+		for k, v := range p.headers {
+			headers[k] = v
 		}
 		resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -241,7 +372,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 		if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
 			// This rule presents a token explicitly, so the client's ambient
 			// credential is not what decides whether the request carried one.
-			observed.observe(classifyInitFailure(ep, token != "", resp))
+			observed.observe(classifyInitFailure(ep, p.token != "", resp))
 			continue
 		}
 		session := mcpSession{
@@ -250,7 +381,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			ProtocolVersion: negotiatedVersion(resp.Body),
 			RawInit:         resp.Body,
 		}
-		_, _ = client.POST(ctx, ep, e.headers(session, token), map[string]interface{}{
+		_, _ = client.POST(ctx, ep, e.headers(session, p), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
@@ -263,7 +394,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 }
 
 // headers builds the per-request headers for a session and principal.
-func (e *TaskIDORExecutor) headers(s mcpSession, token string) map[string]string {
+func (e *TaskIDORExecutor) headers(s mcpSession, p taskPrincipal) map[string]string {
 	h := map[string]string{}
 	if s.ProtocolVersion != "" {
 		h["Mcp-Protocol-Version"] = s.ProtocolVersion
@@ -271,8 +402,13 @@ func (e *TaskIDORExecutor) headers(s mcpSession, token string) map[string]string
 	if s.SessionID != "" {
 		h["Mcp-Session-Id"] = s.SessionID
 	}
-	if token != "" {
-		h["Authorization"] = "Bearer " + token
+	if p.token != "" {
+		h["Authorization"] = "Bearer " + p.token
+	}
+	// A principal's own headers last: a tenant resolved at a gateway is part of the
+	// credential this identity presents, and omitting it made two identities one.
+	for k, v := range p.headers {
+		h[k] = v
 	}
 	return h
 }
@@ -320,8 +456,8 @@ func tasksSupportsList(rawInit []byte) bool {
 
 // listTasks enumerates the tasks visible to the given principal, returning the
 // task ids from the first page. ok is false when the server refuses the call.
-func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, token string) ([]string, bool) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal) ([]string, bool) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      6,
 		"method":  "tasks/list",
@@ -370,15 +506,18 @@ func containsTaskID(ids []string, taskID string) bool {
 // functionality, so the tool must declare itself read-only or explicitly
 // non-destructive. A tool with no annotations is not invoked: MCP treats
 // destructiveHint as true by default when a tool is not read-only.
-func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, token, randID string) (safeTool, bool) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, randID string) (safeTool, taskPremise) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      2,
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return safeTool{}, false
+	// A listing this principal cannot read is not an absent task surface. It used to
+	// collapse into the same "no safe tool" verdict as an answered-but-empty listing,
+	// so a scope-gated tools/call reported task scoping sound with no task ever made.
+	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
+		return safeTool{}, premiseUndetermined
 	}
 	var body struct {
 		Result struct {
@@ -396,7 +535,7 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return safeTool{}, false
+		return safeTool{}, premiseUndetermined
 	}
 	for _, t := range body.Result.Tools {
 		if t.Execution.TaskSupport != "optional" && t.Execution.TaskSupport != "required" {
@@ -410,9 +549,11 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		if !readOnly && !nonDestructive {
 			continue
 		}
-		return safeTool{name: t.Name, args: synthesizeArgs(t.InputSchema, randID)}, true
+		return safeTool{name: t.Name, args: synthesizeArgs(t.InputSchema, randID)}, premiseMet
 	}
-	return safeTool{}, false
+	// The listing was read and no tool declares itself safe to invoke. Genuinely not
+	// applicable, so clean.
+	return safeTool{}, premiseAbsent
 }
 
 // synthesizeArgs builds a minimal argument object from a tool's JSON Schema,
@@ -438,10 +579,14 @@ func synthesizeArgs(schema map[string]interface{}, randID string) map[string]int
 	return args
 }
 
-// createTask issues a task-augmented tools/call and returns the created task id,
-// or empty when the request was refused.
-func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, token string, tool safeTool) string {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+// createTask issues a task-augmented tools/call and returns the created task id.
+//
+// The premise distinguishes a refusal, which the anonymous control reads as "a
+// credential is required here", from a probe that produced no verdict at all. Both
+// used to return an empty id, so a transport failure or a 429 on the anonymous control
+// was written into a finding's evidence as "anonymous task creation: refused".
+func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, tool safeTool) (string, taskPremise) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      3,
 		"method":  "tools/call",
@@ -451,8 +596,12 @@ func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPCl
 			"task":      map[string]interface{}{"ttl": 60000},
 		},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return ""
+	verdict, _ := classifyProbe(resp, err)
+	switch verdict {
+	case probeInconclusive:
+		return "", premiseUndetermined
+	case probeRejected:
+		return "", premiseAbsent
 	}
 	var body struct {
 		Result struct {
@@ -462,9 +611,15 @@ func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPCl
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return ""
+		return "", premiseUndetermined
 	}
-	return body.Result.Task.TaskID
+	if body.Result.Task.TaskID == "" {
+		// Answered, but with no task handle, on a server that advertised
+		// capabilities.tasks.requests.tools.call. That is a deviation rather than an
+		// absent feature, and either way no task exists to read across a boundary.
+		return "", premiseUndetermined
+	}
+	return body.Result.Task.TaskID, premiseMet
 }
 
 // taskState is the subset of a Task object the rule reports on.
@@ -474,38 +629,49 @@ type taskState struct {
 	CreatedAt     string `json:"createdAt"`
 }
 
-// getTask reads a task as the given principal. ok is false when the server
-// refuses (the correctly-scoped outcome, a -32602 per spec).
-func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, token, taskID string) (taskState, bool) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+// getTask reads a task as the given principal.
+//
+// probeAnswered means the task came back, probeRejected means the server refused (the
+// correctly-scoped outcome, a -32602 per spec), and probeInconclusive means the request
+// produced no verdict. The third used to be indistinguishable from a refusal, in both
+// directions: on the anonymous control it read as "reads are gated", and on the
+// cross-principal read it read as "the task is bound to its creating context".
+func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (taskState, probeVerdict) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      4,
 		"method":  "tasks/get",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return taskState{}, false
+	verdict, _ := classifyProbe(resp, err)
+	if verdict != probeAnswered {
+		return taskState{}, verdict
 	}
 	var body struct {
 		Result *taskState             `json:"result"`
 		Error  map[string]interface{} `json:"error"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return taskState{}, false
+		return taskState{}, probeInconclusive
 	}
-	if body.Error != nil || body.Result == nil || body.Result.Status == "" {
-		return taskState{}, false
+	// A JSON-RPC error at HTTP 200 is the spec'd refusal shape, so it is a real answer.
+	if body.Error != nil {
+		return taskState{}, probeRejected
 	}
-	return *body.Result, true
+	if body.Result == nil || body.Result.Status == "" {
+		// 2xx, no error, and no task: nothing was refused and nothing was disclosed.
+		return taskState{}, probeInconclusive
+	}
+	return *body.Result, probeAnswered
 }
 
 // pollTerminal waits for the task to reach a terminal status, within budget.
 // tasks/result blocks until terminal, so polling first keeps the scan bounded.
-func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTPClient, s mcpSession, token, taskID string) bool {
+func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) bool {
 	deadline := time.Now().Add(taskPollBudget)
 	for i := 0; i < taskPollMaxTries && time.Now().Before(deadline); i++ {
-		st, ok := e.getTask(ctx, client, s, token, taskID)
-		if !ok {
+		st, verdict := e.getTask(ctx, client, s, p, taskID)
+		if verdict != probeAnswered {
 			return false
 		}
 		switch st.Status {
@@ -523,8 +689,8 @@ func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTP
 
 // getResult reads the underlying tool output for a terminal task, returning the
 // raw result payload when the server disclosed it.
-func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, token, taskID string) (string, bool) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, token), map[string]interface{}{
+func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (string, bool) {
+	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      5,
 		"method":  "tasks/result",
