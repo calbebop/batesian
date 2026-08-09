@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **20 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **21 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -123,6 +123,11 @@ travel in `params._meta`, the method is mirrored into `Mcp-Method`, and for
 `Mcp-Name`. Every one of those is mandatory, and a mismatch or omission earns
 `-32020`.
 
+`mcp-log-optin-001` runs on the 2026-07-28 wire **only**, because the requirement
+it tests was introduced by that revision and has no equivalent on an earlier one.
+Against a target serving no such wire it reports itself not applicable rather than
+clean.
+
 ## Endpoint discovery
 
 A target that names a path is probed as given; otherwise `/mcp`, `/`, `/api` and
@@ -153,6 +158,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
 | `mcp-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#mcp-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
+| `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 
 ---
 
@@ -717,3 +723,55 @@ Currency: `Mcp-Session-Id` is normative in revisions 2025-03-26 through
 2025-11-25. The 2026-07-28 revision removes protocol-level sessions, so a server
 on that revision returns no session id and the rule reports itself not applicable
 at step 1.
+
+---
+
+### mcp-log-optin-001
+
+**MCP Server Emits Log Notifications Without a Per-Request Opt-In** | Severity:
+Medium | CWE-200 / CWE-532
+
+Tests whether a server sends log notifications to a request that never asked for
+them. `2026-07-28` removed `logging/setLevel` and replaced it with a per-request
+opt-in, and the logging page is explicit: "To receive log messages for a specific
+request, include `io.modelcontextprotocol/logLevel` in the request's `_meta`. The
+server MUST NOT emit `notifications/message` for a request that does not include
+this field."
+
+That is the bug the revision created. A server carried over from the `setLevel`
+era holds a connection-global level and emits unconditionally, so a client that
+never opted in receives server-side log content. The same page requires that log
+messages carry no credentials, personal data or internal system details, which is
+an acknowledgement of what they usually do carry, and an MCP client feeds what the
+server sends into a model's context.
+
+Emitting logs is a MAY, so **absence proves nothing**: a server that never logs is
+indistinguishable from one that respects the gate. Two probes, in this order:
+
+1. Control: `tools/list` **with** `io.modelcontextprotocol/logLevel` = `debug` in
+   `_meta`. At least one `notifications/message` frame must come back, otherwise
+   the server does not log on this surface and the probe below could not tell
+   compliance from silence. The rule then reports **not tested**, never clean.
+2. Probe: the identical `tools/list` with **no** `logLevel` in `_meta`. Any
+   `notifications/message` frame is the finding.
+
+Only positive evidence is reported. A server that stays silent for the control is
+left alone; a server that logs for the control and not for the probe is a genuine
+clean result, because it demonstrably logs here and withheld the frames when they
+were not requested. The probe is a read: `tools/list` creates nothing, calls no
+tool and modifies no state. The evidence also records whether the server declares
+the `logging` capability, which it MUST when it emits log notifications, so one
+that emits them unasked and undeclared is breaking two requirements.
+
+The frames are only visible on the raw stream, so this rule reads the SSE stream
+itself rather than through the shared client, which collapses a stream to its
+JSON-RPC response event and would discard exactly the frames being looked for.
+
+**Currency.** The field and its MUST NOT exist only in `2026-07-28`, so the rule
+runs on that wire alone and reports itself not applicable against a target serving
+no such wire. The Logging feature as a whole is also deprecated as of the same
+revision (SEP-2577): it stays in the specification for at least twelve months and
+is eligible for removal in the first revision released on or after `2027-07-28`,
+with new implementations told to log to stderr or use OpenTelemetry instead. The
+requirement is normative until then, and the servers most likely to break it are
+the ones migrating off `logging/setLevel`.

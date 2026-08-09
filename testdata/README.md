@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 20 MCP = 38 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 21 MCP = 39 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -71,8 +71,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
+| `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
 
-**Coverage.** 37 of the 38 rules have a standalone Python fixture above, and each
+**Coverage.** 38 of the 39 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -273,6 +274,25 @@ official MCP C# SDK's stateful sample, which this rule reported as vulnerable
 until the anonymous-handshake control was added. Without `--token` the rule
 reports inconclusive against all three, since it cannot ask whether a session id
 substitutes for a credential it was never given.
+
+**`mcp_log_optin_server.py` takes a posture argument**, defaulting to `always`, and
+speaks the 2026-07-28 wire only:
+
+```sh
+python testdata/mcp_log_optin_server.py always    # rule must fire
+python testdata/mcp_log_optin_server.py on-optin  # rule must stay silent
+python testdata/mcp_log_optin_server.py never     # rule must report NOT TESTED
+```
+
+The third posture is the one worth having. Emitting log notifications is a MAY, so a
+server that never emits any is indistinguishable from one that gates them correctly,
+and reporting it clean would be a pass with no evidence behind it. That is why the
+rule sends a control request asking for logs before it sends the probe that does not.
+While the rule was being written that control was briefly dead logic: silent-control
+and silent-probe both fell through to clean, so removing the control changed no
+output at all. `never` is what pins the difference, and `on-optin` is what keeps the
+clean verdict a real one, since the control proves the server logs on this surface
+and it withheld the frames when they were not asked for.
 
 The multi-tenant and delegation fixtures exercise the chained rules: they require
 two principals supplied with `--principal name=...,token=...,tenant=...` (or a

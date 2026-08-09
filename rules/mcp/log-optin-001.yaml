@@ -1,0 +1,85 @@
+id: mcp-log-optin-001
+info:
+  name: MCP Server Emits Log Notifications Without a Per-Request Opt-In
+  author: batesian
+  severity: medium
+  description: |
+    Tests whether a server sends log notifications to a request that never asked for
+    them. The 2026-07-28 revision removed logging/setLevel and replaced it with a
+    per-request opt-in, and the logging page is explicit: "To receive log messages
+    for a specific request, include io.modelcontextprotocol/logLevel in the request's
+    _meta. The server MUST NOT emit notifications/message for a request that does not
+    include this field."
+
+    That is the bug the revision created. A server carried over from the setLevel era
+    holds a connection-global level and emits unconditionally, so a client that never
+    opted in receives server-side log content. The same page requires that log
+    messages carry no credentials, personal data or internal system details, which is
+    an acknowledgement of what they usually do carry, and an MCP client feeds what the
+    server sends into a model's context. So the harm is unrequested server-internal
+    detail arriving somewhere it was not expected.
+
+    Emitting logs is a MAY, so ABSENCE PROVES NOTHING: a server that never logs is
+    indistinguishable from one that respects the gate. Two probes, in this order:
+
+      1. Control: tools/list with io.modelcontextprotocol/logLevel = debug in _meta.
+         The server must answer with at least one notifications/message frame,
+         otherwise it does not log on this surface and the probe below could not tell
+         compliance from silence. The rule then judges nothing.
+      2. Probe: the identical tools/list with NO logLevel in _meta. Any
+         notifications/message frame is the finding.
+
+    Only positive evidence is ever reported. A server that stays silent for the
+    control is left alone, and a server that logs for the control and not for the
+    probe is a genuine clean result: it demonstrably logs here, and it withheld the
+    frames when they were not requested.
+
+    The probe is a read. tools/list creates nothing, calls no tool and modifies no
+    state; the rule needs the server to do a unit of work, not to do anything in
+    particular.
+
+    The evidence also records whether the server declares the logging capability,
+    because a server that emits notifications MUST declare it, so one that emits them
+    unasked and undeclared is breaking two requirements rather than one.
+
+    Currency: the field, and the MUST NOT, exist only in 2026-07-28, so the rule runs
+    on that wire alone and reports not applicable against a target serving no such
+    wire. Note also that the whole Logging feature is deprecated as of the same
+    revision (SEP-2577): it remains in the specification for at least twelve months
+    and is eligible for removal in the first revision released on or after
+    2027-07-28, with new implementations told to log to stderr or use OpenTelemetry
+    instead. The requirement is normative until then, and the servers most likely to
+    break it are precisely the ones migrating off logging/setLevel.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/logging
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/index
+    - https://modelcontextprotocol.io/specification/2026-07-28/changelog
+    - https://cwe.mitre.org/data/definitions/200.html
+    - https://cwe.mitre.org/data/definitions/532.html
+
+  tags:
+    - mcp
+    - logging
+    - information-disclosure
+    - cwe-200
+    - cwe-532
+
+attack:
+  protocol: mcp
+  type: mcp-log-optin
+
+remediation: |
+  1. Gate every notifications/message on the requesting call's own
+     io.modelcontextprotocol/logLevel. A request that does not carry the field gets no
+     log notifications at all.
+  2. Do not keep a connection-global or server-global log level. The 2026-07-28
+     revision removed logging/setLevel precisely because the level is now a property
+     of a single request, and a level held anywhere broader is what causes this.
+  3. Keep notifications/message on the response stream of the request that set the
+     level. It must not be delivered on a subscriptions/listen stream or on any other
+     stream.
+  4. Declare the logging capability whenever the server emits log notifications.
+  5. Keep credentials, personal data and internal system details out of log messages
+     regardless. A client feeds server output into a model's context, so log content
+     is not an internal channel.
