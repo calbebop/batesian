@@ -61,7 +61,7 @@ import uvicorn
 
 PORT = 3111
 
-POSTURES = ("secured", "idor")
+POSTURES = ("secured", "idor", "unauth-read")
 POSTURE = sys.argv[1] if len(sys.argv) > 1 else "secured"
 
 # The multi-principal fixtures in this directory all expect these two tokens
@@ -110,10 +110,18 @@ def _normalized(message: dict) -> dict:
     return stored
 
 
+# ANON_READER stands in for a caller that presented no credential at all, so the
+# ownership check below can hand it another principal's task in the unauth-read
+# posture without also making it an owner.
+ANON_READER = "__anonymous__"
+
+
 def _may_touch(task: dict, caller: str) -> bool:
     """Whether caller may act on task. The only place the postures differ."""
     if POSTURE == "idor":
         return True  # any authenticated caller: the bug under test
+    if POSTURE == "unauth-read" and caller == ANON_READER:
+        return True  # reads are not bound to the owner: the bug under test
     return task["owner"] == caller
 
 
@@ -246,10 +254,18 @@ async def jsonrpc(request: Request) -> Response:
     req_id = body.get("id")
     params = body.get("params") or {}
 
-    # Authorization first, in both postures.
+    # Authorization first. In unauth-read the READ methods are exempt, which is the
+    # one posture a2a-task-idor-001 can fire on: that rule needs creation to be
+    # auth-gated (so the finding is broken authorization, not absent authentication)
+    # and the read to answer an anonymous caller. No fixture here offered that shape,
+    # so the rule had zero positive coverage on a live socket and only its Go harness
+    # exercised the disclosure path.
     caller = _principal(request)
     if not caller:
-        return _unauthenticated()
+        if POSTURE == "unauth-read" and method in ("GetTask", "tasks/get"):
+            caller = ANON_READER
+        else:
+            return _unauthenticated()
 
     if method in ("SendMessage", "message/send"):
         return _send(req_id, params, caller, v1=method == "SendMessage")
@@ -274,6 +290,10 @@ if __name__ == "__main__":
     if POSTURE not in POSTURES:
         sys.exit(f"unknown posture {POSTURE!r}; expected one of {', '.join(POSTURES)}")
     print(f"[*] A2A authorization-enforcing agent ({POSTURE}) on http://127.0.0.1:{PORT}/", flush=True)
+    if POSTURE == "unauth-read":
+        print("[*] Violation: task creation requires a credential but GetTask/tasks_get "
+              "answers an ANONYMOUS caller with the owner's task. a2a-task-idor-001 "
+              "must fire.", flush=True)
     if POSTURE == "secured":
         print("[*] Expected: no findings. Any finding is a false positive.", flush=True)
     else:

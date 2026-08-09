@@ -93,7 +93,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	if !accepted {
 		// Not a responsive A2A server, or our credentials were rejected: there
 		// is no owner-created task to test ownership against.
-		f, restReached := e.probeTaskList(ctx, unauthClient, vars)
+		f, restReached := e.probeTaskList(ctx, unauthClient, authedClient, vars)
 		if len(f) > 0 {
 			return f, nil
 		}
@@ -110,7 +110,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 	taskID, contextID := extractTaskContext(ownerResp.Body)
 	if taskID == "" {
-		f, restReached := e.probeTaskList(ctx, unauthClient, vars)
+		f, restReached := e.probeTaskList(ctx, unauthClient, authedClient, vars)
 		if len(f) > 0 {
 			return f, nil
 		}
@@ -148,8 +148,17 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			"params":  getParams,
 		})
 	}
+	// resultReferencesTask, not a text search. The needles used here were
+	// ContainsAny(`"history"`, `"contextId"`, taskID, contextID), and ContainsAny is
+	// OR: the first two are KEY NAMES carried by virtually every A2A Task envelope, so
+	// the check reduced to "the caller got some accepted result". A server that hides
+	// a task it will not disclose by answering with a redacted or empty Task stub
+	// matched on `"contextId"` alone, and the rule reported it at high/confirmed with
+	// the owner's real identifiers printed in the evidence as though they had come
+	// back. taskref.go removed this exact expression from two sibling rules; this was
+	// the third and last instance.
 	unauthReadSucceeded := err == nil && getResp.IsAccepted() &&
-		getResp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID)
+		resultReferencesTask(getResp.Body, taskID, contextID)
 
 	if authEnforcedOnCreate && unauthReadSucceeded {
 		findings = append(findings, attack.Finding{
@@ -170,20 +179,40 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 
-	listFindings, _ := e.probeTaskList(ctx, unauthClient, vars)
+	listFindings, _ := e.probeTaskList(ctx, unauthClient, authedClient, vars)
 	findings = append(findings, listFindings...)
 	return findings, nil
 }
 
-// probeTaskList probes tasks/list - some implementations expose this as
-// GET /v1/tasks or /tasks. An unauthenticated response that lists tasks
-// discloses every session's task IDs (and often history) server-wide, which is
-// the strongest form of the same broken-authorization failure. It runs over the
-// unauthenticated client and is independent of the per-task IDOR check above.
-func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient *attack.HTTPClient, vars attack.Vars) ([]attack.Finding, bool) {
-	listEndpoints := []string{
-		vars.BaseURL + "/v1/tasks",
-		vars.BaseURL + "/tasks",
+// probeTaskList probes the REST binding's task listing. An unauthenticated response
+// that lists tasks discloses every session's task IDs (and often history)
+// server-wide, which is the strongest form of the same broken-authorization failure.
+// It runs over the unauthenticated client and is independent of the per-task IDOR
+// check above.
+//
+// The base comes from the card, via resolveHTTPJSONBase, and not from a guess. This
+// probed vars.BaseURL+"/v1/tasks" and +"/tasks" only, while endpoint.go says plainly
+// that the REST prefix cannot be guessed: the deployment chooses it and chooses which
+// protocol version sits under it. A deployment mounting its HTTP+JSON binding
+// anywhere else 404'd both guesses, and the strongest finding this rule can emit was
+// silently never raised. The guessed paths are kept as a fallback, because an agent
+// that advertises no HTTP+JSON interface may still serve one, but the advertised base
+// is tried first and its own /v1/tasks and /tasks are what get probed.
+func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, cardClient *attack.HTTPClient,
+	vars attack.Vars) ([]attack.Finding, bool) {
+	// The card is fetched with the operator's credential because an agent may gate
+	// its own card; the LISTING probes below stay unauthenticated, which is the whole
+	// point of the check.
+	bases := []string{}
+	if restBase := resolveHTTPJSONBase(ctx, cardClient, vars.BaseURL); restBase != "" {
+		bases = append(bases, restBase)
+	}
+	if len(bases) == 0 || bases[0] != vars.BaseURL {
+		bases = append(bases, vars.BaseURL)
+	}
+	var listEndpoints []string
+	for _, b := range bases {
+		listEndpoints = append(listEndpoints, b+"/v1/tasks", b+"/tasks")
 	}
 	reached := false
 	for _, le := range listEndpoints {
