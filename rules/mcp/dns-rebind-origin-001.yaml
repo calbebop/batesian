@@ -13,25 +13,38 @@ info:
     drives its tools (the class behind the MCP Inspector RCE, CVE-2025-49596, and
     the TypeScript/Python SDK DNS-rebinding advisories).
 
-    Detection (deterministic, black-box):
+    Detection (deterministic, black-box), on each wire the server serves:
 
-      1. Baseline: POST a normal `initialize` with NO Origin header. It must be
-         accepted (HTTP 200 + a JSON-RPC result), confirming a responsive MCP
-         endpoint; otherwise the rule does not apply.
-      2. Probe: POST the same `initialize` with a foreign Origin
+      1. Baseline: open the wire, which is a request carrying NO Origin header that
+         the server accepted (HTTP 200 + a JSON-RPC result). A wire that does not
+         open is not probed.
+      2. Probe: repeat that exact request with a foreign Origin
          (`https://dns-rebind.batesian.invalid`, a non-resolving RFC 6761 host no
          server should allowlist). The only difference from the baseline is the
-         Origin header.
+         Origin header, and both carry the same credential, so a refusal cannot be
+         about a missing token.
 
     A CONFIRMED finding is raised when the server still returns a JSON-RPC result
     for the foreign-Origin request instead of rejecting it with HTTP 403, i.e. it
     does not validate Origin. A server that answers the foreign Origin with 403
-    produces no finding. DNS-rebinding exploitation additionally requires the
+    produces no finding, and a probe that never got an answer is reported as not
+    tested rather than clean. DNS-rebinding exploitation additionally requires the
     server to be reachable from a victim's browser (a local or same-network bind),
     which the operator should confirm for the deployment.
 
+    Currency: the requirement is byte-identical in 2026-07-28, where it moved to
+    the transports/streamable-http page. It is stated for "all incoming
+    connections", is not scoped to a method, and is not conditioned on the server
+    being local; only the bind-to-localhost SHOULD beside it is. So both wires are
+    probed, with the request each speaks: `initialize` on the handshake wires,
+    `server/discover` on 2026-07-28, which every server MUST implement. They are
+    reported separately, because Origin checking is normally middleware and a
+    server can serve the two wires through different handlers, so one that has
+    fixed only one of them reads as clean if only that one is probed.
+
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
     - https://www.oligo.security/blog/critical-rce-vulnerability-in-anthropic-mcp-inspector-cve-2025-49596
     - https://nvd.nist.gov/vuln/detail/CVE-2025-49596
     - https://cwe.mitre.org/data/definitions/350.html

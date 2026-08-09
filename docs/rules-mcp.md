@@ -112,6 +112,10 @@ need not be gated alike: a server can enforce authorization on one and not the
 other. Each wire is capability-gated on its own advertisement, so a surface the
 server exposes on only one era is probed only there.
 
+`mcp-dns-rebind-origin-001` is exercised on each wire for the same reason, with the
+request each one speaks. Origin validation is normally middleware, so a server can
+serve the two wires through different handlers and fix only one.
+
 Findings from the 2026-07-28 wire carry a `[MCP 2026-07-28 wire]` suffix and name
 the wire in their evidence, so a surface exposed on both produces two
 distinguishable results rather than what looks like a duplicate. A legacy-only
@@ -632,17 +636,32 @@ finding.
 
 The Streamable HTTP transport requires servers to validate the Origin header on
 every connection and respond `HTTP 403 Forbidden` to a present, invalid Origin,
-to prevent DNS rebinding. The rule first POSTs a normal `initialize` with no
-Origin (baseline: it must be accepted, confirming a responsive MCP endpoint),
-then POSTs the same `initialize` with a foreign Origin
-(`https://dns-rebind.batesian.invalid`, a non-resolving RFC 6761 host no server
-should allowlist) - the only difference is the Origin header. A **confirmed**
-finding is raised when the server still returns a JSON-RPC result for the
-foreign-Origin request instead of rejecting it with 403. DNS-rebinding
-exploitation additionally requires the server to be reachable from a victim's
-browser (a local or same-network bind), which the operator confirms for the
-deployment; this is the class behind the MCP Inspector RCE (CVE-2025-49596). A
-server that answers the foreign Origin with 403 produces no finding.
+to prevent DNS rebinding. The rule opens each wire the server serves, which is a
+request with no Origin that the server accepted, then repeats that exact request
+with a foreign Origin (`https://dns-rebind.batesian.invalid`, a non-resolving RFC
+6761 host no server should allowlist). The pair differs in the Origin header and
+nothing else, and is credential-symmetric, so a refusal cannot be about a missing
+token. A **confirmed** finding is raised when the server still returns a JSON-RPC
+result for the foreign-Origin request instead of rejecting it with 403.
+DNS-rebinding exploitation additionally requires the server to be reachable from a
+victim's browser (a local or same-network bind), which the operator confirms for
+the deployment; this is the class behind the MCP Inspector RCE (CVE-2025-49596). A
+server that answers the foreign Origin with 403 produces no finding, and a probe
+that never got an answer is reported as not tested rather than clean.
+
+Requiring a completed handshake, rather than any HTTP 200 carrying a JSON-RPC
+result, is load-bearing. An A2A agent answers any method with a Task result, so
+scanning one used to produce this finding against a server that speaks no MCP.
+
+**Currency.** The requirement is byte-identical in `2026-07-28`, where it moved to
+the transports/streamable-http page. It is stated for "all incoming connections",
+is not scoped to a method, and is not conditioned on the server being local; only
+the bind-to-localhost SHOULD beside it is. So **both wires are probed**, with the
+request each one speaks: `initialize` on the handshake wires, `server/discover` on
+2026-07-28, which every server MUST implement. The two are reported separately,
+because Origin checking is normally middleware and a server can serve the wires
+through different handlers, so a server that has fixed one and not the other reads
+as clean if only the fixed one is probed.
 
 ---
 

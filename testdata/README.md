@@ -61,7 +61,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_oauth_metadata_ssrf_server.py` | 7791 | `mcp-oauth-metadata-ssrf-001` |
 | `mcp_secret_canary_server.py` | 7792 | `mcp-secret-canary-001` |
 | `mcp_confused_deputy_server.py` | 7793 | `mcp-confused-deputy-001` |
-| `mcp_dns_rebind_origin_server.py` | 7794 | `mcp-dns-rebind-origin-001` |
+| `mcp_dns_rebind_origin_server.py` | 7794 | `mcp-dns-rebind-origin-001` (two postures, see below) |
 | `mcp_batch_bypass_server.py` | 7795 | `mcp-jsonrpc-batch-bypass-001` |
 | `mcp_completion_unauth_server.py` | 7796 | `mcp-completion-unauth-001` |
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
@@ -274,6 +274,20 @@ official MCP C# SDK's stateful sample, which this rule reported as vulnerable
 until the anonymous-handshake control was added. Without `--token` the rule
 reports inconclusive against all three, since it cannot ask whether a session id
 substitutes for a credential it was never given.
+
+**`mcp_dns_rebind_origin_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_dns_rebind_origin_server.py vulnerable  # one finding, handshake wire
+python testdata/mcp_dns_rebind_origin_server.py wire-split  # one finding, and it must name the 2026-07-28 wire
+```
+
+`wire-split` serves both wires and validates Origin on the handshake wire only. The
+rule used to send only `initialize`, so it could see neither half of this: a
+2026-07-28 server has no `initialize` at all, and a server that has fixed one wire
+reads as clean if only the fixed one is probed. Origin checking is normally
+middleware, and the two wires can sit behind different handlers.
 
 **`mcp_log_optin_server.py` takes a posture argument**, defaulting to `always`, and
 speaks the 2026-07-28 wire only:
