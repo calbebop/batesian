@@ -516,6 +516,28 @@ server that enforces header presence is tested whatever version it advertises, a
 one on 2026-07-28 or later that ignores the header reports clean, since this rule's
 subject is the mismatch rather than the absence.
 
+**Two more dimensions of the same requirement.** `Mcp-Name` is a second REQUIRED
+header, sourced from `params.name` or `params.uri` on `tools/call`, `resources/read`
+and `prompts/get`, carrying the same MUST and the same `-32020`. A server can validate
+`Mcp-Method` and ignore it, and this is the higher-impact instance: an intermediary
+blocklisting a dangerous **tool or resource** inspects the name, not the method. It is
+probed as its own dimension, with the same precondition logic (omission establishes
+whether presence is enforced; it is not itself reported, for consistency with the
+`Mcp-Method` path).
+
+The subject asked for deliberately does not exist, which keeps that dimension
+**read-only**: the oracle is which error comes back, and a server that does not
+validate the header is precisely one that would otherwise act on the body. `tools/call`
+is never used for it, because probing there would invite a non-validating server to
+execute a tool. `Mcp-Param-{Name}` carries the same requirement and is deliberately not
+probed at all, for the same reason: those headers come from `x-mcp-header` annotations
+on a specific tool's schema, so testing one means calling that real annotated tool.
+
+A fourth probe runs only when the plain mismatch was correctly rejected: header names
+are case-insensitive but **values are not**, so `Mcp-Method: TOOLS/LIST` against a body
+of `tools/list` must also be refused. A server that executes it validates the value but
+folds case, and an exact-match intermediary is walked past.
+
 ---
 
 ### mcp-sse-resume-replay-001

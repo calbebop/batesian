@@ -25,10 +25,49 @@ info:
       3. Mcp-Method: tools/call (mismatch). A compliant server MUST reject (400 /
          -32020). If it executes the body's tools/list anyway, the server enforces
          header PRESENCE but not header/body CONSISTENCY - reported CONFIRMED.
+      4. Only when probe 3 was correctly REJECTED: Mcp-Method: TOOLS/LIST. Header
+         names are case-insensitive but header VALUES are not ("Header values (such
+         as method names) are case-sensitive"), so the two spellings are different
+         values and the mismatch must be rejected. A server that executes this
+         validates the value but folds case, and an intermediary matching an exact
+         method name is walked past. Probe 4 runs only here, because a server that
+         ignores the value outright already reports at probe 3.
+
+    Mcp-Name is a SECOND required header with the same MUST behind it, and a server
+    can validate Mcp-Method while ignoring it, so it is probed as its own dimension.
+    The binding makes Mcp-Name REQUIRED for tools/call, resources/read and
+    prompts/get, sourced from params.name or params.uri, and requires a mismatch to
+    earn the same 400 / -32020. This is the higher-impact instance: an intermediary
+    that blocklists a dangerous TOOL OR RESOURCE inspects the name, not the method.
+
+      1. Omit Mcp-Name on a name-bearing method. A dispatch means presence is not
+         enforced, so a mismatch would prove nothing and the dimension does not
+         apply. Exactly as for Mcp-Method, omission is the precondition detector and
+         not the subject; a server dispatching without a required header does
+         violate the binding, but reporting that belongs to its own rule rather than
+         being a second verdict smuggled into this one.
+      2. Same body, an Mcp-Name that disagrees with it. Rejected with -32020 means
+         validated. Anything else means the server acted on the body under a header
+         naming something else - reported CONFIRMED.
+
+    The subject asked for is deliberately one that does not exist, which is what
+    keeps the dimension READ-ONLY: the oracle is which error comes back, and a
+    server that does not validate the header is precisely a server that would
+    otherwise act on the body. tools/call is never used for this reason - probing
+    Mcp-Name on it would mean inviting a non-validating server to execute a tool.
+    resources/read and prompts/get are reads, and a subject that does not exist
+    cannot be read.
+
+    Mcp-Param-{Name} carries the same requirement and is deliberately NOT probed.
+    Those headers come from x-mcp-header annotations on a specific tool's
+    inputSchema, so a header is only "recognized" for that tool, and testing a
+    mismatch would require calling a real annotated tool - the tenant or region
+    parameter of, say, an execute_sql. A scanner must not invoke a tool to learn
+    whether the header is validated.
 
   references:
     - https://modelcontextprotocol.io/seps/2243-http-standardization
-    - https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
     - https://cwe.mitre.org/data/definitions/444.html
     - https://cwe.mitre.org/data/definitions/436.html
 

@@ -33,6 +33,11 @@ env/
 *.key
 secrets.yaml
 secrets.json
+# Per-developer agent settings. This file holds an auth token in cleartext, and
+# nothing under .claude/ is tracked, so it was one `git add .` away from being
+# published. Only the local file is ignored: a shared .claude/settings.json remains
+# committable if the project ever wants one.
+.claude/settings.local.json
 
 # IDE
 .vscode/
