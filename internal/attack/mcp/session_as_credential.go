@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -82,7 +83,14 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 
 		// Step 2: the session must actually work when presented with the credential,
 		// or there is nothing to strip.
-		if !e.toolsList(ctx, client, ep, session, authed) {
+		if v := e.toolsList(ctx, client, ep, session, authed); v != accessGranted {
+			if v == accessUndetermined {
+				observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+					"the credentialled call presenting the server's own session id at %s returned "+
+						"neither a result nor a refusal, so the session was never shown to work and "+
+						"there was nothing to strip", ep)})
+				return nil, false
+			}
 			return nil, true
 		}
 
@@ -113,11 +121,17 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 				// session. Report nothing rather than guess.
 				return nil, true
 			}
-			if e.toolsList(ctx, client, ep, anonSession, nil) {
+			switch e.toolsList(ctx, client, ep, anonSession, nil) {
+			case accessGranted:
 				// A caller who presented no credential at any point reads the tool list.
 				// The server implements no authorization, the MUST NOT above does not
 				// bind on it, and mcp-tools-unauth-001 owns that surface.
 				return nil, true
+			case accessUndetermined:
+				observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+					"the anonymous-session control at %s returned neither a result nor a refusal, so "+
+						"whether this server authorizes anything could not be established", ep)})
+				return nil, false
 			}
 			// The anonymous session was refused while the credentialed one was
 			// accepted, on the same call with the same headers. That is the asymmetry
@@ -130,21 +144,41 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// Step 4: control. No session, no credential. A server that answers this is
 		// open on the surface under test, so a later success cannot be attributed to
 		// the session id.
-		if e.toolsList(ctx, client, ep, "", nil) {
+		switch e.toolsList(ctx, client, ep, "", nil) {
+		case accessGranted:
 			return nil, true
+		case accessUndetermined:
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the no-session no-credential control at %s returned neither a result nor a "+
+					"refusal, so whether this surface is simply open could not be established",
+				ep)})
+			return nil, false
 		}
 
 		// Step 5: control. A random never-issued session id, no credential. A server
 		// that accepts this treats the presence of the header as authorization, so the
 		// issued id was not what decided it.
 		bogus := "batesian-never-issued-" + vars.RandID
-		if e.toolsList(ctx, client, ep, bogus, nil) {
+		switch e.toolsList(ctx, client, ep, bogus, nil) {
+		case accessGranted:
 			return nil, true
+		case accessUndetermined:
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the never-issued session-id control at %s returned neither a result nor a refusal, "+
+					"so whether the server accepts any session id could not be established", ep)})
+			return nil, false
 		}
 
 		// Step 6: the real session id, no credential.
-		if !e.toolsList(ctx, client, ep, session, nil) {
+		switch e.toolsList(ctx, client, ep, session, nil) {
+		case accessRefused:
 			return nil, true // the session carries no authority: secure
+		case accessUndetermined:
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the credential-stripped call presenting the real session id at %s returned neither "+
+					"a result nor a refusal, so whether the session alone authorizes was never "+
+					"observed", ep)})
+			return nil, false
 		}
 
 		return []attack.Finding{e.finding(ep, session, bogus, anonSession)}, true
@@ -198,7 +232,7 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 // a JSON-RPC error at HTTP 200 has refused it, and reading that as success is the
 // mistake that produced fabricated findings elsewhere in this package.
 func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *attack.HTTPClient,
-	endpoint, session string, headers map[string]string) bool {
+	endpoint, session string, headers map[string]string) accessVerdict {
 	h := map[string]string{"Mcp-Protocol-Version": latestStable}
 	for k, v := range headers {
 		h[k] = v
@@ -212,10 +246,22 @@ func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *att
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	})
-	if err != nil {
-		return false
+	// classifyAccess, not err != nil -> false. Steps 4 and 5 are SUPPRESSION controls,
+	// so "refused" is the direction that lets the finding through: a transport failure
+	// or a 429 on either of them used to read as "this server does gate the surface",
+	// and the rule then attributed a step-6 success to the session id.
+	verdict := classifyAccess(resp, err)
+	// One session-specific amendment. HTTP 404 is the shape the transport prescribes
+	// for a missing or unknown session id, and it commonly carries no JSON-RPC body, so
+	// classifyAccess grades it undetermined. Here it is a real refusal: every call this
+	// helper makes goes to an endpoint that has already completed a handshake, so a 404
+	// is this server declining this request rather than a path that does not exist.
+	// Without this a compliant server reports not tested at the controls instead of
+	// being assessed.
+	if verdict == accessUndetermined && resp != nil && resp.StatusCode == http.StatusNotFound {
+		return accessRefused
 	}
-	return resp.IsAccepted()
+	return verdict
 }
 
 func (e *SessionAsCredentialExecutor) finding(endpoint, session, bogus, anonSession string) attack.Finding {

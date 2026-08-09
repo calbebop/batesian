@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -59,13 +60,31 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 		return nil, nil
 	}
 
-	legacyOutcome := e.probeList(ctx, client, *legacy)
-	modernOutcome := e.probeList(ctx, client, *modern)
-	if legacyOutcome.method == "" || modernOutcome.method == "" {
+	// ONE method, advertised by BOTH wires. Each wire used to choose its own from its
+	// own advertisement, and nothing then required the two to match: a legacy wire
+	// advertising {resources} and a modern wire advertising {tools} were compared as
+	// though they were the same call. The difference measured was the capability or a
+	// per-method policy, not the era gate, and the finding text rendered one wire's
+	// method for both sides while the evidence printed both, so the two contradicted
+	// each other.
+	legacyMethods := advertisedListMethods(*legacy)
+	modernMethods := advertisedListMethods(*modern)
+	if len(legacyMethods) == 0 || len(modernMethods) == 0 {
 		// A wire advertising nothing listable leaves nothing whose gating could be
 		// compared, and that is a genuine not-applicable.
 		return nil, nil
 	}
+	method := firstCommon(legacyMethods, modernMethods)
+	if method == "" {
+		return nil, fmt.Errorf("%w: the two wires at %s advertise no listable method in common "+
+			"(legacy: %s; %s: %s), so any difference between them would be a capability "+
+			"difference rather than an authorization gate",
+			attack.ErrInconclusive, legacy.Endpoint, strings.Join(legacyMethods, ", "),
+			modernEraVersion, strings.Join(modernMethods, ", "))
+	}
+
+	legacyOutcome := e.probeList(ctx, client, *legacy, method)
+	modernOutcome := e.probeList(ctx, client, *modern, method)
 	if !legacyOutcome.comparable() || !modernOutcome.comparable() {
 		// One wire did not answer: a transport failure, a bare 202, a 429, a 502.
 		// The comparison is unavailable, and calling the silent wire "refused" is
@@ -90,6 +109,39 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 		open, closed = modernOutcome, legacyOutcome
 	}
 	return []attack.Finding{e.finding(*legacy, open, closed)}, nil
+}
+
+// listableMethods are the read-only listings this rule will compare, in preference
+// order, each with the capability that advertises it.
+var listableMethods = []struct{ capability, method string }{
+	{"tools", "tools/list"},
+	{"resources", "resources/list"},
+	{"prompts", "prompts/list"},
+}
+
+// advertisedListMethods returns the listings this wire advertises, in preference
+// order.
+func advertisedListMethods(session mcpSession) []string {
+	var out []string
+	for _, c := range listableMethods {
+		if session.ServerSupports(c.capability) {
+			out = append(out, c.method)
+		}
+	}
+	return out
+}
+
+// firstCommon returns the first entry of a that also appears in b, preserving a's
+// preference order, or "" when they share nothing.
+func firstCommon(a, b []string) string {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return x
+			}
+		}
+	}
+	return ""
 }
 
 // listOutcome is one wire's answer to a read-only list call.
@@ -119,23 +171,9 @@ func (o listOutcome) comparable() bool {
 // experimental, prompts, resources and tools while server/discover reports
 // prompts, resources and tools. Comparing a method one wire does not implement
 // against one it does would measure the capability difference, not the gate.
-func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTTPClient, session mcpSession) listOutcome {
-	out := listOutcome{era: session.Era}
-
-	for _, c := range []struct{ capability, method string }{
-		{"tools", "tools/list"},
-		{"resources", "resources/list"},
-		{"prompts", "prompts/list"},
-	} {
-		if !session.ServerSupports(c.capability) {
-			continue
-		}
-		out.method = c.method
-		break
-	}
-	if out.method == "" {
-		return out
-	}
+func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTTPClient, session mcpSession,
+	method string) listOutcome {
+	out := listOutcome{era: session.Era, method: method}
 
 	resp, err := session.post(ctx, client, 2, out.method, nil)
 	out.verdict = classifyAccess(resp, err)
