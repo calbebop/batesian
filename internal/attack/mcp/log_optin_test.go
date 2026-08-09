@@ -42,6 +42,14 @@ const (
 	// to the METHOD NAME: matching on field names instead reports this server, which
 	// gates its log notifications correctly, as a violation.
 	logDecoy
+	// logProbeUnreadable streams a log frame for the CONTROL and answers the PROBE
+	// with a plain JSON object, so the probe yields no readable stream at all.
+	//
+	// It pins the one asymmetry the two legs must not share. The control establishes
+	// that this server logs here, so silence on the probe would be evidence the gate
+	// held; a probe that produced no stream is not silence, it is no observation. Both
+	// used to fall through to the same clean verdict.
+	logProbeUnreadable
 )
 
 // logOptInServer serves the 2026-07-28 wire only, so the rule's era gate is exercised
@@ -105,7 +113,10 @@ func logOptInServer(t *testing.T, mode logMode, sawOptIn *[]bool) *httptest.Serv
 				map[string]interface{}{"name": "logLevel", "description": "set the level"},
 			}}
 		}
-		if mode == logJSONOnly {
+		// The probe leg gets no stream, only the control does. Answering the probe with
+		// a plain JSON object is the cheapest way to produce "no observation" without
+		// also killing the connection.
+		if mode == logJSONOnly || (mode == logProbeUnreadable && !optedIn) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id, "result": result,
@@ -113,7 +124,8 @@ func logOptInServer(t *testing.T, mode logMode, sawOptIn *[]bool) *httptest.Serv
 			return
 		}
 
-		emitLog := mode == logAlways || mode == logAlwaysUndeclared || (mode == logOnOptIn && optedIn)
+		emitLog := mode == logAlways || mode == logAlwaysUndeclared ||
+			(mode == logOnOptIn && optedIn) || (mode == logProbeUnreadable && optedIn)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -341,5 +353,32 @@ func TestLogOptIn_DecoyPayloadsAreNotLogFrames(t *testing.T) {
 	// the honest answer is not observed.
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+}
+
+// The control logged and the probe produced no readable stream. That is NOT a clean
+// pass: the control proved the server logs here, so silence on the probe would have
+// been evidence, but no stream is not silence. Both legs used to fall through to the
+// same clean verdict, which reported "it withheld the frames when they were not asked
+// for" about a request that produced no observation at all.
+func TestLogOptIn_UnreadableProbeIsNotClean(t *testing.T) {
+	ts := logOptInServer(t, logProbeUnreadable, nil)
+	defer ts.Close()
+
+	findings, err := runLogOptIn(t, ts)
+	if len(findings) != 0 {
+		t.Fatalf("a probe that produced no stream cannot yield a finding, got %d: %+v",
+			len(findings), findings)
+	}
+	if err == nil {
+		t.Fatal("an unobserved probe must report not tested, not a clean pass")
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want ErrInconclusive, got %v", err)
+	}
+	// The reason has to say which leg failed, or an operator cannot tell this from a
+	// server that simply does not log.
+	if !strings.Contains(err.Error(), "no readable response stream") {
+		t.Errorf("the skip reason should name the unreadable probe; got: %v", err)
 	}
 }

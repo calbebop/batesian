@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -299,5 +300,85 @@ func TestDNSRebindModern_BothWiresReportSeparately(t *testing.T) {
 	if modern != 1 {
 		t.Errorf("expected exactly one of the two to be labelled modern, got %d: %+v",
 			modern, findings)
+	}
+}
+
+// The baseline and the Origin probe must be the SAME request.
+//
+// The rule's whole claim is that the pair differs in the Origin header alone. When it
+// started taking its baseline from openSessions, the probe still built its own body
+// offering a different protocol revision with different capabilities and clientInfo,
+// so the pair differed three ways. A server that refuses that revision refused the
+// probe for reasons unrelated to Origin, and the rule reported Origin validation.
+//
+// Asserting the bodies match, rather than asserting a particular revision, keeps this
+// test correct across a legitimate bump of the offered revision.
+func TestDNSRebindModern_ProbeIsTheBaselineRequestPlusOrigin(t *testing.T) {
+	type seen struct {
+		body   map[string]interface{}
+		origin string
+	}
+	var inits []seen
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.HasPrefix(method, "notifications/") {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if method != "initialize" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+			return
+		}
+		inits = append(inits, seen{body: body, origin: r.Header.Get("Origin")})
+		// Origin is never validated, so the rule must report a finding.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id,
+			"result": map[string]interface{}{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				"serverInfo":      map[string]interface{}{"name": "symmetry", "version": "1.0"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := runOriginRule(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("a server that ignores Origin must be reported, got %d: %+v", len(findings), findings)
+	}
+
+	if len(inits) != 2 {
+		t.Fatalf("expected a baseline handshake and one Origin-bearing repeat, got %d", len(inits))
+	}
+	withOrigin, withoutOrigin := 0, 0
+	for _, in := range inits {
+		if in.origin == "" {
+			withoutOrigin++
+		} else {
+			withOrigin++
+		}
+	}
+	if withOrigin != 1 || withoutOrigin != 1 {
+		t.Fatalf("the pair should be one request with Origin and one without, got %d/%d",
+			withOrigin, withoutOrigin)
+	}
+	if !reflect.DeepEqual(inits[0].body, inits[1].body) {
+		a, _ := json.Marshal(inits[0].body)
+		b, _ := json.Marshal(inits[1].body)
+		t.Errorf("the Origin probe must repeat the baseline request verbatim, so a refusal is "+
+			"attributable to the header.\nbaseline: %s\nprobe:    %s", a, b)
 	}
 }

@@ -114,10 +114,21 @@ func (e *LogOptInExecutor) Execute(ctx context.Context, target string, opts atta
 		// Probe: the same request with no logLevel in _meta. Any notifications/message
 		// frame here is the violation, and no interpretation stands between the
 		// observation and the claim.
-		if e.emitsLogFrame(ctx, raw, client, session, opts, false) == logEmitted {
+		//
+		// logUnreadable is graded separately from logNone. Both used to fall through to
+		// the clean tail, so a probe that died in transport after a control which HAD
+		// established that the server logs here was reported as "it withheld the frames
+		// when they were not asked for" - a clean verdict resting on a request that
+		// produced no observation. Only logNone is evidence the gate held.
+		switch e.emitsLogFrame(ctx, raw, client, session, opts, false) {
+		case logEmitted:
 			findings = append(findings, labelEra(session, []attack.Finding{
 				e.finding(session, e.advertisesLogging(session)),
 			})...)
+		case logUnreadable:
+			notObserved = fmt.Sprintf("the control at %s established that the server emits log "+
+				"notifications, but the probe that omits %s produced no readable response stream, so "+
+				"whether the opt-in gate held was never observed", session.Endpoint, metaLogLevel)
 		}
 	}
 

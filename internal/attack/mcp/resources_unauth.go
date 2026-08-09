@@ -258,16 +258,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 	// responses this loop already has, so it costs no extra requests.
 	var observed initObservation
 	for _, ep := range endpoints {
-		initResp, err := client.POST(ctx, ep, nil, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "initialize",
-			"params": map[string]interface{}{
-				"protocolVersion": latestStable,
-				"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
-				"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
-			},
-		})
+		initResp, err := client.POST(ctx, ep, nil, legacyHandshakeBody())
 		if err != nil {
 			continue // transport failure: nothing answered, so nothing to explain
 		}
