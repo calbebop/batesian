@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -246,21 +245,18 @@ func labelEra(session mcpSession, findings []attack.Finding) []attack.Finding {
 	return findings
 }
 
-// modernResultPayload strips the envelope a modern result wraps its payload in.
+// What a 2026-07-28 result looks like, since the rules here read them.
 //
-// A 2026-07-28 result carries cacheScope, resultType, ttlMs and _meta alongside
-// the fields a legacy result would have had. Rules that read a named field
-// (result.tools, result.resources) are unaffected, but anything that treats the
-// result object as the payload needs the envelope keys removed first.
-func modernResultPayload(body []byte) (map[string]json.RawMessage, error) {
-	var envelope struct {
-		Result map[string]json.RawMessage `json:"result"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("parsing modern result: %w", err)
-	}
-	for _, k := range []string{"cacheScope", "resultType", "ttlMs", "_meta"} {
-		delete(envelope.Result, k)
-	}
-	return envelope.Result, nil
-}
+// Every result carries resultType ("complete", or "input_required" for an interim
+// multi-round-trip reply), and SHOULD carry _meta with
+// io.modelcontextprotocol/serverInfo. The results of server/discover, tools/list,
+// prompts/list, resources/list, resources/templates/list and resources/read
+// additionally carry ttlMs and cacheScope when resultType is "complete"; a
+// tools/call result does not.
+//
+// None of that needs unwrapping. The envelope fields are SIBLINGS of the payload
+// fields, not a wrapper around them: a tools/list result still has tools at the top
+// level of result. So the rules here, which all read a named field, are unaffected,
+// and a helper that stripped the envelope keys had no caller for exactly that
+// reason. It is recorded rather than kept, because dead code reads as a supported
+// capability.

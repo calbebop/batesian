@@ -303,31 +303,15 @@ func jsonRPCErrorCode(body []byte) (int, bool) {
 // 405, tells us something answered, and absent a modern error that answer is
 // legacy.
 func detectEra(ctx context.Context, client *attack.HTTPClient, endpoint string) Era {
-	headers := map[string]string{
-		// Both are REQUIRED on every modern POST. Omitting them would earn a
-		// -32020 HeaderMismatch, which is itself a modern signal, but sending
-		// them correctly keeps the probe a fair test of the server rather than
-		// of our own request.
-		"MCP-Protocol-Version": modernEraVersion,
-		"Mcp-Method":           "server/discover",
-	}
-	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-era-probe",
-		"method":  "server/discover",
-		"params": map[string]interface{}{
-			"_meta": map[string]interface{}{
-				metaProtocolVersion: modernEraVersion,
-				metaClientInfo: map[string]interface{}{
-					"name":    "batesian",
-					"version": attack.Version,
-				},
-				// Required, and deliberately empty: this probe asks only what
-				// the server is, so it needs no client capability.
-				metaClientCapabilities: map[string]interface{}{},
-			},
-		},
-	})
+	// Built through a modern session rather than by hand. What a modern request
+	// looks like (MCP-Protocol-Version and Mcp-Method, both REQUIRED, and the
+	// mandatory _meta block) is one judgement, and this probe had its own copy of
+	// it. Two copies of a wire format drift, and the era probe is the worst place
+	// for that: a request this server would reject as malformed reads as "not a
+	// modern server" and every modern-wire rule then skips a target it should have
+	// tested.
+	probe := mcpSession{Endpoint: endpoint, Era: EraModern}
+	resp, err := probe.post(ctx, client, "batesian-era-probe", "server/discover", nil)
 	if err != nil {
 		return EraUnknown
 	}

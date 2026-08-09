@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -313,5 +315,60 @@ func TestInconclusive(t *testing.T) {
 	}
 	if !errors.Is(plain, attack.ErrInconclusive) {
 		t.Errorf("plain error must be ErrInconclusive, got %v", plain)
+	}
+}
+
+// The era probe must send exactly what a modern session sends.
+//
+// It used to build the MCP-Protocol-Version and Mcp-Method headers and the whole
+// mandatory _meta block by hand, duplicating request(). Two copies of a wire format
+// drift, and this is the worst place for it: a request the server rejects as
+// malformed reads as "not a modern server", and every modern-wire rule then skips a
+// target it should have tested. So the probe goes through a session, and this pins
+// that its request is byte-identical to one.
+//
+// The field-level assertions are in TestDetectEra_SendsRequiredModernFields; this
+// one is only about the two sides agreeing.
+func TestDetectEra_ProbeMatchesAModernSessionRequest(t *testing.T) {
+	var gotHeaders http.Header
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"batesian-era-probe","result":{}}`))
+	}))
+	defer srv.Close()
+
+	if era := detect(t, srv); era != EraLegacy {
+		t.Fatalf("a result that advertises no modern version is legacy, got %v", era)
+	}
+
+	// What a modern session would have sent for the same call.
+	want := mcpSession{Endpoint: srv.URL, Era: EraModern}
+	wantHeaders, wantBody := want.request("batesian-era-probe", "server/discover", nil)
+
+	for k, v := range wantHeaders {
+		if got := gotHeaders.Get(k); got != v {
+			t.Errorf("header %s: probe sent %q, a modern session sends %q", k, got, v)
+		}
+	}
+
+	wantJSON, err := json.Marshal(wantBody)
+	if err != nil {
+		t.Fatalf("marshalling the reference body: %v", err)
+	}
+	// Compared as decoded values, since map key order in the encoded form is not
+	// part of the contract.
+	var gotAny, wantAny interface{}
+	if err := json.Unmarshal(gotBody, &gotAny); err != nil {
+		t.Fatalf("probe body is not JSON: %v", err)
+	}
+	if err := json.Unmarshal(wantJSON, &wantAny); err != nil {
+		t.Fatalf("reference body is not JSON: %v", err)
+	}
+	if !reflect.DeepEqual(gotAny, wantAny) {
+		t.Errorf("the era probe and a modern session disagree on the request body.\nprobe: %s\nsession: %s",
+			gotBody, wantJSON)
 	}
 }

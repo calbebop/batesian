@@ -109,8 +109,16 @@ and 2026-07-28 on the same endpoint. The four unauthenticated-access rules,
 `mcp-resources-unauth-001`, `mcp-tools-unauth-001`, `mcp-prompt-unauth-001` and
 `mcp-completion-unauth-001`, are exercised on each wire it serves, because the two
 need not be gated alike: a server can enforce authorization on one and not the
-other. Each wire is capability-gated on its own advertisement, so a surface the
-server exposes on only one era is probed only there.
+other.
+
+Three of those four read the advertised capability per wire, so a surface the server
+exposes on only one era is probed only there: they follow the listing with a
+state-touching call (`tools/call`, `prompts/get`, `completion/complete`) and gating
+avoids calling a surface the server does not implement.
+`mcp-resources-unauth-001` deliberately does not gate, on either wire. A non-empty
+`resources/list` answered without a credential is direct evidence of the disclosure,
+and what a server advertised is not evidence about what it serves, so gating would
+drop the case of a wire listing resources it never declared.
 
 `mcp-dns-rebind-origin-001` is exercised on each wire for the same reason, with the
 request each one speaks. Origin validation is normally middleware, so a server can

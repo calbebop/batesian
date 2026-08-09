@@ -373,30 +373,6 @@ func TestSessionPost_DoesNotMutateCallerParams(t *testing.T) {
 	}
 }
 
-func TestModernResultPayload_StripsTheEnvelope(t *testing.T) {
-	body := []byte(`{"jsonrpc":"2.0","id":1,"result":{"cacheScope":"private","resultType":"complete",` +
-		`"ttlMs":0,"_meta":{},"tools":[{"name":"echo"}]}}`)
-
-	payload, err := modernResultPayload(body)
-	if err != nil {
-		t.Fatalf("modernResultPayload: %v", err)
-	}
-	if len(payload) != 1 {
-		t.Fatalf("expected only the payload key to survive, got %v", keysOf(payload))
-	}
-	if _, ok := payload["tools"]; !ok {
-		t.Errorf("payload lost its tools key, got %v", keysOf(payload))
-	}
-}
-
-func keysOf(m map[string]json.RawMessage) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
 // A rule ported onto runOnEachWire must exercise both wires of a dual-era server
 // and label the modern findings, so that on a server exposing the same surface
 // twice the two results are distinguishable rather than looking like duplicates.
