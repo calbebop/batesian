@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -133,6 +134,16 @@ func snippetAround(body, needle string) string {
 	end := idx + len(needle) + 40
 	if end > len(body) {
 		end = len(body)
+	}
+	// Both window edges are byte offsets into arbitrary response text. Move each
+	// to a rune boundary so a multi-byte character is never split: the snippet
+	// ends up in Finding.Evidence, which is marshalled to JSON/SARIF, where a
+	// partial rune is silently rewritten to U+FFFD.
+	for start < end && !utf8.RuneStart(body[start]) {
+		start++
+	}
+	for end > start && end < len(body) && !utf8.RuneStart(body[end]) {
+		end--
 	}
 	prefix, suffix := "", ""
 	if start > 0 {
