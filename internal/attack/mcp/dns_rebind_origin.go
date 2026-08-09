@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -98,8 +97,13 @@ func (e *DNSRebindOriginExecutor) originAccepted(ctx context.Context, client *at
 		return resp.IsAccepted(), resp
 	}
 
+	// legacyHandshakeBody, not mcpInitBody: the baseline this is paired against is the
+	// wire-opening handshake, and mcpInitBody offers a different protocol revision with
+	// different capabilities and clientInfo. A server that refuses the older revision
+	// refused this probe for a reason that has nothing to do with Origin, and the rule
+	// read that as Origin validation.
 	headers := map[string]string{"Content-Type": "application/json", "Origin": foreignOrigin}
-	resp, err := client.POST(ctx, session.Endpoint, headers, json.RawMessage(mcpInitBody))
+	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
 	if err != nil {
 		return false, nil
 	}

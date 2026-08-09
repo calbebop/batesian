@@ -149,6 +149,32 @@ func (s mcpSession) header() map[string]string {
 // TestOffersCurrentHandshakeRevision, which fails if it drifts again.
 const latestStable = "2025-11-25"
 
+// legacyHandshakeBody is the initialize request the handshake wire is opened with.
+//
+// It exists so a rule that repeats the handshake as a probe sends the SAME request
+// the baseline sent. mcp-dns-rebind-origin-001 needs exactly that: it establishes a
+// baseline by opening the wire, then repeats it carrying a foreign Origin, and the
+// claim it makes rests on the pair differing in the Origin header alone. It was
+// built by hand from mcpInitBody instead, which offers 2025-06-18 with different
+// capabilities and clientInfo, so the pair differed three ways and a server that
+// refuses the older revision refused the probe for reasons that had nothing to do
+// with Origin. That reads as Origin validation.
+//
+// Any rule pairing a probe against the wire-opening handshake should use this rather
+// than assembling its own.
+func legacyHandshakeBody() map[string]interface{} {
+	return map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": latestStable,
+			"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
+		},
+	}
+}
+
 // negotiatedVersion reads the protocolVersion the server chose from its
 // initialize result body, falling back to latestStable if the server did not
 // echo one. The negotiated value is sent in the Mcp-Protocol-Version header on
