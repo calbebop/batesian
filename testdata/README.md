@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **17 A2A + 20 MCP = 37 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 20 MCP = 38 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -50,7 +50,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
-| `a2a_secured_agent.py` | 3111 | negative control, two postures: NO rule may fire on `secured`; `a2a-multitenant-isolation-001`, `a2a-delegation-integrity-001`, `a2a-task-cancel-idor-001` and `a2a-push-binding-001` must all fire on `idor` (needs `--token tok-a` and two principals, see below) |
+| `a2a_secured_agent.py` | 3111 | negative control, two postures: NO rule may fire on `secured`; `a2a-multitenant-isolation-001`, `a2a-delegation-integrity-001`, `a2a-task-cancel-idor-001`, `a2a-push-binding-001` and `a2a-task-enumeration-001` must all fire on `idor` (needs `--token tok-a` and two principals, see below) |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` (two postures, see below; tracks registrations at `/__clients`) |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
@@ -72,7 +72,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 
-**Coverage.** 36 of the 37 rules have a standalone Python fixture above, and each
+**Coverage.** 37 of the 38 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -231,7 +231,7 @@ this directory.
 
 ```sh
 python testdata/a2a_secured_agent.py secured  # NO rule may fire: any finding is a false positive
-python testdata/a2a_secured_agent.py idor     # the four ownership rules must all fire
+python testdata/a2a_secured_agent.py idor     # the five ownership rules must all fire
 ```
 
 Ownership enforcement is the only difference between the two postures, which is what

@@ -114,6 +114,8 @@ func (a *matrixAgent) serve(w http.ResponseWriter, r *http.Request) {
 		a.get(w, id, params, caller, method == "GetTask")
 	case "CancelTask", "tasks/cancel":
 		a.cancel(w, id, params, caller, method == "CancelTask")
+	case "ListTasks", "tasks/list":
+		a.list(w, id, caller, method == "ListTasks")
 	case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 		a.setPush(w, id, params, caller)
 	default:
@@ -207,6 +209,31 @@ func (a *matrixAgent) cancel(w http.ResponseWriter, id, params interface{}, call
 	a.writeTask(w, id, t, v1, false)
 }
 
+// list is ListTasks: scoped to the caller under secured, every task under idor. The
+// specification requires scoping twice, in sections 3.1.4 and 13.1.
+func (a *matrixAgent) list(w http.ResponseWriter, id interface{}, caller string, v1 bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	visible := []interface{}{}
+	for _, t := range a.tasks {
+		if !a.mayTouch(t, caller) {
+			continue
+		}
+		state := t.state
+		if v1 {
+			state = "TASK_STATE_" + strings.ToUpper(t.state)
+		}
+		visible = append(visible, map[string]interface{}{
+			"id": t.id, "contextId": t.ctxID,
+			"status": map[string]interface{}{"state": state},
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"jsonrpc": "2.0", "id": id,
+		"result": map[string]interface{}{"tasks": visible, "totalSize": len(visible)},
+	})
+}
+
 func (a *matrixAgent) setPush(w http.ResponseWriter, id, params interface{}, caller string) {
 	p, _ := params.(map[string]interface{})
 	taskID, _ := p["taskId"].(string)
@@ -294,6 +321,9 @@ func TestA2APostureMatrix(t *testing.T) {
 		}, true},
 		{"a2a-push-binding-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewPushBindingExecutor(rc)
+		}, true},
+		{"a2a-task-enumeration-001", func(rc attack.RuleContext) attack.Executor {
+			return a2aattack.NewTaskEnumerationExecutor(rc)
 		}, true},
 		// Not ownership-sensitive: its oracle is an ANONYMOUS read, which both
 		// postures refuse. It is here as a false-positive control, since it is the

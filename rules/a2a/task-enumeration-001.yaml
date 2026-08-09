@@ -1,0 +1,96 @@
+id: a2a-task-enumeration-001
+info:
+  name: A2A ListTasks Enumerates Another Principal's Tasks
+  author: batesian
+  severity: high
+  description: |
+    Tests whether one authenticated principal can enumerate another's tasks through
+    ListTasks. The specification requires the opposite twice. Section 3.1.4, on
+    ListTasks itself: "Implementations MUST implement appropriate authorization
+    scoping to ensure clients can only access authorized tasks." Section 13.1:
+    "Servers MUST return only tasks visible to the authenticated client."
+
+    Enumeration is worse than reading a task by id, because it needs no prior
+    knowledge. One valid credential yields every task identifier on the server, and
+    those identifiers are exactly what the per-task read, cancel and
+    push-notification-config surfaces take as input. A tenant that can list becomes a
+    tenant that can act.
+
+    This is a distinct surface from the rules that already exist, not a second look
+    at the same one:
+
+      - a2a-multitenant-isolation-001 reads a task BY ID, so it only shows that a
+        caller who already knows an identifier can fetch it.
+      - a2a-task-idor-001 probes the REST list paths ANONYMOUSLY. A server that
+        correctly requires a credential passes that check and can still hand every
+        tenant's tasks to any authenticated caller.
+      - The listing endpoint is separate code from the per-task fetch, and a server
+        can scope one and not the other. The fetch has an obvious owner to compare
+        against; the list has to be filtered, which is the step implementations miss.
+
+    The rule needs two principals, and confirms the failure with three controls so it
+    cannot fire on a server that implements no listing, one whose listing is broken
+    for its own owner, or one that enforces no authorization at all:
+
+      1. Principal A creates a task. Without one there is nothing for B to find, and
+         reporting the listing scoped would claim a property never tested. A refused
+         creation is reported as not tested, naming the refusal.
+      2. Control: A lists its own tasks and must see the task it just created. If
+         ListTasks is not implemented (-32601 on every spelling) the surface is absent
+         and the rule does not apply. If it is refused, or does not return the owner's
+         own task, the listing is not the thing this rule compares against and the
+         result is not tested rather than clean.
+      3. Control: an UNAUTHENTICATED ListTasks. If it returns A's task the server
+         enforces no authorization on this surface at all, which is
+         a2a-task-idor-001's finding; reporting it here would count one defect twice.
+      4. Principal B lists. A's task id appearing in B's response is the finding: B is
+         authenticated, holds no claim to the task, and was handed its identifier.
+
+    Identifiers are compared, never key names. An earlier version of a sibling check
+    matched the key name "tasks" and so fired on an empty list; the oracle here is
+    whether A's specific task id appears among the ids B received.
+
+    History is deliberately not requested (historyLength 0). The failure is that the
+    identifiers came back at all, and pulling another tenant's conversation content to
+    prove it would be gratuitous. pageSize is set high so a scoped server has no
+    pagination excuse for omitting a task.
+
+    Currency: ListTasks is a v1.0 JSON-RPC method. The v0.3 revision defines
+    tasks/get, tasks/cancel, tasks/resubscribe and the push-notification-config
+    methods, and no list method, so a v0.3-only agent answers -32601 and this reports
+    not applicable. The v0.3 REST binding's list path is covered anonymously by
+    a2a-task-idor-001; the authenticated case on that binding is not probed, because
+    its prefix belongs to the deployment and guessing it is how earlier rules came to
+    post at paths that never existed.
+
+  references:
+    - https://a2a-protocol.org/latest/specification/
+    - https://cwe.mitre.org/data/definitions/639.html
+    - https://cwe.mitre.org/data/definitions/200.html
+    - https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
+
+  tags:
+    - a2a
+    - authorization
+    - multi-tenant
+    - enumeration
+    - cwe-639
+    - cwe-200
+
+attack:
+  protocol: a2a
+  type: a2a-task-enumeration
+
+remediation: |
+  1. Filter ListTasks by the authenticated principal. Resolve the caller's identity
+     from the credential on the request and return only tasks that identity owns, in
+     the query itself rather than after the fact.
+  2. Do not treat a task store as shared by default. Scope it per tenant or per
+     principal, so a listing that forgets to filter returns nothing rather than
+     everything.
+  3. Apply the same rule to the count and pagination fields. A totalSize computed over
+     every task discloses the volume of other tenants' work even when the returned
+     page is filtered correctly.
+  4. Test the listing separately from the per-task fetch. They are different code
+     paths, and scoping one does not scope the other; the fetch has an owner to
+     compare against, the list has to be filtered.
