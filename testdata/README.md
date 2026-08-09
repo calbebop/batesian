@@ -190,6 +190,12 @@ indistinguishable from a 401 and both reported the surfaces clean. An operator
 could not tell "this server enforces auth" from "the scanner could not tell". If
 the 401 and 502 runs ever agree again, that conflation is back.
 
+The same conflation lived in four rules that compare two probes or gate a finding on
+a control, and `mcp-init-downgrade-001` is now covered by this fixture too: on the
+`502` posture it reports not tested, naming the version whose listing returned no
+verdict, where it used to read the gateway error as "authorization enforced under the
+modern version" and emit a critical downgrade bypass.
+
 **`mcp_era_downgrade_server.py` takes a posture argument**, defaulting to
 `vulnerable`:
 

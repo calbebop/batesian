@@ -157,7 +157,20 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 
 	// Probe 3: mismatched Mcp-Method. A compliant server MUST reject; if it
 	// executes the body's tools/list, header value is not validated.
-	if e.toolsList(ctx, client, session, mismatchMethodHeader) != accessGranted {
+	//
+	// accessUndetermined is graded separately here, exactly as it is for probe 1. It
+	// used to fold into the "value IS validated" branch, which is the rule's own
+	// subject: a 502 or a rate limit on this one request reported the SEP-2243 surface
+	// clean. Worse, it then ran the case-folded follow-up, so an undetermined mismatch
+	// plus a server that ignores the header value outright emitted the CASE-FOLDING
+	// finding, whose text asserts that a mismatched Mcp-Method was rejected - something
+	// this path never observed.
+	switch e.toolsList(ctx, client, session, mismatchMethodHeader) {
+	case accessUndetermined:
+		return nil, "", false, "the tools/list probe whose Mcp-Method disagreed with the body " +
+			"returned neither a result nor a refusal, so whether the server validates the header " +
+			"VALUE could not be established"
+	case accessRefused:
 		// The value IS validated. One narrower way to get it wrong remains: comparing
 		// case-insensitively. This runs only here, because a server that ignores the
 		// value outright already reports above and a second finding would say the same

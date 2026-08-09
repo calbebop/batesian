@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -99,15 +100,26 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	})
 
 	// Step 2: present the attacker-chosen id on a follow-up call.
-	if !e.sessionAccepted(ctx, client, ep, fixed, nil) {
+	switch e.sessionAccepted(ctx, client, ep, fixed, nil) {
+	case accessRefused:
 		return nil, nil // server did not adopt the pre-seeded id - secure
+	case accessUndetermined:
+		return nil, fmt.Errorf("%w: the follow-up call presenting the client-chosen session id at %s "+
+			"returned neither a result nor a refusal, so whether the server adopted it was never "+
+			"observed", attack.ErrInconclusive, ep)
 	}
 
 	// Step 3 (control): a never-initialized random id. A spec-compliant server
 	// rejects it (404). If it is ALSO accepted, the server tracks no sessions at
 	// all - not fixation - so suppress.
-	if e.sessionAccepted(ctx, client, ep, unseeded, nil) {
+	switch e.sessionAccepted(ctx, client, ep, unseeded, nil) {
+	case accessGranted:
 		return nil, nil
+	case accessUndetermined:
+		return nil, fmt.Errorf("%w: the never-initialized control id at %s returned neither a result "+
+			"nor a refusal, so whether this server enforces sessions at all could not be established, "+
+			"and without that a client-chosen id being accepted proves nothing",
+			attack.ErrInconclusive, ep)
 	}
 
 	// Confirmed: sessions ARE enforced (unseeded id rejected) yet the server
@@ -125,7 +137,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 		o := opts
 		o.Token = p.Token
 		pClient := attack.NewHTTPClient(o, vars)
-		if e.sessionAccepted(ctx, pClient, ep, fixed, p.Headers) {
+		if e.sessionAccepted(ctx, pClient, ep, fixed, p.Headers) == accessGranted {
 			crossPrincipal = p.Name
 			chain = append(chain, attack.ChainStep{
 				Hop:       4,
@@ -173,7 +185,7 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 // UNLESS it carries a JSON-RPC error that references the session (e.g. "session
 // not found"); a method-not-found error still means the session passed
 // validation and reached method dispatch.
-func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, ep, sessionID string, extraHeaders map[string]string) bool {
+func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, ep, sessionID string, extraHeaders map[string]string) accessVerdict {
 	headers := map[string]string{"Mcp-Session-Id": sessionID, "Mcp-Protocol-Version": latestStable}
 	for k, v := range extraHeaders {
 		headers[k] = v
@@ -184,17 +196,34 @@ func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *a
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return false
+	if err != nil || resp == nil {
+		return accessUndetermined
 	}
 	body := resp.BodyString()
+	sessionRefusal := false
 	if isJSONRPCError(body) {
 		low := strings.ToLower(body)
-		if strings.Contains(low, "session") || strings.Contains(low, "not initialized") {
-			return false
-		}
+		sessionRefusal = strings.Contains(low, "session") || strings.Contains(low, "not initialized")
 	}
-	return true
+	if !resp.IsSuccess() {
+		// 404 is the shape the transport prescribes for an unknown session; an auth
+		// status, or any status carrying a session-flavoured error, is also a real
+		// refusal. Anything else - a 429, a 502, an empty 400 - refused nothing, and
+		// grading it as a refusal is what let this rule fabricate: BOTH of its
+		// suppression controls read a non-answer as "the server enforces sessions",
+		// which is the direction that enables the finding.
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized ||
+			resp.StatusCode == http.StatusForbidden || sessionRefusal {
+			return accessRefused
+		}
+		return accessUndetermined
+	}
+	if sessionRefusal {
+		return accessRefused
+	}
+	// A JSON-RPC error that is not about the session still means the session was
+	// accepted: the request reached dispatch.
+	return accessGranted
 }
 
 // finding builds the confirmed session-fixation finding.
