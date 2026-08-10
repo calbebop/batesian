@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -620,8 +621,15 @@ func summarizeAudience(expected string) string {
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
-	if len(s) > 200 {
-		s = s[:200] + "..."
+	if len(s) <= 200 {
+		return s
 	}
-	return s
+	// Back the cut to a rune boundary so a multi-byte character is never split.
+	// The result ends up in Finding.Evidence, which is marshalled to JSON/SARIF,
+	// where a trailing partial rune is silently rewritten to U+FFFD.
+	cut := 200
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
