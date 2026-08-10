@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	batesian "github.com/calbebop/batesian"
 	attackpkg "github.com/calbebop/batesian/internal/attack"
@@ -635,10 +636,16 @@ func significantHeaderKeys(h map[string]string) []string {
 // oneLine collapses whitespace runs and truncates s for single-line display.
 func oneLine(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > max {
-		return s[:max] + "..."
+	if len(s) <= max {
+		return s
 	}
-	return s
+	// Back the cut to a rune boundary so a multi-byte character is never split.
+	// Dry-run plan bodies are display text that may carry non-ASCII content.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // buildScanJSON creates the JSON representation of scan results.
