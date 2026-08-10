@@ -155,10 +155,10 @@ const latestStable = "2025-11-25"
 // the baseline sent. mcp-dns-rebind-origin-001 needs exactly that: it establishes a
 // baseline by opening the wire, then repeats it carrying a foreign Origin, and the
 // claim it makes rests on the pair differing in the Origin header alone. It was
-// built by hand from mcpInitBody instead, which offers 2025-06-18 with different
-// capabilities and clientInfo, so the pair differed three ways and a server that
-// refuses the older revision refused the probe for reasons that had nothing to do
-// with Origin. That reads as Origin validation.
+// built by hand rather than reusing mcpInitBody, which carries different
+// capabilities and clientInfo, so the pair differed in more than Origin and a
+// server that refused the probe did so for reasons that had nothing to do with
+// Origin. That reads as Origin validation.
 //
 // Any rule pairing a probe against the wire-opening handshake should use this rather
 // than assembling its own.
