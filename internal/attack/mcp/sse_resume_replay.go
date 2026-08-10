@@ -135,7 +135,7 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 		"id":      1,
 		"method":  "initialize",
 		"params": map[string]interface{}{
-			"protocolVersion": "2025-06-18",
+			"protocolVersion": latestStable,
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},

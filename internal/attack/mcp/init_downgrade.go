@@ -81,9 +81,10 @@ func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts
 
 func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string,
 	observed *initObservation) ([]attack.Finding, bool) {
-	// Legacy path: initialize with the pre-auth version, then probe resources/list.
-	legacyInitOK, legacyAccess, legacyCount := e.initAndList(ctx, client, ep, legacyVersion)
-	if !legacyInitOK {
+	// Legacy path: initialize with the pre-auth version. The probe method is
+	// chosen below from the server's advertised capabilities, not hardcoded.
+	legacyOK, legacySession := e.handshake(ctx, client, ep, legacyVersion)
+	if !legacyOK {
 		// The legacy initialize did not succeed. Distinguish "not an MCP
 		// endpoint" from "a server that speaks MCP but rejects this version" by
 		// probing whether the endpoint answers initialize with a JSON-RPC
@@ -96,30 +97,66 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 	}
 
 	// Modern baseline: does the server enforce auth under the post-auth version?
-	modernInitOK, modernAccess, _ := e.initAndList(ctx, client, ep, modernVersion)
+	// A server that does not speak the modern revision has no modern baseline to
+	// compare against; an old server that only supports the legacy version is not a
+	// downgrade bypass. The rule requires the modern path to exist and be rejected
+	// while the legacy path is granted.
+	modernOK, modernSession := e.handshake(ctx, client, ep, modernVersion)
+	if !modernOK {
+		return nil, true
+	}
 
-	// Confirmed downgrade bypass: the modern baseline must exist and be REJECTED
-	// (auth enforced) while the legacy session was GRANTED access. If the modern
-	// session was also granted access, the server has no auth at all (not a
-	// downgrade issue); if legacy was rejected the server is secure.
+	// ONE list method, advertised by BOTH versions, so the comparison measures the
+	// authorization gate and not a capability difference between revisions. A
+	// tools-only or prompts-only server has a real downgrade surface on that method;
+	// the old hardcoded resources/list probe silently missed it because
+	// resources/list returned method-not-found under both versions. era_downgrade
+	// compares two wires the same way; here the two versions of one server play
+	// that role.
+	legacyMethods := advertisedListMethods(legacySession)
+	modernMethods := advertisedListMethods(modernSession)
+	method := firstCommon(legacyMethods, modernMethods)
+	if method == "" {
+		if len(legacyMethods) == 0 && len(modernMethods) == 0 {
+			// Nothing listable is advertised under either version, so the downgrade
+			// concept (a listing gated under one version, open under the other) does
+			// not apply here.
+			return nil, true
+		}
+		observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+			"the legacy (%s) and modern (%s) versions at %s advertise no listable method in common "+
+				"(legacy: %s; modern: %s), so any difference between them would be a capability "+
+				"difference rather than an authorization gate",
+			legacyVersion, modernVersion, ep, strings.Join(legacyMethods, ", "), strings.Join(modernMethods, ", "))})
+		return nil, false
+	}
+
+	legacyAccess, legacyCount := e.probeList(ctx, client, legacySession, method)
+	modernAccess, _ := e.probeList(ctx, client, modernSession, method)
+
+	// Confirmed downgrade bypass: the modern baseline must be REJECTED (auth
+	// enforced) while the legacy session was GRANTED access. If the modern session
+	// was also granted access, the server has no auth at all (not a downgrade
+	// issue); if legacy was rejected the server is secure.
 	//
 	// accessUndetermined on EITHER side means there is no comparison to make. It is
 	// reported as not tested rather than folded into either verdict: folded into
 	// "refused" it invents a critical finding against a server with no authorization at
 	// all, and folded into "granted" it hides a real one.
-	if legacyAccess == accessUndetermined || (modernInitOK && modernAccess == accessUndetermined) {
+	if legacyAccess == accessUndetermined || modernAccess == accessUndetermined {
 		version := legacyVersion
 		if legacyAccess != accessUndetermined {
 			version = modernVersion
 		}
 		observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
-			"resources/list on the session opened at %s with protocol version %s returned neither a "+
+			"%s on the session opened at %s with protocol version %s returned neither a "+
 				"result nor a refusal, so the two versions' authorization could not be compared",
-			ep, version)})
+			method, ep, version)})
 		return nil, false
 	}
 
-	if legacyAccess == accessGranted && modernInitOK && modernAccess == accessRefused {
+	if legacyAccess == accessGranted && modernAccess == accessRefused {
+		noun := strings.TrimSuffix(method, "/list") // resource, tool, prompt
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -128,15 +165,15 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 			Title: fmt.Sprintf(
 				"MCP protocol downgrade to %q bypasses auth enforced under %q", legacyVersion, modernVersion),
 			Description: fmt.Sprintf(
-				"At %s, resources/list was REJECTED when the session was initialized with the "+
+				"At %s, %s was REJECTED when the session was initialized with the "+
 					"modern protocol version %q (authorization enforced), but SUCCEEDED (returned %d "+
-					"resource(s)) when the session was initialized with the legacy pre-auth version %q. "+
+					"%s(s)) when the session was initialized with the legacy pre-auth version %q. "+
 					"This confirms that advertising the outdated protocol version bypasses the server's "+
 					"authorization checks.",
-				ep, modernVersion, legacyCount, legacyVersion),
+				ep, method, modernVersion, legacyCount, noun, legacyVersion),
 			Evidence: fmt.Sprintf(
-				"Endpoint: %s\nModern (%s) resources/list: rejected\nLegacy (%s) resources/list: %d resource(s) returned",
-				ep, modernVersion, legacyVersion, legacyCount),
+				"Endpoint: %s\nModern (%s) %s: rejected\nLegacy (%s) %s: %d %s(s) returned",
+				ep, modernVersion, method, legacyVersion, method, legacyCount, noun),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
 		}}, true
@@ -252,13 +289,12 @@ func jsonRPCErrorMessage(body []byte) string {
 	return envelope.Error.Message
 }
 
-// initAndList performs an MCP initialize with the given protocol version, sends
-// notifications/initialized, then calls resources/list. It returns:
-//   - initOK: the initialize produced a valid MCP response (not a version rejection);
-//   - access: resources/list passed authorization (HTTP success, a JSON-RPC
-//     result, and no JSON-RPC error envelope);
-//   - count: number of resources returned (for evidence).
-func (e *InitDowngradeExecutor) initAndList(ctx context.Context, client *attack.HTTPClient, ep, version string) (initOK bool, access accessVerdict, count int) {
+// handshake opens an MCP session at ep with the given protocol version and
+// returns it with the server's advertised capabilities captured in RawInit, so
+// the probe method can be chosen from what the server actually implements.
+// initOK is false when the initialize was rejected (version unsupported) or did
+// not yield a valid MCP response.
+func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HTTPClient, ep, version string) (bool, mcpSession) {
 	initResp, err := client.POST(ctx, ep, nil, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -270,48 +306,60 @@ func (e *InitDowngradeExecutor) initAndList(ctx context.Context, client *attack.
 		},
 	})
 	if err != nil || !initResp.IsSuccess() {
-		return false, accessUndetermined, 0
+		return false, mcpSession{}
 	}
 	body := initResp.BodyString()
 	// Explicit version rejection (error without a negotiated version).
 	if strings.Contains(body, `"error"`) && !strings.Contains(body, `"protocolVersion"`) {
-		return false, accessUndetermined, 0
+		return false, mcpSession{}
 	}
 	if !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
-		return false, accessUndetermined, 0
+		return false, mcpSession{}
 	}
-
-	session := mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
+	session := mcpSession{
+		Endpoint:        ep,
+		SessionID:       initResp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersion(initResp.Body),
+		RawInit:         initResp.Body,
+	}
 	_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
+	return true, session
+}
 
-	listResp, err := client.POST(ctx, ep, session.header(), map[string]interface{}{
+// probeList calls a read-only listing on session and reports its access verdict
+// and the number of items returned. The result array is keyed by the capability:
+// resources/list -> "resources", tools/list -> "tools", prompts/list -> "prompts".
+//
+// classifyAccess, not err != nil || !IsSuccess(). Deriving "refused" from the
+// absence of acceptance made a transport failure, a 429 from a rate limiter and a
+// one-off 502 indistinguishable from an authorization refusal, and "the modern
+// version refused" is the finding-enabling half of the comparison in probeEndpoint.
+// era_downgrade was fixed for exactly this; this rule kept the collapsed form until
+// the probe method became selectable.
+func (e *InitDowngradeExecutor) probeList(ctx context.Context, client *attack.HTTPClient, session mcpSession, method string) (accessVerdict, int) {
+	resp, err := client.POST(ctx, session.Endpoint, session.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      2,
-		"method":  "resources/list",
+		"method":  method,
 		"params":  map[string]interface{}{},
 	})
-	// classifyAccess, not err != nil || !IsSuccess(). Deriving "refused" from the
-	// absence of acceptance made a transport failure, a 429 from a rate limiter and a
-	// one-off 502 indistinguishable from an authorization refusal, and "the modern wire
-	// refused" is the finding-enabling half of the comparison below. era_downgrade was
-	// fixed for exactly this; this rule kept the collapsed form.
-	verdict := classifyAccess(listResp, err)
+	verdict := classifyAccess(resp, err)
 	if verdict != accessGranted {
-		return true, verdict, 0
+		return verdict, 0
 	}
 	var rb map[string]interface{}
-	if jsonErr := json.Unmarshal(listResp.Body, &rb); jsonErr != nil {
-		return true, accessUndetermined, 0
+	if jsonErr := json.Unmarshal(resp.Body, &rb); jsonErr != nil {
+		return accessUndetermined, 0
 	}
 	result, ok := rb["result"].(map[string]interface{})
 	if !ok {
 		// Accepted by the transport oracle but carrying no result object: nothing was
 		// refused and nothing was listed.
-		return true, accessUndetermined, 0
+		return accessUndetermined, 0
 	}
-	resources, _ := result["resources"].([]interface{})
-	return true, accessGranted, len(resources)
+	items, _ := result[strings.TrimSuffix(method, "/list")].([]interface{})
+	return accessGranted, len(items)
 }
