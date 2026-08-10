@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,28 @@ func TestOAuthGatedRules_NotMCPServerIsInconclusive(t *testing.T) {
 				t.Errorf("a server that does not implement MCP must be not-tested, not clean; got err=%v", err)
 			}
 		})
+	}
+}
+
+// mcpInitBody is a raw JSON template and cannot reference latestStable, so when
+// latestStable moved from 2025-06-18 to 2025-11-25 the template was left two
+// revisions behind: a strict server then rejected every forged-token initialize as
+// "Unsupported protocol version" and the OAuth rules reported clean on a server
+// they had not tested (a silent false negative). latestStable has its own guard
+// (TestOffersCurrentHandshakeRevision); this one pins the version embedded in the
+// template to latestStable so the two cannot drift again.
+func TestMcpInitBodyOffersCurrentRevision(t *testing.T) {
+	var body struct {
+		Params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(mcpInitBody), &body); err != nil {
+		t.Fatalf("mcpInitBody is not valid JSON: %v", err)
+	}
+	if body.Params.ProtocolVersion != latestStable {
+		t.Fatalf("mcpInitBody offers protocolVersion %q; latestStable is %q "+
+			"(a stale offered version is rejected by current servers as a silent false negative)",
+			body.Params.ProtocolVersion, latestStable)
 	}
 }
