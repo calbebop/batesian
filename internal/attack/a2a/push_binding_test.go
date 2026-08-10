@@ -19,6 +19,8 @@ import (
 //   - "unbound": any authenticated principal may set/get any task's push config.
 //   - "bound": only the task owner may set/get (secure).
 //   - "open": even unauthenticated set succeeds (no-auth control plane).
+//   - "push-gated": setPush is refused for authorization regardless of caller, so
+//     the owner cannot configure a webhook even though it can create a task.
 //
 // v1Only makes the server refuse the v0.3 slash methods, which is what a
 // deployment without the compatibility layer looks like. It matters because the
@@ -76,6 +78,16 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 			tid, _ := params["taskId"].(string)
+			if mode == "push-gated" {
+				// The push-config surface is gated independently of task creation
+				// (a push:write scope the owner's token lacks), so even the owner's
+				// set is refused for authorization reasons.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID,
+					"error": map[string]interface{}{"code": -32600, "message": "push:write scope required"}})
+				return
+			}
 			// Strict per method, as a2a-sdk is: on the v1.0 PascalCase call the
 			// params ARE a TaskPushNotificationConfig, so the callback is flat
 			// and a nested pushNotificationConfig is an unknown field. v0.3 is
@@ -222,5 +234,21 @@ func TestPushBinding_InsufficientPrincipals(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d", len(findings))
+	}
+}
+
+// TestPushBinding_OwnerSetPushRefused: the push-config surface is gated separately
+// from task creation, so even the task owner's setPush is refused. The rule used to
+// read that refusal as "feature absent" and report clean; it must report
+// not-tested, because the cross-principal binding was never exercised.
+func TestPushBinding_OwnerSetPushRefused(t *testing.T) {
+	ts := pushServer("push-gated")
+	defer ts.Close()
+
+	_, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("an owner setPush refused for authorization must be not-tested, not clean; "+
+			"want ErrInconclusive, got %v", err)
 	}
 }
