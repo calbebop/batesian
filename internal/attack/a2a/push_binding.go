@@ -72,15 +72,20 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	}
 
 	// Step 1b: control - A configures a webhook with a unique marker URL. If even
-	// the owner cannot set a push config, the feature is absent here.
+	// the owner cannot set a push config, the feature may be absent here - or the
+	// push-config surface may be gated separately from task creation (a push:write
+	// scope the owner's token lacks), in which case the cross-principal binding was
+	// never tested and clean would be the wrong answer.
 	markerURL := "https://batesian-victim-" + vars.RandID + ".example/cb"
 	markerTok := "victim-tok-" + vars.RandID
-	if !e.setPush(ctx, clientA, endpoint, a.Headers, taskID, markerURL, markerTok, vars.RandID) {
-		return nil, nil
+	if ok, setObs := e.setPush(ctx, clientA, endpoint, a.Headers, "configuring the task owner's push-notification webhook",
+		taskID, markerURL, markerTok, vars.RandID); !ok {
+		return nil, setObs.err()
 	}
 
 	// Step 2: discriminator - an unauthenticated set must be rejected.
-	if e.setPush(ctx, unauthClient, endpoint, nil, taskID, "https://batesian-open-"+vars.RandID+".example/cb", "x", vars.RandID) {
+	if ok, _ := e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
+		taskID, "https://batesian-open-"+vars.RandID+".example/cb", "x", vars.RandID); ok {
 		return nil, nil
 	}
 
@@ -91,7 +96,8 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed))
 	}
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
-	if e.setPush(ctx, clientB, endpoint, b.Headers, taskID, attackerURL, "attacker-tok-"+vars.RandID, vars.RandID) {
+	if ok, _ := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
+		taskID, attackerURL, "attacker-tok-"+vars.RandID, vars.RandID); ok {
 		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed))
 	}
 	return findings, nil
@@ -159,7 +165,8 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 }
 
 // setPush attempts to register a push-notification config for taskID, trying the
-// v1.0 shape then the v0.3 one.
+// v1.0 shape then the v0.3 one, and reports both whether any attempt was accepted
+// and the best explanation for why not.
 //
 // On v1.0 the params ARE a TaskPushNotificationConfig, whose fields are tenant,
 // id, taskId, url, token and authentication. This used to send a nested
@@ -167,7 +174,15 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 // exists, and a2a-sdk rejects the call with -32602 "has no field named", so the
 // v1.0 attempt never registered anything. v0.3 is the shape that does nest the
 // config, and it is unchanged.
-func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, taskID, url, token, randID string) bool {
+//
+// The explanation matters for the owner-control call (Step 1b): a server that
+// gates the push-config surface separately from task creation - a push:write scope
+// the owner's token lacks - refuses even the owner, and that refusal used to read
+// as "feature absent" and report clean. Routing it through classifyTaskSetup
+// reports it as not-tested instead. The two probe call sites (the unauth
+// discriminator and the cross-principal write) ignore the explanation: there a
+// failure is the secure behaviour under test, not a setup failure.
+func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, what, taskID, url, token, randID string) (bool, setupObservation) {
 	cfg := map[string]string{"url": url, "token": token}
 	attempts := []struct {
 		method string
@@ -176,6 +191,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 		{"CreateTaskPushNotificationConfig", map[string]interface{}{"taskId": taskID, "url": url, "token": token}},
 		{"tasks/pushNotificationConfig/set", map[string]interface{}{"taskId": taskID, "pushNotificationConfig": cfg}},
 	}
+	var obs setupObservation
 	for _, at := range attempts {
 		headers := map[string]string{"A2A-Version": "1.0"}
 		for k, v := range extra {
@@ -188,10 +204,11 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 			"params":  at.params,
 		})
 		if err == nil && resp.IsAccepted() {
-			return true
+			return true, setupObservation{}
 		}
+		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
 	}
-	return false
+	return false, obs
 }
 
 // getPush attempts to read the push-notification config for taskID and returns
