@@ -315,3 +315,86 @@ func TestInitDowngrade_OldServerRejectingModernIsNotABypass(t *testing.T) {
 			"downgrade bypass; got %d finding(s): %v", len(findings), findings)
 	}
 }
+
+// toolsOnlyDowngradeServer advertises ONLY tools (no resources capability) and
+// gates tools/list under the modern version while leaving it open under the
+// legacy version. This is the false negative the hardcoded resources/list probe
+// caused: resources/list returned method-not-found under both versions, so the
+// rule reported clean against a server with a real downgrade bypass on its tools
+// surface. Picking the probe method from advertised capabilities surfaces it.
+func toolsOnlyDowngradeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	sessions := map[string]string{} // sessionID -> protocolVersion
+	counter := 0
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		w.Header().Set("Content-Type", "application/json")
+
+		switch method {
+		case "initialize":
+			params, _ := req["params"].(map[string]interface{})
+			version, _ := params["protocolVersion"].(string)
+			mu.Lock()
+			counter++
+			sid := fmt.Sprintf("sess-%d", counter)
+			sessions[sid] = version
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", sid)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"protocolVersion": version,
+					"serverInfo":      map[string]interface{}{"name": "tools-only", "version": "1.0"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			mu.Lock()
+			version := sessions[r.Header.Get("Mcp-Session-Id")]
+			mu.Unlock()
+			if version != legacyVer {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"},
+				})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"tools": []interface{}{
+					map[string]interface{}{"name": "search", "description": "internal search"},
+				}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// TestInitDowngrade_ToolsOnlyServer: a tools-only server with a real downgrade
+// bypass on tools/list must be reported, not silently cleaned. Under the old
+// hardcoded resources/list probe this returned no finding.
+func TestInitDowngrade_ToolsOnlyServer(t *testing.T) {
+	srv := toolsOnlyDowngradeServer(t)
+	defer srv.Close()
+
+	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for a tools-only downgrade bypass (resources/list probe "+
+			"silently missed it), got %d: %v", len(findings), findings)
+	}
+	if findings[0].Severity != "critical" || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("expected critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
