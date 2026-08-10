@@ -1,0 +1,64 @@
+name: Validation
+
+# A regression gate against live protocol traffic. The Go test suite proves each
+# rule against an in-process httptest harness, and testdata/README.md documents
+# what each Python fixture must do when the real binary scans it - but nothing
+# ran that second check, so every shipped A2A false negative (#175, #176, #177)
+# was found only by hand. This job runs the binary against the one fixture that
+# ENFORCES authorization (a2a_secured_agent.py), which is the false-positive
+# coverage no no-auth fixture can provide.
+#
+# It starts nightly and on dispatch only: a gate that flakes on a CI environment
+# quirk blocks development while it is diagnosed, so it earns a PR trigger only
+# once it is green on a schedule. Add `pull_request:` to the triggers below when
+# that is true.
+
+on:
+  schedule:
+    # Daily, 06:17 UTC. An odd minute keeps this off the top-of-hour spike every
+    # scheduled workflow lands on.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time per ref. A superseded scheduled run is cancelled rather than
+# left competing for a runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  a2a-secured-agent:
+    name: A2A false-positive gate (secured agent)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install fixture dependencies
+        # a2a_secured_agent.py imports starlette and uvicorn only.
+        run: pip install starlette uvicorn
+
+      - name: Build batesian
+        run: go build -o batesian ./cmd/batesian
+
+      - name: Run the secured-agent validation
+        run: python .github/scripts/validate_secured_agent.py
+        env:
+          BATESIAN_BIN: ./batesian
