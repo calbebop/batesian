@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -96,10 +97,19 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 			undeterminedStatus(legacyOutcome, modernOutcome))
 	}
 
-	// Both granted means the server gates nothing, which is
-	// mcp-resources-unauth-001 and mcp-tools-unauth-001 territory rather than a
-	// difference between wires. Both refused is the secure outcome. Either way
-	// there is no asymmetry to report.
+	// Both granted: if both return data, no auth at all (tools-unauth territory).
+	// But if one returned data and the other an empty list, the empty side
+	// enforces via result-level filtering that the non-empty side bypasses.
+	if legacyOutcome.granted() && modernOutcome.granted() {
+		if legacyOutcome.count > 0 && modernOutcome.count == 0 {
+			return []attack.Finding{e.finding(*legacy, legacyOutcome, modernOutcome)}, nil
+		}
+		if modernOutcome.count > 0 && legacyOutcome.count == 0 {
+			return []attack.Finding{e.finding(*legacy, modernOutcome, legacyOutcome)}, nil
+		}
+		return nil, nil
+	}
+	// Both refused is the secure outcome. No asymmetry to report.
 	if legacyOutcome.granted() == modernOutcome.granted() {
 		return nil, nil
 	}
@@ -153,6 +163,10 @@ type listOutcome struct {
 	// verdict is what the probe established: granted, refused, or neither. It used
 	// to be a bool derived from IsAccepted, which made every non-answer a refusal.
 	verdict accessVerdict
+	// count is the number of items in a granted listing. Zero on a granted call
+	// means the server enforced authorization via result-level filtering (empty
+	// list) rather than hard-refusing. Non-zero means data was returned.
+	count int
 }
 
 // granted reports whether the wire answered the unauthenticated call.
@@ -187,10 +201,26 @@ func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTT
 	}
 	out.status = resp.StatusCode
 	out.body = resp.BodyString()
+	if out.verdict == accessGranted {
+		var rb map[string]interface{}
+		if json.Unmarshal([]byte(out.body), &rb) == nil {
+			if result, ok := rb["result"].(map[string]interface{}); ok {
+				if items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{}); ok {
+					out.count = len(items)
+				}
+			}
+		}
+	}
 	return out
 }
 
 func (e *EraDowngradeExecutor) finding(session mcpSession, open, closed listOutcome) attack.Finding {
+	closedDesc := "was REFUSED"
+	closedEvidence := "refused"
+	if closed.verdict == accessGranted {
+		closedDesc = "returned 0 items (authorization enforced via result-level filtering)"
+		closedEvidence = "0 items returned (filtered)"
+	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -199,15 +229,15 @@ func (e *EraDowngradeExecutor) finding(session mcpSession, open, closed listOutc
 		Title: fmt.Sprintf("MCP authorization enforced on the %s wire but not the %s wire (era downgrade bypass)",
 			closed.era, open.era),
 		Description: fmt.Sprintf(
-			"At %s, an unauthenticated %s was REFUSED on the %s wire but ANSWERED on the %s wire. "+
+			"At %s, an unauthenticated %s %s on the %s wire but ANSWERED on the %s wire. "+
 				"The server serves both protocol eras on one endpoint and applies its authorization "+
 				"check to only one of them, so a caller reaches protected functionality by asking on "+
 				"the other. Nothing about the two eras changes who is allowed to read what.",
-			session.Endpoint, open.method, closed.era, open.era),
+			session.Endpoint, open.method, closedDesc, closed.era, open.era),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\n%s wire: %s -> HTTP %d, refused\n%s wire: %s -> HTTP %d, answered\nanswered body: %.300s",
+			"endpoint: %s\n%s wire: %s -> HTTP %d, %s\n%s wire: %s -> HTTP %d, answered\nanswered body: %.300s",
 			session.Endpoint,
-			closed.era, closed.method, closed.status,
+			closed.era, closed.method, closed.status, closedEvidence,
 			open.era, open.method, open.status, open.body),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
