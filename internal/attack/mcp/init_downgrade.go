@@ -132,7 +132,7 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 	}
 
 	legacyAccess, legacyCount := e.probeList(ctx, client, legacySession, method)
-	modernAccess, _ := e.probeList(ctx, client, modernSession, method)
+	modernAccess, modernCount := e.probeList(ctx, client, modernSession, method)
 
 	// Confirmed downgrade bypass: the modern baseline must be REJECTED (auth
 	// enforced) while the legacy session was GRANTED access. If the modern session
@@ -155,8 +155,17 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 		return nil, false
 	}
 
-	if legacyAccess == accessGranted && modernAccess == accessRefused {
+	modernEnforced := modernAccess == accessRefused ||
+		(modernAccess == accessGranted && modernCount == 0)
+	if legacyAccess == accessGranted && legacyCount > 0 && modernEnforced {
 		noun := strings.TrimSuffix(method, "/list") // resource, tool, prompt
+		modernClause := fmt.Sprintf("%s was REJECTED (authorization enforced)", method)
+		modernEvidence := "rejected"
+		if modernAccess == accessGranted {
+			modernClause = fmt.Sprintf("%s returned 0 %s(s) (authorization enforced via "+
+				"result-level filtering)", method, noun)
+			modernEvidence = fmt.Sprintf("0 %s(s) returned (filtered)", noun)
+		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -165,15 +174,14 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 			Title: fmt.Sprintf(
 				"MCP protocol downgrade to %q bypasses auth enforced under %q", legacyVersion, modernVersion),
 			Description: fmt.Sprintf(
-				"At %s, %s was REJECTED when the session was initialized with the "+
-					"modern protocol version %q (authorization enforced), but SUCCEEDED (returned %d "+
+				"At %s, %s, but SUCCEEDED (returned %d "+
 					"%s(s)) when the session was initialized with the legacy pre-auth version %q. "+
 					"This confirms that advertising the outdated protocol version bypasses the server's "+
 					"authorization checks.",
-				ep, method, modernVersion, legacyCount, noun, legacyVersion),
+				ep, modernClause, legacyCount, noun, legacyVersion),
 			Evidence: fmt.Sprintf(
-				"Endpoint: %s\nModern (%s) %s: rejected\nLegacy (%s) %s: %d %s(s) returned",
-				ep, modernVersion, method, legacyVersion, method, legacyCount, noun),
+				"Endpoint: %s\nModern (%s) %s: %s\nLegacy (%s) %s: %d %s(s) returned",
+				ep, modernVersion, method, modernEvidence, legacyVersion, method, legacyCount, noun),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
 		}}, true

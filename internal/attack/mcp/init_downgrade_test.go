@@ -398,3 +398,75 @@ func TestInitDowngrade_ToolsOnlyServer(t *testing.T) {
 		t.Errorf("expected critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 }
+
+// TestInitDowngrade_ResultFilteringBypass: the modern version returns an empty
+// list (auth enforced via result-level filtering) while the legacy version
+// returns data. The oracle used to require a hard refuse (accessRefused) on the
+// modern side and missed this entirely; now it also fires when the modern side
+// returns an empty result.
+func TestInitDowngrade_ResultFilteringBypass(t *testing.T) {
+	var mu sync.Mutex
+	sessions := map[string]string{}
+	counter := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		params, _ := req["params"].(map[string]interface{})
+		version, _ := params["protocolVersion"].(string)
+		w.Header().Set("Content-Type", "application/json")
+
+		switch method {
+		case "initialize":
+			mu.Lock()
+			counter++
+			sid := fmt.Sprintf("sess-%d", counter)
+			sessions[sid] = version
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", sid)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"protocolVersion": version,
+					"serverInfo":      map[string]interface{}{"name": "filter", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			mu.Lock()
+			v := sessions[r.Header.Get("Mcp-Session-Id")]
+			mu.Unlock()
+			if v == legacyVer {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"tools": []interface{}{
+						map[string]interface{}{"name": "tool1"},
+					}},
+				})
+			} else {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"tools": []interface{}{}},
+				})
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for result-level filtering bypass, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != "critical" || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("want critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
