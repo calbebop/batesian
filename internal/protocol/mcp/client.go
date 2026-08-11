@@ -1,6 +1,6 @@
 // Package mcp provides a lightweight MCP protocol client for reconnaissance.
 // It handles the initialize handshake, SSE response parsing, and session ID
-// threading required by the MCP 2025-03-26 specification.
+// threading required by the MCP specification.
 package mcp
 
 import (
@@ -297,7 +297,7 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		"id":      1,
 		"method":  "initialize",
 		"params": map[string]interface{}{
-			"protocolVersion": "2025-03-26",
+			"protocolVersion": "2025-11-25", // matches the scan path's latestStable
 			"capabilities": map[string]interface{}{
 				"tools":     map[string]interface{}{},
 				"resources": map[string]interface{}{},
