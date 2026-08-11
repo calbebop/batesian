@@ -418,7 +418,7 @@ func (c *Client) newRequest(ctx context.Context, ep string, body []byte) (*http.
 func readBody(resp *http.Response) ([]byte, error) {
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
-		return readFirstSSEData(resp.Body), nil
+		return readFirstSSEData(resp.Body)
 	}
 	// Read one byte past the limit so exceeding it is detectable, matching the
 	// scan client. A plain LimitReader at the limit returns a truncated body and no
@@ -446,9 +446,9 @@ func readBody(resp *http.Response) ([]byte, error) {
 //
 // A read error still maps to a nil body here. The recon path treats a nil body as
 // "no usable answer" throughout, and changing that is a wider change than this.
-func readFirstSSEData(r io.Reader) []byte {
-	payload, _, _ := sse.FirstMatching(r, maxBodyBytes, sse.IsJSONRPCResponse)
-	return payload
+func readFirstSSEData(r io.Reader) ([]byte, error) {
+	payload, _, err := sse.FirstMatching(r, maxBodyBytes, sse.IsJSONRPCResponse)
+	return payload, err
 }
 
 // HasCapability returns true if the session's capability map includes the key.
