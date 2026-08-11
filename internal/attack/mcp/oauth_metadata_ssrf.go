@@ -91,34 +91,31 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 		return nil, fmt.Errorf("oauth-metadata-ssrf: DCR registration failed: %w", err)
 	}
 
-	if listener == nil {
-		// External OOB: we cannot observe the callback ourselves.
-		if resp.StatusCode == 200 || resp.StatusCode == 201 {
-			return []attack.Finding{{
-				RuleID:     e.rule.ID,
-				RuleName:   e.rule.Name,
-				Severity:   "info",
-				Confidence: attack.RiskIndicator,
-				Title:      "MCP OAuth DCR accepted registrant-supplied metadata URLs (verify SSRF via your OOB server)",
-				Description: fmt.Sprintf("The registration endpoint at %s accepted a client registration whose URL "+
-					"metadata fields pointed at %s. Check your OOB server for inbound requests to the marker paths to "+
-					"confirm a metadata-fetch SSRF.", registrationEndpoint, listenerURL),
-				Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v", registrationEndpoint, listenerURL, urlMetadataFields),
-				Remediation: e.rule.Remediation,
-				TargetURL:   registrationEndpoint,
-			}}, nil
-		}
-		return nil, nil
-	}
-
-	// A registration the server refused means the metadata URLs were never stored,
-	// so no fetch could follow and there is nothing to conclude. The external-OOB
-	// branch above already gates on 200/201; this one did not, so a DCR endpoint
-	// answering 401 or 400 produced a clean "no metadata-fetch SSRF" verdict.
+	// A registration the server did not accept means the metadata URLs were never
+	// stored, so no fetch could follow and there is nothing to conclude. This
+	// applies to both OOB modes: reporting clean graded an untested SSRF surface
+	// as secure.
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("%w: the registration at %s was refused with HTTP %d, so the "+
 			"registrant-supplied metadata URLs were never stored and no fetch could occur",
 			attack.ErrInconclusive, registrationEndpoint, resp.StatusCode)
+	}
+
+	if listener == nil {
+		// External OOB: we cannot observe the callback ourselves.
+		return []attack.Finding{{
+			RuleID:     e.rule.ID,
+			RuleName:   e.rule.Name,
+			Severity:   "info",
+			Confidence: attack.RiskIndicator,
+			Title:      "MCP OAuth DCR accepted registrant-supplied metadata URLs (verify SSRF via your OOB server)",
+			Description: fmt.Sprintf("The registration endpoint at %s accepted a client registration whose URL "+
+				"metadata fields pointed at %s. Check your OOB server for inbound requests to the marker paths to "+
+				"confirm a metadata-fetch SSRF.", registrationEndpoint, listenerURL),
+			Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v", registrationEndpoint, listenerURL, urlMetadataFields),
+			Remediation: e.rule.Remediation,
+			TargetURL:   registrationEndpoint,
+		}}, nil
 	}
 
 	// Local OOB: wait for the server to fetch one of the seeded URLs.
