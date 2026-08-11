@@ -138,8 +138,8 @@ Rules and code are welcome under [Apache 2.0](LICENSE). See [CONTRIBUTING.md](CO
 ## References
 
 - [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
-- [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-- [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices)
+- [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+- [MCP Security Best Practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
 - [Unit 42: Agent Session Smuggling in A2A Systems](https://unit42.paloaltonetworks.com/agent-session-smuggling-in-agent2agent-systems/)
 - [OWASP GenAI Security Project](https://genai.owasp.org)
 
