@@ -1,6 +1,6 @@
 // Package mcp provides a lightweight MCP protocol client for reconnaissance.
 // It handles the initialize handshake, SSE response parsing, and session ID
-// threading required by the MCP 2025-03-26 specification.
+// threading required by the MCP specification.
 package mcp
 
 import (
@@ -25,6 +25,7 @@ import (
 const (
 	defaultTimeout = 10 * time.Second
 	maxBodyBytes   = 32 << 20 // 32 MB; see internal/attack.maxBody
+	maxListPages   = 10       // cap on pagination for tools/resources/prompts listings
 )
 
 // candidatePaths are tried in order when discovering the MCP endpoint.
@@ -173,119 +174,161 @@ func (c *Client) Initialize(ctx context.Context) (*Session, error) {
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
-// ListTools calls tools/list and returns all available tools.
+// ListTools calls tools/list and returns all available tools, following
+// nextCursor pagination up to maxListPages.
 func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
-	resp, err := c.post(ctx, s, map[string]interface{}{
-		"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": map[string]interface{}{},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp, &body); err != nil {
-		return nil, err
-	}
-	result, _ := body["result"].(map[string]interface{})
-	rawTools, _ := result["tools"].([]interface{})
-
 	var tools []Tool
-	for _, t := range rawTools {
-		tm, ok := t.(map[string]interface{})
-		if !ok {
-			continue
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]interface{}{}
+		if cursor != "" {
+			params["cursor"] = cursor
 		}
-		tool := Tool{
-			Name:        strField(tm, "name"),
-			Description: strField(tm, "description"),
+		resp, err := c.post(ctx, s, map[string]interface{}{
+			"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": params,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if schema, ok := tm["inputSchema"].(map[string]interface{}); ok {
-			tool.InputSchema = schema
+
+		var body map[string]interface{}
+		if err := json.Unmarshal(resp, &body); err != nil {
+			return nil, err
 		}
-		tools = append(tools, tool)
+		result, _ := body["result"].(map[string]interface{})
+		rawTools, _ := result["tools"].([]interface{})
+
+		for _, t := range rawTools {
+			tm, ok := t.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			tool := Tool{
+				Name:        strField(tm, "name"),
+				Description: strField(tm, "description"),
+			}
+			if schema, ok := tm["inputSchema"].(map[string]interface{}); ok {
+				tool.InputSchema = schema
+			}
+			tools = append(tools, tool)
+		}
+		cursor, _ = result["nextCursor"].(string)
+		if cursor == "" {
+			break
+		}
 	}
 	return tools, nil
 }
 
-// ListResources calls resources/list and returns all available resources.
+// ListResources calls resources/list and returns all available resources,
+// following nextCursor pagination up to maxListPages.
 func (c *Client) ListResources(ctx context.Context, s *Session) ([]Resource, error) {
-	resp, err := c.post(ctx, s, map[string]interface{}{
-		"jsonrpc": "2.0", "id": 11, "method": "resources/list", "params": map[string]interface{}{},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp, &body); err != nil {
-		return nil, err
-	}
-	// JSON-RPC error means resources are not supported or access was denied.
-	if _, hasErr := body["error"]; hasErr {
-		return nil, nil
-	}
-	result, _ := body["result"].(map[string]interface{})
-	rawResources, _ := result["resources"].([]interface{})
-
 	var resources []Resource
-	for _, r := range rawResources {
-		rm, ok := r.(map[string]interface{})
-		if !ok {
-			continue
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]interface{}{}
+		if cursor != "" {
+			params["cursor"] = cursor
 		}
-		resources = append(resources, Resource{
-			URI:         strField(rm, "uri"),
-			Name:        strField(rm, "name"),
-			MimeType:    strField(rm, "mimeType"),
-			Description: strField(rm, "description"),
+		resp, err := c.post(ctx, s, map[string]interface{}{
+			"jsonrpc": "2.0", "id": 11, "method": "resources/list", "params": params,
 		})
+		if err != nil {
+			return nil, err
+		}
+
+		var body map[string]interface{}
+		if err := json.Unmarshal(resp, &body); err != nil {
+			return nil, err
+		}
+		// JSON-RPC error means resources are not supported or access was denied.
+		if _, hasErr := body["error"]; hasErr {
+			if page == 0 {
+				return nil, nil
+			}
+			break
+		}
+		result, _ := body["result"].(map[string]interface{})
+		rawResources, _ := result["resources"].([]interface{})
+
+		for _, r := range rawResources {
+			rm, ok := r.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			resources = append(resources, Resource{
+				URI:         strField(rm, "uri"),
+				Name:        strField(rm, "name"),
+				MimeType:    strField(rm, "mimeType"),
+				Description: strField(rm, "description"),
+			})
+		}
+		cursor, _ = result["nextCursor"].(string)
+		if cursor == "" {
+			break
+		}
 	}
 	return resources, nil
 }
 
-// ListPrompts calls prompts/list and returns all available prompt templates.
+// ListPrompts calls prompts/list and returns all available prompt templates,
+// following nextCursor pagination up to maxListPages.
 func (c *Client) ListPrompts(ctx context.Context, s *Session) ([]Prompt, error) {
-	resp, err := c.post(ctx, s, map[string]interface{}{
-		"jsonrpc": "2.0", "id": 12, "method": "prompts/list", "params": map[string]interface{}{},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp, &body); err != nil {
-		return nil, err
-	}
-	if _, hasErr := body["error"]; hasErr {
-		return nil, nil
-	}
-	result, _ := body["result"].(map[string]interface{})
-	rawPrompts, _ := result["prompts"].([]interface{})
-
 	var prompts []Prompt
-	for _, p := range rawPrompts {
-		pm, ok := p.(map[string]interface{})
-		if !ok {
-			continue
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]interface{}{}
+		if cursor != "" {
+			params["cursor"] = cursor
 		}
-		prompt := Prompt{
-			Name:        strField(pm, "name"),
-			Description: strField(pm, "description"),
+		resp, err := c.post(ctx, s, map[string]interface{}{
+			"jsonrpc": "2.0", "id": 12, "method": "prompts/list", "params": params,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if args, ok := pm["arguments"].([]interface{}); ok {
-			for _, a := range args {
-				am, ok := a.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				req, _ := am["required"].(bool)
-				prompt.Arguments = append(prompt.Arguments, PromptArgument{
-					Name:     strField(am, "name"),
-					Required: req,
-				})
+
+		var body map[string]interface{}
+		if err := json.Unmarshal(resp, &body); err != nil {
+			return nil, err
+		}
+		if _, hasErr := body["error"]; hasErr {
+			if page == 0 {
+				return nil, nil
 			}
+			break
 		}
-		prompts = append(prompts, prompt)
+		result, _ := body["result"].(map[string]interface{})
+		rawPrompts, _ := result["prompts"].([]interface{})
+
+		for _, p := range rawPrompts {
+			pm, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			prompt := Prompt{
+				Name:        strField(pm, "name"),
+				Description: strField(pm, "description"),
+			}
+			if args, ok := pm["arguments"].([]interface{}); ok {
+				for _, a := range args {
+					am, ok := a.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					req, _ := am["required"].(bool)
+					prompt.Arguments = append(prompt.Arguments, PromptArgument{
+						Name:     strField(am, "name"),
+						Required: req,
+					})
+				}
+			}
+			prompts = append(prompts, prompt)
+		}
+		cursor, _ = result["nextCursor"].(string)
+		if cursor == "" {
+			break
+		}
 	}
 	return prompts, nil
 }
@@ -297,7 +340,7 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		"id":      1,
 		"method":  "initialize",
 		"params": map[string]interface{}{
-			"protocolVersion": "2025-03-26",
+			"protocolVersion": "2025-11-25", // matches the scan path's latestStable
 			"capabilities": map[string]interface{}{
 				"tools":     map[string]interface{}{},
 				"resources": map[string]interface{}{},
