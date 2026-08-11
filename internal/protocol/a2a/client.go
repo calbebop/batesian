@@ -111,8 +111,12 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 
 	c := &Client{
 		http: &http.Client{
-			Timeout:   defaultTimeout,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
+			Timeout: defaultTimeout,
+			// Do not follow redirects. Matches the scan client (attack/http.go): a
+			// server that 302s the agent card to a login page would otherwise have a
+			// probe report the login page as the card.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			Transport:     &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
 		},
 		baseURL: base,
 		headers: map[string]string{
@@ -230,10 +234,16 @@ func (c *Client) do(req *http.Request) (*ProbeResult, error) {
 	result.StatusCode = resp.StatusCode
 	result.Headers = resp.Header
 
-	lr := io.LimitReader(resp.Body, maxBodyBytes)
-	body, err := io.ReadAll(lr)
+	// Read one byte past the limit so exceeding it is detectable, matching the
+	// scan client. A plain LimitReader at the limit returns a truncated body and no
+	// error, which reads downstream as malformed JSON from the server rather than a
+	// body this client declined to finish reading.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return result, fmt.Errorf("reading response body from %s: %w", req.URL, err)
+	}
+	if len(body) > maxBodyBytes {
+		return result, fmt.Errorf("response body from %s exceeds the %d byte read limit", req.URL, maxBodyBytes)
 	}
 	result.Body = body
 	return result, nil

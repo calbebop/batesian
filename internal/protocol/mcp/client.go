@@ -97,8 +97,12 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	}
 	c := &Client{
 		http: &http.Client{
-			Timeout:   defaultTimeout,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
+			Timeout: defaultTimeout,
+			// Do not follow redirects. Matches the scan client (attack/http.go): a
+			// redirect on initialize or server/discover would otherwise be followed
+			// and the final response read as the MCP server's.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			Transport:     &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
 		},
 		baseURL: strings.TrimRight(u.String(), "/"),
 	}
@@ -319,7 +323,10 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 	}
 
 	sessionID := resp.Header.Get("Mcp-Session-Id")
-	respBody := readBody(resp)
+	respBody, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
 
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -384,7 +391,11 @@ func (c *Client) post(ctx context.Context, s *Session, payload interface{}) ([]b
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return readBody(resp), nil
+	b, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // newRequest builds an HTTP POST with the standard MCP headers.
@@ -404,13 +415,23 @@ func (c *Client) newRequest(ctx context.Context, ep string, body []byte) (*http.
 
 // readBody reads the response body, handling both plain JSON and SSE streams.
 // For SSE, it extracts the payload from the first "data:" line.
-func readBody(resp *http.Response) []byte {
+func readBody(resp *http.Response) ([]byte, error) {
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
-		return readFirstSSEData(resp.Body)
+		return readFirstSSEData(resp.Body), nil
 	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	return b
+	// Read one byte past the limit so exceeding it is detectable, matching the
+	// scan client. A plain LimitReader at the limit returns a truncated body and no
+	// error, which reads downstream as malformed JSON from the server rather than a
+	// body this client declined to finish reading.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	if len(b) > maxBodyBytes {
+		return nil, fmt.Errorf("response body exceeds the %d byte read limit", maxBodyBytes)
+	}
+	return b, nil
 }
 
 // readFirstSSEData returns the JSON-RPC response carried on an SSE stream,
