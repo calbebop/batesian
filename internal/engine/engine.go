@@ -15,6 +15,7 @@ import (
 	_ "github.com/calbebop/batesian/internal/attack/a2a"
 	_ "github.com/calbebop/batesian/internal/attack/mcp"
 	"github.com/calbebop/batesian/internal/rules"
+	"github.com/calbebop/batesian/internal/severity"
 )
 
 // RunResult holds the findings and any error from executing a single rule.
@@ -259,12 +260,17 @@ func TotalFindings(results []RunResult) int {
 	return n
 }
 
-// FindingsBySeverity groups findings by severity level.
+// FindingsBySeverity groups findings by severity level, folded to canonical
+// (lowercase) spelling. The JSON summary buckets it by lowercase key, while the
+// table printer canonicalizes on its own end, so bucketing by raw f.Severity left
+// a capitalized severity ("High") in its own bucket and the summary count
+// disagreeing with the findings list. Canonical is idempotent, so a finding
+// already carrying a lowercase severity is unchanged.
 func FindingsBySeverity(results []RunResult) map[string][]attackpkg.Finding {
 	out := make(map[string][]attackpkg.Finding)
 	for _, r := range results {
 		for _, f := range r.Findings {
-			out[f.Severity] = append(out[f.Severity], f)
+			out[severity.Canonical(f.Severity)] = append(out[severity.Canonical(f.Severity)], f)
 		}
 	}
 	return out

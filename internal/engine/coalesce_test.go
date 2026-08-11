@@ -75,3 +75,25 @@ func TestCoalesce_SingleRuleMultipleFindings(t *testing.T) {
 		t.Errorf("expected both single-rule findings kept, got %d", got)
 	}
 }
+
+// TestFindingsBySeverity_FoldsToCanonical: a capitalized severity must fold into
+// its canonical (lowercase) bucket. The JSON summary keys FindingsBySeverity by
+// lowercase, so without folding a "High" finding lands in its own bucket and the
+// summary count disagrees with the findings list.
+func TestFindingsBySeverity_FoldsToCanonical(t *testing.T) {
+	results := []RunResult{
+		mkResult("r1", attackpkg.Finding{RuleID: "a", Severity: "High"}),
+		mkResult("r2", attackpkg.Finding{RuleID: "b", Severity: "high"}),
+		mkResult("r3", attackpkg.Finding{RuleID: "c", Severity: "CRITICAL"}),
+	}
+	got := FindingsBySeverity(results)
+	if len(got["high"]) != 2 {
+		t.Errorf("\"High\" and \"high\" must fold into one canonical \"high\" bucket; got %d", len(got["high"]))
+	}
+	if len(got["critical"]) != 1 {
+		t.Errorf("\"CRITICAL\" must fold into \"critical\"; got %d", len(got["critical"]))
+	}
+	if _, ok := got["High"]; ok {
+		t.Error("a capitalized severity key must not survive canonicalization")
+	}
+}
