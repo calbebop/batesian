@@ -420,6 +420,40 @@ func TestFetchAgentCard_RealV1SecuredCard(t *testing.T) {
 	}
 }
 
+// TestFetchAgentCard_DoesNotFollowRedirect: a 302 on the card path must surface,
+// not be followed to whatever it points at. Following redirects lets a server mask
+// a missing or gated card behind a 200 login page, the same class the scan client
+// was hardened against in #79. The card path returns 302; the redirect target
+// returns 200. Before the guard the client followed and read the 200 body; now the
+// 302 is the response.
+func TestFetchAgentCard_DoesNotFollowRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("login page"))
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, result, err := client.FetchAgentCard(context.Background())
+	if err == nil {
+		t.Fatal("a 302 on the card path must surface as an error, not be followed to a 200")
+	}
+	got := 0
+	if result != nil {
+		got = result.StatusCode
+	}
+	if got != http.StatusFound {
+		t.Errorf("expected HTTP 302 to surface (redirect not followed), got %d", got)
+	}
+}
+
 // TestAgentCard_RequiresAuth covers what probe reports in its Authentication
 // block. Reading only the v1.0 securityRequirements field described every v0.3
 // agent as "no (unauthenticated access)", including ones that reject anonymous
