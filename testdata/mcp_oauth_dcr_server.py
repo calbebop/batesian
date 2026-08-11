@@ -43,13 +43,16 @@ from starlette.routing import Route
 
 POSTURES = ("managed", "unmanaged")
 POSTURE = sys.argv[1] if len(sys.argv) > 1 else "managed"
+# Optional second argument lets the CI harness run the two postures on separate
+# ports, so a leaked process from one posture cannot hold the other's port.
+PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 7788
 
 # client_id -> {client_name, scope, token}. Registrations this server currently holds.
 CLIENTS: dict = {}
 
 
 async def oauth_metadata(request: Request) -> JSONResponse:
-    base = "http://localhost:7788"
+    base = f"http://localhost:{PORT}"
     return JSONResponse({
         "issuer": base,
         "authorization_endpoint": f"{base}/authorize",
@@ -134,7 +137,7 @@ app = Starlette(routes=routes)
 if __name__ == "__main__":
     if POSTURE not in POSTURES:
         sys.exit(f"unknown posture {POSTURE!r}; expected one of {', '.join(POSTURES)}")
-    print(f"Starting vulnerable OAuth DCR server ({POSTURE}) on http://localhost:7788")
+    print(f"Starting vulnerable OAuth DCR server ({POSTURE}) on http://localhost:{PORT}")
     print("  GET  /.well-known/oauth-authorization-server")
     print("  POST /register  (no auth, accepts any scopes and redirect URIs)")
     if POSTURE == "managed":
@@ -143,4 +146,4 @@ if __name__ == "__main__":
     else:
         print("  no RFC 7592 management: a scan CANNOT clean up, and must report that")
     print("  GET  /__clients  (validation helper: what is still registered)")
-    uvicorn.run(app, host="127.0.0.1", port=7788)
+    uvicorn.run(app, host="127.0.0.1", port=PORT)
