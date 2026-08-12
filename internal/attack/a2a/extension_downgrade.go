@@ -68,20 +68,27 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 		return nil, attack.ErrInconclusive
 	}
 
+	var observed setupObservation
 	for _, uri := range required {
 		// Control: activate the required extension. If even this is rejected we
 		// cannot exercise the rule (e.g. messaging needs creds we lack).
-		accepted, shape := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
+		accepted, shape, ctrlObs := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
 		if !accepted {
+			observed.observe(ctrlObs)
 			continue
 		}
 		// Test: omit the extension header and reuse the shape that worked.
-		omitted, _ := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
+		omitted, _, _ := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
 		if omitted {
 			return []attack.Finding{e.finding(endpoint, uri, shape)}, nil
 		}
 	}
-	return nil, nil
+	// No finding. If every control failed and the best explanation is a refusal
+	// (auth, transport), the premise was never established and clean would claim
+	// coverage the scan does not have. classifyTaskSetup maps feature-absent
+	// (-32601, -32003, -32004) to nil (genuine not-applicable) and everything
+	// else to ErrInconclusive.
+	return nil, observed.err()
 }
 
 // requiredExtensions fetches the agent card and returns the URIs of every
@@ -127,7 +134,7 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 // is empty it tries the A2A v1.0 PascalCase shape then the v0.3 slash shape and
 // returns which one was accepted; when forceShape is set it uses only that shape
 // (so the control and test requests are byte-identical except for the header).
-func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, forceShape string) (accepted bool, shape string) {
+func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, forceShape string) (accepted bool, shape string, obs setupObservation) {
 	type variant struct {
 		name   string
 		method string
@@ -159,10 +166,12 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 			},
 		})
 		if err == nil && resp.IsAccepted() {
-			return true, v.name
+			return true, v.name, setupObservation{}
 		}
+		obs.observe(classifyTaskSetup("activating a required extension", endpoint,
+			c.PresentsCredential(endpoint), resp))
 	}
-	return false, ""
+	return false, "", obs
 }
 
 func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack.Finding {
