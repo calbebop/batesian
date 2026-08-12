@@ -100,7 +100,9 @@ func TestExtDowngrade_FailClosed(t *testing.T) {
 	ts := extensionServer("failclosed", true)
 	defer ts.Close()
 
-	if findings := runExtDowngrade(t, ts); len(findings) != 0 {
+	exec := a2a.NewExtensionDowngradeExecutor(testRuleCtx())
+	findings, _ := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 {
 		t.Errorf("expected zero findings against a fail-closed server, got %d: %+v", len(findings), findings)
 	}
 }
@@ -122,7 +124,9 @@ func TestExtDowngrade_ControlRejected(t *testing.T) {
 	ts := extensionServer("noauth-msg", true)
 	defer ts.Close()
 
-	if findings := runExtDowngrade(t, ts); len(findings) != 0 {
+	exec := a2a.NewExtensionDowngradeExecutor(testRuleCtx())
+	findings, _ := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 {
 		t.Errorf("expected zero findings when control is rejected, got %d", len(findings))
 	}
 }
