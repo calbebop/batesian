@@ -256,9 +256,7 @@ func TestSessionSmuggle_AcceptedWithNoTaskIsNotTested(t *testing.T) {
 		body := readBody(r)
 		id := body["id"]
 		w.Header().Set("Content-Type", "application/json")
-		// A Message result: legal, and it carries no task identifiers. The state string
-		// keeps looksLikeTask satisfied, so this exercises the no-task path rather than
-		// being filtered out before it.
+		// A Message result: legal, and it carries no task identifiers.
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
 			"result": map[string]interface{}{
@@ -272,6 +270,43 @@ func TestSessionSmuggle_AcceptedWithNoTaskIsNotTested(t *testing.T) {
 	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
 	if len(findings) != 0 {
 		t.Fatalf("no task means no stored turn to report, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no task id") {
+		t.Errorf("reason should name the missing task; got: %v", err)
+	}
+}
+
+// A Message reply carrying none of the task-identifier markers at all. The
+// accepted-side looksLikeTask gate used to read this shape as "not a task" and
+// funnel it through the refusal observations, which errIfAuthRefused turned
+// into a clean result - while the rule's own contract (and the test above)
+// says a reply with no task reports not tested. The gate could also suppress
+// real findings from task bodies whose state spelled none of its needles.
+func TestSessionSmuggle_MessageReplyWithNoTaskMarkersIsNotTested(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		body := readBody(r)
+		id := body["id"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id,
+			"result": map[string]interface{}{
+				"messageId": "srv-1", "role": "ROLE_AGENT",
+				"parts": []interface{}{map[string]string{"text": "done"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d: %+v", len(findings), findings)
 	}
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)

@@ -8,63 +8,6 @@ import "testing"
 // helpers that recognize a task by its state must accept both, or a rule gated
 // on them stays silent against a compliant server.
 
-func TestLooksLikeTask_AcceptsBothStateSpellings(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{
-			name: "v0.3 lowercase state only",
-			body: `{"result":{"status":{"state":"working"}}}`,
-			want: true,
-		},
-		{
-			name: "v1.0 enum state only",
-			body: `{"result":{"status":{"state":"TASK_STATE_WORKING"}}}`,
-			want: true,
-		},
-		{
-			name: "v1.0 enum submitted only",
-			body: `{"result":{"status":{"state":"TASK_STATE_SUBMITTED"}}}`,
-			want: true,
-		},
-		{
-			name: "id fields with no state at all",
-			body: `{"result":{"contextId":"c-1"}}`,
-			want: true,
-		},
-		{
-			name: "task kind marker",
-			body: `{"result":{"kind":"task"}}`,
-			want: true,
-		},
-		{
-			name: "not a task",
-			body: `{"result":{"messageId":"m-1","parts":[]}}`,
-			want: false,
-		},
-		{
-			name: "error envelope",
-			body: `{"error":{"code":-32001,"message":"Task not found"}}`,
-			want: false,
-		},
-		{
-			name: "empty",
-			body: ``,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := looksLikeTask([]byte(tt.body)); got != tt.want {
-				t.Errorf("looksLikeTask(%s) = %v, want %v", tt.body, got, tt.want)
-			}
-		})
-	}
-}
-
 // bodyShowsCanceled already accepted both spellings when a2a-task-cancel-idor-001
 // was written. This pins that, so a later simplification cannot quietly drop the
 // enum form and leave the rule unable to confirm a cancellation.

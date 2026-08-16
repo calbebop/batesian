@@ -105,8 +105,16 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	}
 
 	// Step 4: as A, read the context back. Confirmed only if A can see B's marker.
-	if !e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, taskA, marker, vars.RandID) {
-		return nil, nil
+	// A read that never happened is not evidence of isolation: a marker "not
+	// found" in a history that was never fetched says nothing about the merge.
+	// a2a-artifact-tamper-001 reports the identical unreadable-read-back as not
+	// tested; this step used to return clean.
+	read, contains, readObs := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, taskA, marker, vars.RandID)
+	if !read {
+		return nil, readObs.err()
+	}
+	if !contains {
+		return nil, nil // the history was read; the victim's marker was not merged into A's view
 	}
 
 	return []attack.Finding{e.finding(endpoint, a, b, fixedCtx, taskA, taskB)}, nil
@@ -168,7 +176,13 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 // taskHistoryContains reads a task via GetTask (v1.0) / tasks/get (v0.3) and
 // reports whether the returned history contains the given marker - i.e. the
 // shared context exposed another principal's message.
-func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID string) bool {
+//
+// read is false when neither shape yielded a usable task result; obs then
+// explains why (and contains is meaningless). Callers must not read a false
+// contains as "marker absent" without checking read first.
+func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	extraHeaders map[string]string, taskID, marker, randID string) (read, contains bool, obs setupObservation) {
+	what := "reading the task history back"
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
@@ -179,18 +193,21 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
 	})
-	if err != nil || !resp.IsAccepted() {
-		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "batesian-ctxfix-get-" + randID,
-			"method":  "tasks/get",
-			"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
-		})
+	if err == nil && resp.IsAccepted() {
+		return true, resp.ContainsAny(marker), setupObservation{}
 	}
-	if err != nil || !resp.IsAccepted() {
-		return false
+	obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+	resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "batesian-ctxfix-get-" + randID,
+		"method":  "tasks/get",
+		"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
+	})
+	if err == nil && resp.IsAccepted() {
+		return true, resp.ContainsAny(marker), setupObservation{}
 	}
-	return resp.ContainsAny(marker)
+	obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+	return false, false, obs
 }
 
 // finding builds the confirmed context-fixation cross-principal disclosure.

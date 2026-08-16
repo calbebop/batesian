@@ -74,6 +74,11 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			if mode == "no-cancel-surface" {
+				// Neither wire implements cancellation.
+				rpcErr(-32601, "method not found")
+				return
+			}
 			if mode == "not-cancelable" {
 				rpcErr(-32002, "Task is not in a cancelable state")
 				return
@@ -177,13 +182,39 @@ func TestTaskCancelIDOR_Secure(t *testing.T) {
 	}
 }
 
-// TestTaskCancelIDOR_NotCancelable: task cannot be canceled => no finding.
+// TestTaskCancelIDOR_NotCancelable: the task cannot be canceled, so the
+// anonymous discriminator drew an application error instead of an auth
+// rejection. Whether the cancel handler demands a credential was never
+// established, so the rule reports not tested rather than clean - a server can
+// hide or terminal-state a task for anonymous callers while still letting any
+// authenticated principal cancel, which is the boundary this rule exists to
+// test.
 func TestTaskCancelIDOR_NotCancelable(t *testing.T) {
 	srv := cancelServer("not-cancelable")
 	defer srv.Close()
 
+	findings, err := runTaskCancel(t, srv)
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ownership boundary on cancellation could not be tested") {
+		t.Errorf("reason should name the untested boundary: %v", err)
+	}
+}
+
+// TestTaskCancelIDOR_NoCancelSurface: both cancel shapes answer method-not-
+// found, so the agent offers no cancellation at all. That is genuinely not
+// applicable - the same verdict classifyTaskSetup gives an absent feature - and
+// must stay clean rather than not tested.
+func TestTaskCancelIDOR_NoCancelSurface(t *testing.T) {
+	srv := cancelServer("no-cancel-surface")
+	defer srv.Close()
+
 	if findings, err := runTaskCancel(t, srv); err != nil || len(findings) != 0 {
-		t.Errorf("expected 0 findings / nil err when the task is not cancelable, got %d findings, err=%v", len(findings), err)
+		t.Errorf("expected 0 findings / nil err when no cancel surface exists, got %d findings, err=%v", len(findings), err)
 	}
 }
 
