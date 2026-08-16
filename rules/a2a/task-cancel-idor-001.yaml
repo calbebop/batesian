@@ -26,8 +26,13 @@ info:
          principal B. A CONFIRMED finding is raised only when B's cancel succeeds
          and a read-back as owner A shows the task is now canceled.
 
-    A server that rejects the wrong-principal cancel, or that cannot cancel the
-    task (already terminal), produces no finding.
+    A server that rejects the wrong-principal cancel produces no finding: the
+    boundary was tested and held. Two outcomes are NOT clean results: an
+    anonymous cancel answered with an application error (task hidden from
+    anonymous callers, task already terminal) never established whether the
+    cancel handler demands a credential, so the rule reports not tested; and a
+    server that implements no cancel method on either wire is not applicable and
+    also reports nothing.
 
     SAFETY: the rule creates and cancels its OWN throwaway task; it never cancels
     a pre-existing task, and is standalone (it does not consume tasks other rules
@@ -35,7 +40,7 @@ info:
 
     Note: against a server that completes tasks almost immediately the probe task
     may reach a terminal state before it can be canceled, in which case the rule
-    cannot demonstrate the issue and reports nothing.
+    cannot demonstrate the issue and reports not tested.
 
   references:
     - https://a2a-protocol.org/latest/specification/

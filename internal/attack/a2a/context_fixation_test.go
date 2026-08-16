@@ -25,6 +25,8 @@ type ctxMsg struct {
 //     requested task's own messages (no cross-principal merge)
 //   - "server-minted": ignores the client contextId and mints its own
 //   - "open":         no authentication at all
+//   - "read-fails":   like vulnerable, but GetTask answers HTTP 500, so whether
+//     the context merged cannot be observed
 func contextServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	ctxMsgs := map[string][]ctxMsg{} // contextId -> messages
@@ -72,6 +74,12 @@ func contextServer(mode string) *httptest.Server {
 			mu.Unlock()
 			taskResult(w, id, taskID, ctxID)
 		case "GetTask", "tasks/get":
+			if mode == "read-fails" {
+				// The read-back breaks at the gateway: sends work, but nothing
+				// about the merge can be observed.
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			if mode != "open" && tenant == "" {
 				rpcErr(w, id, -32600, "authentication required")
 				return
@@ -178,6 +186,26 @@ func TestContextFixation_ServerMinted(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when the server mints its own contextId, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestContextFixation_UnreadableReadBackIsNotTested: the discriminator passed,
+// both principals posted under the fixed context, and then the attacker's
+// read-back failed. A "marker not found" in a history that was never fetched is
+// not evidence of isolation; this used to return clean, while
+// a2a-artifact-tamper-001 reports the identical unreadable read-back as not
+// tested.
+func TestContextFixation_UnreadableReadBackIsNotTested(t *testing.T) {
+	ts := contextServer("read-fails")
+	defer ts.Close()
+
+	findings, err := a2a.NewContextFixationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 0 {
+		t.Fatalf("expected zero findings, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive for an unreadable read-back, got %v", err)
 	}
 }
 
