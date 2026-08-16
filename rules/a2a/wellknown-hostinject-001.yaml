@@ -12,7 +12,7 @@ info:
 
     Severity is graded by WHERE the canary lands. Reflection into an
     authority/URL field (`url`, `endpoint`, any `*.url`/`*.uri`, or any value
-    that is itself a URL) is reported as high / ConfirmedExploit - that is the
+    that is itself a URL) is reported as high severity (RiskIndicator) - that is the
     agent's advertised service location that peers and registries trust. A
     reflection that only lands in a non-URL field (e.g. `description`) is a real
     injection primitive but lower direct impact, reported as medium /

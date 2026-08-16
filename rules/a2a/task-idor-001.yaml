@@ -2,7 +2,7 @@ id: a2a-task-idor-001
 info:
   name: A2A Task IDOR via Unauthenticated tasks/get
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Detects broken object-level authorization (IDOR / BOLA) on A2A task lookup:
     a server that authenticates task creation but does not bind tasks/get to the

@@ -2,7 +2,7 @@ id: mcp-prompt-unauth-001
 info:
   name: MCP Prompt Templates Accessible Without Authentication
   author: batesian
-  severity: medium
+  severity: high
   description: |
     Tests whether an MCP server exposes its prompt templates via prompts/list
     and prompts/get without requiring authentication.

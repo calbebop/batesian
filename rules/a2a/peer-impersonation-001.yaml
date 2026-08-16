@@ -2,7 +2,7 @@ id: a2a-peer-impersonation-001
 info:
   name: A2A Peer Agent Impersonation via Forged JWT
   author: batesian
-  severity: critical
+  severity: high
   description: |
     A2A servers are expected to validate the identity of calling agents using
     bearer tokens with cryptographic signatures. An attacker can forge a JWT

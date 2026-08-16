@@ -2,7 +2,7 @@ id: mcp-token-replay-001
 info:
   name: MCP OAuth Token Signature and Audience Validation Bypass
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Tests whether an MCP server accepts forged or unsigned OAuth 2.1 bearer
     tokens. The probes are JWTs the server cannot have validated: two signed with
