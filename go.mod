@@ -1,6 +1,6 @@
 module github.com/calbebop/batesian
 
-go 1.25.12
+go 1.25.13
 
 retract (
 	// Superseded by v1.1.0.
