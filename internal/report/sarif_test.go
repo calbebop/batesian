@@ -78,3 +78,38 @@ func TestWriteSARIF_AbsoluteURIHasNoUriBaseId(t *testing.T) {
 		t.Errorf("artifactLocation must not contain uriBaseId for an absolute URI, got: %v", al)
 	}
 }
+
+// TestWriteSARIF_CleanScanEmptiesResultsArray verifies a zero-finding scan
+// writes "results": [] rather than "results": null. SARIF 2.1.0 types
+// runs[].results as an array - null is not a legal value - so a nil Go slice
+// here produced a document that schema-validating consumers (GitHub
+// code-scanning upload, VS Code SARIF viewer) reject, precisely when the
+// target was clean. A clean scan is the most common scan outcome.
+func TestWriteSARIF_CleanScanEmptiesResultsArray(t *testing.T) {
+	r := &rules.Rule{}
+	r.ID = "mcp-test-001"
+	r.Info.Name = "Test Rule"
+	r.Info.Severity = "high"
+	clean := []engine.RunResult{{Rule: r}} // ran, found nothing
+
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, "https://agent.example.com", clean, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "\"results\": null") {
+		t.Fatalf("clean scan must emit an empty results array, not null:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "\"results\": []") {
+		t.Fatalf("clean scan must emit \"results\": []:\n%s", buf.String())
+	}
+
+	var doc sarifDoc
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("SARIF is not valid JSON: %v", err)
+	}
+	if len(doc.Runs) != 1 || doc.Runs[0].Results == nil || len(doc.Runs[0].Results) != 0 {
+		t.Fatalf("expected one run with a non-nil empty results array; runs=%d results=%v",
+			len(doc.Runs), doc.Runs[0].Results)
+	}
+}

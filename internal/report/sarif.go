@@ -99,7 +99,12 @@ func WriteSARIF(w io.Writer, target string, results []engine.RunResult, toolVers
 func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 	// De-duplicate rules from the results.
 	ruleMap := make(map[string]sarifRule)
-	var sarifResults []sarifResult
+	// A clean scan is the most common outcome, and a nil slice here marshals as
+	// "results": null. SARIF 2.1.0 types runs[].results as an array - null is
+	// not a legal value - so schema-validating consumers (GitHub code-scanning
+	// upload, VS Code SARIF viewer) can reject exactly the scans that found
+	// nothing. rules below builds with make for the same reason.
+	sarifResults := make([]sarifResult, 0, len(results))
 
 	for _, r := range results {
 		if r.Rule != nil {
