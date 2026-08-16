@@ -21,19 +21,29 @@ import (
 // signature-valid tokens are isolated separately by mcp-oauth-audience-002.
 //
 // Attack sequence:
+//
 //  1. Confirm the server participates in OAuth 2.1 / OIDC by probing the known
 //     discovery documents (RFC 9728 protected-resource-metadata, RFC 8414
 //     authorization-server metadata, and OIDC openid-configuration). If none is
 //     present, skip gracefully (the server does not appear to use OAuth).
+//
 //  2. Forge three JWTs using stdlib only (no third-party JWT library):
 //     - no-aud: HS256 token with no aud claim
 //     - wrong-aud: HS256 token with aud pointing to a different server
 //     - alg-none: unsigned token (alg:none) whose aud matches the target
+//
 //  3. POST each token to {target}/mcp with an MCP initialize request body.
-//  4. Emit a finding for any probe that the server ACCEPTS - HTTP 200 carrying a
-//     JSON-RPC `result` envelope. A 200 carrying a JSON-RPC `error` (a
-//     protocol-layer rejection) or any 4xx is treated as a rejection, so a
-//     server that returns 200 + {"error":...} for a bad token is not a finding.
+//
+//  4. For a probe the server ACCEPTS - HTTP 200 carrying a JSON-RPC `result`
+//     envelope - establish where tokens are actually examined before reporting
+//     (see init_gate.go): an anonymous initialize. If initialize itself gates,
+//     acceptance is a finding. If initialize is open, the probe is re-run
+//     against the advertised listing that DOES gate; only acceptance there is
+//     a finding. A server that answers both anonymously reports not tested.
+//
+//     A 200 carrying a JSON-RPC `error` (a protocol-layer rejection) or any 4xx
+//     is treated as a rejection, so a server that returns 200 + {"error":...}
+//     for a bad token is not a finding.
 type TokenReplayExecutor struct {
 	rule attack.RuleContext
 }
@@ -158,6 +168,13 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	// examined yet the server was reported as rejecting alg:none and forged
 	// signatures. oauth_audience took this fix in #148 against the same candidate
 	// list and the same init body; this rule did not.
+	//
+	// anon carries no credential (the operator's --token included), because the
+	// controls that attribute an accepted probe ask what the server does for a
+	// caller who presents nothing.
+	anon := attack.NewUnauthHTTPClient(opts, vars)
+	gates := map[string]gateProbe{}
+	notTestedReason := ""
 	anyEndpoint := false
 	var findings []attack.Finding
 	for _, p := range probes {
@@ -176,7 +193,21 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
 			// carries a JSON-RPC error is a protocol-layer rejection of the
 			// forged token and must not be reported.
-			if resp.IsAccepted() {
+			if !resp.IsAccepted() {
+				continue
+			}
+
+			// The probe was accepted at initialize. Before that says anything
+			// about tokens, establish where this server actually examines them
+			// (see init_gate.go). The gate is a property of the endpoint, so it
+			// is probed once and shared across the three probes.
+			gp, ok := gates[ep]
+			if !ok {
+				gp = probeInitGate(ctx, anon, ep)
+				gates[ep] = gp
+			}
+			switch gp.gate {
+			case gateOnInit:
 				findings = append(findings, attack.Finding{
 					RuleID:      e.rule.ID,
 					RuleName:    e.rule.Name,
@@ -185,23 +216,64 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 					Title:       fmt.Sprintf("MCP server %s", p.titleSufx),
 					Description: p.descSufx,
 					Evidence: fmt.Sprintf(
-						"probe: %s\ntoken header.payload: %s...[signature omitted]\nHTTP %d from %s\n%s",
+						"probe: %s (judged at initialize, which refuses an anonymous caller)\ntoken header.payload: %s...[signature omitted]\nHTTP %d from %s\n%s",
 						p.name, jwtHeaderPayload(p.token), resp.StatusCode, ep, snippetMCP(resp.Body),
 					),
 					Remediation: e.rule.Remediation,
 					TargetURL:   ep,
 				})
-				break // Found a responsive endpoint for this probe; no need to try others.
+			case gateAfterInit:
+				// Initialize does not authenticate; the advertised listing does.
+				// The acceptance above proves nothing, so judge the token there.
+				mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, p.token)
+				if verdict == accessGranted {
+					findings = append(findings, attack.Finding{
+						RuleID:      e.rule.ID,
+						RuleName:    e.rule.Name,
+						Severity:    p.severity,
+						Confidence:  attack.ConfirmedExploit,
+						Title:       fmt.Sprintf("MCP server %s", p.titleSufx),
+						Description: p.descSufx,
+						Evidence: fmt.Sprintf(
+							"probe: %s (judged at %s, which refuses an anonymous caller while initialize accepts one)\ntoken header.payload: %s...[signature omitted]\n%s",
+							p.name, gp.method, jwtHeaderPayload(p.token), evidenceSnippet(mresp, ep),
+						),
+						Remediation: e.rule.Remediation,
+						TargetURL:   ep,
+					})
+				}
+				// A refusal at the gated method is the server validating the
+				// token; no finding. An undetermined reply suppresses the
+				// finding rather than attribute it.
+			default:
+				// gateNowhere / gateUnknown: nothing on this endpoint can be
+				// said about token validation. Record why, once.
+				if notTestedReason == "" {
+					notTestedReason = gp.reason
+				}
 			}
+			break // Found a responsive endpoint for this probe; no need to try others.
 		}
 	}
 
+	if len(findings) == 0 && notTestedReason != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, notTestedReason)
+	}
 	if len(findings) == 0 && !anyEndpoint {
 		return nil, fmt.Errorf("%w: %s publishes OAuth metadata but no MCP endpoint answered at "+
 			"any candidate path, so no forged token was ever examined",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
 	return findings, nil
+}
+
+// evidenceSnippet renders a method-probe response for a finding's evidence,
+// covering the nil response a transport failure leaves behind.
+func evidenceSnippet(resp *attack.Response, ep string) string {
+	if resp == nil {
+		return fmt.Sprintf("no response from %s", ep)
+	}
+	return fmt.Sprintf("HTTP %d from %s\n%s", resp.StatusCode, ep, snippetMCP(resp.Body))
 }
 
 // oauthWellKnownPaths are the discovery documents that signal a server

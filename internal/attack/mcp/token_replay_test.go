@@ -338,3 +338,139 @@ func TestTokenReplay_CurrentVersionNotRejected(t *testing.T) {
 		t.Fatal("expected a finding (current-version initialize accepted, forged token accepted); got 0 - the offered protocolVersion may have been rejected as stale")
 	}
 }
+
+// ungatedInitServer models the posture that broke both forged-token rules:
+// initialize answers anyone, and what happens on the calls that follow is what
+// mode selects.
+//
+//   - validate: the follow-up gate accepts only the sentinel bearer - a server
+//     that validates tokens and leaves initialize open. The rules must stay
+//     silent here; before the anonymous-initialize control they fired three
+//     findings claiming absent signature validation.
+//   - presence: the gate accepts any bearer - presence-only validation. The
+//     findings must fire, judged at the gated method.
+//   - open: no gate anywhere. The unauth rules own that surface, and the token
+//     rules must report not tested rather than "accepted a forged token".
+//
+// The initialize result advertises the tools capability so the control probes
+// the real listing rather than the ping fallback. Shared with
+// oauth_audience_test.go (same package).
+func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + srv.Listener.Addr().String()
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":         base,
+				"token_endpoint": base + "/token",
+			})
+		case "/mcp":
+			var req struct {
+				Method string `json:"method"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+
+			// initialize is ungated in every mode: it answers anyone.
+			if req.Method == "initialize" {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"protocolVersion": "2025-11-25",
+						"serverInfo":      map[string]interface{}{"name": "ungated-init", "version": "1.0"},
+						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+					},
+				})
+				return
+			}
+
+			authz := r.Header.Get("Authorization")
+			accepted := false
+			switch mode {
+			case "open":
+				accepted = true
+			case "presence":
+				accepted = strings.HasPrefix(authz, "Bearer ")
+			case "validate":
+				accepted = authz == "Bearer good-token"
+			}
+			if accepted {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      2,
+					"result":  map[string]interface{}{"tools": []interface{}{}},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid_token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv
+}
+
+// The regression the anonymous-initialize control exists for: initialize
+// answers anyone, and the token is validated at the methods that follow. The
+// rule used to fire three findings (two high, one critical) claiming absent
+// signature validation, against a server that rejects every forged token where
+// it matters.
+func TestTokenReplay_UngatedInitValidatingGateStaysSilent(t *testing.T) {
+	srv := ungatedInitServer(t, "validate")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings against an ungated-initialize server that validates tokens at the gate, got %d: %+v", len(findings), findings)
+	}
+}
+
+// The same posture with a presence-only gate: any bearer is accepted at the
+// gated method. The findings must still fire - attributed to the method that
+// actually examined (and failed to validate) the token, not to initialize.
+func TestTokenReplay_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
+	srv := ungatedInitServer(t, "presence")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 3 {
+		t.Fatalf("expected one finding per forged probe, got %d: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if !strings.Contains(f.Evidence, "judged at tools/list") {
+			t.Errorf("evidence must name the gated method the token was judged at: %s", f.Evidence)
+		}
+	}
+}
+
+// A server that answers everyone everywhere presents no credential-gated
+// surface; the unauth rules report it, and this rule reports not tested rather
+// than "accepted a forged token".
+func TestTokenReplay_FullyOpenServerIsNotTested(t *testing.T) {
+	srv := ungatedInitServer(t, "open")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings against a fully open server, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no credential-gated surface") {
+		t.Errorf("reason should explain the open surface: %v", err)
+	}
+}

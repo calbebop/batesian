@@ -12,7 +12,18 @@ info:
     three.
 
     Accepting any of them proves the server does not validate the token
-    signature. Without signature validation, audience binding cannot be enforced
+    signature - provided the surface the token was presented to examines tokens
+    at all. Plenty of servers leave `initialize` ungated and authorize the calls
+    that follow, so before reporting, an anonymous `initialize` control
+    establishes where the gate sits. If `initialize` itself refuses the
+    anonymous caller, acceptance there is the finding. If `initialize` answers
+    anyone, the probes are re-run against the server's first advertised listing
+    (`ping` when nothing is listable), which the control confirms refuses an
+    anonymous caller; only acceptance at that method is a finding. A server
+    that answers both anonymously authenticates nothing this rule can reach and
+    is reported not tested - the unauthenticated-access rules own that surface.
+
+    Without signature validation, audience binding cannot be enforced
     either, so a token forged for any audience, or issued for an unrelated
     service, can be replayed against this endpoint. Audience-matching bugs on
     signature-valid tokens are isolated separately by mcp-oauth-audience-002.

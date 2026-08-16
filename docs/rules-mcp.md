@@ -221,6 +221,17 @@ It submits a **negative control** plus three trap probes as forged HS256 JWTs:
 - `aud-case-canonicalization-trap` - catches lowercase/URL-canonicalizing matchers.
 - `aud-array-canary-only` - catches validators that skip the array-shape branch.
 
+Every probe rides an MCP `initialize` request, and plenty of servers leave
+`initialize` ungated and authorize the calls that follow - a probe accepted
+there was accepted by a method that never looked at it. When any probe is
+accepted, an anonymous `initialize` control establishes where the gate sits: if
+`initialize` itself refuses the anonymous caller, its verdicts stand; if it
+answers anyone, every probe is re-judged at the server's first advertised
+listing (`ping` when nothing is listable), confirmed to refuse an anonymous
+caller, and the evidence names that method. A server that answers both
+anonymously is reported **not tested** - the unauthenticated-access rules own
+that surface.
+
 **Honest scope.** Because the probes are forged self-signed HS256 tokens,
 acceptance indicates a *compound* failure of signature validation **and** audience
 matching. The negative control disambiguates: if the control is accepted, the
@@ -247,8 +258,19 @@ unsigned (`alg: none`). A compliant OAuth 2.1 resource server verifies the token
 signature and the `aud` claim (RFC 9068, RFC 8707) and rejects all three.
 Acceptance is judged at the protocol layer - HTTP 200 + a JSON-RPC `result` - so a
 200 carrying an `invalid_token` JSON-RPC error is correctly treated as a rejection.
-A **confirmed** finding means a forged or unsigned token was accepted: signature
-validation is absent, which also defeats audience binding and enables replay.
+
+Before a **confirmed** finding is reported, an anonymous `initialize` control
+establishes where the server actually examines tokens: plenty of servers leave
+`initialize` ungated and authorize the calls that follow, and an acceptance by a
+method that never looked at the token says nothing about validation. If
+`initialize` itself refuses the anonymous caller, acceptance there is the
+finding. If it answers anyone, the probes are re-run against the server's first
+advertised listing (`ping` when nothing is listable), confirmed to refuse an
+anonymous caller; only acceptance at that method is a finding. A server that
+answers both anonymously is reported **not tested** - the unauthenticated-access
+rules own that surface. A confirmed finding therefore means a forged or unsigned
+token was accepted on a surface that gates: signature validation is absent,
+which also defeats audience binding and enables replay.
 Audience-matching bugs on signature-valid tokens are isolated by
 `mcp-oauth-audience-002`.
 

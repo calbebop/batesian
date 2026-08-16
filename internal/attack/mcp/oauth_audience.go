@@ -83,6 +83,9 @@ type probeOutcome struct {
 	status   int
 	bodySnip string
 	tokenHP  string // header.payload (signature redacted)
+	// judgedAt names the surface the verdict came from: "initialize", or the
+	// gated method an ungated-initialize server was re-probed against.
+	judgedAt string
 }
 
 // Execute runs the audience-matching probes against the target.
@@ -118,7 +121,8 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 
 	probes := buildProbes(expected)
 
-	endpoint, outcomes, err := runProbesAgainstEndpoint(ctx, client, vars.BaseURL, probes)
+	endpoint, outcomes, err := runProbesAgainstEndpoint(ctx, client,
+		attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL, probes)
 	if err != nil {
 		return nil, err
 	}
@@ -378,18 +382,31 @@ func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, m
 // strength of four requests to a path that did not exist. A stray /api path must
 // not be able to hide a real /mcp finding, which is what the old comment here
 // claimed and the code did not do.
-func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string, probes []audienceProbe) (string, []probeOutcome, error) {
+//
+// anon is a credential-free client. It backs one control: a probe accepted at
+// initialize only says something about tokens if the server examines them
+// there, and plenty of servers leave initialize ungated and authorize the calls
+// that follow. On those, every forged token was accepted by a method that never
+// looked at it, and this rule reported blanket forged-token acceptance on the
+// strength of it. When any probe is accepted, probeInitGate establishes where
+// the gate sits; if it is after initialize, every probe is re-judged at the
+// gated method (see init_gate.go).
+func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, anon *attack.HTTPClient, baseURL string, probes []audienceProbe) (string, []probeOutcome, error) {
+	forge := func(p audienceProbe) (string, error) {
+		return forgeHS256JWT(map[string]interface{}{
+			"iss": "https://attacker.example.com",
+			"sub": "batesian-probe",
+			"aud": p.audClaim,
+			"iat": 1700000000,
+			"exp": 9999999999,
+		})
+	}
 	for _, ep := range endpointCandidates(baseURL) {
 		outcomes := make([]probeOutcome, 0, len(probes))
 		anyResponse := false
+		anyAccepted := false
 		for _, p := range probes {
-			tok, err := forgeHS256JWT(map[string]interface{}{
-				"iss": "https://attacker.example.com",
-				"sub": "batesian-probe",
-				"aud": p.audClaim,
-				"iat": 1700000000,
-				"exp": 9999999999,
-			})
+			tok, err := forge(p)
 			if err != nil {
 				return "", nil, fmt.Errorf("forging token for probe %s: %w", p.name, err)
 			}
@@ -399,26 +416,71 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, ba
 			}, json.RawMessage(mcpInitBody))
 			if err != nil {
 				outcomes = append(outcomes, probeOutcome{
-					probe:   p,
-					verdict: verdictInconclusive,
-					tokenHP: jwtHeaderPayload(tok),
+					probe:    p,
+					verdict:  verdictInconclusive,
+					tokenHP:  jwtHeaderPayload(tok),
+					judgedAt: "initialize",
 				})
 				continue
 			}
 			if !endpointAbsent(resp) {
 				anyResponse = true
 			}
+			verdict := classifyResponse(resp)
+			if verdict == verdictAcceptedVulnerable {
+				anyAccepted = true
+			}
 			outcomes = append(outcomes, probeOutcome{
 				probe:    p,
-				verdict:  classifyResponse(resp),
+				verdict:  verdict,
 				status:   resp.StatusCode,
 				bodySnip: snippetMCP(resp.Body),
 				tokenHP:  jwtHeaderPayload(tok),
+				judgedAt: "initialize",
 			})
 		}
-		if anyResponse {
-			return ep, outcomes, nil
+		if !anyResponse {
+			continue
 		}
+
+		if anyAccepted {
+			gp := probeInitGate(ctx, anon, ep)
+			switch gp.gate {
+			case gateOnInit:
+				// Initialize itself demands a credential; its verdicts stand.
+			case gateAfterInit:
+				// Initialize does not authenticate; the advertised listing
+				// does. Re-judge every probe there.
+				for i := range outcomes {
+					tok, err := forge(outcomes[i].probe)
+					if err != nil {
+						return "", nil, fmt.Errorf("forging token for probe %s: %w", outcomes[i].probe.name, err)
+					}
+					mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, tok)
+					outcomes[i].tokenHP = jwtHeaderPayload(tok)
+					outcomes[i].judgedAt = judgedAtLabel(gp.method)
+					outcomes[i].verdict = verdictInconclusive
+					outcomes[i].status = 0
+					outcomes[i].bodySnip = ""
+					if mresp != nil {
+						outcomes[i].status = mresp.StatusCode
+						outcomes[i].bodySnip = snippetMCP(mresp.Body)
+					}
+					switch verdict {
+					case accessGranted:
+						outcomes[i].verdict = verdictAcceptedVulnerable
+					case accessRefused:
+						outcomes[i].verdict = verdictRejected
+					}
+				}
+			default:
+				// gateNowhere / gateUnknown: nothing here can be attributed to
+				// the token rather than to an open surface or a control that
+				// did not answer.
+				return "", nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, gp.reason)
+			}
+		}
+		return ep, outcomes, nil
 	}
 	return "", nil, nil
 }
@@ -596,6 +658,9 @@ func formatEvidence(endpoint, expected string, vulnerable []probeOutcome) string
 
 func writeOutcomeLine(sb *strings.Builder, o probeOutcome) {
 	fmt.Fprintf(sb, "  - %s: HTTP %d\n", o.probe.name, o.status)
+	if o.judgedAt != "" && o.judgedAt != "initialize" {
+		fmt.Fprintf(sb, "      judged at: %s\n", o.judgedAt)
+	}
 	fmt.Fprintf(sb, "      token header.payload: %s...[signature omitted]\n", o.tokenHP)
 	fmt.Fprintf(sb, "      response snippet: %s\n", oneLine(o.bodySnip))
 }
