@@ -172,12 +172,13 @@ func TestOAuthAudience_VulnerableServer_ArrayBranchSkip(t *testing.T) {
 	}
 }
 
-// TestOAuthAudience_BlanketForgedAcceptance: the server accepts ANY forged token
-// regardless of audience (no signature/audience validation). The negative
-// control fires, so the rule must report blanket acceptance - NOT misattribute
-// it to a specific aud-matching bug.
+// TestOAuthAudience_BlanketForgedAcceptance: the server demands a bearer on
+// every call but accepts ANY token regardless of audience (no signature or
+// audience validation behind a presence-only gate). The negative control
+// fires, so the rule must report blanket acceptance - NOT misattribute it to a
+// specific aud-matching bug.
 func TestOAuthAudience_BlanketForgedAcceptance(t *testing.T) {
-	srv := newAudienceServer(t, func(aud interface{}) bool { return true })
+	srv := newAudienceServer(t, func(aud interface{}) bool { return aud != nil })
 	defer srv.Close()
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
@@ -330,6 +331,12 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			// The gate: initialize itself demands a bearer, so the probes'
+			// initialize verdicts stand.
+			challenge401(w)
+			return
+		}
 		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
 		if s, ok := aud.(string); ok && strings.HasPrefix(s, "https://batesian-control") {
 			// negative control: 200 with no JSON-RPC result envelope
@@ -541,11 +548,11 @@ func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
 }
 
 // A disagreement is not a reason to withhold a finding the server demonstrated.
-// This one accepts any forged token, which the control probe catches regardless
-// of which audience the traps were built from.
+// This one accepts any presented bearer token, which the control probe catches
+// regardless of which audience the traps were built from.
 func TestOAuthAudience_ClaimDisagreesButFindingStillReported(t *testing.T) {
 	srv := audienceServerAdvertising(t, "https://API.acme.com/mcp", func(aud interface{}) bool {
-		return true // accepts every forged token, audience irrelevant
+		return aud != nil // accepts every forged token, audience irrelevant
 	})
 	defer srv.Close()
 
@@ -576,5 +583,64 @@ func TestOAuthAudience_ClaimMatchesAdvertisedStaysClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings on a strict server, got %d", len(findings))
+	}
+}
+
+// The ungated-initialize posture, from the audience rule's side. The
+// ungatedInitServer fixture is defined in token_replay_test.go (same package).
+
+// initialize answers anyone and the gate validates tokens: no finding. The
+// rule used to report blanket forged-token acceptance here, because the
+// control probe (forged unrelated audience) was accepted by a method that
+// never looked at it.
+func TestOAuthAudience_UngatedInitValidatingGateStaysSilent(t *testing.T) {
+	srv := ungatedInitServer(t, "validate")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings against an ungated-initialize server that validates tokens at the gate, got %d: %+v", len(findings), findings)
+	}
+}
+
+// initialize answers anyone, the gate checks bearer presence only: the blanket
+// acceptance finding still fires, judged at the gated method.
+func TestOAuthAudience_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
+	srv := ungatedInitServer(t, "presence")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 coalesced finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("expected ConfirmedExploit, got %q", findings[0].Confidence)
+	}
+	if !strings.Contains(findings[0].Evidence, "judged at: tools/list") {
+		t.Errorf("evidence must name the gated method the token was judged at: %s", findings[0].Evidence)
+	}
+}
+
+// No gate anywhere: the unauth rules own the surface, this rule reports not
+// tested instead of blanket forged-token acceptance.
+func TestOAuthAudience_FullyOpenServerIsNotTested(t *testing.T) {
+	srv := ungatedInitServer(t, "open")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings against a fully open server, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no credential-gated surface") {
+		t.Errorf("reason should explain the open surface: %v", err)
 	}
 }
