@@ -2,6 +2,7 @@ package report_test
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -23,8 +24,8 @@ func TestPrintScanSummary_InconclusiveNotClean(t *testing.T) {
 	if strings.Contains(out, "appears clean") {
 		t.Errorf("must not claim 'appears clean' when no rule was exercised:\n%s", out)
 	}
-	if !strings.Contains(out, "were not exercised") {
-		t.Errorf("expected an inconclusive note, got:\n%s", out)
+	if !strings.Contains(out, "not exercised") {
+		t.Errorf("expected an incompleteness note, got:\n%s", out)
 	}
 }
 
@@ -126,5 +127,26 @@ func TestPrintScanSummary_GroupingIsDeterministic(t *testing.T) {
 		if got := build(); got != first {
 			t.Fatalf("output differed between runs (iteration %d); grouping is not deterministic", i)
 		}
+	}
+}
+
+// TestPrintScanSummary_ErroredNotClean: when a rule errored (not skipped, not
+// inconclusive) and there are no findings and no skips, the summary must NOT
+// claim the target "appears clean". An errored rule means the scan's coverage
+// is incomplete, and the operator must see that.
+func TestPrintScanSummary_ErroredNotClean(t *testing.T) {
+	var buf bytes.Buffer
+	report.New(&buf, false).PrintScanSummary([]engine.RunResult{
+		{Rule: &rules.Rule{ID: "mcp-x"}, Err: errors.New("executor panicked: nil pointer dereference")},
+	})
+	out := buf.String()
+	if strings.Contains(out, "appears clean") {
+		t.Errorf("must not claim 'appears clean' when a rule errored:\n%s", out)
+	}
+	if !strings.Contains(out, "errored") {
+		t.Errorf("expected the summary to mention the errored rule, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ERROR running mcp-x") {
+		t.Errorf("expected an ERROR line for the rule, got:\n%s", out)
 	}
 }

@@ -91,7 +91,15 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 						"there was nothing to strip", ep)})
 				return nil, false
 			}
-			return nil, true
+			// accessRefused: the credentialed call was refused. The premise that
+			// the credential works on this surface was never established, so the
+			// session-only test could not run. Reporting clean here claimed the
+			// server was tested when it was not; the operator's credential may
+			// simply be stale or lack the right scope for this surface.
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the credentialed tools/list at %s was refused, so the credential was "+
+					"never shown to work and the session-only test could not run", ep)})
+			return nil, false
 		}
 
 		// Step 3: control. Does this server implement authorization at all? The
