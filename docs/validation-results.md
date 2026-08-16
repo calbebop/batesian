@@ -12,6 +12,14 @@ This document records what happens when the rules are pointed at **third-party
 reference implementations** instead: servers written by the protocol maintainers,
 with no knowledge of Batesian.
 
+The fixture and third-party validation are now automated in CI.
+`.github/workflows/validation.yml` runs nightly and on dispatch, and exercises the
+A2A false-positive gate against the auth-enforcing secured-agent fixture; the MCP
+property fixtures (probe-honesty, log opt-in, body size, session-as-credential);
+a third-party FastMCP server for MCP false-positive and true-positive coverage;
+and the OAuth DCR cleanup-and-report-leftovers gate. The per-rule outcomes below
+are the manual runs that established those gates.
+
 ---
 
 ## Why this matters

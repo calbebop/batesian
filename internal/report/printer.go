@@ -294,9 +294,13 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 	fmt.Fprintln(p.w)
 
 	notExercised := 0
+	errored := 0
 	for _, r := range results {
 		if r.Skipped {
 			notExercised++
+		}
+		if r.Err != nil {
+			errored++
 		}
 	}
 
@@ -307,10 +311,17 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 	// "could not reach a testable endpoint" for all of them sent operators looking
 	// for a network fault. The per-rule reason is on each SKIP line, which -v shows.
 	if total == 0 {
-		if notExercised > 0 {
+		if notExercised > 0 || errored > 0 {
+			parts := []string{}
+			if notExercised > 0 {
+				parts = append(parts, fmt.Sprintf("%d not exercised", notExercised))
+			}
+			if errored > 0 {
+				parts = append(parts, fmt.Sprintf("%d errored", errored))
+			}
 			fmt.Fprintf(p.w, "  %s\n\n", Yellow(fmt.Sprintf(
-				"No findings, but %d of %d rule(s) were not exercised, so the target was not fully tested. Run with -v to see why each was skipped.",
-				notExercised, len(results))))
+				"No findings, but %d of %d rule(s) did not complete (%s). The target was not fully tested. Run with -v for details.",
+				notExercised+errored, len(results), strings.Join(parts, ", "))))
 			// The per-rule reasons have to print here too. This branch used to
 			// return before reaching the loop below, so on a scan with no findings,
 			// which is exactly when an operator needs to know what went untested,
@@ -365,10 +376,17 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 
 	p.printSkipsAndErrors(results)
 
-	if notExercised > 0 {
+	if notExercised > 0 || errored > 0 {
+		parts := []string{}
+		if notExercised > 0 {
+			parts = append(parts, fmt.Sprintf("%d not exercised", notExercised))
+		}
+		if errored > 0 {
+			parts = append(parts, fmt.Sprintf("%d errored", errored))
+		}
 		fmt.Fprintf(p.w, "\n  %s\n", Yellow(fmt.Sprintf(
-			"Note: %d of %d rule(s) were not exercised. Run with -v to see why each was skipped.",
-			notExercised, len(results))))
+			"Note: %d of %d rule(s) did not complete (%s).",
+			notExercised+errored, len(results), strings.Join(parts, ", "))))
 	}
 }
 

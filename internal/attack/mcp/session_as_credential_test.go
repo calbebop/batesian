@@ -70,7 +70,7 @@ func sessionCredServer(t *testing.T, mode string) *httptest.Server {
 		case "initialize":
 			switch mode {
 			case "no-auth", "no-auth-session-required", "open-init-session-auth",
-				"open-init-no-anon-session":
+				"open-init-no-anon-session", "open-init-header-refuses":
 				// Handshake is ungated in these postures.
 			default:
 				if !authed {
@@ -118,6 +118,18 @@ func sessionCredServer(t *testing.T, mode string) *httptest.Server {
 				// The handshake is open, but the session remembers who opened it and
 				// that memory is what authorizes the call.
 				ok = authed || bornAuthed[sid]
+			case "open-init-header-refuses":
+				// The auth middleware rejects any request whose Authorization
+				// header carries a token it does not recognize, even when the
+				// session is valid. A request with no header but a valid session
+				// is accepted. This models a server where the operator's stale
+				// token makes the credentialed call fail while the session-only
+				// path (the vulnerability) would succeed.
+				if r.Header.Get("Authorization") != "" && !authed {
+					refuse()
+					return
+				}
+				ok = authed || issued[sid]
 			default: // token-required, stateless
 				ok = authed
 			}
@@ -332,5 +344,23 @@ func TestSessionAsCredential_NoAnonymousSessionIsSuppressed(t *testing.T) {
 	if len(findings) != 0 {
 		t.Errorf("no anonymous session was available to attribute the refusals to the "+
 			"missing credential; got %d finding(s)", len(findings))
+	}
+}
+
+// TestSessionAsCredential_RefusedCredentialNotClean: the operator's token is
+// rejected on the credentialed tools/list (stale, wrong scope). The rule used
+// to report clean, claiming the server was tested when the premise (the
+// credential works) was never established. It must report not-tested instead.
+func TestSessionAsCredential_RefusedCredentialNotClean(t *testing.T) {
+	srv := sessionCredServer(t, "open-init-header-refuses")
+	defer srv.Close()
+
+	exec := mcpattack.NewSessionAsCredentialExecutor(attack.RuleContext{ID: "mcp-session-as-credential-001"})
+	_, err := exec.Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5, Token: "stale-token",
+	})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("a refused credentialed call must report not-tested, not clean; "+
+			"want ErrInconclusive, got %v", err)
 	}
 }

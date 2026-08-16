@@ -671,6 +671,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 
 	findings := make([]jsonFinding, 0)
 	skipped := make([]map[string]string, 0)
+	ruleErrors := make([]map[string]string, 0)
 
 	for _, r := range results {
 		for _, f := range r.Findings {
@@ -706,12 +707,19 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 				"reason":  r.SkipMsg,
 			})
 		}
+		if r.Err != nil {
+			ruleErrors = append(ruleErrors, map[string]string{
+				"rule_id": r.Rule.ID,
+				"error":   r.Err.Error(),
+			})
+		}
 	}
 
 	return map[string]interface{}{
 		"target":   target,
 		"findings": findings,
 		"skipped":  skipped,
+		"errors":   ruleErrors,
 		"summary": map[string]int{
 			"total":    engine.TotalFindings(results),
 			"critical": len(engine.FindingsBySeverity(results)["critical"]),

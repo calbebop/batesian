@@ -100,6 +100,28 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 
 	result, _ := listBody["result"].(map[string]interface{})
 	resourcesRaw, _ := result["resources"].([]interface{})
+
+	// Follow nextCursor pagination so a secret-bearing resource on a later
+	// page is not missed. The listing finding is already confirmed from the
+	// first page; subsequent pages only collect more resources.
+	cursor, _ := result["nextCursor"].(string)
+	for p := 1; p < 10 && cursor != ""; p++ {
+		pageResp, pageErr := session.post(ctx, client, 3+p, "resources/list",
+			map[string]interface{}{"cursor": cursor})
+		if pageErr != nil {
+			break
+		}
+		_, pageBody := classifyProbe(pageResp, pageErr)
+		if pageResult, ok := pageBody["result"].(map[string]interface{}); ok {
+			if pageResources, ok := pageResult["resources"].([]interface{}); ok {
+				resourcesRaw = append(resourcesRaw, pageResources...)
+			}
+			cursor, _ = pageResult["nextCursor"].(string)
+			continue
+		}
+		break
+	}
+
 	if len(resourcesRaw) == 0 {
 		return nil, true
 	}
