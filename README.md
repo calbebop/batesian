@@ -21,7 +21,7 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ## What ships
 
-Bundled rules: **18 A2A, 22 MCP (40 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **18 A2A, 23 MCP (41 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
 - [A2A rules](docs/rules-a2a.md) (18)
 - [MCP rules](docs/rules-mcp.md) (21)
@@ -30,7 +30,7 @@ Rules are validated against third-party reference implementations, not only agai
 
 Coverage spans:
 
-- **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance, redirect_uri confused deputy
+- **OAuth & token validation** - OAuth 2.1 / DCR scope escalation, audience binding, token replay, version-downgrade bypass, forged-token acceptance, redirect_uri confused deputy, tool-level scope enforcement
 - **Agent-card trust (A2A)** - JWS signatures, canonicalization, cache/freshness, required-extension downgrade, host-header injection, unauthenticated extended card, declared-but-unenforced auth
 - **Request & task integrity** - task IDOR, agent-role injection, artifact tampering, SEP-2243 header/body routing, SSE resumption replay
 - **Multi-party isolation** - cross-tenant isolation, cross-principal task enumeration, session/context fixation, session id accepted as a credential, delegation chain-of-custody, cross-principal task cancellation, cross-context MCP task and result access
