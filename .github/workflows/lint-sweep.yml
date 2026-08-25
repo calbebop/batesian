@@ -1,0 +1,47 @@
+name: Lint sweep
+
+# golangci-lint caches analysis results per file, and the CI lint job restores
+# that cache between runs. A file whose content has not changed keeps its cached
+# verdict, which means a latent finding in a file nobody has edited stays
+# invisible until the next PR that touches it - where it surfaces as a red job
+# mixed into unrelated work (#222: an unparam finding on a test helper that had
+# been there since the helper was written, exposed only because that PR edited
+# the file).
+#
+# This job re-analyzes the whole tree with the cache disabled on a schedule, so
+# those findings surface here instead. A scheduled failure notifies on its own
+# and blocks nothing.
+
+on:
+  schedule:
+    # Daily, 05:43 UTC. An odd minute keeps this off the top-of-hour spike
+    # every scheduled workflow lands on.
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (cache disabled)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint (fresh analysis)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.4
+          skip-cache: true
