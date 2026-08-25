@@ -21,7 +21,7 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 
 ## What ships
 
-Bundled rules: **18 A2A, 24 MCP (42 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
+Bundled rules: **18 A2A, 25 MCP (43 total)**. The set is deliberately narrow - every rule targets MCP/A2A-specific semantics, not generic web hygiene that `nuclei`/ZAP already cover. Each rule maps to CWE references and remediation text in the catalogs:
 
 - [A2A rules](docs/rules-a2a.md) (18)
 - [MCP rules](docs/rules-mcp.md) (21)
@@ -36,6 +36,7 @@ Coverage spans:
 - **Multi-party isolation** - cross-tenant isolation, cross-principal task enumeration, session/context fixation, session id accepted as a credential, delegation chain-of-custody, cross-principal task cancellation, cross-context MCP task and result access
 - **SSRF & secret leakage** - push-notification SSRF, push control-plane binding, OAuth discovery/metadata SSRF, credential leakage into responses
 - **Shadow surfaces** - unauthenticated inspector/dashboard listeners on adjacent ports, graded by whether a foreign origin can reach them
+- **Tool manifest integrity** - hidden-character payloads, description injection patterns, duplicate-name shadowing, and manifest drift between consecutive reads (OWASP MCP03)
 - **Unauthenticated & cross-origin access** - exposed MCP tools, resources, prompt templates, completion suggestions, and log-level control, Streamable HTTP Origin validation (DNS rebinding)
 - **Tool argument integrity** - path traversal in read-only MCP tool arguments (sandbox escape via resolution evidence, zero content read)
 
