@@ -1,0 +1,64 @@
+id: mcp-shadow-surface-001
+info:
+  name: Shadow MCP Surface on an Adjacent Port (Inspector/Dashboard Class)
+  author: batesian
+  severity: high
+  description: |
+    Looks for MCP surfaces the target host serves on ports adjacent to the one
+    the scan was aimed at. Developer dashboards and inspector proxies bind to
+    loopback or every interface with no authentication, on ports nobody
+    associates with the production service. Operators rarely know these
+    listeners exist, so scanning only the named URL misses them entirely.
+
+    The port list is deliberately short and documented - each entry is a
+    default binding of a product with a published unauthenticated-RCE advisory:
+
+      1. 6277  - MCP Inspector proxy server default (CVE-2025-49596)
+      2. 24282 - Serena dashboard/API default (CVE-2026-49471)
+      3. 3000  - the conventional dev-server port
+
+    ORACLES. An initialize answered without credentials is an open shadow
+    surface. Repeating that exact request with a foreign Origin separates two
+    severities: both accepted means a page on another origin can drive the
+    process from a victim's browser, which is the full precondition pair of
+    CVE-2025-49596 (high, confirmed); the foreign Origin refused leaves an
+    unauthenticated surface reachable from the machine and network path
+    (medium, confirmed). A page fingerprinting as a known dashboard without a
+    drivable protocol endpoint is a low indicator naming the product.
+
+    Every probe is read-only: an initialize creates no session state beyond
+    what the listener already tracks for its own clients, and nothing is ever
+    invoked through a discovered surface.
+
+    A closed port is an answer, not a failure: silence from this rule means
+    each documented port was checked and none spoke MCP.
+
+  references:
+    - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
+    - https://github.com/advisories/GHSA-7xvr-hh38-w3qf
+    - https://owasp.org/www-project-mcp-top-10/
+    - https://cwe.mitre.org/data/definitions/488.html
+
+  tags:
+    - mcp
+    - shadow-surface
+    - inspector
+    - dns-rebinding
+    - cwe-488
+
+attack:
+  protocol: mcp
+  type: mcp-shadow-surface
+
+remediation: |
+  1. Inventory listening processes on hosts that run MCP tooling
+     (`ss -tlnp` / `Get-NetTCPListener`); treat any inspector or dashboard
+     bound beyond strict loopback as an incident to close.
+  2. Do not run inspector or dashboard processes on production hosts. If one
+     is required, bind it to 127.0.0.1 explicitly and put it behind an
+     authenticated reverse proxy.
+  3. Validate the Origin header on every connection the listener accepts,
+     including non-initialize paths; reject foreign origins with 403 before
+     any protocol handling.
+  4. Require authentication on MCP surfaces even when they are "local only" -
+     the spec's own guidance is that local never stays local in practice.
