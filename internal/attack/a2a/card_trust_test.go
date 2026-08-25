@@ -33,8 +33,8 @@ func signedCard(url string, exp *int64) map[string]interface{} {
 	}
 }
 
-func unsignedCard(url string) map[string]interface{} {
-	return map[string]interface{}{"name": "Test Agent", "url": url}
+func unsignedCard() map[string]interface{} {
+	return map[string]interface{}{"name": "Test Agent", "url": "https://agent.example/"}
 }
 
 // cardServer serves the given cards at the two well-known paths (nil => 404) and
@@ -87,7 +87,7 @@ func onlyFinding(t *testing.T, findings []attack.Finding) attack.Finding {
 // MUST fire indicator/high (a read-only analyzer observes the unsigned path but
 // cannot prove a verifier is bypassed).
 func TestCardTrust_SignatureStripping(t *testing.T) {
-	ts := cardServer(signedCard("https://agent.example/", future()), unsignedCard("https://agent.example/"), "no-store")
+	ts := cardServer(signedCard("https://agent.example/", future()), unsignedCard(), "no-store")
 	defer ts.Close()
 
 	f := onlyFinding(t, runCardTrust(t, ts))
@@ -110,7 +110,7 @@ func TestCardTrust_UrlMismatch(t *testing.T) {
 // TestCardTrust_StaleCache: consistent unsigned card with a long max-age.
 // MUST fire a single medium cache indicator.
 func TestCardTrust_StaleCache(t *testing.T) {
-	card := unsignedCard("https://agent.example/")
+	card := unsignedCard()
 	ts := cardServer(card, card, "public, max-age=86400")
 	defer ts.Close()
 
@@ -123,7 +123,7 @@ func TestCardTrust_StaleCache(t *testing.T) {
 // TestCardTrust_MissingCache: consistent unsigned card, no Cache-Control header.
 // MUST fire a single low cache indicator.
 func TestCardTrust_MissingCache(t *testing.T) {
-	card := unsignedCard("https://agent.example/")
+	card := unsignedCard()
 	ts := cardServer(card, card, "")
 	defer ts.Close()
 
@@ -169,6 +169,31 @@ func TestCardTrust_Clean(t *testing.T) {
 
 	if findings := runCardTrust(t, ts); len(findings) != 0 {
 		t.Errorf("expected zero findings against a well-configured card, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestCardTrust_UnsignedCardStaysSilent: a uniformly unsigned card is
+// spec-compliant. The A2A spec makes signatures optional, so an agent whose
+// card carries no signatures field at all is not a defect this rule reports;
+// the actionable case, signed on one well-known path and unsigned on the
+// other, is the canonicalization check above.
+func TestCardTrust_UnsignedCardStaysSilent(t *testing.T) {
+	card := map[string]interface{}{
+		"name": "Test Agent",
+		"url":  "https://agent.example/",
+		"capabilities": map[string]interface{}{
+			"streaming":         true,
+			"pushNotifications": true,
+		},
+		"skills": []interface{}{
+			map[string]interface{}{"id": "echo", "name": "Echo", "description": "Echo", "tags": []string{"echo"}},
+		},
+	}
+	ts := cardServer(card, card, "no-store")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected zero findings for a uniformly unsigned (spec-compliant) card, got %d: %+v", len(findings), findings)
 	}
 }
 
