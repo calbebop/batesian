@@ -152,9 +152,9 @@ candidate answers does a rule report that it could not test.
 |---|---|:---:|:---:|---|
 | `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | indicator | CWE-284 |
 | `mcp-oauth-audience-002` | [OAuth Audience Matching Bug Probes](#mcp-oauth-audience-002) | High | confirmed / indicator | CWE-863 |
-| `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High | confirmed | CWE-294 |
+| `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High / Critical | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
-| `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium | confirmed | CWE-862 |
+| `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
@@ -250,7 +250,7 @@ token and is tracked as a follow-up.
 
 ### mcp-token-replay-001
 
-**OAuth Token Signature and Audience Validation Bypass** | Severity: High | CWE-294
+**OAuth Token Signature and Audience Validation Bypass** | Severity: High / Critical | CWE-294
 
 Submits forged bearer tokens the server cannot have validated: two HS256 tokens
 signed with a random key (one with no `aud`, one with a wrong `aud`) and one
@@ -301,7 +301,7 @@ distinguishable from one that saw everything.
 
 ### mcp-prompt-unauth-001
 
-**Prompt Templates Without Authentication** | Severity: Medium | CWE-862
+**Prompt Templates Without Authentication** | Severity: High / Medium | CWE-862
 
 Sends `prompts/list` and `prompts/get` without credentials. Prompt templates can
 encode system-level instructions and internal context that were not intended to be

@@ -102,14 +102,14 @@ report them not tested against a secured agent, and say so.
 
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
-| `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High | confirmed | CWE-862 |
+| `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `a2a-push-ssrf-001` | [Push Notification SSRF](#a2a-push-ssrf-001) | High | confirmed | CWE-918 |
-| `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High | confirmed | CWE-639 |
+| `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High / Critical | confirmed | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Algorithm Confusion](#a2a-jws-algconf-001) | Critical | indicator | CWE-327 |
-| `a2a-peer-impersonation-001` | [Peer Agent Impersonation via Forged JWT](#a2a-peer-impersonation-001) | Critical | confirmed | CWE-290 |
-| `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | High | confirmed | CWE-284 |
+| `a2a-peer-impersonation-001` | [Peer Agent Impersonation via Forged JWT](#a2a-peer-impersonation-001) | High / Medium | confirmed | CWE-290 |
+| `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | Critical | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
@@ -127,7 +127,7 @@ report them not tested against a secured agent, and say so.
 
 ### a2a-extcard-unauth-001
 
-**Extended Agent Card Unauthenticated Disclosure** | Severity: High | CWE-862
+**Extended Agent Card Unauthenticated Disclosure** | Severity: High / Critical | CWE-862
 
 Fetches the Extended Agent Card without credentials, over both transports the spec
 allows: the JSON-RPC `agent/getAuthenticatedExtendedCard` method and the legacy
@@ -177,7 +177,7 @@ Confirmed unfixed in the reference `a2a-python` SDK as of April 2026
 
 ### a2a-task-idor-001
 
-**Task IDOR via Unauthenticated tasks/get** | Severity: High | CWE-639
+**Task IDOR via Unauthenticated tasks/get** | Severity: High / Critical | CWE-639
 
 Detects broken object-level authorization (IDOR / BOLA) on task lookup using an
 **auth-enforcement discriminator** so an open server is not mislabelled. It (1)
@@ -253,7 +253,7 @@ impact-if-true, not a demonstrated exploit).
 
 ### a2a-peer-impersonation-001
 
-**Peer Agent Impersonation via Forged JWT** | Severity: Critical | CWE-290
+**Peer Agent Impersonation via Forged JWT** | Severity: High / Medium | CWE-290
 
 Forges an HS256 JWT signed with a random key the server cannot know, claiming to
 be a trusted peer agent (`sub`, `iss`, `role`, `aud`), and submits it. The result
@@ -268,17 +268,19 @@ authentication at all and a lower-severity finding is raised instead.
 
 ### a2a-artifact-tamper-001
 
-**Task Artifact Tampering via Task ID Reuse** | Severity: High | CWE-284
+**Task Artifact Tampering via Task ID Reuse** | Severity: Critical | CWE-284
 
 Submits a task, then re-submits the same client-generated task ID with different
 content, then **reads the task back via `tasks/get`** to prove what the server
 actually stored. Acceptance requires HTTP success *and* no JSON-RPC error (a
 "task already exists" error is correctly treated as a rejection). A **confirmed**
-finding is reported only from the read-back: tampered content replacing the
-original is a critical overwrite; tampered content appended alongside the original
-is high-severity injection. If the re-submission is accepted but the original is
-preserved, no finding is raised; if accepted but the result cannot be verified, an
-**indicator** is reported.
+finding is reported only from the read-back, and only when the tampered
+content has fully replaced the original - the stored task returns the attacker's
+content alone, which is a critical-severity overwrite. Tampered content appended
+alongside the original means the original was preserved - a conformant
+continuation, and no finding. If the re-submission is accepted but the stored
+result cannot be read back, nothing was determined and the rule reports **not
+tested**.
 
 ---
 

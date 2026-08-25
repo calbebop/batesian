@@ -2,7 +2,7 @@ id: mcp-completion-unauth-001
 info:
   name: MCP completion/complete Reachable Without Authentication
   author: batesian
-  severity: medium
+  severity: high
   description: |
     Tests whether an MCP server answers completion/complete requests without
     requiring authentication.

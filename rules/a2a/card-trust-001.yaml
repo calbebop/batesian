@@ -18,7 +18,7 @@ info:
          /.well-known/agent-card.json and the legacy /.well-known/agent.json. If
          one path serves a SIGNED card and the other serves an UNSIGNED card, an
          attacker (or MITM) can steer verification to the unsigned path to strip
-         the signature requirement - reported CONFIRMED. If both are signed but
+         the signature requirement - reported as an indicator. If both are signed but
          their routing-critical `url` differs, reported as an INDICATOR (routing
          ambiguity).
 
@@ -33,7 +33,7 @@ info:
       3. Signature freshness. When the card carries JWS signatures, each protected
          header is decoded: a signature with no `exp` never expires (a captured
          card is valid forever - INDICATOR); a signature whose `exp` is already in
-         the past is still being served (CONFIRMED stale signature).
+         the past is still being served (indicator: stale signature).
 
   references:
     - https://a2a-protocol.org/latest/specification/

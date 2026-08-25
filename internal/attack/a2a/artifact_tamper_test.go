@@ -285,9 +285,13 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// The old assertion checked strings.Contains(f.Title, "TAMPERED"), but the
+	// rule's confirmed title spells "tampered" in lowercase, so the guard could
+	// never fire and the test passed with any confirmed finding. An immutable
+	// server must not produce one at all, which is the claim worth pinning.
 	for _, f := range findings {
-		if f.Confidence == attack.ConfirmedExploit && strings.Contains(f.Title, "TAMPERED") {
-			t.Errorf("tampered content should not appear for immutable server: %s", f.Title)
+		if f.Confidence == attack.ConfirmedExploit {
+			t.Errorf("an immutable server must not produce a confirmed finding: %s", f.Title)
 		}
 	}
 }

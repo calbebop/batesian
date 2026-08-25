@@ -2,7 +2,7 @@ id: a2a-extcard-unauth-001
 info:
   name: Extended Agent Card Unauthenticated Disclosure
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Tests whether the A2A Extended Agent Card endpoint is accessible without
     authentication. The extended agent card contains privileged capability listings
