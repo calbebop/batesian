@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 21 MCP = 39 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 22 MCP = 40 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -72,8 +72,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
+| `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 
-**Coverage.** 38 of the 39 rules have a standalone Python fixture above, and each
+**Coverage.** 39 of the 40 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -329,6 +330,21 @@ two principals supplied with `--principal name=...,token=...,tenant=...` (or a
 and `a2a-delegation-integrity-001` run in the same scan, the delegation rule
 (a consumer) reuses a task-id the multi-tenant rule (a producer) published to the
 blackboard.
+
+**`mcp_tool_param_traversal_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_tool_param_traversal_server.py vulnerable  # rule must fire
+python testdata/mcp_tool_param_traversal_server.py patched     # rule must stay silent
+```
+
+Both postures serve two tools: `read_note`, annotated `readOnlyHint: true` with a
+`path` parameter, and `admin_read`, carrying the same bug with **no annotations**.
+The scanner may only dispatch annotated tools, so `admin_read` staying broken and
+untouched is part of the validation: if a finding ever names it, the safety gate
+is gone. The oracle reads resolution disclosures, not file content - every probe
+names a file that does not exist, in either posture.
 
 > Note: some multi-rule Python servers may still carry leftover routes from rules
 > that were pruned from the scanner. Only the rule IDs listed in the table above

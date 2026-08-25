@@ -1,0 +1,70 @@
+id: mcp-tool-param-traversal-001
+info:
+  name: MCP Tool Path Traversal (Unvalidated Filesystem Arguments)
+  author: batesian
+  severity: high
+  description: |
+    Probes whether read-only MCP tools validate filesystem-style path arguments
+    against escaping their intended root. A tool that joins a caller-supplied
+    path onto an internal directory without checking where the join lands lets
+    "../.." walk out of the root and read any file the server process can
+    access. This is the defect class behind CVE-2025-53109 (Filesystem
+    EscapeRoute) and CVE-2026-27825 (mcp-atlassian): ordinary tool arguments,
+    not the transport or authorization layer.
+
+    SAFETY. The rule invokes real tools by name, so it inherits and tightens the
+    mcp-task-idor-001 gate:
+
+      1. Only tools whose annotations declare readOnlyHint true, or explicitly
+         destructiveHint false, are dispatched. An unannotated tool is never
+         touched.
+      2. Every probe reads a file that does not exist - a per-run canary name -
+         so no file content is ever returned and nothing on the target changes.
+
+    ORACLE. Many servers resolve the joined path before opening it, and say
+    where they looked when it is not there (a Node ENOENT names the resolved
+    absolute path). The rule sends three requests per candidate parameter: a
+    no-traversal baseline naming only the canary, an absolute path carrying a
+    dot-dot chain, and a backslash variant for Windows-style joins. The finding
+    fires only when a traversal probe discloses a RESOLVED absolute lookup in a
+    directory outside the baseline's own tree - the server's own resolution
+    proves the escape, with zero bytes read. An echo of the caller's input with
+    its dot-dot segments intact is not resolution evidence and is ignored, so a
+    chatty tool is not accused of traversal for repeating what it was sent.
+
+    Candidates are read-only annotated tools exposing a string parameter named
+    like a filesystem path ("path", "file_path", "filename", "directory", ...).
+    Tools without such a parameter, and servers advertising none, are reported
+    clean; unannotated tools are out of scope by construction, which the scan's
+    evidence states rather than hides.
+
+  references:
+    - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
+    - https://cymulate.com/blog/cve-2025-53109-53110-escaperoute-anthropic/
+    - https://github.com/advisories/GHSA-gjv4-ghm7-q58q
+    - https://cwe.mitre.org/data/definitions/22.html
+
+  tags:
+    - mcp
+    - path-traversal
+    - tools
+    - cwe-22
+    - cwe-23
+
+attack:
+  protocol: mcp
+  type: mcp-tool-param-traversal
+
+remediation: |
+  1. Resolve every caller-supplied path against the tool's root yourself
+     (filepath.Join followed by filepath.Abs), then verify the result is still
+     inside that root before opening anything - filepath.Rel plus a leading
+     ".." check, or os.Getwd-based containment, both work. Reject otherwise.
+  2. Treat absolute paths as hostile by default: joining an absolute path onto
+     a root silently discards the root in most languages' join functions.
+  3. Do not rely on string prefix checks ("not starting with ..") alone;
+     normalize first, then compare against the resolved root.
+  4. Return generic rejections that do not echo resolved paths, so the server
+     does not disclose its layout to a caller probing boundaries.
+  5. Keep tool annotations accurate: declare readOnlyHint only when the tool
+     truly cannot mutate state, since scanners and clients gate on it.

@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **21 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **22 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -171,6 +171,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#mcp-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
+| `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 
 ---
 
@@ -841,3 +842,46 @@ is eligible for removal in the first revision released on or after `2027-07-28`,
 with new implementations told to log to stderr or use OpenTelemetry instead. The
 requirement is normative until then, and the servers most likely to break it are
 the ones migrating off `logging/setLevel`.
+
+---
+
+### mcp-tool-param-traversal-001
+
+**Tool Path Traversal (Unvalidated Filesystem Arguments)** | Severity: High | CWE-22
+
+Probes whether read-only MCP tools validate filesystem-style path arguments
+against escaping their intended root. A tool that joins a caller-supplied path
+onto an internal directory without checking where the join lands lets `../..`
+walk out of that directory and read any file the server process can access.
+This is the defect class behind CVE-2025-53109 (Filesystem EscapeRoute) and
+CVE-2026-27825 (mcp-atlassian), and it lives in ordinary tool arguments rather
+than in the transport or authorization layer the other rules here cover.
+
+**Safety.** This rule invokes real tools by name, which only
+`mcp-task-idor-001` also does, so it inherits that rule's gate and tightens it:
+
+1. Only tools whose annotations declare `readOnlyHint: true`, or explicitly
+   `destructiveHint: false`, are dispatched. An unannotated tool is never
+   touched, even one the scanner believes is vulnerable - the fixture keeps an
+   unannotated broken tool precisely to pin this.
+2. Every probe reads a file that does not exist: a per-run canary name. No file
+   content is ever returned and nothing on the target changes.
+
+**Oracle.** Servers that resolve the joined path before opening it usually say
+where they looked when it is not there; a Node ENOENT names the resolved
+absolute path. Three requests go to each candidate parameter: a no-traversal
+baseline naming only the canary, an absolute path carrying a dot-dot chain, and
+a backslash variant for Windows-style joins. The finding fires only when a
+traversal probe discloses a **resolved** absolute lookup in a directory outside
+the baseline's own tree - the server's own resolution proves the escape with
+zero bytes read. An echo of the caller's input with its dot-dot segments intact
+is not resolution evidence and is ignored, so a chatty read-only tool is not
+accused of traversal for repeating what it was sent. Without a baseline
+resolution to compare against, the rule declines to report rather than guess
+containment from a single lookup.
+
+Candidates are annotated-safe tools exposing a string parameter named like a
+filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
+whose safe tools take no such parameter reports clean: the rule does not
+dispatch unannotated tools, and the catalog records that trade-off here rather
+than hiding it behind a clean-looking result.
