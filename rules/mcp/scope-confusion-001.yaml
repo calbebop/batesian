@@ -1,0 +1,80 @@
+id: mcp-scope-confusion-001
+info:
+  name: MCP Tool Scope Confusion (Valid Token, Privileged Dispatch)
+  author: batesian
+  severity: high
+  description: |
+    Tests whether tools/call enforces the scopes of the credential presented,
+    or merely that A credential exists. The failure sits between two rules
+    that already ship: mcp-token-replay-001 covers tokens the server cannot
+    have validated (signature checks absent), and mcp-oauth-dcr-001 covers
+    registration granting privileged scopes. Neither says anything about a
+    validly-signed, genuinely-issued token whose scope set is too small.
+    Servers that authenticate correctly and then authorize nothing per-tool
+    hand every authenticated caller every tool. That is OWASP MCP02 scope
+    creep, and the Security Best Practices call for least privilege.
+
+    Two identities drive it, via the --principal machinery the
+    cross-principal rules use: principal A holds full privilege, principal B
+    holds a deliberately limited one. For each privileged-looking candidate
+    tool (annotations declaring it non-read-only or destructive, or write/
+    admin vocabulary in its name), the rule sends the SAME invalid-subject
+    call twice:
+
+      1. As principal A. This baseline must reach argument validation - a
+         -32602-style answer proves the dispatcher ran for a legitimate
+         caller and that the call shape itself is not what gets refused.
+      2. As principal B. An authorization refusal here is the boundary
+         holding, which is the pass sought. Dispatching like A while an
+         unauthenticated control was refused means the server authenticates
+         callers and then ignores what their credential is scoped to do -
+         reported confirmed at high.
+
+    SAFETY. The arguments are invalid on purpose: every required string
+    parameter names an object that does not exist. A scope-ignoring server
+    stops at argument validation and executes nothing; the oracle never needs
+    a successful state-changing call. This is the same never-executes trick
+    mcp-tools-unauth-001 uses on its dispatch probe.
+
+    CONTROLS. The limited credential must succeed somewhere (tools/list)
+    before any refusal is read as a scope decision rather than a dead token;
+    an anonymous call on the first candidate must be refused, since a server
+    dispatching unauthenticated calls gates nothing by identity and belongs
+    to mcp-tools-unauth-001 instead.
+
+    PRECONDITION. Two distinct credentials are required, because crossing a
+    scope boundary needs two differently-scoped ones. With fewer - or with
+    two principals presenting the same credential - the rule reports not
+    tested rather than clean, naming what was missing.
+
+  references:
+    - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+    - https://owasp.org/www-project-mcp-top-10/
+    - https://cwe.mitre.org/data/definitions/285.html
+
+  tags:
+    - mcp
+    - oauth
+    - scope-enforcement
+    - least-privilege
+    - tools
+    - cwe-285
+
+attack:
+  protocol: mcp
+  type: mcp-scope-confusion
+
+remediation: |
+  1. Map every tool to the scope(s) it requires at registration time, and
+     check those scopes at dispatch - before validating arguments, but after
+     authenticating the caller.
+  2. On failure, return an OAuth-shaped insufficient_scope error (RFC 6750
+     section 3.1) so clients can distinguish "not allowed" from "not found".
+  3. Do not treat mere possession of a valid token as authorization for every
+     tool; authentication answers who the caller is, scopes answer what it
+     may do.
+  4. Keep granted scopes minimal at issuance; a server cannot enforce scopes
+     narrower than the tokens it hands out carry.
+  5. Log scope-refusals separately from validation errors so operators can
+     see probing of the boundary.

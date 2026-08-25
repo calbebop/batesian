@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **22 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **23 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -172,6 +172,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
+| `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 
 ---
 
@@ -885,3 +886,51 @@ filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
 whose safe tools take no such parameter reports clean: the rule does not
 dispatch unannotated tools, and the catalog records that trade-off here rather
 than hiding it behind a clean-looking result.
+
+---
+
+### mcp-scope-confusion-001
+
+**Tool Scope Confusion (Valid Token, Privileged Dispatch)** | Severity: High | CWE-285
+
+Tests whether `tools/call` enforces the scopes of the credential presented, or
+merely that a credential exists. The failure sits between two rules that
+already ship: `mcp-token-replay-001` covers tokens the server cannot have
+validated, and `mcp-oauth-dcr-001` covers registration granting privileged
+scopes. Neither says anything about a validly-signed, genuinely-issued token
+whose scope set is too small. Servers that authenticate correctly and then
+authorize nothing per-tool hand every authenticated caller every tool - OWASP
+MCP02 scope creep.
+
+**Two identities drive it**, via the same `--principal` machinery the
+cross-principal rules use: principal A holds full privilege, principal B a
+deliberately limited one. For each privileged-looking candidate tool -
+annotations declaring it non-read-only or destructive, or write/admin
+vocabulary in its name - the rule sends the SAME invalid-subject call twice:
+
+1. As principal A. The baseline must reach argument validation; a
+   `-32602`-style answer proves the dispatcher ran for a legitimate caller
+   and that the call shape is not what gets refused.
+2. As principal B. An authorization refusal here is the boundary holding,
+   which is the pass sought. Dispatching like A while an unauthenticated
+   control was refused means the server authenticates callers and then
+   ignores what their credential is scoped to do - reported **confirmed**
+   at high.
+
+**Safety.** The arguments are invalid on purpose: every required string
+parameter names an object that does not exist. A scope-ignoring server stops
+at argument validation and executes nothing; the oracle never needs a
+successful state-changing call, which is the same never-executes trick
+`mcp-tools-unauth-001` uses on its dispatch probe.
+
+**Controls.** The limited credential must succeed somewhere (`tools/list`)
+before any refusal below is read as a scope decision rather than a dead
+token. An anonymous call on the first candidate must be refused: a server
+that dispatches unauthenticated calls gates nothing by identity, which
+belongs to `mcp-tools-unauth-001`, and reporting it as a scope failure would
+count one defect twice under the wrong name.
+
+**Precondition.** Two distinct credentials are required, because crossing a
+scope boundary needs two differently-scoped ones. With fewer - or with two
+principals presenting the same credential - the rule reports **not tested**
+rather than clean, naming what was missing.
