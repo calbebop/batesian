@@ -7,17 +7,14 @@ name: Validation
 # was found only by hand. This job runs the binary against the one fixture that
 # ENFORCES authorization (a2a_secured_agent.py), which is the false-positive
 # coverage no no-auth fixture can provide.
-#
-# It starts nightly and on dispatch only: a gate that flakes on a CI environment
-# quirk blocks development while it is diagnosed, so it earns a PR trigger only
-# once it is green on a schedule. Add `pull_request:` to the triggers below when
-# that is true.
 
 on:
   schedule:
     # Daily, 06:17 UTC. An odd minute keeps this off the top-of-hour spike every
     # scheduled workflow lands on.
     - cron: '17 6 * * *'
+  pull_request:
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -120,8 +117,7 @@ jobs:
       - name: Install FastMCP
         # Unpinned on purpose, the era-watch way: a FastMCP release that changes
         # the server's defaults is exactly the kind of drift this job exists to
-        # surface. The job is nightly/dispatch only, so a drift failure notifies
-        # rather than blocks.
+        # surface.
         run: pip install "fastmcp>=3"
 
       - name: Build batesian
