@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 25 MCP = 43 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 26 MCP = 44 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -76,8 +76,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (three postures, see below; needs `--token tok-a` and two principals) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
+| `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 
-**Coverage.** 41 of the 43 rules have a standalone Python fixture above, and each
+**Coverage.** 42 of the 44 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -463,10 +464,26 @@ consecutive reads, so only the drift check may fire; its evidence names what
 was added or changed. `clean` is factual, unique and stable. Nothing beyond
 `tools/list` is served anywhere, so validation never executes a tool.
 
+**`mcp_vulnerable_version_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_vulnerable_version_server.py vulnerable  # high indicator
+python testdata/mcp_vulnerable_version_server.py patched     # silent
+python testdata/mcp_vulnerable_version_server.py unknown     # silent
+batesian scan --target http://127.0.0.1:7809 --rule-ids mcp-vulnerable-version-001 -v
+```
+
+The three postures differ only in what `serverInfo` reports: one patch below
+the mcp-server-git fix, exactly at it, and an unrelated product identity. The
+patched posture pins the range boundary - the fix version itself must not
+fire - and `unknown` pins that the advisory table is closed rather than
+heuristic. Only `initialize` is served; this rule reads identity and nothing
+else.
+
 ---
 
 ## Port allocation
-
 
 When adding a new test server, pick the next free port, document it in the
 Server Registry table above before merging. Prefer the `77xx` band for servers

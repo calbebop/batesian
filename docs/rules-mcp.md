@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **25 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **26 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -175,6 +175,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | High / Medium | confirmed / indicator | CWE-74 |
+| `mcp-vulnerable-version-001` | [Known-Vulnerable Component Identity](#mcp-vulnerable-version-001) | High | indicator | CWE-1104 |
 
 ---
 
@@ -1013,3 +1014,43 @@ them reads only the listing - no tool is ever invoked:
 
 Both protocol wires are driven where a server serves them, since a manifest
 need not agree with itself across eras either.
+
+---
+
+### mcp-vulnerable-version-001
+
+**Known-Vulnerable Component Identity** | Severity: High | indicator | CWE-1104
+
+Reads the identity a target publishes in its handshake - `serverInfo` on the
+legacy initialize result, the same block under `result._meta` on the 2026-07-
+28 discover result - and matches it against documented advisories for MCP
+components with published vulnerabilities. Every Tier-1 SDK and most product
+servers state who they are, which is exactly what an attacker needs to pick
+the right exploit; it is also what a scanner can check.
+
+The advisory table is deliberately short, and closed: only products whose
+patched version is published and unambiguous carry an entry, each with its
+citations in both the YAML and the finding evidence.
+
+- **mcp-server-git** <2025.12.18 - argument injection and path escape chain (CVE-2025-68143/44/45)
+- **mcp-remote** <0.1.16 - OAuth flow command injection (CVE-2025-6514)
+- **mcp-atlassian** <0.17.0 - attachment path traversal to RCE (CVE-2026-27825/26)
+- **inspector** <0.14.1 - unauthenticated RCE via DNS rebinding (CVE-2025-49596)
+- **serena** <1.5.2 - dashboard memory poisoning to RCE via DNS rebinding (CVE-2026-49471)
+- **mcpjam** <=1.4.2 - exposed control endpoint RCE (CVE-2026-23744)
+
+Every finding is an **indicator**. The version is self-reported and trivially
+spoofable, and matching a range does not prove the vulnerable code path is
+reachable from this surface; each finding names its advisories so the operator
+verifies against the actual patch.
+
+Two edge cases are pinned rather than papered over:
+
+- A name that matches a table entry but reports an unparseable version is a
+  **low indicator** - neither clean nor vulnerable can be claimed from what
+  the server publishes.
+- An identity matching nothing reports clean, because the table is reviewed
+  and closed rather than a heuristic net.
+
+Both wires are read where served: legacy carries identity in
+`result.serverInfo`, modern under `result._meta`, and the two need not agree.
