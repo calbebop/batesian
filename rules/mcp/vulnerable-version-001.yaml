@@ -1,0 +1,60 @@
+id: mcp-vulnerable-version-001
+info:
+  name: MCP Server Identifies as a Known-Vulnerable Component
+  author: batesian
+  severity: high
+  description: |
+    Reads the identity a target publishes in its handshake - serverInfo on the
+    legacy initialize result, the same block under result._meta on the 2026-
+    07-28 discover result - and matches it against documented advisories for
+    MCP components with published vulnerabilities. Every Tier-1 SDK and most
+    product servers state who they are, which is exactly what an attacker
+    needs to pick the right exploit; it is also what a scanner can check.
+
+    The advisory table is deliberately short: only products whose patched
+    version is published and unambiguous carry an entry, each with citations.
+    Current entries:
+
+      - mcp-server-git <2025.12.18 (CVE-2025-68143/44/45)
+      - mcp-remote <0.1.16          (CVE-2025-6514)
+      - mcp-atlassian <0.17.0       (CVE-2026-27825/26)
+      - inspector <0.14.1           (CVE-2025-49596)
+      - serena <1.5.2               (CVE-2026-49471)
+      - mcpjam <=1.4.2              (CVE-2026-23744)
+
+    Every finding is an INDICATOR. The version is self-reported and trivially
+    spoofed, and matching a range does not prove the vulnerable code path is
+    reachable from this surface. Each finding names its advisories so the
+    operator verifies against the actual patch.
+
+    A name that matches a table entry but reports an unparseable version is a
+    low indicator: neither clean nor vulnerable can be claimed from what the
+    server publishes. A server whose identity matches nothing reports clean -
+    the table is closed and reviewed, not a heuristic net.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+    - https://nvd.nist.gov/vuln/detail/CVE-2025-49596
+    - https://nvd.nist.gov/vuln/detail/CVE-2026-49471
+    - https://cwe.mitre.org/data/definitions/1104.html
+
+  tags:
+    - mcp
+    - versioning
+    - known-vulnerabilities
+    - supply-chain
+    - cwe-1104
+
+attack:
+  protocol: mcp
+  type: mcp-vulnerable-version
+
+remediation: |
+  1. Upgrade the identified component past the patched versions named in the
+     matched advisories, then re-scan to confirm the disclosure changed.
+  2. If the reported version is wrong or stale, fix the build metadata: an
+     accurate serverInfo is operationally useful and reduces attacker
+     reconnaissance asymmetry when it matches reality rather than guessing.
+  3. Keep MCP components on a supported, patched release line; subscribe to
+     the component's advisory feed so upgrades are driven by publication,
+     not discovery.
