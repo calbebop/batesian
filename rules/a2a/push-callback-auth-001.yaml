@@ -1,0 +1,72 @@
+id: a2a-push-callback-auth-001
+info:
+  name: A2A Push Notification Sent Without Configured Integrity Token
+  author: batesian
+  severity: high
+  description: |
+    Tests whether an A2A agent's outgoing push notifications carry anything a
+    receiver can use to verify where they came from.
+
+    The push flow hands the agent a webhook URL plus, optionally, a secret
+    token the agent is expected to present when it calls (typically as
+    X-A2A-Notification-Token). A receiver that knows the token can tell
+    genuine completion events from forged ones. An agent that accepts the
+    token at registration and then never presents it produces notifications
+    with no verifiable provenance: anyone who learns or guesses the webhook
+    URL can forge task completions, failures, or injected results and they
+    are indistinguishable from genuine agent output. That is the
+    notification-side enabler of task hijacking.
+
+    MECHANICS. The probe registers a callback toward the Batesian listener
+    carrying a unique secret - across all three transport bindings the
+    push-notification surface has (v1.0 CreateTaskPushNotificationConfig,
+    v0.3 message/send inline plus tasks/pushNotificationConfig/set, and the
+    card-advertised HTTP+JSON binding) - waits for the agent's outbound call,
+    and reads what arrived:
+
+      1. Callback carries the secret in any header or in the body -> the
+         transport is verifiable. No finding; a held boundary is the pass.
+      2. Callback arrives WITHOUT the secret -> CONFIRMED at high. The agent
+         ignored integrity material it accepted at registration, so its
+         notifications cannot be authenticated by receivers.
+      3. No callback within the window -> the oracle never ran; reported as
+         NOT TESTED rather than clean, since accepting a config is normal and
+         says nothing about what callbacks carry.
+      4. With an external --oob-url collector, an INFO indicator names the
+         token to look for so the operator can verify manually.
+
+    The marker routing the callback and the integrity token are deliberately
+    different values: conflating them made "the callback arrived" and "the
+    callback was authenticated" one observation instead of two.
+
+    PRECONDITION. A task must be creatable, which on an authorization-
+    enforcing agent depends on the supplied credential; a refused creation is
+    reported as not tested naming the refusal, per the shared task-first
+    convention.
+
+  references:
+    - https://a2a-protocol.org/latest/specification/
+    - https://owasp.org/www-project-mcp-top-10/
+    - https://cwe.mitre.org/data/definitions/345.html
+
+  tags:
+    - a2a
+    - push-notifications
+    - webhooks
+    - authenticity
+    - cwe-345
+
+attack:
+  protocol: a2a
+  type: a2a-push-callback-auth
+
+remediation: |
+  1. When a push config declares a token, present it on every callback -
+     conventionally as the X-A2A-Notification-Token header - exactly as
+     configured; do not drop or transform it.
+  2. Refuse push configs whose authentication material is absent rather than
+     silently downgrading to unauthenticated callbacks.
+  3. Sign notification payloads where the transport allows it, so receivers
+     verify origin and integrity rather than relying on URL secrecy.
+  4. Document the verification requirement for client implementers; a token
+     the receiver does not know to check protects nobody.

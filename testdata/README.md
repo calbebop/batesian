@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 26 MCP = 44 rules**. Every rule's primary
+The bundled rule set is **19 A2A + 26 MCP = 45 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -77,8 +77,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
+| `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
-**Coverage.** 42 of the 44 rules have a standalone Python fixture above, and each
+**Coverage.** 43 of the 45 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -480,6 +481,25 @@ patched posture pins the range boundary - the fix version itself must not
 fire - and `unknown` pins that the advisory table is closed rather than
 heuristic. Only `initialize` is served; this rule reads identity and nothing
 else.
+
+**`a2a_push_callback_auth_server.py` takes a posture argument**, defaulting to
+`unsigned`. batesian starts its local OOB listener for this one, so no extra
+flags are needed:
+
+```sh
+python testdata/a2a_push_callback_auth_server.py unsigned    # high finding
+python testdata/a2a_push_callback_auth_server.py signed      # silent
+python testdata/a2a_push_callback_auth_server.py nocallback  # NOT TESTED
+batesian scan --target http://127.0.0.1:7810 --rule-ids a2a-push-callback-auth-001 -v
+```
+
+All three postures register the caller's config verbatim on the v1.0 wire.
+`unsigned` drops the token on the outbound call, so the notification carries
+nothing a receiver could authenticate. `signed` presents it in the documented
+header and must stay silent. `nocallback` never dials out at all; the rule
+reports not tested because its oracle never ran, which is different from a
+clean claim about callbacks nobody sent.
+
 
 ---
 

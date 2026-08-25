@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **18 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **19 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -77,10 +77,10 @@ evidence. A card rule with no card has nothing to say either way.
 
 ### Rules that need a task first
 
-Nine rules cannot say anything until they have created a task: `a2a-task-idor-001`,
+Ten rules cannot say anything until they have created a task: `a2a-task-idor-001`,
 `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-context-fixation-001`,
 `a2a-delegation-integrity-001`, `a2a-multitenant-isolation-001`,
-`a2a-push-binding-001`, `a2a-task-cancel-idor-001` and `a2a-task-enumeration-001`.
+`a2a-push-binding-001`, `a2a-task-cancel-idor-001`, `a2a-task-enumeration-001` and `a2a-push-callback-auth-001`.
 Against an agent that enforces authorization, whether they can depends on the
 credential the scan was given, so a failure to create one is reported as **not
 tested**, naming the refusal and whether the request carried a credential at all. A
@@ -120,6 +120,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [ListTasks Enumerates Another Principal's Tasks](#a2a-task-enumeration-001) | High | confirmed | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
+| `a2a-push-callback-auth-001` | [Push Notification Without Integrity Token](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
 
 ---
 
@@ -559,3 +560,39 @@ v0.3 REST binding's list path is covered anonymously by `a2a-task-idor-001`; the
 authenticated case on that binding is not probed, because its prefix belongs to the
 deployment and guessing it is how earlier rules came to post at paths that never
 existed.
+
+---
+
+### a2a-push-callback-auth-001
+
+**Push Notification Without Integrity Token** | Severity: High | confirmed | CWE-345
+
+Tests whether an A2A agent's outgoing push notifications carry anything a
+receiver can use to verify where they came from. The push flow hands the
+agent a webhook URL plus, optionally, a secret token the agent is expected to
+present when it calls (typically as `X-A2A-Notification-Token`). A receiver
+that knows the token can tell genuine completion events from forged ones. An
+agent that accepts the token at registration and then never presents it
+produces notifications with no verifiable provenance: anyone who learns or
+guesses the webhook URL can forge task completions, failures, or injected
+results, indistinguishable from genuine agent output - the notification-side
+enabler of task hijacking.
+
+The registration mechanics are shared with `a2a-push-ssrf-001` across all
+three transport bindings; two things differ. The URL marker routing the
+callback and the integrity token are deliberately different values here,
+because in the SSRF rule they coincide and "the callback arrived" is the same
+string as "the callback was authenticated". And the oracle grades what the
+callback carried rather than that it happened:
+
+1. Callback presents the secret - header or body -> the transport is
+   verifiable, no finding. A held boundary is exactly the pass sought.
+2. Callback arrives WITHOUT it (**confirmed**, high): the agent ignored
+   integrity material it accepted at registration.
+3. No callback within the window -> **not tested**: accepting a config is
+   normal A2A behaviour and says nothing about what callbacks carry.
+4. With an external `--oob-url`, an info indicator names the token so the
+   operator can verify against their own collector.
+
+Like every task-first rule, creation depends on the credential the scan was
+given; a refused creation is not tested naming the refusal.
