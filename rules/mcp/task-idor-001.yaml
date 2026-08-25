@@ -2,7 +2,7 @@ id: mcp-task-idor-001
 info:
   name: MCP Task Readable Across Authorization Contexts
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Tests whether MCP tasks are bound to the authorization context that created
     them.

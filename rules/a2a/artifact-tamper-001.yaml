@@ -2,7 +2,7 @@ id: a2a-artifact-tamper-001
 info:
   name: A2A Task Artifact Tampering via Task ID Reuse
   author: batesian
-  severity: high
+  severity: critical
   description: |
     Tests whether an A2A server allows a client to overwrite or alter the content
     of a completed task by re-submitting a tasks/send request with the same task ID
