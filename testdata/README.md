@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 23 MCP = 41 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 24 MCP = 42 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -74,8 +74,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
 | `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (three postures, see below; needs `--token tok-a` and two principals) |
+| `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 
-**Coverage.** 40 of the 41 rules have a standalone Python fixture above, and each
+**Coverage.** 40 of the 42 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -370,6 +371,24 @@ the confirmed failure. In `patched` the limited token draws
 rule suppresses itself because identity gates nothing here (that surface is
 `mcp-tools-unauth-001`'s). Every call names an item id that does not exist, so
 nothing is ever deleted in any posture.
+
+**`mcp_shadow_surface_server.py` binds two ports** and takes a posture argument,
+defaulting to `shadow-open`:
+
+```sh
+python testdata/mcp_shadow_surface_server.py shadow-open       # high finding
+python testdata/mcp_shadow_surface_server.py shadow-hardened   # medium finding
+python testdata/mcp_shadow_surface_server.py none              # silent
+batesian scan --target http://127.0.0.1:7807 --rule-ids mcp-shadow-surface-001 -v
+```
+
+Port 7807 is the named target and serves nothing but 404s. Port 6277 is the
+shadow listener - an inspector-style page plus an unauthenticated initialize -
+which exists to prove the rule finds surfaces the operator never aimed at. In
+`shadow-hardened` the listener refuses any request carrying a foreign Origin,
+so only the medium severity may appear. In `none` the second listener simply
+is not started; a closed port is an answer, and the rule reporting clean there
+is checked-and-absent rather than could-not-tell.
 
 > Note: some multi-rule Python servers may still carry leftover routes from rules
 > that were pruned from the scanner. Only the rule IDs listed in the table above

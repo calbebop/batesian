@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **23 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **24 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -173,6 +173,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
+| `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 
 ---
 
@@ -934,3 +935,43 @@ count one defect twice under the wrong name.
 scope boundary needs two differently-scoped ones. With fewer - or with two
 principals presenting the same credential - the rule reports **not tested**
 rather than clean, naming what was missing.
+
+---
+
+### mcp-shadow-surface-001
+
+**Shadow MCP Surface on an Adjacent Port (Inspector/Dashboard Class)** | Severity: High / Medium / Low | confirmed / indicator | CWE-488
+
+Looks for MCP surfaces the target host serves on ports adjacent to the one the
+scan was aimed at. Developer dashboards and inspector proxies bind to loopback
+or every interface with no authentication, on ports nobody associates with the
+production service, and operators rarely know these listeners exist - so
+scanning only the named URL misses them entirely.
+
+The port list is deliberately short and documented rather than a sweep; each
+entry is a default binding of a product with a published unauthenticated-RCE
+advisory:
+
+- **6277** - MCP Inspector proxy server default (CVE-2025-49596)
+- **24282** - Serena dashboard/API default (CVE-2026-49471)
+- **3000** - the conventional dev-server port
+
+Probing a closed port costs one refused connection and is an answer, not a
+failure: silence from this rule means each documented port was checked and none
+spoke MCP.
+
+Three outcomes, all from read-only probes:
+
+1. An `initialize` answered without credentials is an open shadow surface.
+   The exact same request repeated with a foreign Origin separates severities:
+   both accepted is the full browser-reachable chain behind CVE-2025-49596
+   (**high**, confirmed); the foreign Origin refused leaves an unauthenticated
+   surface reachable from the machine and network path (**medium**, confirmed).
+2. A page fingerprinting as "MCP Inspector" or "Serena" whose protocol
+   endpoint does not answer the probed paths is a **low indicator** naming the
+   exposed product page.
+3. Anything else - closed port, unrelated service - produces nothing.
+
+Nothing is ever invoked through a discovered surface; the initialize that
+proves the finding creates no state the listener was not already prepared to
+track for its own clients.
