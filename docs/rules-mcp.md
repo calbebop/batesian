@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **24 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **25 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -174,6 +174,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
+| `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | High / Medium | confirmed / indicator | CWE-74 |
 
 ---
 
@@ -975,3 +976,40 @@ Three outcomes, all from read-only probes:
 Nothing is ever invoked through a discovered surface; the initialize that
 proves the finding creates no state the listener was not already prepared to
 track for its own clients.
+
+---
+
+### mcp-tool-poisoning-001
+
+**Tool Manifest Integrity (Poisoning)** | Severity: High / Medium | confirmed / indicator | CWE-74
+
+Inspects the server's `tools/list` manifest for the integrity failures behind
+rug-pull and description-injection attacks (OWASP MCP03). An agent reads tool
+descriptions as instructions, so whatever the manifest says is what the model
+does. Four checks, all judged on bytes rather than semantics, and every one of
+them reads only the listing - no tool is ever invoked:
+
+1. **Hidden characters** (confirmed, high). Zero-width spaces and bidi control
+   codes inside a name or description are concealment: invisible text and
+   direction overrides have no legitimate use in a tool definition, and they
+   are how payload content hides from whoever reviews and approves the tool
+   while still reaching the model. The evidence renders the invisible runes as
+   visible placeholders so an operator can see exactly where they sit.
+2. **Duplicate tool names** (confirmed, medium). The spec requires names to be
+   unique per server; a repeated name lets one definition shadow whichever
+   definition the caller approved - the squatting half of the attack class.
+3. **Injection patterns** (indicator, medium). Imperative phrases aimed at the
+   model ("ignore previous instructions"), credential paths paired with
+   send/upload verbs, and fetch-and-exfiltrate chains match the recurring
+   shapes of published poisoning samples. Heuristic by nature: security
+   tooling can legitimately describe such operations, and the finding says so.
+   One pattern finding per entry keeps the report readable.
+4. **Manifest drift between two consecutive reads** (confirmed, high). Two
+   `tools/list` requests issued back to back on the same session must return
+   identical manifests. Differences mean approval-time content and
+   execution-time content disagree, which is the primitive every rug-pull
+   relies on. What this check cannot see is slow drift across deployments;
+   that belongs to scheduled scans diffing their own output.
+
+Both protocol wires are driven where a server serves them, since a manifest
+need not agree with itself across eras either.

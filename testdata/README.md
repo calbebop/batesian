@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **18 A2A + 24 MCP = 42 rules**. Every rule's primary
+The bundled rule set is **18 A2A + 25 MCP = 43 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -75,8 +75,9 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (three postures, see below; needs `--token tok-a` and two principals) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
+| `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 
-**Coverage.** 40 of the 42 rules have a standalone Python fixture above, and each
+**Coverage.** 41 of the 43 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -443,9 +444,29 @@ For a specific rule only:
 batesian scan --target http://127.0.0.1:9998 --rule-ids a2a-push-ssrf-001 -v
 ```
 
+
+
+**`mcp_tool_poisoning_server.py` takes a posture argument**, defaulting to
+`poisoned`:
+
+```sh
+python testdata/mcp_tool_poisoning_server.py poisoned   # checks 1, 2, 3 fire
+python testdata/mcp_tool_poisoning_server.py drifting   # check 4 fires
+python testdata/mcp_tool_poisoning_server.py clean      # all silent
+batesian scan --target http://127.0.0.1:7808 --rule-ids mcp-tool-poisoning-001 -v
+```
+
+The `poisoned` posture carries a zero-width payload, an instruction-override
+phrase, and a duplicate `github_create_issue` pair in one stable manifest -
+three findings, no drift. `drifting` alternates two benign manifests on
+consecutive reads, so only the drift check may fire; its evidence names what
+was added or changed. `clean` is factual, unique and stable. Nothing beyond
+`tools/list` is served anywhere, so validation never executes a tool.
+
 ---
 
 ## Port allocation
+
 
 When adding a new test server, pick the next free port, document it in the
 Server Registry table above before merging. Prefer the `77xx` band for servers
