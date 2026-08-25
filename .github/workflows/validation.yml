@@ -60,6 +60,39 @@ jobs:
         env:
           BATESIAN_BIN: ./batesian
 
+  a2a-push-callback-auth:
+    name: A2A push callback-auth gate (unsigned/signed/nocallback)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install fixture dependencies
+        # The fixture dials the registered webhook itself, so it needs httpx.
+        run: pip install starlette uvicorn httpx
+
+      - name: Build batesian
+        run: go build -o batesian ./cmd/batesian
+
+      - name: Run the push callback-auth validation
+        run: python .github/scripts/validate_push_callback_auth.py
+        env:
+          BATESIAN_BIN: ./batesian
+
   mcp-property-fixtures:
     name: MCP property gates (probe-honesty, log opt-in, body size, session)
     runs-on: ubuntu-latest

@@ -28,6 +28,7 @@ Validate against it (batesian starts its local OOB listener automatically):
 Run: python testdata/a2a_push_callback_auth_server.py [posture]
 Scan: batesian scan --target http://127.0.0.1:7810 --rule-ids a2a-push-callback-auth-001 -v
 """
+import sys
 import threading
 import time
 
