@@ -182,7 +182,7 @@ func TestCardTrust_UnsignedCardStaysSilent(t *testing.T) {
 		"name": "Test Agent",
 		"url":  "https://agent.example/",
 		"capabilities": map[string]interface{}{
-			"streaming":          true,
+			"streaming":         true,
 			"pushNotifications": true,
 		},
 		"skills": []interface{}{
