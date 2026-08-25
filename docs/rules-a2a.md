@@ -355,14 +355,14 @@ identifier itself.
 
 ### a2a-card-trust-001
 
-**Agent Card Trust Durability (Canonicalization, Cache, Signature Freshness)** | Severity: High / Medium | CWE-345
+**Agent Card Trust Durability (Canonicalization, Cache, Signature Freshness, Unsigned Anchor)** | Severity: High / Medium | CWE-345
 
 Covers the agent-card trust gaps the other card rules do not: where
 `a2a-jws-algconf-001` inspects the signature *algorithm*,
 `a2a-wellknown-hostinject-001` inspects Host reflection, and
 `a2a-extcard-unauth-001` inspects unauthenticated access, this rule inspects how
 *durable and consistent* the card's trust is. Because Batesian scans the server
-(not a consuming verifier), it judges only what the server exposes - three
+(not a consuming verifier), it judges only what the server exposes - four
 checks:
 
 - **Canonicalization / multi-path consistency.** The card is fetched from both
@@ -380,6 +380,12 @@ checks:
   header is decoded: no `exp` means the signature never expires (**indicator,
   medium**); an `exp` already in the past that is still served is an **indicator**
   (a compliant verifier rejects an expired signature).
+- **Unsigned trust anchor.** When the card carries no `signatures` field at all
+  but advertises `capabilities`, `skills`, `provider`, or security schemes, it
+  is a trust anchor that can be spoofed by DNS hijack, cache poison, or network
+  steering (**indicator, medium**). A bare `name`/`url` demo card is not flagged.
+  This does not duplicate `a2a-jws-algconf-001`, which only reports when
+  `supportsAuthenticatedExtendedCard` is set.
 
 ---
 

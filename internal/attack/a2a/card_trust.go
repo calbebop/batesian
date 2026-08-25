@@ -70,6 +70,7 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	findings = append(findings, e.checkCanonicalization(primaryURL, primaryBody, primaryOK, legacyURL, legacyBody, legacyOK)...)
 	findings = append(findings, e.checkCache(cardURL, cacheControl)...)
 	findings = append(findings, e.checkSignatureFreshness(cardURL, cardBody)...)
+	findings = append(findings, e.checkUnsignedCard(cardURL, cardBody)...)
 	return findings, nil
 }
 
@@ -283,6 +284,82 @@ func cardHasSignatures(card map[string]interface{}) bool {
 func primaryURLField(card map[string]interface{}) string {
 	u, _ := card["url"].(string)
 	return u
+}
+
+// checkUnsignedCard flags a card served without JWS signatures when it
+// advertises security-relevant fields that a verifier would trust.
+//
+// A card with no signatures can be trivially spoofed via DNS hijacking,
+// cache poisoning, or a network path that steers resolution. The A2A spec
+// makes signatures optional, so a bare name/url demo card is not flagged.
+// When the card advertises capabilities, skills, provider identity, or
+// security schemes, its contents are a trust anchor and the missing
+// signatures are reported as a medium indicator.
+//
+// The narrow extended-card-only case (supportsAuthenticatedExtendedCard)
+// is left to a2a-jws-algconf-001, which already reports it as info. This
+// rule covers the general unsigned trust anchor without duplicating that
+// narrow finding.
+func (e *CardTrustExecutor) checkUnsignedCard(cardURL string, cardBody []byte) []attack.Finding {
+	card, ok := parseCard(cardBody)
+	if !ok {
+		return nil
+	}
+	if cardHasSignatures(card) {
+		return nil
+	}
+	if !cardHasMeaningfulTrustFields(card) {
+		return nil
+	}
+	return []attack.Finding{{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "medium",
+		Confidence: attack.RiskIndicator,
+		Title:      "A2A agent card served without JWS signatures (spoofable trust anchor)",
+		Description: fmt.Sprintf(
+			"GET %s returned an agent card with no JWS signatures field, but the card advertises "+
+				"capabilities, provider identity, skills, or security schemes. Without signatures a "+
+				"network attacker, cache poison, or DNS hijack can substitute a forged card and have "+
+				"clients trust the attacker's service URL, extensions, or authentication requirements. "+
+				"Sign the card (RFC 7515) and require verifiers to check the signature before trusting any field.",
+			cardURL),
+		Evidence:    fmt.Sprintf("GET %s -> 200 with JSON card, signatures absent, trust-relevant fields present", cardURL),
+		Remediation: e.rule.Remediation,
+		TargetURL:   cardURL,
+	}}
+}
+
+// cardHasMeaningfulTrustFields reports whether an unsigned card advertises
+// fields that justify a trust-anchor warning. A bare name/url card is common
+// for demos and is not flagged.
+func cardHasMeaningfulTrustFields(card map[string]interface{}) bool {
+	// capabilities with any member present
+	if caps, ok := card["capabilities"].(map[string]interface{}); ok && len(caps) > 0 {
+		return true
+	}
+	// security schemes or requirements in either dialect
+	if schemes, ok := card["securitySchemes"].(map[string]interface{}); ok && len(schemes) > 0 {
+		return true
+	}
+	if reqs, ok := card["securityRequirements"].([]interface{}); ok && len(reqs) > 0 {
+		return true
+	}
+	if sec, ok := card["security"].([]interface{}); ok && len(sec) > 0 {
+		return true
+	}
+	// provider identity
+	if prov, ok := card["provider"].(map[string]interface{}); ok && len(prov) > 0 {
+		return true
+	}
+	if prov, ok := card["provider"].(string); ok && prov != "" {
+		return true
+	}
+	// skills advertised
+	if skills, ok := card["skills"].([]interface{}); ok && len(skills) > 0 {
+		return true
+	}
+	return false
 }
 
 // cacheMaxAge extracts the max-age directive (seconds) from a lowercased

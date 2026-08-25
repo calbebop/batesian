@@ -8,11 +8,12 @@ info:
     covering the gaps that a2a-jws-algconf-001 (signature ALGORITHM config),
     a2a-wellknown-hostinject-001 (Host reflection), and a2a-extcard-unauth-001
     (unauthenticated access) do not: canonicalization across well-known paths,
-    cache/TTL of the trust anchor, and signature freshness/expiry.
+    cache/TTL of the trust anchor, signature freshness/expiry, and unsigned trust
+    anchors.
 
     Because Batesian scans the SERVER (not a consuming client/verifier), it judges
     only what the server itself exposes; client-side verifier acceptance is out of
-    scope. Three checks:
+    scope. Four checks:
 
       1. Canonicalization / multi-path consistency. The card is fetched from both
          /.well-known/agent-card.json and the legacy /.well-known/agent.json. If
@@ -34,6 +35,13 @@ info:
          header is decoded: a signature with no `exp` never expires (a captured
          card is valid forever - INDICATOR); a signature whose `exp` is already in
          the past is still being served (indicator: stale signature).
+
+      4. Unsigned trust anchor. When the card carries no JWS signatures field at
+         all but advertises capabilities, skills, provider identity, or security
+         schemes, it is a trust anchor that can be spoofed by a network attacker,
+         cache poison, or DNS hijack (INDICATOR, medium). A bare name/url demo
+         card is not flagged. This does not duplicate a2a-jws-algconf-001, which
+         only reports when supportsAuthenticatedExtendedCard is set.
 
   references:
     - https://a2a-protocol.org/latest/specification/

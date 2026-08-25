@@ -172,6 +172,66 @@ func TestCardTrust_Clean(t *testing.T) {
 	}
 }
 
+// TestCardTrust_UnsignedWithCapabilities: unsigned card that advertises
+// capabilities, skills, or security schemes. MUST fire indicator/medium for
+// the spoofable trust anchor. Cache is set to a revalidating value so only the
+// unsigned-anchor finding fires.
+func TestCardTrust_UnsignedWithCapabilities(t *testing.T) {
+	card := map[string]interface{}{
+		"name": "Test Agent",
+		"url":  "https://agent.example/",
+		"capabilities": map[string]interface{}{
+			"streaming": true,
+		},
+		"skills": []interface{}{
+			map[string]interface{}{"id": "echo", "name": "Echo", "description": "Echo", "tags": []string{"echo"}},
+		},
+	}
+	ts := cardServer(card, card, "no-store")
+	defer ts.Close()
+
+	f := onlyFinding(t, runCardTrust(t, ts))
+	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
+		t.Errorf("want medium/RiskIndicator for unsigned trust anchor, got %q/%q", f.Severity, f.Confidence)
+	}
+	if f.Title != "A2A agent card served without JWS signatures (spoofable trust anchor)" {
+		t.Errorf("unexpected title %q", f.Title)
+	}
+}
+
+// TestCardTrust_UnsignedWithProvider: unsigned card that advertises a provider
+// identity. MUST also fire the unsigned-anchor indicator.
+func TestCardTrust_UnsignedWithProvider(t *testing.T) {
+	card := map[string]interface{}{
+		"name": "Test Agent",
+		"url":  "https://agent.example/",
+		"provider": map[string]interface{}{
+			"organization": "Example Co",
+			"url":          "https://example.com",
+		},
+	}
+	ts := cardServer(card, card, "no-store")
+	defer ts.Close()
+
+	f := onlyFinding(t, runCardTrust(t, ts))
+	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
+		t.Errorf("want medium/RiskIndicator for unsigned trust anchor, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+// TestCardTrust_BareUnsignedClean: bare name/url unsigned card with a
+// revalidating cache. MUST stay silent, a bare demo card is not a trust
+// anchor worth flagging.
+func TestCardTrust_BareUnsignedClean(t *testing.T) {
+	card := unsignedCard("https://agent.example/")
+	ts := cardServer(card, card, "no-store")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected zero findings for bare unsigned card with safe cache, got %d: %+v", len(findings), findings)
+	}
+}
+
 // TestCardTrust_NotACardServer: no well-known card means the rule was never
 // exercised, not that the card is sound. It used to report clean here, which is
 // indistinguishable from a target whose card passed every check.
