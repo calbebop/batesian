@@ -33,11 +33,13 @@ env/
 *.key
 secrets.yaml
 secrets.json
-# Per-developer agent settings. This file holds an auth token in cleartext, and
-# nothing under .claude/ is tracked, so it was one `git add .` away from being
-# published. Only the local file is ignored: a shared .claude/settings.json remains
-# committable if the project ever wants one.
-.claude/settings.local.json
+# Per-developer agent settings. The local file holds an auth token in
+# cleartext, and the shared settings.json holds personal gateway and model
+# choices, so neither belongs in the repo: one `git add .` away from being
+# published, and permanent untracked noise in every git status before it was
+# ignored wholesale. If a project-level agent config is ever wanted, negate
+# that specific file here rather than un-ignoring the directory.
+.claude/
 
 # IDE
 .vscode/
