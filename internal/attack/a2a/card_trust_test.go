@@ -33,8 +33,8 @@ func signedCard(url string, exp *int64) map[string]interface{} {
 	}
 }
 
-func unsignedCard(url string) map[string]interface{} {
-	return map[string]interface{}{"name": "Test Agent", "url": url}
+func unsignedCard() map[string]interface{} {
+	return map[string]interface{}{"name": "Test Agent", "url": "https://agent.example/"}
 }
 
 // cardServer serves the given cards at the two well-known paths (nil => 404) and
@@ -87,7 +87,7 @@ func onlyFinding(t *testing.T, findings []attack.Finding) attack.Finding {
 // MUST fire indicator/high (a read-only analyzer observes the unsigned path but
 // cannot prove a verifier is bypassed).
 func TestCardTrust_SignatureStripping(t *testing.T) {
-	ts := cardServer(signedCard("https://agent.example/", future()), unsignedCard("https://agent.example/"), "no-store")
+	ts := cardServer(signedCard("https://agent.example/", future()), unsignedCard(), "no-store")
 	defer ts.Close()
 
 	f := onlyFinding(t, runCardTrust(t, ts))
@@ -110,7 +110,7 @@ func TestCardTrust_UrlMismatch(t *testing.T) {
 // TestCardTrust_StaleCache: consistent unsigned card with a long max-age.
 // MUST fire a single medium cache indicator.
 func TestCardTrust_StaleCache(t *testing.T) {
-	card := unsignedCard("https://agent.example/")
+	card := unsignedCard()
 	ts := cardServer(card, card, "public, max-age=86400")
 	defer ts.Close()
 
@@ -123,7 +123,7 @@ func TestCardTrust_StaleCache(t *testing.T) {
 // TestCardTrust_MissingCache: consistent unsigned card, no Cache-Control header.
 // MUST fire a single low cache indicator.
 func TestCardTrust_MissingCache(t *testing.T) {
-	card := unsignedCard("https://agent.example/")
+	card := unsignedCard()
 	ts := cardServer(card, card, "")
 	defer ts.Close()
 
@@ -172,16 +172,18 @@ func TestCardTrust_Clean(t *testing.T) {
 	}
 }
 
-// TestCardTrust_UnsignedWithCapabilities: unsigned card that advertises
-// capabilities, skills, or security schemes. MUST fire indicator/medium for
-// the spoofable trust anchor. Cache is set to a revalidating value so only the
-// unsigned-anchor finding fires.
-func TestCardTrust_UnsignedWithCapabilities(t *testing.T) {
+// TestCardTrust_UnsignedCardStaysSilent: a uniformly unsigned card is
+// spec-compliant. The A2A spec makes signatures optional, so an agent whose
+// card carries no signatures field at all is not a defect this rule reports;
+// the actionable case, signed on one well-known path and unsigned on the
+// other, is the canonicalization check above.
+func TestCardTrust_UnsignedCardStaysSilent(t *testing.T) {
 	card := map[string]interface{}{
 		"name": "Test Agent",
 		"url":  "https://agent.example/",
 		"capabilities": map[string]interface{}{
-			"streaming": true,
+			"streaming":          true,
+			"pushNotifications": true,
 		},
 		"skills": []interface{}{
 			map[string]interface{}{"id": "echo", "name": "Echo", "description": "Echo", "tags": []string{"echo"}},
@@ -190,45 +192,8 @@ func TestCardTrust_UnsignedWithCapabilities(t *testing.T) {
 	ts := cardServer(card, card, "no-store")
 	defer ts.Close()
 
-	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
-		t.Errorf("want medium/RiskIndicator for unsigned trust anchor, got %q/%q", f.Severity, f.Confidence)
-	}
-	if f.Title != "A2A agent card served without JWS signatures (spoofable trust anchor)" {
-		t.Errorf("unexpected title %q", f.Title)
-	}
-}
-
-// TestCardTrust_UnsignedWithProvider: unsigned card that advertises a provider
-// identity. MUST also fire the unsigned-anchor indicator.
-func TestCardTrust_UnsignedWithProvider(t *testing.T) {
-	card := map[string]interface{}{
-		"name": "Test Agent",
-		"url":  "https://agent.example/",
-		"provider": map[string]interface{}{
-			"organization": "Example Co",
-			"url":          "https://example.com",
-		},
-	}
-	ts := cardServer(card, card, "no-store")
-	defer ts.Close()
-
-	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
-		t.Errorf("want medium/RiskIndicator for unsigned trust anchor, got %q/%q", f.Severity, f.Confidence)
-	}
-}
-
-// TestCardTrust_BareUnsignedClean: bare name/url unsigned card with a
-// revalidating cache. MUST stay silent, a bare demo card is not a trust
-// anchor worth flagging.
-func TestCardTrust_BareUnsignedClean(t *testing.T) {
-	card := unsignedCard("https://agent.example/")
-	ts := cardServer(card, card, "no-store")
-	defer ts.Close()
-
 	if findings := runCardTrust(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings for bare unsigned card with safe cache, got %d: %+v", len(findings), findings)
+		t.Errorf("expected zero findings for a uniformly unsigned (spec-compliant) card, got %d: %+v", len(findings), findings)
 	}
 }
 
