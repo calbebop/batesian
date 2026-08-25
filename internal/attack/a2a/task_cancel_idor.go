@@ -51,6 +51,7 @@ const (
 	cancelOther        cancelOutcome = iota // application error: not found / not cancelable / unknown method
 	cancelAuthRejected                      // rejected at the auth layer (HTTP 401/403 or an auth error)
 	cancelCanceled                          // accepted: the task is now canceled
+	cancelAbsent                            // every answered shape said method-not-found: no cancel surface exists
 )
 
 func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -89,10 +90,22 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 		return []attack.Finding{e.unauthFinding(endpoint, taskID)}, nil
 	case cancelAuthRejected:
 		// Auth is enforced; a successful cancel by a non-owner is now a true IDOR.
-	default:
-		// The task is not cancelable (already terminal) or the server hid it, so the
-		// cancel surface cannot be exercised cleanly. No finding.
+	case cancelAbsent:
+		// The agent implements no cancel method on either wire. Nothing to test,
+		// and nothing wrong - the same verdict classifyTaskSetup gives a surface
+		// the agent does not offer.
 		return nil, nil
+	default:
+		// The anonymous cancel drew an application error (task hidden from
+		// anonymous callers, task already terminal, ...) rather than an
+		// authorization rejection, so whether the cancel handler demands a
+		// credential was never established and the cross-principal step cannot
+		// be judged. This used to return clean, claiming the ownership boundary
+		// on cancellation was tested when it was not.
+		return nil, fmt.Errorf("%w: the unauthenticated cancel of task %s at %s was answered with an "+
+			"application error rather than an authorization rejection, so the ownership boundary on "+
+			"cancellation could not be tested",
+			attack.ErrInconclusive, taskID, endpoint)
 	}
 
 	// Step 3: cancel A's task as the WRONG principal B.
@@ -179,6 +192,8 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPC
 		{"CancelTask", v1Headers},
 		{"tasks/cancel", extraHeaders},
 	}
+	answered := false // at least one shape got a reply
+	appErr := false   // some shape answered with an application error
 	for _, s := range shapes {
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -189,14 +204,24 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPC
 		if err != nil {
 			continue
 		}
+		answered = true
 		if isA2AAuthRejection(resp) {
 			return cancelAuthRejected
 		}
 		if resp.IsAccepted() && bodyShowsCanceled(resp.Body) {
 			return cancelCanceled
 		}
-		// Otherwise an application error (not cancelable / not found / unknown
-		// method): try the next shape.
+		// Otherwise an application error (not cancelable / not found): try the
+		// next shape. Method-not-found on every shape that answered means the
+		// agent offers no cancel surface at all, which the caller treats as
+		// absent rather than refused.
+		if code, hasErr := jsonRPCErrorCode(resp.Body); !hasErr ||
+			(code != jsonRPCMethodNotFound && code != a2aUnsupportedOperation) {
+			appErr = true
+		}
+	}
+	if answered && !appErr {
+		return cancelAbsent
 	}
 	return cancelOther
 }

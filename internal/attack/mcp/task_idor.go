@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -287,6 +288,19 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 				enforcedOn: "task creation and reads",
 				anonProbe:  "anonymous task creation: refused",
 			}
+		}
+	} else {
+		// The anonymous initialize itself returned no verdict. A refusal that
+		// was actually answered is exactly what the default anonProbe above
+		// records. An endpoint where nothing answered is not: the evidence line
+		// "anonymous initialize: refused" used to stand anyway, stamping an
+		// unobserved refusal into every finding this rule emitted - the same
+		// defect the branches inside this control were fixed for.
+		var refusal handshakeRefusal
+		if !errors.As(anonErr, &refusal) {
+			return nil, fmt.Errorf("%w: the anonymous initialize control at %s returned no verdict "+
+				"(%v), so whether this server authenticates anything could not be established",
+				attack.ErrInconclusive, sessA.Endpoint, anonErr)
 		}
 	}
 

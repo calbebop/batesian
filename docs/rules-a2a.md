@@ -468,11 +468,15 @@ failures:
   B. A **confirmed** finding is raised only when B's cancel succeeds and a
   read-back as owner A shows the task is now `canceled`.
 
-A server that rejects the wrong-principal cancel, or that cannot cancel the task
-(already terminal), produces no finding. The rule creates and cancels its own
-throwaway task; it never cancels a pre-existing one. Against a server that
+A server that rejects the wrong-principal cancel produces no finding: the
+boundary was tested and held. Two outcomes are not clean results: an anonymous
+cancel answered with an application error (task hidden from anonymous callers,
+task already terminal) never established whether the cancel handler demands a
+credential, so the rule reports **not tested**; and a server implementing no
+cancel method on either wire is not applicable. The rule creates and cancels its
+own throwaway task; it never cancels a pre-existing one. Against a server that
 completes tasks almost immediately, the probe task may be terminal before it can
-be canceled, in which case the rule reports nothing.
+be canceled, in which case the rule reports not tested.
 
 ---
 

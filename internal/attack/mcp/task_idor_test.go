@@ -32,6 +32,8 @@ import (
 //   - "unsafe-tool":   the only task-capable tool carries no safety annotations,
 //     so the rule refuses to invoke it => skip.
 //   - "not-mcp":       everything 404s => silent.
+//   - "anon-init-hidden": initialize without a bearer 404s (the endpoint is
+//     hidden from anonymous callers) while credentialed initialize works.
 func taskIDORServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	sessions := 0
@@ -63,6 +65,14 @@ func taskIDORServer(mode string) *httptest.Server {
 
 		switch method {
 		case "initialize":
+			if mode == "anon-init-hidden" && !authed {
+				// The auth middleware hides the endpoint from anonymous callers
+				// rather than answering 401: an unanswered control, not an
+				// observed refusal (classifyInitFailure treats 404 as a routing
+				// miss, correctly).
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			mu.Lock()
 			sessions++
 			newSID := fmt.Sprintf("sess-%d", sessions)
@@ -200,6 +210,37 @@ func runTaskIDOR(t *testing.T, srv *httptest.Server) []attack.Finding {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	return findings
+}
+
+// TestTaskIDOR_HiddenAnonInitializeIsNotTested: the anonymous initialize
+// control was never answered - this server hides the endpoint from anonymous
+// callers (404) instead of refusing it (401), and classifyInitFailure is right
+// that a routing miss is not a refused handshake. The rule used to keep the
+// default evidence line "anonymous initialize: refused" and proceed anyway,
+// stamping a refusal it never observed into any finding it emitted; a server
+// that hides from anonymous callers may still scope tasks per authorization
+// context either way, so the rule reports not tested.
+func TestTaskIDOR_HiddenAnonInitializeIsNotTested(t *testing.T) {
+	srv := taskIDORServer("anon-init-hidden")
+	defer srv.Close()
+
+	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Token: "tok-a"},
+			{Name: "tenant-b", Token: "tok-b"},
+		},
+	})
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings when the anonymous control went unanswered, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "returned no verdict") {
+		t.Errorf("reason should name the unanswered control: %v", err)
+	}
 }
 
 // TestTaskIDOR_CrossContext: B reads A's task and its result => both findings.

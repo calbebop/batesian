@@ -109,7 +109,17 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		// means the message never reached the role handling, so a clean result would
 		// claim this agent does not preserve a forged role without ever having offered
 		// it one.
-		if !resp.IsAccepted() || !looksLikeTask(resp.Body) {
+		//
+		// Only a rejection takes this branch. An ACCEPTED reply that does not look
+		// like a task used to be funneled through the same observation, where
+		// errIfAuthRefused read it as a pass - but A2A lets an agent answer a send
+		// with a Message instead of a Task, and the rule's own documentation says
+		// that shape reports not tested. evaluateAcceptance already says so for a
+		// task reply with no extractable id; the gate only mattered for rejections,
+		// and on the accepted side it also suppressed real findings from task
+		// bodies whose state spelled none of the needles (e.g. a completed task
+		// keyed by bare "id").
+		if !resp.IsAccepted() {
 			obs.observe(classifyTaskSetup("sending a message claiming the agent role", ep,
 				client.PresentsCredential(ep), resp))
 			continue
@@ -281,23 +291,6 @@ func isAgentRole(v interface{}) bool {
 	default:
 		return false
 	}
-}
-
-// looksLikeTask returns true if the body resembles an A2A task response.
-//
-// Task states appear in two spellings. v0.3 used lowercase strings ("working"),
-// while v1.0 carries the proto enum ("TASK_STATE_WORKING"), and A2A v1.0.1
-// standardized the specification's own examples on the enum form. Both are
-// matched, because this gates whether a finding is reported at all: a server
-// whose task body carried only the enum state would otherwise be read as not a
-// task, and the rule would stay silent against a target it should flag.
-func looksLikeTask(body []byte) bool {
-	s := string(body)
-	return containsAnyStr(s,
-		`"contextId"`, `"taskId"`, `"kind":"task"`,
-		`"working"`, `"submitted"`,
-		"TASK_STATE_WORKING", "TASK_STATE_SUBMITTED",
-	)
 }
 
 // extractTaskContext extracts the taskId and contextId from a JSON-RPC task result.
