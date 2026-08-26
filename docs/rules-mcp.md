@@ -873,9 +873,13 @@ than in the transport or authorization layer the other rules here cover.
 
 **Oracle.** Servers that resolve the joined path before opening it usually say
 where they looked when it is not there; a Node ENOENT names the resolved
-absolute path. Three requests go to each candidate parameter: a no-traversal
-baseline naming only the canary, an absolute path carrying a dot-dot chain, and
-a backslash variant for Windows-style joins. The finding fires only when a
+absolute path. Seven requests go to each candidate parameter: a no-traversal baseline naming
+only the canary, then six payloads - literal absolute dot-dot, backslash,
+URL-encoded dot-dot (validate-before-decode bugs), double-encoded dot-dot
+(two decode passes), mixed separators, and drive-lettered joins. The encoding
+variants exist because canonicalization is where the real-world bypasses live:
+CVE-2026-53766 escaped symlink-aware validation through exactly the gap between
+what is checked and what the filesystem resolves. The finding fires only when a
 traversal probe discloses a **resolved** absolute lookup in a directory outside
 the baseline's own tree - the server's own resolution proves the escape with
 zero bytes read. An echo of the caller's input with its dot-dot segments intact

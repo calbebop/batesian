@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -285,5 +286,42 @@ func TestTraversal_ContainedClimbStaysSilent(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when the sandbox contains the climb, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestTraversal_EncodedOnlyFires: a server that rejects literal traversal
+// up front but decodes the input before joining escapes only through the
+// percent-encoded payloads. The pre-expansion probe set read this server
+// clean; the expansion exists to catch exactly it.
+func TestTraversal_EncodedOnlyFires(t *testing.T) {
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			p, _ := args["path"].(string)
+			if !strings.Contains(p, "%") && strings.Contains(p, "..") {
+				// Literal dot-dot is rejected before anything else happens.
+				return "rejected: path contains traversal segments", true, ""
+			}
+			decoded, err := url.PathUnescape(p)
+			if err == nil {
+				p = decoded
+			}
+			resolved := joinLikeNaive(p)
+			return strings.ReplaceAll(leakTemplate, "<PATH>", resolved), true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "URL-encoded") {
+		t.Errorf("expected the URL-encoded payload to be the one that escaped, got: %q", findings[0].Evidence)
 	}
 }
