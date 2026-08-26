@@ -72,6 +72,11 @@ var vvTable = []vvAdvisory{
 		refs:  "CVE-2026-27825, CVE-2026-27826",
 	},
 	{
+		key: "mcp-atlassian", affected: "<0.22.0", severity: "medium",
+		title: "mcp-atlassian SSRF DNS-rebinding TOCTOU bypass of the 27826 fix",
+		refs:  "GHSA-489g-7rxv-6c8q",
+	},
+	{
 		key: "inspector", affected: "<0.14.1", severity: "high",
 		title: "MCP Inspector unauthenticated RCE via DNS rebinding",
 		refs:  "CVE-2025-49596",
