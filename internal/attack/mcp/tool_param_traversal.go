@@ -254,7 +254,41 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 	return sb.String()
 }
 
-// probeTool drives baseline plus two traversals against one tool's path
+// traversalPayload is one attack-shaped argument for the path parameter.
+type traversalPayload struct {
+	label string
+	value string
+}
+
+// deepFwd / winPrefix climb twelve levels, far past any plausible root depth,
+// so the surviving segments cannot be mistaken for legitimate structure.
+const traversalDepth = 12
+
+// traversalPayloads enumerates the encodings a validating server may treat
+// differently from the literal forms. Beyond the plain variants:
+//
+//   - URL-encoded dot-dot catches servers that validate before decoding
+//     (the single most common canonicalization gap; CVE-2026-53766 class)
+//   - double-encoded catches two decode passes (proxy then handler)
+//   - mixed separators catch normalizers that treat / and \ asymmetrically
+//   - drive-lettered exercises Windows-rooted joins on POSIX frontends
+func traversalPayloads(canary string) []traversalPayload {
+	fwd := strings.Repeat("../", traversalDepth)
+	bwd := strings.Repeat("..\\", traversalDepth)
+	enc := strings.Repeat("%2e%2e%2f", traversalDepth)
+	dbl := strings.Repeat("%252e%252e%252f", traversalDepth)
+	mixed := strings.Repeat("../\\", traversalDepth)
+	return []traversalPayload{
+		{"absolute forward-slash traversal", "/" + fwd + canary},
+		{"backslash traversal", bwd + canary},
+		{"URL-encoded dotdot", enc + canary},
+		{"double-encoded dotdot", dbl + canary},
+		{"mixed separator traversal", mixed + canary},
+		{"drive-lettered traversal", "C:\\" + bwd + canary},
+	}
+}
+
+// probeTool drives the baseline plus every payload against one tool's path
 // parameter and grades what came back. A nil return means the tool validated
 // its paths, refused them without disclosing resolutions, or could not be
 // characterised; none of those is a finding.
@@ -264,16 +298,12 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 	baselineText := e.callTool(ctx, client, session, 10, cand.tool, cand.param, canary, cand.others)
 	baselinePath := leakedPath(baselineText, canary)
 
-	deepPrefix := strings.Repeat("../", 12)
-	winPrefix := strings.Repeat("..\\", 12)
-	traversalText := e.callTool(ctx, client, session, 11, cand.tool, cand.param, "/"+deepPrefix+canary, cand.others)
-	backslashText := e.callTool(ctx, client, session, 12, cand.tool, cand.param, winPrefix+canary, cand.others)
+	nextID := 11
+	for _, probe := range traversalPayloads(canary) {
+		text := e.callTool(ctx, client, session, nextID, cand.tool, cand.param, probe.value, cand.others)
+		nextID++
 
-	for _, probe := range []struct{ label, text string }{
-		{"absolute + forward-slash traversal", traversalText},
-		{"backslash traversal", backslashText},
-	} {
-		path := leakedPath(probe.text, canary)
+		path := leakedPath(text, canary)
 		if !resolvedAbsolute(path) {
 			// Either nothing was disclosed, or the server merely echoed the
 			// caller's input back with its dot-dot segments intact. An echo is

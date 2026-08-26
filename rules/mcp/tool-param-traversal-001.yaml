@@ -23,7 +23,7 @@ info:
 
     ORACLE. Many servers resolve the joined path before opening it, and say
     where they looked when it is not there (a Node ENOENT names the resolved
-    absolute path). The rule sends three requests per candidate parameter: a
+    absolute path). The rule sends the baseline plus six traversal payloads per candidate parameter - literal absolute dot-dot, backslash, URL-encoded dot-dot, double-encoded dot-dot, mixed separators, and drive-lettered. Encoded forms catch servers that validate before decoding; the canonicalization-bypass class behind CVE-2026-53766 (symlink and encoding aliasing) escapes precisely there. The baseline is a
     no-traversal baseline naming only the canary, an absolute path carrying a
     dot-dot chain, and a backslash variant for Windows-style joins. The finding
     fires only when a traversal probe discloses a RESOLVED absolute lookup in a
