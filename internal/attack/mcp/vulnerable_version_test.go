@@ -153,6 +153,40 @@ func TestVV_Boundaries(t *testing.T) {
 	}
 }
 
+// TestVV_AtlassianTOCTOU: the 27826 fix shipped in 0.17.0 but its bypass
+// (GHSA-489g) was only patched in 0.22.0, so the table carries a second,
+// wider entry. A deployment between the two bounds fires once - the TOCTOU
+// advisory alone; one below both bounds fires twice; at 0.22.0 silent.
+func TestVV_AtlassianTOCTOU(t *testing.T) {
+	cases := []struct {
+		version string
+		want    int
+	}{
+		{"0.16.9", 2}, // traversal + TOCTOU
+		{"0.17.5", 1}, // TOCTOU only: the earlier fix is present...
+		{"0.21.9", 1}, // ...but so is the gap it left
+		{"0.22.0", 0}, // patched
+	}
+	for _, tc := range cases {
+		t.Run("v"+tc.version, func(t *testing.T) {
+			ts := vvServer("mcp-atlassian", tc.version)
+			defer ts.Close()
+
+			findings, err := runVV(t, ts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.want {
+				t.Fatalf("version %q: want %d findings, got %d: %+v",
+					tc.version, tc.want, len(findings), findings)
+			}
+			if tc.want >= 1 && !strings.Contains(findings[len(findings)-1].Evidence, "GHSA-489g") {
+				t.Errorf("newest finding should cite the TOCTOU advisory, got: %q", findings[len(findings)-1].Evidence)
+			}
+		})
+	}
+}
+
 // TestVV_ModernWireMeta: on the modern wire the identity travels under
 // result._meta rather than result.serverInfo; the extractor reads both.
 func TestVV_ModernWireMeta(t *testing.T) {

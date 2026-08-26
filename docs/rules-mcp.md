@@ -1040,6 +1040,7 @@ citations in both the YAML and the finding evidence.
 - **mcp-server-git** <2025.12.18 - argument injection and path escape chain (CVE-2025-68143/44/45)
 - **mcp-remote** <0.1.16 - OAuth flow command injection (CVE-2025-6514)
 - **mcp-atlassian** <0.17.0 - attachment path traversal to RCE (CVE-2026-27825/26)
+- **mcp-atlassian** <0.22.0 - SSRF DNS-rebinding TOCTOU bypass of the 27826 fix (GHSA-489g-7rxv-6c8q; a 0.16.x deployment matches this entry and the one above, which is accurate rather than duplicate: two distinct advisories, two distinct fixes)
 - **inspector** <0.14.1 - unauthenticated RCE via DNS rebinding (CVE-2025-49596)
 - **serena** <1.5.2 - dashboard memory poisoning to RCE via DNS rebinding (CVE-2026-49471)
 - **mcpjam** <=1.4.2 - exposed control endpoint RCE (CVE-2026-23744)

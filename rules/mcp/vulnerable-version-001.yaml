@@ -18,6 +18,7 @@ info:
       - mcp-server-git <2025.12.18 (CVE-2025-68143/44/45)
       - mcp-remote <0.1.16          (CVE-2025-6514)
       - mcp-atlassian <0.17.0       (CVE-2026-27825/26)
+      - mcp-atlassian <0.22.0       (GHSA-489g TOCTOU bypass)
       - inspector <0.14.1           (CVE-2025-49596)
       - serena <1.5.2               (CVE-2026-49471)
       - mcpjam <=1.4.2              (CVE-2026-23744)
