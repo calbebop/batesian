@@ -240,3 +240,30 @@ batesian scan --target http://127.0.0.1:7797 --rule-ids mcp-logging-unauth-001 -
 Reference servers are third-party software; their behavior changes between
 versions. The version scanned is recorded above so a differing result can be
 attributed to the target rather than to Batesian.
+
+---
+
+## Scan cost against rule growth (measured)
+
+Rule count tripled since launch while every MCP rule still resolves its own
+endpoint. The discovery cache (#239) lets later rules skip earlier rules'
+walk results; this measures what that saves in practice, so the claim is a
+number rather than an adjective.
+
+Setup: `mcp_transient_failure_server.py` (`ok` posture) as the counting
+target - uvicorn access logging enabled, three full 47-rule scans per binary
+after one discarded warm-up, binaries built from the commits immediately
+before and after the cache landed.
+
+| Binary | Requests / 3 scans | Avg scan wall |
+|---|---|---|
+| pre-cache | 600 | 328 ms |
+| cached | 561 | 272 ms |
+
+Read honestly: on this target the handler sits at the FIRST candidate path,
+so the legacy walk never paid for its misses and the cache's saving is the
+per-rule modern-wire probe plus repeated handshakes at the resolved path -
+about 6% of requests and 17% of wall clock. Targets whose handler answers on
+a later candidate (the common misconfiguration shape) shift more of their
+traffic into missed probes, which is precisely the part caching removes; the
+saving grows with how deep the service hides.
