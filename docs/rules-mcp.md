@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **26 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **27 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -176,6 +176,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | High / Medium | confirmed / indicator | CWE-74 |
 | `mcp-vulnerable-version-001` | [Known-Vulnerable Component Identity](#mcp-vulnerable-version-001) | High | indicator | CWE-1104 |
+| `mcp-origin-prefix-bypass-001` | [Origin Prefix-Match Bypass](#mcp-origin-prefix-bypass-001) | High | confirmed | CWE-346 |
 
 ---
 
@@ -1058,3 +1059,45 @@ Two edge cases are pinned rather than papered over:
 
 Both wires are read where served: legacy carries identity in
 `result.serverInfo`, modern under `result._meta`, and the two need not agree.
+
+---
+
+### mcp-origin-prefix-bypass-001
+
+**Origin Prefix-Match Bypass** | Severity: High | confirmed | CWE-346
+
+Asks whether the Origin validation that exists actually means anything.
+mcp-dns-rebind-origin-001 establishes whether validation happens at all using
+a fully unrelated origin; the recurring real-world defect sits one step
+inside - validators written as string comparisons:
+
+```go
+strings.HasPrefix(origin, "https://trusted.example")
+strings.Contains(origin, "trusted.example")
+```
+
+Such validators reject that same unrelated origin and read clean under the
+sibling rule, while accepting anything whose STRING starts with (or contains)
+the trusted value:
+
+- `https://trusted.example.attacker.tld` - attacker subdomain
+- `https://trusted.example@attacker.tld` - userinfo smuggle
+
+Parsed out, both resolve to attacker infrastructure, so the browser-mediated
+exposure is identical to having no check at all. This family published
+repeatedly this quarter: CVE-2026-55532 prefix match, CVE-2026-55637 local
+rebind, GHSA-489g TOCTOU.
+
+The probe is a control pair on every served wire: the baseline handshake is
+repeated with a fully foreign Origin first, and its rejection is what proves
+a validator exists on that wire. Only then do the two crafted origins go out;
+acceptance of either against the rejecting control is **confirmed** at high,
+with evidence showing all three outcomes side by side. If the control twin is
+also accepted there is no validator to bypass - that surface belongs to
+`mcp-dns-rebind-origin-001` and is suppressed here rather than double-counted.
+
+The crafted domains are non-resolving RFC 6761 `.invalid` names, so nothing
+the probe accepts can call out to the scanner. Both crafts mirror the target's
+own scheme and host-port verbatim, because deployments allowlist what they
+themselves serve: an http server never accepts https-prefixed strings, and a
+craft that cannot fool a prefix validator measures nothing.
