@@ -169,12 +169,18 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 // era it serves, so answering it proves nothing on its own; see
 // modernWireAdvertised for what treating the answer as proof cost.
 func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (mcpSession, bool) {
-	probe := mcpSession{Endpoint: ep, Era: EraModern}
-	resp, err := probe.post(ctx, client, "batesian-discover", "server/discover", nil)
-	if err != nil || !resp.IsAccepted() {
+	// A sibling rule may already have asked this endpoint. Negative results
+	// are cached too: the detection is one request per rule otherwise, and a
+	// mid-scan flake freezing an absence for later rules costs them only the
+	// legacy path they would walk anyway.
+	if present, known := client.Discovery().ModernPresent(ep); known && !present {
 		return mcpSession{}, false
 	}
-	if !modernWireAdvertised(resp.Body) {
+	probe := mcpSession{Endpoint: ep, Era: EraModern}
+	resp, err := probe.post(ctx, client, "batesian-discover", "server/discover", nil)
+	found := err == nil && resp.IsAccepted() && modernWireAdvertised(resp.Body)
+	client.Discovery().RememberModernPresent(ep, found)
+	if !found {
 		return mcpSession{}, false
 	}
 	return mcpSession{

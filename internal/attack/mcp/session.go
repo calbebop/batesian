@@ -190,3 +190,20 @@ func negotiatedVersion(initBody []byte) string {
 	}
 	return latestStable
 }
+
+// OpenSessionForTest resolves sessions for a caller-supplied Options, so the
+// harness can share one discovery cache across repeated resolutions exactly
+// the way the engine does across rules.
+func OpenSessionForTest(baseURL string, opts attack.Options) ([]string, error) {
+	vars := attack.NewVars(baseURL, opts.OOBListenerURL)
+	client := attack.NewUnauthHTTPClient(opts, vars)
+	sessions, err := openSessions(context.Background(), client, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	eps := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		eps = append(eps, s.Endpoint)
+	}
+	return eps, nil
+}
