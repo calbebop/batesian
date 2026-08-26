@@ -79,14 +79,15 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` must fire on `prefix`; stay silent on `hardened` and `open` (three postures, see below) |
 | `mcp_task_entropy_server.py` | 7812 | `mcp-task-id-entropy-001` must fire on `weak`; stay silent on `clean` (two postures, see below) |
+| `mcp_token_replay_server.py` | 7813 | `mcp-token-replay-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
-**Coverage.** 45 of the 47 rules have a standalone Python fixture above, and each
-of those was checked by actually running it rather than by reading this table. The
-remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
-(`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
-edge-case harnesses for every other rule. `mockserver.go` is a Go helper used by
-unit tests via `net/http/httptest`; it is not a standalone server.
+**Coverage.** All 47 rules have a standalone Python fixture above, and each
+of those was checked by actually running it rather than by reading this table.
+The last holdout, `mcp-token-replay-001`, gained `mcp_token_replay_server.py`
+(port 7813) alongside the nightly suite that drives it. The same is true of
+the per-rule edge-case harnesses for every other rule. `mockserver.go` is a Go
+helper used by unit tests via `net/http/httptest`; it is not a standalone server.
 
 A registry row is a claim, and claims rot. Three things make a fixture look broken
 when it is not, so check them before concluding a rule has regressed:
@@ -534,6 +535,25 @@ the exact shape the extension's unguessability MUST forbids, since ids double
 as bearer tokens for stored state there. `clean` mints uuid-shaped handles.
 The only tool served is annotated read-only and never acts on its arguments,
 so validation mints handles and executes nothing.
+
+**`mcp_token_replay_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_token_replay_server.py vulnerable  # 3 findings (high x2, critical)
+python testdata/mcp_token_replay_server.py patched     # silent
+batesian scan --target http://127.0.0.1:7813 --rule-ids mcp-token-replay-001 -v
+```
+
+Both postures publish RFC 9728 metadata and refuse an unauthenticated
+initialize, which is what lets the rule judge its forged probes at the gate.
+In `vulnerable`, ANY well-formed bearer is accepted, so the no-aud and
+wrong-aud forgeries land high and the alg:none forgery lands critical. In
+`patched`, tokens are checked against the single credential this fixture
+issued - an exact presentation match that a random-keyed signature fails for
+the same reason real signature verification fails it - so every forged probe
+is rejected and the rule stays silent. The fixture implements no tool surface:
+the probe is purely about token handling.
 
 ---
 
