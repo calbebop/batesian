@@ -409,6 +409,31 @@ def task_entropy():
     return ok_all
 
 
+def token_replay():
+    """vulnerable refuses an anonymous initialize (so the forged-probe family
+    is judged right at the gate) yet accepts any well-formed bearer: three
+    findings MUST fire. patched verifies the presented credential exactly,
+    so every forged probe is rejected and the rule stays silent."""
+    ok_all = True
+    rid = "mcp-token-replay-001"
+
+    p, l = start("mcp_token_replay_server.py", 7813, "vulnerable")
+    try:
+        fired, _, _ = scan(7813)
+    finally:
+        stop(p, l)
+    ok_all &= check("token-replay vulnerable (fires)", rid in fired, f"fired {sorted(fired)}")
+
+    p, l = start("mcp_token_replay_server.py", 7813, "patched")
+    try:
+        fired, _, _ = scan(7813)
+    finally:
+        stop(p, l)
+    ok_all &= check("token-replay patched (silent)", rid not in fired,
+                    f"fired {sorted(fired)}")
+    return ok_all
+
+
 def main():
     suites = [
         ("transient", transient()),
@@ -421,6 +446,7 @@ def main():
         ("tool-poisoning", tool_poisoning()),
         ("vulnerable-version", vulnerable_version()),
         ("task-entropy", task_entropy()),
+        ("token-replay", token_replay()),
     ]
     print()
     for name, ok in suites:
