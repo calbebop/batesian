@@ -385,6 +385,30 @@ def vulnerable_version():
     return ok_all
 
 
+def task_entropy():
+    """weak mints counter handles (sequential + thin alphabet, the extension's
+    bearer-token MUST broken); clean mints uuid-shaped handles and must be
+    fully silent."""
+    ok_all = True
+    rid = "mcp-task-id-entropy-001"
+
+    p, l = start("mcp_task_entropy_server.py", 7812, "weak")
+    try:
+        fired, _, _ = scan(7812)
+    finally:
+        stop(p, l)
+    ok_all &= check("task-entropy weak (fires)", rid in fired, f"fired {sorted(fired)}")
+
+    p, l = start("mcp_task_entropy_server.py", 7812, "clean")
+    try:
+        fired, _, _ = scan(7812)
+    finally:
+        stop(p, l)
+    ok_all &= check("task-entropy clean (silent)", rid not in fired,
+                    f"fired {sorted(fired)}")
+    return ok_all
+
+
 def main():
     suites = [
         ("transient", transient()),
@@ -396,6 +420,7 @@ def main():
         ("shadow-surface", shadow_surface()),
         ("tool-poisoning", tool_poisoning()),
         ("vulnerable-version", vulnerable_version()),
+        ("task-entropy", task_entropy()),
     ]
     print()
     for name, ok in suites:

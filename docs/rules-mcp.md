@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **27 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **28 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -177,6 +177,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | High / Medium | confirmed / indicator | CWE-74 |
 | `mcp-vulnerable-version-001` | [Known-Vulnerable Component Identity](#mcp-vulnerable-version-001) | High | indicator | CWE-1104 |
 | `mcp-origin-prefix-bypass-001` | [Origin Prefix-Match Bypass](#mcp-origin-prefix-bypass-001) | High | confirmed | CWE-346 |
+| `mcp-task-id-entropy-001` | [Task Handle Entropy (Extension Wire)](#mcp-task-id-entropy-001) | High / Medium | confirmed | CWE-330 |
 
 ---
 
@@ -1102,3 +1103,45 @@ the probe accepts can call out to the scanner. Both crafts mirror the target's
 own scheme and host-port verbatim, because deployments allowlist what they
 themselves serve: an http server never accepts https-prefixed strings, and a
 craft that cannot fool a prefix validator measures nothing.
+
+---
+
+### mcp-task-id-entropy-001
+
+**Task Handle Entropy (Extension Wire)** | Severity: High / Medium | confirmed | CWE-330
+
+Collects task handles the server mints for task-augmented calls and measures
+them against the tasks extension's own unguessability requirement. The
+2026-07-28 revision moved tasks out of core into
+`io.modelcontextprotocol/tasks` and deliberately dropped context binding: its
+Security Considerations permit a server to treat task ids as bearer tokens
+for stored state, PROVIDED they carry enough entropy:
+
+> "Servers MUST generate them with sufficient entropy that a third party
+> cannot enumerate or guess them."
+
+That MUST is what this rule measures, and it is why the cross-context reads
+`mcp-task-idor-001` performs on the core wire would be wrong here - a
+conformant extension-era server answering a guessed handle is doing what the
+spec allows. What is never permitted is an id a third party can guess.
+
+Two measurable failures from five samples, both confirmed:
+
+1. **Sequential handles** (high). All-numeric ids minted with a constant
+   stride, whatever it is. The next handle is demonstrated in the evidence,
+   not estimated.
+2. **Sub-threshold alphabet entropy** (medium). Bits counted as longest-
+   handle-length times log2 of every distinct character seen. The estimate is
+   deliberately generous to the server - hidden randomness beyond what the
+   samples reveal only raises real entropy - so falling under the 64-bit bar
+   violates a bearer-token MUST before prediction is even attempted.
+
+The two checks are independent and both may fire on one manifest; sequential
+counter handles are also thin-alphabet by construction.
+
+Safety mirrors `mcp-task-idor-001`: only annotated read-only or explicitly
+non-destructive tools declaring taskSupport optional/required are invoked,
+with inert arguments. A server without such a tool reports clean rather than
+dispatching anything unannotated. Refusals before enough samples report not
+tested naming the refusal - fewer than two handles cannot distinguish any
+pattern from coincidence.

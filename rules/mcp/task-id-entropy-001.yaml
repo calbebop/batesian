@@ -1,0 +1,66 @@
+id: mcp-task-id-entropy-001
+info:
+  name: MCP Task Handle Entropy (Guessable Handles on the Tasks Extension Wire)
+  author: batesian
+  severity: high
+  description: |
+    Collects task handles the server mints for task-augmented calls and
+    measures them against the tasks extension's own unguessability
+    requirement. The 2026-07-28 revision moved tasks out of core into
+    io.modelcontextprotocol/tasks and deliberately DROPPED context binding:
+    its Security Considerations permit a server to treat task ids as bearer
+    tokens for stored state, PROVIDED they carry enough entropy:
+
+      "Servers MUST generate them with sufficient entropy that a third party
+       cannot enumerate or guess them."
+
+    That MUST is what this rule measures, and it is why the cross-context
+    reads mcp-task-idor-001 performs on the core wire would be wrong here - a
+    conformant extension-era server answering a guessed handle is doing what
+    the spec allows. What is never permitted is an id a third party can guess.
+
+    Two measurable failures from five samples:
+
+      1. Sequential handles (CONFIRMED, high). All-numeric ids minted with a
+         constant stride, whatever it is. The next handle is demonstrated,
+         not estimated; evidence shows the stride and the predicted value.
+      2. Sub-threshold alphabet entropy (CONFIRMED, medium). Bits counted as
+         longest-handle-length times log2 of every distinct character seen -
+         deliberately generous to the server, since hidden randomness beyond
+         what samples reveal only makes real entropy higher. Under 64 bits a
+         bearer-token MUST is violated before prediction is even attempted.
+
+    SAFETY mirrors mcp-task-idor-001: only annotated read-only or explicitly
+    non-destructive tools declaring taskSupport optional/required are invoked,
+    with inert arguments. A server without such a tool reports clean rather
+    than dispatching anything unannotated.
+
+    Refusals before enough samples are collected report NOT TESTED naming the
+    refusal - two or more samples are required to distinguish any pattern from
+    coincidence.
+
+  references:
+    - https://github.com/modelcontextprotocol/ext-tasks
+    - https://modelcontextprotocol.io/specification/2026-07-28/changelog
+    - https://cwe.mitre.org/data/definitions/330.html
+
+  tags:
+    - mcp
+    - tasks
+    - entropy
+    - bearer-token
+    - cwe-330
+
+attack:
+  protocol: mcp
+  type: mcp-task-id-entropy
+
+remediation: |
+  1. Generate task handles from a cryptographically secure random source with
+     at least 128 bits of output; never serialize counters, timestamps alone,
+     or fixed-width sequences a caller can correlate.
+  2. Treat handles exactly as the extension frames them - bearer tokens for
+     stored state - and give them the same generation discipline as session
+     credentials.
+  3. If a counter must exist internally, keep it behind an opaque random
+     mapping so externally visible ids carry no stride information.

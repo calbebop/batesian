@@ -31,7 +31,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **19 A2A + 27 MCP = 46 rules**. Every rule's primary
+The bundled rule set is **19 A2A + 28 MCP = 47 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below are optional standalone
@@ -78,9 +78,10 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` must fire on `prefix`; stay silent on `hardened` and `open` (three postures, see below) |
+| `mcp_task_entropy_server.py` | 7812 | `mcp-task-id-entropy-001` must fire on `weak`; stay silent on `clean` (two postures, see below) |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
-**Coverage.** 44 of the 46 rules have a standalone Python fixture above, and each
+**Coverage.** 45 of the 47 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table. The
 remaining rule, `mcp-token-replay-001`, is validated only by its Go harness
 (`internal/attack/mcp/token_replay_test.go`); the same is true of the per-rule
@@ -518,6 +519,21 @@ rebinding rule reads this server clean and why this rule exists. `hardened`
 parses scheme and host individually and rejects every craft. `open` accepts
 the control twin too; there is no validator to bypass, so the rule suppresses
 itself rather than double-counting the other rule's finding.
+
+**`mcp_task_entropy_server.py` takes a posture argument**, defaulting to
+`weak`:
+
+```sh
+python testdata/mcp_task_entropy_server.py weak   # high sequential finding
+python testdata/mcp_task_entropy_server.py clean  # silent
+batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 -v
+```
+
+The `weak` posture mints handles from a plain counter with a visible stride -
+the exact shape the extension's unguessability MUST forbids, since ids double
+as bearer tokens for stored state there. `clean` mints uuid-shaped handles.
+The only tool served is annotated read-only and never acts on its arguments,
+so validation mints handles and executes nothing.
 
 ---
 
