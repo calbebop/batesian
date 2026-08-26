@@ -32,8 +32,14 @@ type Engine struct {
 	opts attackpkg.Options
 }
 
-// New creates an Engine with the given execution options.
+// New creates an Engine with the given execution options. The engine owns
+// one discovery cache per scan and injects it into the options it hands to
+// executors, so endpoint resolution happens once per target rather than once
+// per rule.
 func New(opts attackpkg.Options) *Engine {
+	if opts.Discovery == nil {
+		opts.Discovery = attackpkg.NewDiscoveryCache()
+	}
 	return &Engine{opts: opts}
 }
 

@@ -38,8 +38,10 @@ var Version = "dev"
 // HTTPClient is a thin wrapper around net/http.Client with helpers for attack requests.
 type HTTPClient struct {
 	inner *http.Client
-	vars  Vars
-	token string // bearer token injected into requests to targetHost when set
+	// discovery is the scan-scoped endpoint cache; nil disables reuse.
+	discovery *DiscoveryCache
+	vars      Vars
+	token     string // bearer token injected into requests to targetHost when set
 	// targetHost is the host:port of the scan target. The auto-injected token is
 	// withheld from any other host; see tokenAllowedFor.
 	targetHost string
@@ -118,6 +120,7 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		timeout = 10 * time.Second
 	}
 	return &HTTPClient{
+		discovery: opts.Discovery,
 		inner: &http.Client{
 			Timeout:   timeout,
 			Transport: Transport(opts),
@@ -399,4 +402,13 @@ func marshalBody(body interface{}, vars Vars) ([]byte, error) {
 	// Expand template vars in the JSON string before re-encoding.
 	expanded := vars.Expand(string(raw))
 	return []byte(expanded), nil
+}
+
+// Discovery returns the scan-scoped discovery cache this client carries, or
+// nil when the engine did not provide one.
+func (c *HTTPClient) Discovery() *DiscoveryCache {
+	if c == nil {
+		return nil
+	}
+	return c.discovery
 }

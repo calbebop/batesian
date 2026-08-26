@@ -274,7 +274,15 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 // Servers implementing MCP 2025-03-26 require the session ID on all follow-up
 // requests; omitting it causes 4xx errors that silently suppress findings.
 func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL string) (mcpSession, error) {
+	// A sibling rule may already have resolved which path completes a
+	// handshake. Try it first and skip the remaining candidates; if that one
+	// endpoint stops answering mid-scan (restart, flake), fall through to the
+	// full walk rather than trusting a stale resolution.
 	endpoints := endpointCandidates(baseURL)
+	cachedEp, hadCached := client.Discovery().LegacyEndpoint(baseURL)
+	if hadCached {
+		endpoints = append([]string{cachedEp}, endpoints...)
+	}
 	// Why the walk failed, so a rule that could not run can say what happened
 	// instead of sending the operator to check their network. Classified from the
 	// responses this loop already has, so it costs no extra requests.
@@ -285,6 +293,11 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			continue // transport failure: nothing answered, so nothing to explain
 		}
 		if !initResp.IsSuccess() || !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+			if hadCached && ep == cachedEp {
+				// The remembered endpoint has gone stale: forget it and let
+				// this walk continue over every candidate as before.
+				client.Discovery().RememberLegacy(baseURL, "")
+			}
 			observed.observe(classifyInitFailure(ep, client.PresentsCredential(ep), initResp))
 			continue
 		}
@@ -295,6 +308,10 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			ProtocolVersion: negotiatedVersion(initResp.Body),
 			RawInit:         initResp.Body,
 		}
+
+		// First successful resolution wins for the whole scan: later rules
+		// start here instead of re-walking every candidate.
+		client.Discovery().RememberLegacy(baseURL, ep)
 
 		// notifications/initialized - fire and forget
 		_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{

@@ -81,6 +81,12 @@ type Options struct {
 	// Recorder collects the requests captured during a dry run. It must be non-nil
 	// when DryRun is set; the engine stamps the active rule onto it per rule.
 	Recorder *Recorder
+
+	// Discovery, when non-nil, lets MCP rules share endpoint-resolution
+	// results within one scan instead of each re-walking the same candidate
+	// paths. The engine allocates it per scan; nil keeps every rule walking
+	// independently (the behaviour direct executor use in tests expects).
+	Discovery *DiscoveryCache
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant
