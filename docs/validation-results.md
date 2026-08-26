@@ -71,9 +71,11 @@ The reference MCP server maintained by the Model Context Protocol project,
 exercising the full capability surface (tools, prompts, resources, logging,
 completions).
 
-**Target:** `@modelcontextprotocol/server-everything` 2026.7.4, Streamable HTTP
-transport, `http://127.0.0.1:3120`
-**Command:** `batesian scan --target http://127.0.0.1:3120 --timeout 20`
+**Target:** `@modelcontextprotocol/server-everything`, Streamable HTTP
+transport, `http://mcpref:3001/mcp`
+**Command:** `batesian scan --target http://mcpref:3001/mcp --timeout 25`
+**Captured:** 2026-08-26, current `npx` release, inside a dedicated container
+network so the shadow-surface rule probes only the reference host.
 
 ### Result
 
@@ -83,9 +85,9 @@ Scan Results (10 finding(s))    critical 0 · high 6 · medium 4
 
 | Rules | Count |
 |---|---|
-| MCP rules that fired | 6 of 17 (10 findings) |
-| MCP rules that ran and reported nothing | 11 of 17 |
-| MCP rules skipped as unreachable | 0 |
+| MCP rules that fired | 6 of 28 (10 findings) |
+| MCP rules that ran and reported nothing | 17 of 28 |
+| MCP rules not applicable on this surface | 5 of 28 (see below) |
 | A2A rules that fired against an MCP server | **0** |
 
 ### What fired
@@ -98,6 +100,11 @@ Scan Results (10 finding(s))    critical 0 · high 6 · medium 4
 | `mcp-prompt-unauth-001` | high / medium | Prompt content readable; `prompts/list` returned 4 templates |
 | `mcp-completion-unauth-001` | high / medium | Suggestion values disclosed; endpoint reachable |
 | `mcp-logging-unauth-001` | medium | `logging/setLevel` reachable |
+
+The summary is byte-identical to the capture recorded when the shipped set was
+half this size - same six rules, same severities - which is itself a finding:
+nine rules added since then, aimed at classes this reference server does not
+exhibit, changed nothing here.
 
 **Honest framing.** `server-everything` is a reference implementation with no
 authorization layer by design. The unauthenticated-access findings above
@@ -113,7 +120,7 @@ transport requires servers to validate `Origin` and reject a foreign one with
 induced to reach them via DNS rebinding. The check is a two-step control:
 
 ```
-endpoint: http://127.0.0.1:3120/mcp
+endpoint: http://mcpref:3001/mcp
 baseline initialize (no Origin): accepted
 initialize with Origin https://dns-rebind.batesian.invalid: accepted (should be HTTP 403)
 ```
@@ -135,9 +142,10 @@ logging/setLevel with an invalid level → -32603
 
 ### What correctly stayed silent
 
-This is the more informative half. Eleven MCP rules ran against a server with
-**no authentication whatsoever** and reported nothing, because each carries an
-explicit precondition or discriminator that a naive implementation would lack:
+This is the more informative half. Seventeen MCP rules ran against a server
+with **no authentication whatsoever** and reported nothing, because each
+carries an explicit precondition or discriminator that a naive implementation
+would lack:
 
 | Rule | Why it declined to report |
 |---|---|
@@ -145,21 +153,29 @@ explicit precondition or discriminator that a naive implementation would lack:
 | `mcp-init-downgrade-001` | Requires the modern-version session to be *rejected* and the legacy one accepted. Both succeed here, which means no auth at all rather than a downgrade bypass. |
 | `mcp-session-fixation-001` | Control requires an un-initialized session id to be rejected. It is accepted, so the server tracks no sessions and this is not fixation. |
 | `mcp-jsonrpc-batch-bypass-001` | Requires the single-request control to be rejected while the batch succeeds. Nothing is rejected, so there is no bypass to demonstrate. |
-| `mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-oauth-metadata-ssrf-001`, `mcp-confused-deputy-001` | No OAuth registration, authorization, or metadata endpoints exist. |
-| `mcp-secret-canary-001` | The canary credential was not echoed in any response. |
+| `mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-oauth-metadata-ssrf-001`, `mcp-confused-deputy-001`, `mcp-vulnerable-version-001`'s non-matching path, and `mcp-secret-canary-001` | No OAuth registration, authorization, metadata, or recognizable vulnerable-component identity exists; the canary credential was not echoed in any response. |
 | `mcp-sse-resume-replay-001` | Requires two distinct server-minted sessions and id-bearing events to replay. |
 | `mcp-header-body-split-001` | The server does not enforce `Mcp-Method` presence, so it is not SEP-2243-aware and there is no split-brain to demonstrate. |
+| `mcp-tool-param-traversal-001`, `mcp-tool-poisoning-001`, `mcp-task-id-entropy-001` | Every post-April content-integrity rule: the manifest is factual and unique across two consecutive reads, its annotated read-only tools expose no path parameter to traverse, and task-augmented calls return uuid-shaped handles over a full hex alphabet. A reference implementation with clean descriptions staying clean is exactly what the byte-level oracles are supposed to permit. |
+
+Five MCP rules were skipped as not applicable on this surface rather than run:
+`mcp-task-idor-001` (the core-wire tasks capability is not advertised),
+`mcp-scope-confusion-001` (needs a limited second credential against an OAuth
+boundary), `mcp-session-as-credential-001` (needs a session id to strip),
+`mcp-log-optin-001` (extension-era wire only), `mcp-header-body-split-001`
+overlap accounted above.
 
 A scanner pointed at a completely open server is under maximum pressure to
-over-report. That eleven rules declined, each for a specific documented reason,
-is the strongest available evidence that the `confirmed` tier means what it
-claims.
+over-report. That seventeen rules declined, each for a specific documented
+reason - including every content-integrity rule added this cycle - is the
+strongest available evidence that the `confirmed` tier means what it claims.
 
 ### Cross-protocol check
 
-All 17 A2A rules produced **zero findings** against an MCP server: 8 reported
-inconclusive (no reachable A2A endpoint) and 9 skipped cleanly on unmet
-preconditions. Protocol misidentification does not generate noise.
+All 19 A2A rules produced **zero findings** against an MCP server, every one
+of them reporting not tested with its stated reason (no reachable A2A
+endpoint, or a precondition that was never met). Protocol misidentification
+does not generate noise.
 
 ---
 
@@ -213,8 +229,8 @@ retained as a regression seed.
 
 ```sh
 # MCP reference server
-PORT=3120 npx -y @modelcontextprotocol/server-everything streamableHttp
-batesian scan --target http://127.0.0.1:3120 --timeout 20
+PORT=3001 npx -y @modelcontextprotocol/server-everything streamableHttp
+batesian scan --target http://127.0.0.1:3001 --timeout 20
 
 # Bundled vulnerable fixtures (see testdata/README.md for the registry)
 python testdata/mcp_logging_unauth_server.py
