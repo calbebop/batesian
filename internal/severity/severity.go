@@ -49,6 +49,16 @@ func Canonical(s string) string {
 // Valid reports whether s names a severity, ignoring case and surrounding space.
 func Valid(s string) bool { return Canonical(s) != "" }
 
+// CanonicalOrRaw returns Canonical(s), or s verbatim when it names no known
+// severity - for output sites that must not collapse an unrecognized value
+// to the empty string.
+func CanonicalOrRaw(s string) string {
+	if c := Canonical(s); c != "" {
+		return c
+	}
+	return s
+}
+
 // Rank orders severities for comparison, higher being worse. An unrecognized
 // value ranks below every legal one rather than tying with "info", so a typo can
 // never win a coalescing contest against a real severity.
