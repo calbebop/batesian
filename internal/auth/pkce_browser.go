@@ -295,16 +295,22 @@ func respondCallbackError(w http.ResponseWriter, errParam, desc string) {
 // before reaching this function, so the variable arg to exec.Command is bounded
 // to URLs we generated ourselves.
 //
-// On Windows, the URL is launched via cmd /c start "" "<url>" to avoid the
-// quirk where start treats the first quoted argument as a window title.
+// Windows uses rundll32 rather than "cmd /c start". Two reasons, both
+// structural: cmd treats & in an unquoted argument as a command separator,
+// and every authorization URL here contains one (query parameters joined by
+// q.Encode), which truncated what opened and injected whatever followed;
+// routing through CreateProcess directly means no shell ever re-parses the
+// command line, so the URL arrives byte-for-byte regardless of metacharacters.
+// rundll32 ships with every Windows release back to NT and dispatches to the
+// default browser via its URL protocol association.
 func openInBrowser(target string) error {
 	if !strings.HasPrefix(target, "https://") {
 		return fmt.Errorf("refusing to open non-https URL in browser: %q", target)
 	}
 	switch runtime.GOOS {
 	case "windows":
-		// #nosec G204 -- target validated as https URL above.
-		return exec.Command("cmd", "/c", "start", "", target).Start()
+		// #nosec G204 -- target validated as https URL above; no shell involved.
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
 	case "darwin":
 		// #nosec G204 -- target validated as https URL above.
 		return exec.Command("open", target).Start()

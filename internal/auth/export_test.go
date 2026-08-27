@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"os/exec"
 )
 
 // DiscoverTokenURLWithClient is a test-only export of discoverTokenURLWithClient,
@@ -29,4 +30,11 @@ func ExchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 // endpoint is served by httptest.NewTLSServer (self-signed certificate).
 func PerformPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, client *http.Client) (*TokenResponse, error) {
 	return performPKCEFlowWithClient(ctx, cfg, client)
+}
+
+// WindowsBrowserCmd is a test-only export of the Windows browser-launch
+// command construction, so the ampersand-preservation regression can be
+// asserted on any platform.
+func WindowsBrowserCmd(target string) *exec.Cmd {
+	return exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 }
