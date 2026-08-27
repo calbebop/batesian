@@ -181,13 +181,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 		switch {
 		case authURL != "" && clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthTokenPKCE(context.Background(), authURL, tokenURL, clientID, oauthScopes, oauthAudience, redirectPort, !noBrowser)
+			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, clientID, oauthScopes, oauthAudience, redirectPort, !noBrowser)
 			if err != nil {
 				return fmt.Errorf("OAuth PKCE flow failed: %w", err)
 			}
 			token = tok
 		case clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthToken(context.Background(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience)
+			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience)
 			if err != nil {
 				return fmt.Errorf("OAuth token acquisition failed: %w", err)
 			}
@@ -256,7 +256,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	eng := engine.New(opts)
-	ctx := context.Background()
+	ctx := cmd.Context()
 	results := eng.Run(ctx, target, filtered)
 
 	if dryRun {

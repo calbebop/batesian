@@ -38,6 +38,7 @@ type Callback struct {
 // Listener is a local HTTP server that captures incoming requests.
 type Listener struct {
 	server    *http.Server
+	ln        net.Listener
 	addr      string
 	callbacks chan Callback
 	mu        sync.Mutex
@@ -70,24 +71,45 @@ func (l *Listener) Start() (string, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", l.handleCallback)
 
-	l.server = &http.Server{
+	srv := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
+	l.server = srv
+	l.ln = ln
 
 	go func() {
-		_ = l.server.Serve(ln)
+		// The local copy matters: a fast Stop between here and the first
+		// accept nils l.server, and a Serve on a nil server panics.
+		_ = srv.Serve(ln)
 	}()
 
 	l.started = true
-	return l.URL(), nil
+	return l.urlLocked(), nil
 }
 
-// URL returns the base URL of the listener.
-// The outbound IP is detected by dialing a well-known external address.
+// URL returns the base URL of the listener, or the empty string before a
+// successful Start: without a bound port there is no usable callback URL,
+// and handing the target a half-formed one would register a probe that can
+// never fire. The outbound IP is detected by dialing a well-known external
+// address; hosts with no outbound route fall back to 127.0.0.1.
 func (l *Listener) URL() string {
-	_, port, _ := net.SplitHostPort(l.addr)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.urlLocked()
+}
+
+// urlLocked is URL for callers already holding l.mu (Start reports the URL
+// it just bound).
+func (l *Listener) urlLocked() string {
+	if l.addr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(l.addr)
+	if err != nil {
+		return ""
+	}
 	ip := outboundIP()
 	return fmt.Sprintf("http://%s:%s", ip, port)
 }
@@ -117,14 +139,28 @@ func (l *Listener) WaitForMarker(ctx context.Context, timeout time.Duration, mar
 	}
 }
 
-// Stop shuts down the HTTP server.
+// Stop shuts down the HTTP server and resets the listener so a subsequent
+// Start binds a fresh port. Without the reset, a reused Listener reported
+// its old URL as if a server still answered there - callbacks would then
+// silently never arrive.
 func (l *Listener) Stop(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.server == nil {
 		return nil
 	}
-	return l.server.Shutdown(ctx)
+	// Closing the listener first makes Shutdown decisive even when the serve
+	// goroutine has not reached Accept yet - without it, the open port would
+	// survive a restart racing this call.
+	if l.ln != nil {
+		_ = l.ln.Close()
+	}
+	err := l.server.Shutdown(ctx)
+	l.server = nil
+	l.ln = nil
+	l.addr = ""
+	l.started = false
+	return err
 }
 
 func (l *Listener) handleCallback(w http.ResponseWriter, r *http.Request) {
