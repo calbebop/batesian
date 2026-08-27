@@ -18,6 +18,7 @@ import (
 	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
+	"github.com/calbebop/batesian/internal/severity"
 	"github.com/spf13/cobra"
 )
 
@@ -689,9 +690,14 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 				})
 			}
 			findings = append(findings, jsonFinding{
-				RuleID:      f.RuleID,
-				RuleName:    f.RuleName,
-				Severity:    f.Severity,
+				RuleID:   f.RuleID,
+				RuleName: f.RuleName,
+				// Canonical, matching the summary buckets and SARIF output:
+				// a finding carrying "Critical" used to serialize as
+				// "Critical" while being counted under "critical" in the
+				// same document. Unknown severities fall back to the raw
+				// string rather than collapsing to empty.
+				Severity:    severity.CanonicalOrRaw(f.Severity),
 				Confidence:  confidence,
 				Title:       f.Title,
 				Description: f.Description,
@@ -720,13 +726,32 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 		"findings": findings,
 		"skipped":  skipped,
 		"errors":   ruleErrors,
-		"summary": map[string]int{
-			"total":    engine.TotalFindings(results),
-			"critical": len(engine.FindingsBySeverity(results)["critical"]),
-			"high":     len(engine.FindingsBySeverity(results)["high"]),
-			"medium":   len(engine.FindingsBySeverity(results)["medium"]),
-			"low":      len(engine.FindingsBySeverity(results)["low"]),
-			"info":     len(engine.FindingsBySeverity(results)["info"]),
-		},
+		"summary":  buildSummary(results),
 	}
+}
+
+// buildSummary counts findings into the canonical severity buckets. An
+// "unknown" bucket accounts for findings whose severity is not one of the
+// known values, so the buckets always sum to total - executors set severity
+// as a plain string, and a value nothing validates used to be counted in
+// total while vanishing from every bucket.
+func buildSummary(results []engine.RunResult) map[string]int {
+	total := engine.TotalFindings(results)
+	bySev := engine.FindingsBySeverity(results)
+	summary := map[string]int{
+		"total":    total,
+		"critical": len(bySev["critical"]),
+		"high":     len(bySev["high"]),
+		"medium":   len(bySev["medium"]),
+		"low":      len(bySev["low"]),
+		"info":     len(bySev["info"]),
+	}
+	known := 0
+	for _, k := range []string{"critical", "high", "medium", "low", "info"} {
+		known += summary[k]
+	}
+	if unknown := total - known; unknown > 0 {
+		summary["unknown"] = unknown
+	}
+	return summary
 }
