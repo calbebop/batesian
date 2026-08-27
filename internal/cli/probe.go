@@ -285,6 +285,11 @@ func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string,
 					Description: t.Description,
 				})
 			}
+		} else {
+			// Silence here reads as "no tools", which is the one conclusion a
+			// failed listing can never support - and probe's whole deliverable
+			// is the surface map.
+			printer.Warn(fmt.Sprintf("tools/list failed: %v (tool surface not enumerated)", err))
 		}
 	}
 
@@ -303,6 +308,8 @@ func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string,
 				RuleID:   "mcp-resources-unauth-001",
 				Message:  fmt.Sprintf("%d resource(s) listed without authentication. Run scan to read content.", len(resources)),
 			})
+		} else if err != nil {
+			printer.Warn(fmt.Sprintf("resources/list failed: %v (resource surface not enumerated)", err))
 		}
 	}
 
@@ -324,6 +331,8 @@ func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string,
 					HasRequired: hasReq,
 				})
 			}
+		} else {
+			printer.Warn(fmt.Sprintf("prompts/list failed: %v (prompt surface not enumerated)", err))
 		}
 	}
 
