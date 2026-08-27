@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -28,10 +29,19 @@ scanners never see.
 Documentation: https://github.com/calbebop/batesian`,
 }
 
-// Execute is the entrypoint called by main.
+// Execute is the entrypoint called by main. The context carries signal
+// cancellation (see cmd/batesian/main.go): an interrupt propagates to every
+// in-flight request and lets executor cleanup defers actually run, rather
+// than the process dying with listeners still bound.
 func Execute() error {
+	return ExecuteContext(context.Background())
+}
+
+// ExecuteContext runs the root command bound to ctx.
+func ExecuteContext(ctx context.Context) error {
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
+	rootCmd.SetContext(ctx)
 	return rootCmd.Execute()
 }
 
