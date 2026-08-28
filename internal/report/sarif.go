@@ -1,10 +1,13 @@
 package report
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
@@ -59,12 +62,19 @@ type sarifRuleProperties struct {
 	Severity string   `json:"security-severity,omitempty"` // CVSS-like 0.0-10.0 string
 }
 
+// sarifResult carries partialFingerprints so GitHub code-scanning correlates
+// one logical finding to one alert across scans: without it, identity is
+// ruleId + artifact URI, and a discovered endpoint that moves (the candidate
+// walk appending or dropping a path) re-opens the same vulnerability as a new
+// alert. The fingerprint hashes rule ID plus the finding title - both stable
+// while the endpoint string is not.
 type sarifResult struct {
-	RuleID     string            `json:"ruleId"`
-	Level      string            `json:"level"` // error, warning, note, none
-	Message    sarifMessage      `json:"message"`
-	Locations  []sarifLocation   `json:"locations"`
-	Properties map[string]string `json:"properties,omitempty"`
+	RuleID              string            `json:"ruleId"`
+	Level               string            `json:"level"` // error, warning, note, none
+	Message             sarifMessage      `json:"message"`
+	Locations           []sarifLocation   `json:"locations"`
+	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
+	Properties          map[string]string `json:"properties,omitempty"`
 }
 
 type sarifMessage struct {
@@ -86,7 +96,7 @@ type sarifArtifactLocation struct {
 }
 
 // WriteSARIF encodes the scan results as SARIF v2.1.0 JSON to w.
-func WriteSARIF(w io.Writer, target string, results []engine.RunResult, toolVersion string) error {
+func WriteSARIF(w io.Writer, results []engine.RunResult, toolVersion string) error {
 	doc := buildSARIF(results, toolVersion)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -115,6 +125,7 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 				Name:             r.Rule.Info.Name,
 				ShortDescription: sarifMessage{Text: r.Rule.Info.Name},
 				FullDescription:  sarifMessage{Text: truncateRunes(r.Rule.Info.Description, 500)},
+				HelpURI:          firstHTTPReference(r.Rule.Info.References),
 				Properties: sarifRuleProperties{
 					Tags:     tags,
 					Severity: severityScore(r.Rule.Info.Severity),
@@ -193,8 +204,34 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 				},
 			},
 		},
+		PartialFingerprints: map[string]string{
+			"primaryLocationLineHash": fingerprint(f),
+		},
 		Properties: props,
 	}
+}
+
+// fingerprint derives the stable per-finding identity used for
+// partialFingerprints: SHA-256 over rule ID and finding title, hex-encoded.
+// Both fields survive endpoint-string drift, which is exactly the churn that
+// used to re-open one vulnerability as a fresh alert.
+func fingerprint(f attackpkg.Finding) string {
+	sum := sha256.Sum256([]byte(f.RuleID + "\x00" + f.Title))
+	return hex.EncodeToString(sum[:])
+}
+
+// firstHTTPReference picks the first http(s) reference from a rule's
+// reference list for helpUri. Rules cite specs and advisories there; GitHub
+// code-scanning renders the field as the alert's help link. A rule with no
+// http reference (or none at all) yields an empty helpUri, which the
+// omitempty tag drops.
+func firstHTTPReference(refs []string) string {
+	for _, r := range refs {
+		if strings.HasPrefix(r, "https://") || strings.HasPrefix(r, "http://") {
+			return r
+		}
+	}
+	return ""
 }
 
 // severityLevel maps Batesian severity strings to SARIF level values.
