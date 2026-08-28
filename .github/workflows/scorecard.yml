@@ -18,6 +18,10 @@ on:
   schedule:
     # Weekly, Monday 05:30 UTC.
     - cron: '30 5 * * 1'
+  # Manual trigger, matching every other scheduled workflow in this repo: a
+  # direct API call that works when event delivery is degraded (the
+  # 2026-08-06 Actions incident is the precedent documented in ci.yml).
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -25,6 +29,7 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # Needed to upload the results to the code-scanning dashboard.
       security-events: write
