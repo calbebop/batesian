@@ -30,12 +30,16 @@ jobs:
   a2a-secured-agent:
     name: A2A false-positive gate (secured agent)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Tags and history feed git describe in the ldflags below, so these
+          # gates exercise the same version string a released binary carries.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -53,7 +57,9 @@ jobs:
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        run: go build -o batesian ./cmd/batesian
+        # Match the Makefile's ldflags so the gates validate the real binary
+        # identity (User-Agent included), not a bare 'dev' build.
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the secured-agent validation
         run: python .github/scripts/validate_secured_agent.py
@@ -63,12 +69,16 @@ jobs:
   a2a-push-callback-auth:
     name: A2A push callback-auth gate (unsigned/signed/nocallback)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Tags and history feed git describe in the ldflags below, so these
+          # gates exercise the same version string a released binary carries.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -86,7 +96,9 @@ jobs:
         run: pip install starlette uvicorn httpx
 
       - name: Build batesian
-        run: go build -o batesian ./cmd/batesian
+        # Match the Makefile's ldflags so the gates validate the real binary
+        # identity (User-Agent included), not a bare 'dev' build.
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the push callback-auth validation
         run: python .github/scripts/validate_push_callback_auth.py
@@ -96,12 +108,16 @@ jobs:
   mcp-property-fixtures:
     name: MCP property gates (probe-honesty, log opt-in, body size, session)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Tags and history feed git describe in the ldflags below, so these
+          # gates exercise the same version string a released binary carries.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -119,7 +135,9 @@ jobs:
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        run: go build -o batesian ./cmd/batesian
+        # Match the Makefile's ldflags so the gates validate the real binary
+        # identity (User-Agent included), not a bare 'dev' build.
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the MCP property-fixture validations
         run: python .github/scripts/validate_mcp_fixtures.py
@@ -129,12 +147,16 @@ jobs:
   fastmcp-target:
     name: MCP false-positive + true-positive gate (FastMCP, third-party)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Tags and history feed git describe in the ldflags below, so these
+          # gates exercise the same version string a released binary carries.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -154,7 +176,9 @@ jobs:
         run: pip install "fastmcp>=3"
 
       - name: Build batesian
-        run: go build -o batesian ./cmd/batesian
+        # Match the Makefile's ldflags so the gates validate the real binary
+        # identity (User-Agent included), not a bare 'dev' build.
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the FastMCP validation
         run: python .github/scripts/validate_fastmcp.py
@@ -164,12 +188,16 @@ jobs:
   oauth-dcr-fixture:
     name: MCP OAuth DCR cleanup + report-leftovers gate
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Tags and history feed git describe in the ldflags below, so these
+          # gates exercise the same version string a released binary carries.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -186,7 +214,9 @@ jobs:
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        run: go build -o batesian ./cmd/batesian
+        # Match the Makefile's ldflags so the gates validate the real binary
+        # identity (User-Agent included), not a bare 'dev' build.
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the OAuth DCR validation
         run: python .github/scripts/validate_oauth_dcr.py

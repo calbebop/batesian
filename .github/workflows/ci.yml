@@ -31,6 +31,7 @@ jobs:
   build:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -60,6 +61,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -79,6 +81,7 @@ jobs:
   vuln:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -89,11 +92,12 @@ jobs:
           cache: true
 
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
   release:
     name: Release (goreleaser)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Tag PUSH only. workflow_dispatch accepts any ref, including a tag, so a
     # ref test alone would let a manual run re-publish an existing release.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -117,7 +121,8 @@ jobs:
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       # cosign performs keyless signing of the checksums file using the
-      # workflow's OIDC token. Output: checksums.txt.sig + checksums.txt.pem.
+      # workflow's OIDC token. Output: checksums.txt.sigstore.json (cosign v3
+      # bundles; see .goreleaser.yaml signs block for exactly what ships).
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
