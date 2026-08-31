@@ -298,12 +298,14 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 }
 
 func TestOAuthAudience_Ambiguous200(t *testing.T) {
-	// Server returns 200 with no JSON-RPC envelope to every probe (e.g. a
+	// Server returns 200 with no JSON-RPC envelope to any probe (e.g. a
 	// non-MCP endpoint or a generic 2xx ack). That is not evidence that any
-	// forged token was accepted, so the rule must produce no finding rather
-	// than a downgraded indicator. (Previously a 200 non-result was treated as
-	// "ambiguous acceptance" and emitted a RiskIndicator, which false-positived
-	// non-MCP targets whose /mcp fell through to a 200 page.)
+	// forged token was accepted, and it is not a rejection either: no probe was
+	// ever judged. The rule must report not tested rather than either a
+	// downgraded indicator or a clean pass. (A 200 non-result was first treated
+	// as "ambiguous acceptance", which false-positived non-MCP targets whose
+	// /mcp fell through to a 200 page; it then read as clean, which claimed the
+	// audience handling is sound about a JSON-RPC layer that engaged nothing.)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -315,11 +317,11 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
 	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings for a 200 non-result target, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("no probe was judged; want ErrInconclusive, got %v", err)
 	}
 }
 
@@ -361,6 +363,92 @@ func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("expected RiskIndicator (control not clearly rejected), got %q", findings[0].Confidence)
+	}
+}
+
+// A 429 is not a rejection. The negative control is what upgrades an accepted
+// trap to a confirmed finding: "the control was REJECTED, so the audience value
+// was the decisive factor". A rate limiter catching the control (plausible on
+// its own: the probes are a burst) made that argument out of a reply that said
+// nothing about the token, and every trap acceptance read as confirmed.
+func TestOAuthAudience_RateLimitedControlDowngradesToIndicator(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			// Gate initialize itself, so the probes' initialize verdicts stand.
+			challenge401(w)
+			return
+		}
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if s, ok := aud.(string); ok && strings.HasPrefix(s, "https://batesian-control") {
+			// The rate limiter caught the control probe.
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		// Every trap probe is accepted with a clean result envelope.
+		initializeOK(w)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected the accepted traps to survive a rate-limited control, got %d findings: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("a control that was rate-limited, not rejected, cannot isolate the audience value as decisive; want RiskIndicator, got %q", findings[0].Confidence)
+	}
+}
+
+// A 429 on every probe is a scan that never happened: no token was judged.
+// Reading 429 as a rejection made this a clean result, claiming the audience
+// check is sound about a server that refused nothing and accepted nothing.
+func TestOAuthAudience_RateLimitedEverythingIsNotTested(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d", len(findings))
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("rate-limited probes judged nothing; want ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("the reason should name the statuses that came back, got: %v", err)
+	}
+}
+
+// An explicit JSON-RPC refusal counts as a rejection at any HTTP status, the
+// same rule classifyAccess applies: a 400 carrying an error envelope is the
+// JSON-RPC layer saying no, not a verdict the scanner could not read. Every
+// probe refused is a tested surface, so the result is clean.
+func TestOAuthAudience_ExplicitJSONRPCRefusalIsARejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error":   map[string]interface{}{"code": -32602, "message": "invalid request"},
+		})
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if err != nil {
+		t.Fatalf("an explicit refusal is a tested surface; want clean, got %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings, got %d", len(findings))
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -134,6 +135,19 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes)
 	if finding != nil {
 		return []attack.Finding{*finding}, nil
+	}
+
+	// Nothing was accepted. Before calling that a clean result, check that the
+	// probes were actually judged. A reply carrying no verdict used to read as
+	// a rejection, so a rate-limited scan reported audience matching sound;
+	// classifyResponse now grades those inconclusive, and "every probe
+	// inconclusive" is a scan that never happened, not a server that enforced
+	// its gate. This runs before the premise check below: that one explains
+	// refusals, and a rate limiter refused nothing.
+	if everyProbeInconclusive(outcomes) {
+		return nil, fmt.Errorf("%w: every audience probe at %s came back without a verdict "+
+			"(HTTP %s), so whether the server enforces audience matching could not be judged",
+			attack.ErrInconclusive, endpoint, outcomeStatuses(outcomes))
 	}
 
 	// Nothing was accepted. That is only a clean result if the probes were built
@@ -494,6 +508,14 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 // was accepted, so it produces no finding. (Previously this was treated as a
 // downgraded "ambiguous" acceptance, which false-positived non-MCP targets whose
 // /mcp request fell through to a 200 HTML page.)
+//
+// An explicit JSON-RPC `error` envelope counts as a rejection at any HTTP
+// status, the same rule classifyAccess applies: the JSON-RPC layer said no.
+// Every other reply outside 200/401/403 is inconclusive, a 429 above all.
+// Reading the remaining 4xx as a rejection made a rate-limited negative control
+// look like "the audience value was the decisive factor", which upgraded an
+// accepted trap to a confirmed finding, and made a rate-limited scan report
+// audience matching sound.
 func classifyResponse(resp *attack.Response) audVerdict {
 	switch {
 	case resp.StatusCode == 200:
@@ -515,9 +537,13 @@ func classifyResponse(resp *attack.Response) audVerdict {
 		// worked, which is how this rule reported a whole target secure on the
 		// strength of paths that did not exist.
 		return verdictInconclusive
-	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+	case isJSONRPCError(resp.BodyString()):
+		// An explicit JSON-RPC refusal counts whatever HTTP status carries it.
 		return verdictRejected
 	default:
+		// A 429 from a rate limiter, a bare 400, an HTML 500: the server did not
+		// judge the token. classifyAccess leaves these undetermined, and so does
+		// this rule now.
 		return verdictInconclusive
 	}
 }
@@ -634,6 +660,36 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 		Remediation: rc.Remediation,
 		TargetURL:   endpoint,
 	}
+}
+
+// everyProbeInconclusive reports whether no probe produced a verdict: nothing
+// was accepted, and nothing was clearly refused either. A clean result claims
+// the audience check is sound, which needs at least one probe the server
+// actually judged; a scan where every probe was rate-limited or otherwise
+// unanswered judged nothing, and is not tested instead.
+func everyProbeInconclusive(outcomes []probeOutcome) bool {
+	for _, o := range outcomes {
+		if o.verdict != verdictInconclusive {
+			return false
+		}
+	}
+	return len(outcomes) > 0
+}
+
+// outcomeStatuses renders the distinct HTTP statuses the probes received, for
+// the not-tested reason. Zero is a transport failure, which said nothing about
+// the endpoint and is left out.
+func outcomeStatuses(outcomes []probeOutcome) string {
+	seen := map[int]bool{}
+	statuses := []string{}
+	for _, o := range outcomes {
+		if o.status == 0 || seen[o.status] {
+			continue
+		}
+		seen[o.status] = true
+		statuses = append(statuses, strconv.Itoa(o.status))
+	}
+	return strings.Join(statuses, ", ")
 }
 
 // formatEvidence renders the per-probe evidence block. The operator-supplied
