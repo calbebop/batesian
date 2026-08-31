@@ -383,7 +383,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 		if err != nil {
 			continue // transport failure: nothing answered, so nothing to explain
 		}
-		if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 			// This rule presents a token explicitly, so the client's ambient
 			// credential is not what decides whether the request carried one.
 			observed.observe(classifyInitFailure(ep, p.token != "", resp))

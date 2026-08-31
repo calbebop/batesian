@@ -194,9 +194,12 @@ func isAuthRejection(resp *attack.Response) bool {
 	return authFlavoredError(obj.Error.Code, obj.Error.Message)
 }
 
-// isMCPInitialize reports whether a response is a successful MCP initialize result.
+// isMCPInitialize reports whether a response is a completed MCP initialize
+// result. The JSON-level oracle, not a substring over the raw body: an error
+// envelope whose message quotes the field names is not a handshake, and this
+// rule derives which methods to probe from ServerSupports parsing that body.
 func isMCPInitialize(resp *attack.Response) bool {
-	return resp.IsSuccess() && resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`)
+	return resp.IsSuccess() && initializeSucceeded(resp.Body)
 }
 
 // batchHasResult reports whether body is a JSON-RPC batch response (a JSON array)

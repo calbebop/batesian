@@ -175,6 +175,31 @@ func legacyHandshakeBody() map[string]interface{} {
 	}
 }
 
+// initializeSucceeded reports whether body is a completed MCP initialize: a
+// result envelope naming the negotiated revision. It is the handshake-grade
+// counterpart of answersMCPInitialize, which answers the reachability question
+// and deliberately counts version rejections and auth refusals, because for
+// that question an error still proves an MCP endpoint is listening.
+//
+// The distinction is load-bearing. A 2xx JSON-RPC error envelope whose message
+// quotes a field name (an SDK writing `unsupported "protocolVersion" value`)
+// serializes with the quotes intact, so a substring gate over the raw body
+// accepts it, and a rule built on that gate then treated the error as the
+// session's initialize result: RawInit became the error body, ServerSupports
+// derived capabilities from it, and notifications/initialized was sent against
+// a session the server never established. This oracle reads
+// result.protocolVersion, so an error envelope does not count whatever it
+// quotes. Callers pair it with IsSuccess so a non-2xx carrying a result body
+// does not count either.
+func initializeSucceeded(initBody []byte) bool {
+	var body struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	return json.Unmarshal(initBody, &body) == nil && body.Result.ProtocolVersion != ""
+}
+
 // negotiatedVersion reads the protocolVersion the server chose from its
 // initialize result body, falling back to latestStable if the server did not
 // echo one. The negotiated value is sent in the Mcp-Protocol-Version header on

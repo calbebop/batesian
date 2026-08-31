@@ -103,7 +103,7 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 	mcpPath := ""
 	for _, path := range shadowPaths {
 		resp, err := client.POST(ctx, base+path, nil, legacyHandshakeBody())
-		if err != nil || !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 			continue
 		}
 		mcpPath = path
@@ -141,8 +141,7 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 	// one header different. Accepting it is the browser-reachability half of
 	// the rebinding chain.
 	rebindResp, rebindErr := client.POST(ctx, endpoint, map[string]string{"Origin": foreignOrigin}, legacyHandshakeBody())
-	originOpen := rebindErr == nil && rebindResp.IsSuccess() &&
-		rebindResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`)
+	originOpen := rebindErr == nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body)
 
 	sev, title := "medium", fmt.Sprintf("MCP surface answers without authentication on %s:%d%s", host, port, mcpPath)
 	if originOpen {

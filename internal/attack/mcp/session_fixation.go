@@ -170,10 +170,7 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return "", false
-	}
-	if !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+	if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 		return "", false
 	}
 	return resp.Headers.Get("Mcp-Session-Id"), true
