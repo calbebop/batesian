@@ -185,7 +185,7 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 		if err != nil {
 			continue
 		}
-		if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 			observed.observe(classifyInitFailure(ep, p.token != "", resp))
 			continue
 		}

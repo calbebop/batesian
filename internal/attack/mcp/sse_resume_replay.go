@@ -143,7 +143,7 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 	if err != nil {
 		return "", false, nil
 	}
-	if !resp.IsSuccess() || !resp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 		return "", false, resp
 	}
 	sid := resp.Headers.Get("Mcp-Session-Id")

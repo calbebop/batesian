@@ -292,7 +292,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		if err != nil {
 			continue // transport failure: nothing answered, so nothing to explain
 		}
-		if !initResp.IsSuccess() || !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+		if !initResp.IsSuccess() || !initializeSucceeded(initResp.Body) {
 			if hadCached && ep == cachedEp {
 				// The remembered endpoint has gone stale: forget it and let
 				// this walk continue over every candidate as before.

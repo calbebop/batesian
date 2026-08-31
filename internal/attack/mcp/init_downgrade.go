@@ -316,12 +316,11 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 	if err != nil || !initResp.IsSuccess() {
 		return false, mcpSession{}
 	}
-	body := initResp.BodyString()
-	// Explicit version rejection (error without a negotiated version).
-	if strings.Contains(body, `"error"`) && !strings.Contains(body, `"protocolVersion"`) {
-		return false, mcpSession{}
-	}
-	if !initResp.ContainsAny(`"protocolVersion"`, `"serverInfo"`, `"capabilities"`) {
+	// A version rejection, or any other error envelope, means the handshake did
+	// not complete, which is initOK=false either way per the contract above.
+	// initializeSucceeded reads result.protocolVersion, so an error whose message
+	// quotes the field names no longer passes the way a substring gate let it.
+	if !initializeSucceeded(initResp.Body) {
 		return false, mcpSession{}
 	}
 	session := mcpSession{

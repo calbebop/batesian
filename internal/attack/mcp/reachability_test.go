@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -77,6 +78,103 @@ func TestAnswersMCPInitialize(t *testing.T) {
 				t.Errorf("answersMCPInitialize(%s) = %v, want %v", tc.body, got, tc.want)
 			}
 		})
+	}
+}
+
+// initializeSucceeded is the oracle every session-building call site gates the
+// handshake on. It replaced a substring check over the raw body, which accepted
+// any 2xx error envelope whose message quotes a field name, so the rules then
+// built a session from an error body. The quoting case is the regression that
+// motivates the JSON-level read; unlike answersMCPInitialize, no error counts,
+// because the question is whether the handshake completed, not whether an MCP
+// endpoint answered.
+func TestInitializeSucceeded(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "completed handshake",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"s"}}}`,
+			want: true,
+		},
+		{
+			// The defect this oracle replaced: the error message quotes the field
+			// names the substring gate matched on.
+			name: "error envelope quoting the field names is not a handshake",
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unsupported \"protocolVersion\" value, expected \"serverInfo\" and \"capabilities\""}}`,
+			want: false,
+		},
+		{
+			// answersMCPInitialize deliberately counts this; the handshake oracle
+			// must not, or a version rejection would open a session.
+			name: "version rejection is not a completed handshake",
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Unsupported protocol version"}}`,
+			want: false,
+		},
+		{
+			name: "result without a protocolVersion is not a handshake",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"s"}}}`,
+			want: false,
+		},
+		{
+			name: "batch response is not a handshake",
+			body: `[{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}]`,
+			want: false,
+		},
+		{
+			name: "non-JSON body is not a handshake",
+			body: `<html>not json</html>`,
+			want: false,
+		},
+		{
+			name: "empty body is not a handshake",
+			body: ``,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := initializeSucceeded([]byte(tc.body)); got != tc.want {
+				t.Errorf("initializeSucceeded(%s) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// This pins the WIRING through initializeMCP, not just the oracle. A unit test
+// on initializeSucceeded alone stays green when a call site is reverted to the
+// substring gate, so it does not protect the behaviour that matters.
+//
+// initializeMCP is the shared handshake walk. Pointed at a server that answers
+// every candidate with a 2xx error envelope quoting the field names, the old
+// gate opened a session whose RawInit was that error body and cached the
+// endpoint for the whole scan. Now the walk must fail with the reason
+// classifyInitFailure derives from the envelope, and no session may come back.
+func TestInitializeMCP_ErrorEnvelopeIsNotASession(t *testing.T) {
+	const envelope = `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unsupported \"protocolVersion\" value, expected \"serverInfo\" and \"capabilities\""}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(envelope))
+	}))
+	defer srv.Close()
+
+	client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(srv.URL, ""))
+	session, err := initializeMCP(context.Background(), client, srv.URL)
+	if err == nil {
+		t.Fatal("initializeMCP must not report success against an error-envelope server")
+	}
+	if session.Endpoint != "" {
+		t.Fatalf("an error envelope must not produce a session; got endpoint %q", session.Endpoint)
+	}
+	var refusal handshakeRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("expected a handshakeRefusal naming the refusal, got %v", err)
+	}
+	if !strings.Contains(refusal.reason, `-32602`) {
+		t.Errorf("the refusal should quote the server's own JSON-RPC code, got %q", refusal.reason)
 	}
 }
 
