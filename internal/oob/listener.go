@@ -18,6 +18,7 @@ package oob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -156,6 +157,15 @@ func (l *Listener) Stop(ctx context.Context) error {
 		_ = l.ln.Close()
 	}
 	err := l.server.Shutdown(ctx)
+	// When the serve goroutine registered the listener before this call ran,
+	// Shutdown closes it a second time and reports the fd already closed by
+	// the line above. That is this function's own two closes of one listener,
+	// not a shutdown failure: only this call ever closes the fd, so ErrClosed
+	// here can mean nothing else. The lifecycle test asserts on Stop's error,
+	// which is how this surfaced as a CI flake rather than a silent one.
+	if errors.Is(err, net.ErrClosed) {
+		err = nil
+	}
 	l.server = nil
 	l.ln = nil
 	l.addr = ""
