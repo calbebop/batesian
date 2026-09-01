@@ -91,7 +91,22 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	// privileged scope. A rejected registration (auth required / scope policy)
 	// or a granted scope reduced to read-only is correct behaviour: no finding.
 	if escalatedResp.StatusCode != 200 && escalatedResp.StatusCode != 201 {
-		return nil, nil
+		// RFC 7591 section 3.2.2 answers an invalid registration with 400, an
+		// authorization server requiring a registration token answers 401, and
+		// 403 is the policy-denied variant. Those are verdicts: the server
+		// judged the request and declined it, which is the secure answer to
+		// this rule's question. Any other status - a 429 from a rate limiter,
+		// a gateway 502 - judged nothing, and a clean result there asserted the
+		// server's granted-scope policy is sound about a reply that said
+		// nothing.
+		switch escalatedResp.StatusCode {
+		case 400, 401, 403:
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: the registration request to %s was answered with HTTP %d, which is "+
+			"neither an acceptance nor a registration refusal, so the granted-scope policy for anonymous "+
+			"registrants could not be judged",
+			attack.ErrInconclusive, registrationEndpoint, escalatedResp.StatusCode)
 	}
 	grantedScope := escalatedResp.JSONField("scope")
 	granted := privilegedScopesIn(grantedScope)
