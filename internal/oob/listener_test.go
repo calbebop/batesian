@@ -97,3 +97,23 @@ func TestListener_StopResetsLifecycle(t *testing.T) {
 		t.Errorf("second stop: %v", err)
 	}
 }
+
+// TestListener_StopRepeatNeverReportsOwnDoubleClose drives the interleaving
+// the single start/stop above only samples once: whether the serve goroutine
+// has registered the listener before Stop runs decides which of Stop's two
+// closes of the same fd observes it already shut, and the loser used to
+// surface as Stop's return value. A CI run caught that as a 1-in-N flake
+// ("close tcp: use of closed network connection"); the loop makes the
+// assertion fire on every run and fails on revert.
+func TestListener_StopRepeatNeverReportsOwnDoubleClose(t *testing.T) {
+	ctx := context.Background()
+	for i := 0; i < 25; i++ {
+		l := New()
+		if _, err := l.Start(); err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		if err := l.Stop(ctx); err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+	}
+}
