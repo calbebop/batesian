@@ -220,6 +220,44 @@ func TestOAuthDCR_NoOAuthServer(t *testing.T) {
 	}
 }
 
+// A registration answered with a status that is neither an acceptance nor one
+// of the RFC 7591 refusal statuses (400/401/403) judged nothing: a 429 from a
+// rate limiter or a gateway 502 says nothing about the granted-scope policy,
+// and a clean result there asserted that policy is sound about a reply that
+// said nothing. The refusal statuses stay clean and are pinned above by the
+// secure (400) and auth-gated (401) servers.
+func TestOAuthDCR_UnjudgedRegistrationStatusIsNotTested(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				base := "http://" + srv.Listener.Addr().String()
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/.well-known/oauth-authorization-server":
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"issuer":                base,
+						"registration_endpoint": base + "/register",
+					})
+				case "/register":
+					w.WriteHeader(status)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 {
+				t.Fatalf("expected no findings, got %d", len(findings))
+			}
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Errorf("HTTP %d judged no registration; want ErrInconclusive, got %v", status, err)
+			}
+		})
+	}
+}
+
 // Nothing answered, so the rule was never exercised.
 func TestOAuthDCR_NothingReachableIsNotTested(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
