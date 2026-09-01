@@ -109,9 +109,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		target = cfg.Target
 	}
-	if outputFmt == "" {
-		outputFmt = cfg.Output
-	}
+	// The flag carries a default, so this is the same sentinel problem as
+	// --proxy: an empty value cannot say "not passed".
+	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
 	if protocol == "" {
 		protocol = cfg.Protocol
 	}
@@ -446,6 +446,21 @@ func firstNonEmpty(vals ...string) string {
 // Otherwise a positive config value is used; otherwise the flag value (default).
 func effectiveTimeout(flagChanged bool, flagVal, cfgVal int) int {
 	if !flagChanged && cfgVal > 0 {
+		return cfgVal
+	}
+	return flagVal
+}
+
+// effectiveOutput resolves --output from the flag and the config file. The flag
+// carries a default ("table"), so its value can never distinguish "not passed"
+// from "explicitly table" and the config file's documented, validated output
+// field could never apply; the flag therefore wins only when it was actually
+// passed, the same treatment --proxy got for the same sentinel problem.
+func effectiveOutput(flagChanged bool, flagVal, cfgVal string) string {
+	if flagChanged {
+		return flagVal
+	}
+	if cfgVal != "" {
 		return cfgVal
 	}
 	return flagVal

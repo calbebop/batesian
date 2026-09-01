@@ -1,6 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,5 +177,82 @@ func TestEffectiveSkipTLS(t *testing.T) {
 				t.Errorf("effectiveSkipTLS(%v, %v, %v) = %v, want %v", tc.flagChanged, tc.flagVal, tc.cfgVal, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEffectiveOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagVal     string
+		cfgVal      string
+		want        string
+	}{
+		// The bug this guards: the flag carries a default, so the old
+		// empty-string sentinel never fired and the config value could never
+		// apply. "flag wins" therefore means "flag was actually passed".
+		{"explicit flag wins over config", true, "json", "sarif", "json"},
+		{"explicit flag equal to default wins over config", true, "table", "sarif", "table"},
+		{"config used when flag not passed", false, "table", "sarif", "sarif"},
+		{"flag default when neither set", false, "table", "", "table"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveOutput(tc.flagChanged, tc.flagVal, tc.cfgVal); got != tc.want {
+				t.Errorf("effectiveOutput(%v, %q, %q) = %q, want %q", tc.flagChanged, tc.flagVal, tc.cfgVal, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScan_ConfigOutputFieldApplies pins the WIRING, not just the helper: the
+// config file's output field is validated, documented in the generated
+// example, and was silently ignored because the --output default masked the
+// empty-string sentinel. Driven through the real command against a target
+// that answers nothing, so the run is fast and sends no attack traffic: a
+// 404-everything server leaves every rule not-tested and the payload on
+// stdout must be the JSON envelope the config asked for.
+func TestScan_ConfigOutputFieldApplies(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(cfgPath, []byte("output: json\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	// The machine-readable payload goes to os.Stdout; banner and status go to
+	// stderr for json output, so stdout must carry the envelope alone. The
+	// reader runs concurrently: the payload exceeds a pipe's buffer, and a
+	// reader that starts only after Execute returns deadlocks the writer.
+	stdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	var buf bytes.Buffer
+	readerDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(readerDone)
+	}()
+
+	os.Stdout = w
+	rootCmd.SetArgs([]string{"scan", "--target", srv.URL, "--config", cfgPath})
+	cmdErr := rootCmd.Execute()
+	os.Stdout = stdout
+	_ = w.Close()
+	defer func() { rootCmd.SetArgs(nil) }()
+	<-readerDone
+	if cmdErr != nil {
+		t.Fatalf("scan: %v", cmdErr)
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("config output: json did not produce a JSON payload on stdout: %v; got %.200s", err, buf.String())
+	}
+	if _, ok := doc["findings"]; !ok {
+		t.Errorf("payload missing the findings key: %.200s", buf.String())
 	}
 }
