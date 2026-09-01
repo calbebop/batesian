@@ -28,6 +28,10 @@ import (
 //   - "create-open":   task creation needs no credentials but reads do, and reads
 //     are not scoped. Authentication really is enforced on the surface this rule
 //     tests, so the boundary B crosses is real => both findings.
+//   - "anon-create-envelope": anonymous creation is refused with a JSON-RPC
+//     error envelope at HTTP 200, the spec'd refusal shape, while reads are
+//     unscoped. The refusal is a verdict, so the rule proceeds; it used to read
+//     as no verdict and suppress the rule.
 //   - "no-tasks-cap":  the tasks capability is absent => skip.
 //   - "unsafe-tool":   the only task-capable tool carries no safety annotations,
 //     so the rule refuses to invoke it => skip.
@@ -121,6 +125,12 @@ func taskIDORServer(mode string) *httptest.Server {
 			}
 			// Only no-auth and create-open let an anonymous caller create a task.
 			if mode != "no-auth" && mode != "create-open" && !authed {
+				if mode == "anon-create-envelope" {
+					// The spec'd refusal shape: a JSON-RPC error envelope at
+					// HTTP 200. That is a real answer, not a missing verdict.
+					rpcErr(-32001, "Unauthorized")
+					return
+				}
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -240,6 +250,28 @@ func TestTaskIDOR_HiddenAnonInitializeIsNotTested(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "returned no verdict") {
 		t.Errorf("reason should name the unanswered control: %v", err)
+	}
+}
+
+// TestTaskIDOR_AnonCreationRefusedAt200StillTestsScoping: the anonymous control
+// had task creation refused with a JSON-RPC error envelope at HTTP 200, which
+// is the spec'd refusal shape and a real answer. createTask used to read it as
+// no verdict, so the discriminator suppressed the whole rule with "the
+// anonymous control returned no verdict" on exactly the servers that refuse
+// politely; getTask in the same file already read the identical shape as a
+// refusal. The refusal is also what the findings' evidence records.
+func TestTaskIDOR_AnonCreationRefusedAt200StillTestsScoping(t *testing.T) {
+	srv := taskIDORServer("anon-create-envelope")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) != 3 {
+		t.Fatalf("expected 3 findings (tasks/get + tasks/result + tasks/list), got %d: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if !strings.Contains(f.Evidence, "anonymous task creation: refused") {
+			t.Errorf("evidence should record the observed anonymous refusal: %s", f.Evidence)
+		}
 	}
 }
 

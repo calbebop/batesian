@@ -599,6 +599,12 @@ func synthesizeArgs(schema map[string]interface{}, randID string) map[string]int
 // credential is required here", from a probe that produced no verdict at all. Both
 // used to return an empty id, so a transport failure or a 429 on the anonymous control
 // was written into a finding's evidence as "anonymous task creation: refused".
+//
+// A refusal can arrive as a JSON-RPC error envelope at HTTP 200, the spec'd
+// refusal shape, and that is a real answer rather than a missing verdict. It
+// used to fall into the empty-taskId branch below, so a server that refused
+// creation politely suppressed the rule with "the anonymous control returned no
+// verdict"; getTask in this file already read the identical shape as a refusal.
 func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, tool safeTool) (string, taskPremise) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -623,9 +629,15 @@ func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPCl
 				TaskID string `json:"taskId"`
 			} `json:"task"`
 		} `json:"result"`
+		Error map[string]interface{} `json:"error"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		return "", premiseUndetermined
+	}
+	if body.Error != nil {
+		// A JSON-RPC error at HTTP 200 is the spec'd refusal shape, so it is a
+		// real answer: the control reads it as "a credential is required here".
+		return "", premiseAbsent
 	}
 	if body.Result.Task.TaskID == "" {
 		// Answered, but with no task handle, on a server that advertised
