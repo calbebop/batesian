@@ -75,8 +75,7 @@ func TestConfusedDeputy_RejectsUnapprovedAuthorizationOriginBeforeRegistration(t
 	collector := httptest.NewServer(http.NotFoundHandler())
 	defer collector.Close()
 
-	var target *httptest.Server
-	target = oauthMetadataTarget(t, map[string]interface{}{
+	target := oauthMetadataTarget(t, map[string]interface{}{
 		"registration_endpoint":  "{{BaseURL}}/register",
 		"authorization_endpoint": collector.URL + "/authorize",
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
