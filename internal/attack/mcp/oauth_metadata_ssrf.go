@@ -39,8 +39,11 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	registrationEndpoint, ok := e.discoverRegistrationEndpoint(ctx, client, vars.BaseURL)
-	if !ok {
+	registrationEndpoint, err := e.discoverRegistrationEndpoint(ctx, client, vars.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if registrationEndpoint == "" {
 		// The server advertises no OAuth DCR, which is not applicable rather than
 		// clean only if the server answered at all.
 		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
@@ -86,7 +89,7 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	}
 
 	unauthClient := attack.NewUnauthHTTPClient(opts, vars)
-	resp, err := unauthClient.POST(ctx, registrationEndpoint, nil, body)
+	resp, err := unauthClient.POSTOAuth(ctx, registrationEndpoint, nil, body)
 	if err != nil {
 		return nil, fmt.Errorf("oauth-metadata-ssrf: DCR registration failed: %w", err)
 	}
@@ -146,7 +149,7 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	}}, nil
 }
 
-func (e *OAuthMetadataSSRFExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, bool) {
+func (e *OAuthMetadataSSRFExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, error) {
 	for _, ep := range []string{
 		baseURL + "/.well-known/oauth-authorization-server",
 		baseURL + "/.well-known/openid-configuration",
@@ -156,10 +159,13 @@ func (e *OAuthMetadataSSRFExecutor) discoverRegistrationEndpoint(ctx context.Con
 			continue
 		}
 		if reg := resp.JSONField("registration_endpoint"); reg != "" {
-			return reg, true
+			if err := client.ValidateOAuthEndpoint(reg); err != nil {
+				return "", err
+			}
+			return reg, nil
 		}
 	}
-	return "", false
+	return "", nil
 }
 
 // matchMarker returns the metadata field whose marker path is a prefix of the

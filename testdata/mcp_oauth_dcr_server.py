@@ -26,10 +26,10 @@ Run:
     python testdata/mcp_oauth_dcr_server.py unmanaged
 
 Endpoints:
-    GET    http://localhost:7788/.well-known/oauth-authorization-server
-    POST   http://localhost:7788/register
-    DELETE http://localhost:7788/register/{client_id}   (managed posture only)
-    GET    http://localhost:7788/__clients              (validation helper)
+    GET    http://127.0.0.1:7788/.well-known/oauth-authorization-server
+    POST   http://127.0.0.1:7788/register
+    DELETE http://127.0.0.1:7788/register/{client_id}   (managed posture only)
+    GET    http://127.0.0.1:7788/__clients              (validation helper)
 """
 import json
 import secrets
@@ -52,7 +52,9 @@ CLIENTS: dict = {}
 
 
 async def oauth_metadata(request: Request) -> JSONResponse:
-    base = f"http://localhost:{PORT}"
+    # Advertise the exact origin used to reach the fixture. localhost and
+    # 127.0.0.1 resolve to the same listener but are distinct OAuth origins.
+    base = str(request.base_url).rstrip("/")
     return JSONResponse({
         "issuer": base,
         "authorization_endpoint": f"{base}/authorize",
@@ -137,7 +139,7 @@ app = Starlette(routes=routes)
 if __name__ == "__main__":
     if POSTURE not in POSTURES:
         sys.exit(f"unknown posture {POSTURE!r}; expected one of {', '.join(POSTURES)}")
-    print(f"Starting vulnerable OAuth DCR server ({POSTURE}) on http://localhost:{PORT}")
+    print(f"Starting vulnerable OAuth DCR server ({POSTURE}) on http://127.0.0.1:{PORT}")
     print("  GET  /.well-known/oauth-authorization-server")
     print("  POST /register  (no auth, accepts any scopes and redirect URIs)")
     if POSTURE == "managed":

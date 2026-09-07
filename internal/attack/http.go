@@ -46,6 +46,9 @@ type HTTPClient struct {
 	// targetOrigin is the normalized scheme, host, and port of the scan target.
 	// The auto-injected token is withheld from every other origin.
 	targetOrigin string
+	// oauthOrigins contains exact additional origins the operator authorized for
+	// target-advertised OAuth endpoints.
+	oauthOrigins map[string]struct{}
 }
 
 // tokenAllowedFor reports whether the auto-injected bearer token may be sent to
@@ -120,6 +123,74 @@ func originOf(rawURL string) string {
 	return scheme + "://" + host
 }
 
+// ValidateOAuthOrigins verifies that each configured value is an origin rather
+// than a URL with a path, query, credentials, or fragment. Callers should reject
+// invalid configuration before a scan starts instead of silently ignoring it.
+func ValidateOAuthOrigins(origins []string) error {
+	for _, raw := range origins {
+		if _, err := normalizeOAuthOrigin(raw); err != nil {
+			return fmt.Errorf("invalid OAuth origin %q: %w", raw, err)
+		}
+	}
+	return nil
+}
+
+func normalizeOAuthOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if !u.IsAbs() || u.Hostname() == "" {
+		return "", errors.New("must be an absolute HTTP(S) origin")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("scheme must be http or https")
+	}
+	if u.User != nil {
+		return "", errors.New("userinfo is not allowed")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", errors.New("paths are not allowed")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("queries and fragments are not allowed")
+	}
+	origin := originOf(raw)
+	if origin == "" {
+		return "", errors.New("could not normalize origin")
+	}
+	return origin, nil
+}
+
+// ValidateOAuthEndpoint confines a target-advertised OAuth URL to the selected
+// target origin or an exact additional origin authorized by the operator.
+func (c *HTTPClient) ValidateOAuthEndpoint(rawURL string) error {
+	rawURL = c.vars.Expand(rawURL)
+	u, err := url.Parse(rawURL)
+	if err != nil || !u.IsAbs() || u.Hostname() == "" {
+		return fmt.Errorf("%w: target advertised an invalid OAuth endpoint %q",
+			ErrInconclusive, rawURL)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: target advertised OAuth endpoint %q with unsupported scheme %q",
+			ErrInconclusive, rawURL, u.Scheme)
+	}
+	if u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("%w: target advertised unsafe OAuth endpoint %q (userinfo and fragments are not allowed)",
+			ErrInconclusive, rawURL)
+	}
+	origin := originOf(rawURL)
+	if origin == c.targetOrigin {
+		return nil
+	}
+	if _, ok := c.oauthOrigins[origin]; ok {
+		return nil
+	}
+	return fmt.Errorf("%w: target advertised OAuth endpoint %q outside the authorized origin %s; "+
+		"authorize %s explicitly with --oauth-origin to test it",
+		ErrInconclusive, rawURL, c.targetOrigin, origin)
+}
+
 // NewUnauthHTTPClient creates an attack HTTP client with no bearer token.
 // Use this for requests that are intentionally unauthenticated (e.g. baseline
 // probes that test whether an endpoint can be reached without credentials).
@@ -136,6 +207,12 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 	timeout := time.Duration(opts.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 10 * time.Second
+	}
+	oauthOrigins := make(map[string]struct{}, len(opts.OAuthOrigins))
+	for _, raw := range opts.OAuthOrigins {
+		if origin, err := normalizeOAuthOrigin(raw); err == nil {
+			oauthOrigins[origin] = struct{}{}
+		}
 	}
 	return &HTTPClient{
 		discovery: opts.Discovery,
@@ -156,6 +233,7 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		vars:         vars,
 		token:        opts.Token,
 		targetOrigin: originOf(vars.BaseURL),
+		oauthOrigins: oauthOrigins,
 	}
 }
 
@@ -279,6 +357,15 @@ func (c *HTTPClient) GET(ctx context.Context, urlTpl string, headers map[string]
 	return c.do(ctx, http.MethodGet, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
 }
 
+// GETOAuth sends a GET only when the target-advertised OAuth URL stays within
+// the operator-authorized origins.
+func (c *HTTPClient) GETOAuth(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
+	if err := c.ValidateOAuthEndpoint(urlTpl); err != nil {
+		return nil, err
+	}
+	return c.GET(ctx, urlTpl, headers)
+}
+
 // OPTIONS sends an OPTIONS request (used for CORS preflight probes).
 func (c *HTTPClient) OPTIONS(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
 	return c.do(ctx, http.MethodOptions, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
@@ -292,6 +379,15 @@ func (c *HTTPClient) DELETE(ctx context.Context, urlTpl string, headers map[stri
 	return c.do(ctx, http.MethodDelete, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
 }
 
+// DELETEOAuth sends a DELETE only when the target-advertised OAuth URL stays
+// within the operator-authorized origins.
+func (c *HTTPClient) DELETEOAuth(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
+	if err := c.ValidateOAuthEndpoint(urlTpl); err != nil {
+		return nil, err
+	}
+	return c.DELETE(ctx, urlTpl, headers)
+}
+
 // POST sends a POST request with a JSON body. body may be a map or struct.
 func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
 	jsonBytes, err := marshalBody(body, c.vars)
@@ -303,6 +399,15 @@ func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string
 		merged[k] = v
 	}
 	return c.do(ctx, http.MethodPost, c.vars.Expand(urlTpl), bytes.NewReader(jsonBytes), merged)
+}
+
+// POSTOAuth sends a POST only when the target-advertised OAuth URL stays within
+// the operator-authorized origins.
+func (c *HTTPClient) POSTOAuth(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
+	if err := c.ValidateOAuthEndpoint(urlTpl); err != nil {
+		return nil, err
+	}
+	return c.POST(ctx, urlTpl, headers, body)
 }
 
 // do executes an HTTP request and returns the captured Response.

@@ -83,6 +83,12 @@ settled with a single `initialize` per candidate, on the bail path only, and a
 2026-07-28 server is reported as speaking an unsupported protocol version rather
 than as unreachable.
 
+OAuth URLs advertised by the target are followed only on the target's exact origin.
+For deployments with a separate authorization server, explicitly add that origin to
+the authorized scan scope with `--oauth-origin https://login.example.com` or the
+`oauth_origins` config field. Scheme, host, and effective port must match; redirects
+remain disabled.
+
 ### Client registrations are cleaned up
 
 Three of them register an OAuth client, because what DCR accepts cannot be tested

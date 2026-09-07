@@ -106,6 +106,10 @@ their own CA. With no flag, `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honou
 note that Go does not send loopback targets through an environment proxy, so a scan
 against `127.0.0.1` needs the explicit flag.
 
+Target-advertised OAuth URLs are confined to the target's exact origin. When a
+deployment uses a separate authorization server, add its origin to the scan scope
+with `--oauth-origin https://login.example.com` (or `oauth_origins` in config).
+
 `probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
 
 ## CI integration

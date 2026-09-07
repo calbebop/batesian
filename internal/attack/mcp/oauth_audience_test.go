@@ -297,6 +297,50 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/broken-metadata", func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support connection hijacking")
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijacking metadata response: %v", err)
+		}
+		_ = conn.Close()
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": testExpectedAud})
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate",
+				fmt.Sprintf(`Bearer resource_metadata="http://%s/broken-metadata"`, r.Host))
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
+		if value, ok := aud.(string); ok && strings.Contains(value, testExpectedAud) {
+			initializeOK(w)
+			return
+		}
+		challenge401(w)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected well-known fallback to drive one finding, got %d", len(findings))
+	}
+}
+
 func TestOAuthAudience_Ambiguous200(t *testing.T) {
 	// Server returns 200 with no JSON-RPC envelope to any probe (e.g. a
 	// non-MCP endpoint or a generic 2xx ack). That is not evidence that any

@@ -44,6 +44,10 @@ type Config struct {
 	// (HTTPS_PROXY, HTTP_PROXY, NO_PROXY).
 	Proxy string `yaml:"proxy"`
 
+	// OAuthOrigins are exact additional origins that target-advertised OAuth
+	// endpoints may use. The target origin itself is always allowed.
+	OAuthOrigins []string `yaml:"oauth_origins"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -203,6 +207,12 @@ func Example() string {
 # NO_PROXY instead; note that Go does not send loopback targets through an
 # environment proxy, so a scan against 127.0.0.1 needs this set explicitly.
 # proxy: 127.0.0.1:8080
+
+# Exact additional origins allowed for target-advertised OAuth endpoints.
+# The target origin is always allowed. Add external authorization servers only
+# when they are part of the scan scope.
+# oauth_origins:
+#   - https://login.example.com
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

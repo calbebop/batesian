@@ -2,6 +2,7 @@ package attack_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,85 @@ func TestHTTPClient_ScopesTokenToTargetOrigin(t *testing.T) {
 				t.Errorf("PresentsCredential(%q) = %v, want %v", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateOAuthOrigins(t *testing.T) {
+	valid := [][]string{
+		{"https://login.example.com"},
+		{"https://LOGIN.example.com:443/"},
+		{"http://127.0.0.1:8080"},
+	}
+	for _, origins := range valid {
+		if err := attack.ValidateOAuthOrigins(origins); err != nil {
+			t.Errorf("ValidateOAuthOrigins(%q) returned %v", origins, err)
+		}
+	}
+
+	invalid := []string{
+		"login.example.com",
+		"ftp://login.example.com",
+		"https://user@login.example.com",
+		"https://login.example.com/oauth",
+		"https://login.example.com?tenant=a",
+		"https://login.example.com#fragment",
+	}
+	for _, origin := range invalid {
+		if err := attack.ValidateOAuthOrigins([]string{origin}); err == nil {
+			t.Errorf("ValidateOAuthOrigins(%q) succeeded", origin)
+		}
+	}
+}
+
+func TestHTTPClient_OAuthDestinationPolicy(t *testing.T) {
+	c := attack.NewHTTPClient(attack.Options{
+		OAuthOrigins: []string{"https://login.example.com"},
+	}, attack.NewVars("https://api.example.com/mcp", ""))
+
+	cases := []struct {
+		name    string
+		url     string
+		allowed bool
+	}{
+		{"target origin", "https://api.example.com/register", true},
+		{"target default port", "https://api.example.com:443/register", true},
+		{"authorized external origin", "https://LOGIN.example.com:443/register", true},
+		{"different host", "https://other.example.com/register", false},
+		{"scheme downgrade", "http://api.example.com/register", false},
+		{"different port", "https://api.example.com:8443/register", false},
+		{"relative URL", "/register", false},
+		{"userinfo", "https://user@api.example.com/register", false},
+		{"fragment", "https://api.example.com/register#token", false},
+		{"non HTTP scheme", "file:///etc/passwd", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := c.ValidateOAuthEndpoint(tc.url)
+			if tc.allowed && err != nil {
+				t.Fatalf("expected %q to be allowed: %v", tc.url, err)
+			}
+			if !tc.allowed && !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected %q to be rejected as inconclusive, got %v", tc.url, err)
+			}
+		})
+	}
+}
+
+func TestHTTPClient_GETOAuthDoesNotContactUnapprovedOrigin(t *testing.T) {
+	hits := 0
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+
+	c := attack.NewHTTPClient(attack.Options{}, attack.NewVars("http://target.example", ""))
+	_, err := c.GETOAuth(context.Background(), collector.URL+"/metadata", nil)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("unapproved origin received %d requests", hits)
 	}
 }
 

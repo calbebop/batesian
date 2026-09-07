@@ -89,14 +89,14 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 		return out
 	}
 
-	if !sameHost(clientURI, registrationEndpoint) {
+	if !sameOrigin(clientURI, registrationEndpoint) {
 		out.reason = fmt.Sprintf("its registration_client_uri points at %s while registration "+
-			"happened at %s, and a target-chosen URI on another host is not followed",
+			"happened at %s, and a target-chosen URI on another origin is not followed",
 			hostOrRaw(clientURI), hostOrRaw(registrationEndpoint))
 		return out
 	}
 
-	resp, err := client.DELETE(ctx, clientURI, map[string]string{
+	resp, err := client.DELETEOAuth(ctx, clientURI, map[string]string{
 		"Authorization": "Bearer " + accessToken,
 	})
 	if err != nil {
@@ -113,14 +113,32 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 	return out
 }
 
-// sameHost reports whether two URLs share a host, case-insensitively.
-func sameHost(a, b string) bool {
+// sameOrigin reports whether two URLs share an HTTP(S) scheme, host, and
+// effective port, without credentials or fragments.
+func sameOrigin(a, b string) bool {
 	ua, erra := url.Parse(a)
 	ub, errb := url.Parse(b)
-	if erra != nil || errb != nil || ua.Host == "" || ub.Host == "" {
+	if erra != nil || errb != nil || ua.Host == "" || ub.Host == "" ||
+		ua.User != nil || ub.User != nil || ua.Fragment != "" || ub.Fragment != "" {
 		return false
 	}
-	return strings.EqualFold(ua.Host, ub.Host)
+	return strings.EqualFold(ua.Scheme, ub.Scheme) &&
+		strings.EqualFold(ua.Hostname(), ub.Hostname()) &&
+		effectivePort(ua) == effectivePort(ub)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 // hostOrRaw returns a URL's host for use in a message, falling back to the raw

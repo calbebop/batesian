@@ -205,6 +205,28 @@ func TestEffectiveOutput(t *testing.T) {
 	}
 }
 
+func TestEffectiveOAuthOrigins(t *testing.T) {
+	configured := []string{"https://login.example.com"}
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagValue   []string
+		want        []string
+	}{
+		{"config used when flag not passed", false, nil, configured},
+		{"flag replaces config", true, []string{"https://other.example.com"}, []string{"https://other.example.com"}},
+		{"explicit empty flag clears config", true, []string{}, []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveOAuthOrigins(tc.flagChanged, tc.flagValue, configured)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestScan_ConfigOutputFieldApplies pins the WIRING, not just the helper: the
 // config file's output field is validated, documented in the generated
 // example, and was silently ignored because the --output default masked the

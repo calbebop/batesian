@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -97,8 +98,11 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	expected := strings.TrimSpace(opts.AudienceClaim)
 	operatorSupplied := expected != ""
 	if !operatorSupplied {
-		discovered, mcpReached, observed := discoverExpectedAudience(ctx, client,
+		discovered, mcpReached, observed, err := discoverExpectedAudience(ctx, client,
 			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+		if err != nil {
+			return nil, err
+		}
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
 			// resource metadata. Operators who want this rule to run should pass
@@ -156,8 +160,12 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	// scan that found something needs no premise check, and a disagreement is not
 	// a reason to withhold a finding the server demonstrated.
 	if operatorSupplied {
-		if advertised, _, _ := discoverExpectedAudience(ctx, client,
-			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL); advertised != "" && advertised != expected {
+		advertised, _, _, err := discoverExpectedAudience(ctx, client,
+			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		if advertised != "" && advertised != expected {
 			return nil, fmt.Errorf("%w: the probes were built from the --audience-claim value %q, "+
 				"but %s advertises %q as its resource audience; RFC 7519 section 4.1.3 compares the "+
 				"aud claim exactly, so every probe was a plain mismatch this server refuses whether "+
@@ -288,15 +296,20 @@ func hasUpper(s string) bool {
 // usable was found (caller treats that as "skip").
 // metaClient is unauthenticated because step 2 follows a URL the target chose.
 func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient,
-	baseURL string) (audience string, mcpReached bool, observed initObservation) {
+	baseURL string) (audience string, mcpReached bool, observed initObservation, err error) {
 	metaURL, mcpReached, observed := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
 	if metaURL != "" {
-		if resource := fetchResourceFromMetadata(ctx, metaClient, metaURL); resource != "" {
-			return resource, mcpReached, observed
+		resource, err := fetchResourceFromMetadata(ctx, metaClient, metaURL)
+		if err != nil {
+			return "", mcpReached, observed, err
+		}
+		if resource != "" {
+			return resource, mcpReached, observed, nil
 		}
 	}
 	wellKnown := baseURL + "/.well-known/oauth-protected-resource"
-	return fetchResourceFromMetadata(ctx, metaClient, wellKnown), mcpReached, observed
+	resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown)
+	return resource, mcpReached, observed, err
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to
@@ -368,20 +381,26 @@ func parseResourceMetadataURL(header string) string {
 // that points resource_metadata at a host it controls must not be handed the
 // operator's bearer token. The transport enforces this as well, so this is
 // defence in depth plus a statement of intent at the call site.
-func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string) string {
-	resp, err := client.GET(ctx, metaURL, nil)
-	if err != nil || !resp.IsSuccess() {
-		return ""
+func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string) (string, error) {
+	resp, err := client.GETOAuth(ctx, metaURL, nil)
+	if err != nil {
+		if errors.Is(err, attack.ErrInconclusive) {
+			return "", err
+		}
+		return "", nil
+	}
+	if !resp.IsSuccess() {
+		return "", nil
 	}
 	resource := resp.JSONField("resource")
 	if resource == "" {
-		return ""
+		return "", nil
 	}
 	parsed, err := url.Parse(resource)
 	if err != nil || !parsed.IsAbs() {
-		return ""
+		return "", nil
 	}
-	return parsed.String()
+	return parsed.String(), nil
 }
 
 // runProbesAgainstEndpoint sends every probe to each candidate endpoint and

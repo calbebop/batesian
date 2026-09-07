@@ -51,9 +51,6 @@ func TestOAuthAudience_DoesNotSendOperatorTokenToTargetChosenHost(t *testing.T) 
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(collected) == 0 {
-		t.Skip("the rule did not follow the advertised metadata URL; nothing to assert")
-	}
 	for i, auth := range collected {
 		if auth != "" {
 			t.Errorf("request %d to a target-chosen host carried a credential (%q); a scanned server "+
