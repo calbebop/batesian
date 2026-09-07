@@ -92,15 +92,15 @@ func runProbe(cmd *cobra.Command, args []string) error {
 
 	switch strings.ToLower(protocol) {
 	case "a2a":
-		return probeA2A(target, token, timeoutSecs, skipTLS, proxy, format, printer)
+		return probeA2A(cmd.Context(), target, token, timeoutSecs, skipTLS, proxy, format, printer)
 	case "mcp":
-		return probeMCP(target, token, timeoutSecs, skipTLS, proxy, format, printer)
+		return probeMCP(cmd.Context(), target, token, timeoutSecs, skipTLS, proxy, format, printer)
 	default:
 		return fmt.Errorf("unknown protocol %q; supported: a2a, mcp", protocol)
 	}
 }
 
-func probeA2A(target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
+func probeA2A(ctx context.Context, target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
 	if timeoutSecs <= 0 {
 		timeoutSecs = 10
 	}
@@ -123,7 +123,6 @@ func probeA2A(target, token string, timeoutSecs int, skipTLS bool, proxy string,
 	}
 
 	printer.ProbeHeader(target, "a2a")
-	ctx := context.Background()
 
 	printer.Verbose("GET " + target + a2a.WellKnownPath)
 	card, cardResult, err := client.FetchAgentCard(ctx)
@@ -226,7 +225,7 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 	return r
 }
 
-func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
+func probeMCP(ctx context.Context, target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
 	if timeoutSecs <= 0 {
 		timeoutSecs = 10
 	}
@@ -249,7 +248,6 @@ func probeMCP(target, token string, timeoutSecs int, skipTLS bool, proxy string,
 	}
 
 	printer.ProbeHeader(target, "mcp")
-	ctx := context.Background()
 
 	printer.Verbose("POST " + target + "/mcp (initialize)")
 	start := time.Now()
