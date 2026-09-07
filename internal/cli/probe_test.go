@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/calbebop/batesian/internal/protocol/a2a"
+	"github.com/calbebop/batesian/internal/report"
 )
 
 // TestCardToProbeResult_ExtendedCardAndProtocol covers the two card fields whose
@@ -181,5 +186,68 @@ func TestCardToProbeResult_SchemeOrderIsDeterministic(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(first) {
 		t.Errorf("schemes should be in a stable, predictable order, got %v", first)
+	}
+}
+
+// Probe ran on context.Background() while main installs signal.NotifyContext,
+// which removes the default SIGINT kill. A stalled target therefore made probe
+// unkillable: the first and second Ctrl+C did nothing and the process hung
+// until the request timeout elapsed. The command's context must reach the
+// wire, and both protocol clients bind it via NewRequestWithContext.
+func TestProbeA2A_ContextCancellationInterruptsStalledFetch(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // the target accepted the connection and never answers
+	}))
+	// Defers run LIFO: close(release) is registered last, so it runs before
+	// Server.Close, or Close waits on the stalled handler forever.
+	defer srv.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := probeA2A(ctx, srv.URL, "", 30, false, "", report.FormatTable, report.New(io.Discard, false))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a stalled target, got nil")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("probe returned after %s; cancellation must interrupt the fetch, not wait out the 30s request timeout", elapsed)
+	}
+}
+
+// Same contract, MCP side: the initialize handshake is the first wire request,
+// so cancellation must unblock it.
+func TestProbeMCP_ContextCancellationInterruptsInitialize(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // every candidate endpoint stalls
+	}))
+	// Defers run LIFO: close(release) is registered last, so it runs before
+	// Server.Close, or Close waits on the stalled handler forever.
+	defer srv.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := probeMCP(ctx, srv.URL, "", 30, false, "", report.FormatTable, report.New(io.Discard, false))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a stalled target, got nil")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("probe returned after %s; cancellation must interrupt initialize, not wait out the 30s request timeout", elapsed)
 	}
 }
