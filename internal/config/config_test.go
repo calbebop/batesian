@@ -35,6 +35,8 @@ output: sarif
 token: test-token
 skip_tls: true
 oob_url: https://oob.example.com
+oauth_origins:
+  - https://login.example.com
 rule_ids:
   - mcp-oauth-audience-002
   - a2a-push-ssrf-001
@@ -73,6 +75,9 @@ severities:
 	}
 	if cfg.OOBURL != "https://oob.example.com" {
 		t.Errorf("oob_url: got %q", cfg.OOBURL)
+	}
+	if len(cfg.OAuthOrigins) != 1 || cfg.OAuthOrigins[0] != "https://login.example.com" {
+		t.Errorf("oauth_origins: got %v", cfg.OAuthOrigins)
 	}
 	if len(cfg.RuleIDs) != 2 {
 		t.Errorf("rule_ids: expected 2, got %d", len(cfg.RuleIDs))

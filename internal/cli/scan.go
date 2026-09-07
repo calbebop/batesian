@@ -57,6 +57,7 @@ func init() {
 	scanCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
 	scanCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
 	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
+	scanCmd.Flags().StringSlice("oauth-origin", nil, "Allow target-advertised OAuth endpoints on this exact additional origin (comma-separated)")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")
 	// OAuth 2.0 flags for automatic token acquisition.
@@ -101,6 +102,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
+	oauthOrigins, _ := cmd.Flags().GetStringSlice("oauth-origin")
 	oobURL, _ := cmd.Flags().GetString("oob-url")
 	audienceClaim, _ := cmd.Flags().GetString("audience-claim")
 	principalFlags, _ := cmd.Flags().GetStringArray("principal")
@@ -137,6 +139,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// --proxy="" force a direct connection over a config proxy.
 	if !cmd.Flags().Changed("proxy") {
 		proxy = cfg.Proxy
+	}
+	oauthOrigins = effectiveOAuthOrigins(cmd.Flags().Changed("oauth-origin"), oauthOrigins, cfg.OAuthOrigins)
+	if err := attackpkg.ValidateOAuthOrigins(oauthOrigins); err != nil {
+		return err
 	}
 	// Validate here rather than letting each rule fail its own requests. A broken
 	// proxy is one configuration mistake, and surfacing it as "31 of 36 rules could
@@ -244,6 +250,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		TimeoutSeconds: timeoutSecs,
 		SkipTLS:        skipTLS,
 		Proxy:          proxy,
+		OAuthOrigins:   oauthOrigins,
 		Verbose:        verbose,
 		AudienceClaim:  audienceClaim,
 		Principals:     principals,
@@ -471,6 +478,13 @@ func effectiveOutput(flagChanged bool, flagVal, cfgVal string) string {
 // instead of being masked by the false-is-default sentinel; otherwise the config
 // value is used.
 func effectiveSkipTLS(flagChanged, flagVal, cfgVal bool) bool {
+	if flagChanged {
+		return flagVal
+	}
+	return cfgVal
+}
+
+func effectiveOAuthOrigins(flagChanged bool, flagVal, cfgVal []string) []string {
 	if flagChanged {
 		return flagVal
 	}

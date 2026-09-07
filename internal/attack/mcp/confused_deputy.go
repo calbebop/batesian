@@ -55,7 +55,10 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	client := attack.NewHTTPClient(opts, vars)
 	unauthClient := attack.NewUnauthHTTPClient(opts, vars)
 
-	regEP, authEP := discoverOAuthEndpoints(ctx, client, vars.BaseURL)
+	regEP, authEP, err := discoverOAuthEndpoints(ctx, client, vars.BaseURL)
+	if err != nil {
+		return nil, err
+	}
 	if authEP == "" || regEP == "" {
 		// No authorization endpoint, or no DCR endpoint to obtain a client_id.
 		// CIMD-only (2025-11-25) and non-OAuth servers land here: not applicable,
@@ -99,7 +102,10 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	// Authorize with a DIFFERENT, unregistered off-origin redirect.
 	attackerHost := fmt.Sprintf("batesian-%s-attacker.invalid", vars.RandID)
 	attackerRedirect := "https://" + attackerHost + "/cb"
-	loc, status := authorizeRedirectProbe(ctx, opts, authEP, clientID, attackerRedirect, vars.RandID)
+	loc, status, err := authorizeRedirectProbe(ctx, unauthClient, opts, authEP, clientID, attackerRedirect, vars.RandID)
+	if err != nil {
+		return nil, err
+	}
 
 	// The client_id has served its purpose, so remove the registration before
 	// reporting, which is what lets the report say whether anything was left behind.
@@ -156,7 +162,7 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 // discoverOAuthEndpoints reads the authorization-server metadata and returns the
 // registration_endpoint and authorization_endpoint. It tries the RFC 8414
 // authorization-server document first, then the OIDC openid-configuration.
-func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, baseURL string) (registrationEndpoint, authorizationEndpoint string) {
+func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, baseURL string) (registrationEndpoint, authorizationEndpoint string, err error) {
 	for _, p := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
 		resp, err := client.GET(ctx, baseURL+p, nil)
 		if err != nil || !resp.IsSuccess() {
@@ -165,10 +171,18 @@ func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, base
 		reg := resp.JSONField("registration_endpoint")
 		authz := resp.JSONField("authorization_endpoint")
 		if authz != "" {
-			return reg, authz
+			if err := client.ValidateOAuthEndpoint(authz); err != nil {
+				return "", "", err
+			}
+			if reg != "" {
+				if err := client.ValidateOAuthEndpoint(reg); err != nil {
+					return "", "", err
+				}
+			}
+			return reg, authz, nil
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // registerDCRClient registers a client via DCR with the given redirect_uri and
@@ -191,7 +205,7 @@ func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, base
 // redirect_uri and leaves it there has changed the target and not changed it back.
 func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI,
 	randID string) (clientID string, echoedRedirect bool, outcome dcrOutcome, reg *attack.Response) {
-	resp, err := client.POST(ctx, registrationEndpoint, nil, map[string]interface{}{
+	resp, err := client.POSTOAuth(ctx, registrationEndpoint, nil, map[string]interface{}{
 		"client_name":    "batesian-cd-" + randID,
 		"redirect_uris":  []string{redirectURI},
 		"grant_types":    []string{"authorization_code"},
@@ -238,7 +252,8 @@ type dcrOutcome struct {
 // (unregistered) redirect_uri and returns the response's Location header and
 // status code WITHOUT following the redirect, so the server's redirect decision
 // can be inspected directly.
-func authorizeRedirectProbe(ctx context.Context, opts attack.Options, authorizationEndpoint, clientID, redirectURI, randID string) (location string, status int) {
+func authorizeRedirectProbe(ctx context.Context, guard *attack.HTTPClient, opts attack.Options,
+	authorizationEndpoint, clientID, redirectURI, randID string) (location string, status int, err error) {
 	q := url.Values{}
 	q.Set("response_type", "code")
 	q.Set("client_id", clientID)
@@ -256,10 +271,13 @@ func authorizeRedirectProbe(ctx context.Context, opts attack.Options, authorizat
 		sep = "&"
 	}
 	reqURL := authorizationEndpoint + sep + q.Encode()
+	if err := guard.ValidateOAuthEndpoint(reqURL); err != nil {
+		return "", 0, err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return "", 0
+		return "", 0, nil
 	}
 	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
 
@@ -270,10 +288,10 @@ func authorizeRedirectProbe(ctx context.Context, opts attack.Options, authorizat
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", 0
+		return "", 0, nil
 	}
 	defer resp.Body.Close()
-	return resp.Header.Get("Location"), resp.StatusCode
+	return resp.Header.Get("Location"), resp.StatusCode, nil
 }
 
 // redirectsToHost reports whether a 3xx response carries a Location header whose

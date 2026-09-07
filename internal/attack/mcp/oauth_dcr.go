@@ -62,15 +62,18 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	// Step 1: Discover the OAuth metadata endpoint to find the registration endpoint.
 	registrationEndpoint, err := e.discoverRegistrationEndpoint(ctx, client, vars.BaseURL)
 	if err != nil {
+		return nil, err
+	}
+	if registrationEndpoint == "" {
 		// Not a finding - this MCP server may not use OAuth 2.1. That holds only
 		// for a server that answered; an unreachable target was never tested.
-		return nil, oauthNotApplicable(ctx, client, vars.BaseURL) //nolint:nilerr
+		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
 	}
 
 	// Step 2: Unauthenticated registration requesting admin/write scopes.
 	escalatedScope := "tools:read tools:write resources:write prompts:write admin superuser"
 	clientName := "batesian-probe-" + vars.RandID + "-esc"
-	escalatedResp, err := unauthClient.POST(ctx, registrationEndpoint, nil, map[string]interface{}{
+	escalatedResp, err := unauthClient.POSTOAuth(ctx, registrationEndpoint, nil, map[string]interface{}{
 		"client_name":    clientName,
 		"redirect_uris":  []string{"https://batesian.invalid/callback"},
 		"grant_types":    []string{"authorization_code"},
@@ -150,10 +153,13 @@ func (e *OAuthDCRExecutor) discoverRegistrationEndpoint(ctx context.Context, cli
 		}
 		regEP := resp.JSONField("registration_endpoint")
 		if regEP != "" {
+			if err := client.ValidateOAuthEndpoint(regEP); err != nil {
+				return "", err
+			}
 			return regEP, nil
 		}
 	}
-	return "", fmt.Errorf("no OAuth authorization server metadata found at %s", baseURL)
+	return "", nil
 }
 
 // privilegedScopesIn returns the privileged scope tokens present in a granted

@@ -56,6 +56,11 @@ type Options struct {
 	// tool should not spring.
 	Proxy string
 
+	// OAuthOrigins are exact additional origins the operator has authorized for
+	// target-advertised OAuth endpoints. The scan target's own origin is always
+	// allowed. Everything else is denied unless it appears here.
+	OAuthOrigins []string
+
 	// Verbose enables debug logging.
 	Verbose bool
 

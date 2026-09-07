@@ -44,11 +44,13 @@ type dcrServer struct {
 type dcrSupport int
 
 const (
-	dcrFull       dcrSupport = iota // registration_client_uri + registration_access_token
-	dcrNoneAtAll                    // neither: the client cannot be removed
-	dcrNoToken                      // a URI but no token, so a delete would be unauthenticated
-	dcrOffHostURI                   // a URI on another host, which must not be followed
-	dcrRefuseDel                    // full advertisement, but DELETE is refused
+	dcrFull        dcrSupport = iota // registration_client_uri + registration_access_token
+	dcrNoneAtAll                     // neither: the client cannot be removed
+	dcrNoToken                       // a URI but no token, so a delete would be unauthenticated
+	dcrOffHostURI                    // a URI on another host, which must not be followed
+	dcrOtherScheme                   // a URI on another scheme, which must not be followed
+	dcrUserinfoURI                   // a URI with userinfo, which must not be followed
+	dcrRefuseDel                     // full advertisement, but DELETE is refused
 )
 
 func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrServer {
@@ -91,6 +93,12 @@ func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrSer
 			out["registration_client_uri"] = base + "/register/" + id
 		case dcrOffHostURI:
 			out["registration_client_uri"] = "http://elsewhere.invalid/register/" + id
+			out["registration_access_token"] = "rat-" + id
+		case dcrOtherScheme:
+			out["registration_client_uri"] = "https://" + r.Host + "/register/" + id
+			out["registration_access_token"] = "rat-" + id
+		case dcrUserinfoURI:
+			out["registration_client_uri"] = "http://attacker@" + r.Host + "/register/" + id
 			out["registration_access_token"] = "rat-" + id
 		case dcrNoneAtAll:
 			// Advertise nothing: an RFC 7591 server without the management protocol.
@@ -220,11 +228,32 @@ func TestDCRCleanup_OffHostManagementURIIsNotFollowed(t *testing.T) {
 		t.Fatalf("expected the escalated-scope finding, got %d", len(findings))
 	}
 	ev := findings[0].Evidence
-	if !strings.Contains(ev, "another host is not followed") {
+	if !strings.Contains(ev, "another origin is not followed") {
 		t.Errorf("an off-host management URI must be reported, not followed; got:\n%s", ev)
 	}
 	if !strings.Contains(ev, "elsewhere.invalid") {
 		t.Errorf("the reason should name the host it declined to contact; got:\n%s", ev)
+	}
+}
+
+func TestDCRCleanup_RejectsSchemeChangesAndUserinfo(t *testing.T) {
+	for _, support := range []dcrSupport{dcrOtherScheme, dcrUserinfoURI} {
+		srv := newDCRServer(t, support, "tools:write admin")
+		exec := mcpattack.NewOAuthDCRExecutor(attack.RuleContext{ID: "mcp-oauth-dcr-001", Severity: "high"})
+		findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+		srv.Close()
+		if err != nil {
+			t.Fatalf("support %d: unexpected error: %v", support, err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("support %d: expected one finding, got %d", support, len(findings))
+		}
+		if len(srv.deletes()) != 0 {
+			t.Fatalf("support %d: unsafe management URI was followed", support)
+		}
+		if !strings.Contains(findings[0].Evidence, "another origin is not followed") {
+			t.Fatalf("support %d: rejected management URI was not explained:\n%s", support, findings[0].Evidence)
+		}
 	}
 }
 
