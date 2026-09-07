@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,14 +42,15 @@ type HTTPClient struct {
 	// discovery is the scan-scoped endpoint cache; nil disables reuse.
 	discovery *DiscoveryCache
 	vars      Vars
-	token     string // bearer token injected into requests to targetHost when set
-	// targetHost is the host:port of the scan target. The auto-injected token is
-	// withheld from any other host; see tokenAllowedFor.
-	targetHost string
+	token     string // bearer token injected into requests to targetOrigin when set
+	// targetOrigin is the normalized scheme, host, and port of the scan target.
+	// The auto-injected token is withheld from every other origin.
+	targetOrigin string
 }
 
 // tokenAllowedFor reports whether the auto-injected bearer token may be sent to
-// this URL. It may not leave the scan target's host.
+// this URL. It may not leave the scan target's origin or cross from HTTPS to
+// plaintext HTTP on the same host.
 //
 // The operator supplies one credential, for one target. Several rules follow URLs
 // the TARGET chooses: the resource_metadata parameter of its own WWW-Authenticate
@@ -65,17 +67,17 @@ type HTTPClient struct {
 // author stating intent (principal tokens, forged tokens) rather than ambient
 // injection.
 //
-// When the target host is unknown the token is sent, preserving the previous
+// When the target origin is unknown the token is sent, preserving the previous
 // behaviour rather than silently dropping credentials.
 func (c *HTTPClient) tokenAllowedFor(rawURL string) bool {
-	if c.targetHost == "" {
+	if c.targetOrigin == "" {
 		return true
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
+	origin := originOf(rawURL)
+	if origin == "" {
 		return true
 	}
-	return strings.EqualFold(u.Host, c.targetHost)
+	return origin == c.targetOrigin
 }
 
 // PresentsCredential reports whether a request this client sends to rawURL will
@@ -93,13 +95,29 @@ func (c *HTTPClient) PresentsCredential(rawURL string) bool {
 	return c.token != "" && c.tokenAllowedFor(rawURL)
 }
 
-// hostOf returns the host:port of a URL, or "" when it cannot be determined.
-func hostOf(rawURL string) string {
+// originOf returns a normalized scheme, host, and port for an absolute URL.
+// Default ports are made explicit so https://host and https://host:443 compare
+// as the same origin.
+func originOf(rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil {
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
 		return ""
 	}
-	return u.Host
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	host := strings.ToLower(u.Hostname())
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + host
 }
 
 // NewUnauthHTTPClient creates an attack HTTP client with no bearer token.
@@ -135,9 +153,9 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 			// redirects during the authorization-code flow.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		vars:       vars,
-		token:      opts.Token,
-		targetHost: hostOf(vars.BaseURL),
+		vars:         vars,
+		token:        opts.Token,
+		targetOrigin: originOf(vars.BaseURL),
 	}
 }
 

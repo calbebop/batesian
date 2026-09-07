@@ -67,14 +67,18 @@ func TestSelectJSONRPCURL_NoUsableInterface(t *testing.T) {
 	}
 }
 
-func TestPinToTargetHost(t *testing.T) {
-	// Same host: used verbatim.
-	if got := pinToTargetHost("http://h:8080/a2a/jsonrpc", "http://h:8080"); got != "http://h:8080/a2a/jsonrpc" {
-		t.Errorf("same-host pin = %q", got)
+func TestPinToTargetOrigin(t *testing.T) {
+	// Same origin: used verbatim.
+	if got := pinToTargetOrigin("http://h:8080/a2a/jsonrpc", "http://h:8080"); got != "http://h:8080/a2a/jsonrpc" {
+		t.Errorf("same-origin pin = %q", got)
 	}
 	// Different host: keep target scheme+host, take card path.
-	if got := pinToTargetHost("http://other:9000/a2a/jsonrpc", "http://h:8080"); got != "http://h:8080/a2a/jsonrpc" {
+	if got := pinToTargetOrigin("http://other:9000/a2a/jsonrpc", "http://h:8080"); got != "http://h:8080/a2a/jsonrpc" {
 		t.Errorf("cross-host pin = %q, want path applied to target host", got)
+	}
+	// Same host with a different scheme: keep the target's HTTPS origin.
+	if got := pinToTargetOrigin("http://h:8443/a2a/jsonrpc", "https://h:8443"); got != "https://h:8443/a2a/jsonrpc" {
+		t.Errorf("scheme-downgrade pin = %q, want target HTTPS origin", got)
 	}
 }
 

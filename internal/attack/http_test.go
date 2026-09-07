@@ -40,6 +40,32 @@ func TestNewHTTPClient_PreservesToken(t *testing.T) {
 	}
 }
 
+func TestHTTPClient_ScopesTokenToTargetOrigin(t *testing.T) {
+	c := attack.NewHTTPClient(
+		attack.Options{Token: "operator-token"},
+		attack.NewVars("https://Example.COM/api", ""),
+	)
+
+	cases := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"same origin", "https://example.com/metadata", true},
+		{"explicit default port", "https://example.com:443/metadata", true},
+		{"scheme downgrade", "http://example.com/metadata", false},
+		{"different port", "https://example.com:8443/metadata", false},
+		{"different host", "https://other.example.com/metadata", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := c.PresentsCredential(tc.url); got != tc.want {
+				t.Errorf("PresentsCredential(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUserAgent_IncludesVersion verifies the User-Agent header reflects
 // attack.Version so support / supportability of bug reports stays accurate.
 func TestUserAgent_IncludesVersion(t *testing.T) {
