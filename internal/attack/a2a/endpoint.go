@@ -45,7 +45,7 @@ func (i a2aDiscoveryInterface) isHTTPJSON() bool {
 }
 
 // resolveHTTPJSONBase returns the base URL of the card's HTTP+JSON (REST)
-// interface, pinned to the target host, or "" when none is advertised.
+// interface, pinned to the target origin, or "" when none is advertised.
 //
 // The REST binding's paths cannot be guessed. a2a-sdk mounts them under a
 // caller-chosen prefix and lets the deployment decide which protocol version
@@ -61,12 +61,12 @@ func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL
 	for _, group := range [][]a2aDiscoveryInterface{card.SupportedInterfaces, card.AdditionalInterfaces} {
 		for _, iface := range group {
 			if iface.isHTTPJSON() && hasHTTPScheme(iface.URL) {
-				return strings.TrimSuffix(pinToTargetHost(iface.URL, baseURL), "/")
+				return strings.TrimSuffix(pinToTargetOrigin(iface.URL, baseURL), "/")
 			}
 		}
 	}
 	if strings.EqualFold(card.PreferredTransport, "HTTP+JSON") && hasHTTPScheme(card.URL) {
-		return strings.TrimSuffix(pinToTargetHost(card.URL, baseURL), "/")
+		return strings.TrimSuffix(pinToTargetOrigin(card.URL, baseURL), "/")
 	}
 	return ""
 }
@@ -75,7 +75,7 @@ func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL
 // endpoint was found. It prefers the URL the agent card declares for the JSON-RPC
 // transport; failing that, it probes a small set of conventional paths. The
 // returned endpoint is always pinned to the target's scheme+host (see
-// pinToTargetHost), so a card that points elsewhere never redirects traffic off
+// pinToTargetOrigin), so a card that points elsewhere never redirects traffic off
 // the operator's authorized target. When ok is false, no JSON-RPC endpoint
 // responded and callers should not report the target as tested.
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
@@ -98,7 +98,7 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 			// declared path only has to ANSWER; it need not prove A2A again. That
 			// keeps an auth-gated agent discoverable, since its 401 is weak evidence
 			// alone but the card corroborates it.
-			pinned := pinToTargetHost(cardURL, baseURL)
+			pinned := pinToTargetOrigin(cardURL, baseURL)
 			if probeA2AEvidence(ctx, client, pinned) != a2aEvidenceNone {
 				return pinned, true
 			}
@@ -209,11 +209,11 @@ func selectJSONRPCURL(card a2aDiscoveryCard) string {
 	return ""
 }
 
-// pinToTargetHost keeps the operator's target scheme+host and applies only the
-// card URL's path when the card points at a different host. A same-host card URL
-// is used verbatim. This prevents a card from redirecting scan traffic to a host
-// the operator did not authorize.
-func pinToTargetHost(cardURL, baseURL string) string {
+// pinToTargetOrigin keeps the operator's target scheme+host and applies only the
+// card URL's path when the card points at a different origin. A same-origin card
+// URL is used verbatim. This prevents a card from redirecting scan traffic off
+// the authorized origin or downgrading HTTPS to plaintext on the same host.
+func pinToTargetOrigin(cardURL, baseURL string) string {
 	cu, err := url.Parse(cardURL)
 	if err != nil {
 		return baseURL + "/"
@@ -222,7 +222,7 @@ func pinToTargetHost(cardURL, baseURL string) string {
 	if err != nil {
 		return cardURL
 	}
-	if strings.EqualFold(cu.Host, tu.Host) {
+	if strings.EqualFold(cu.Scheme, tu.Scheme) && strings.EqualFold(cu.Host, tu.Host) {
 		return cardURL
 	}
 	pinned := *tu
