@@ -86,16 +86,9 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 		form.Set("audience", cfg.Audience)
 	}
 
-	httpClient := client
-	if httpClient == nil {
-		proxy, err := httpx.ProxyFunc(cfg.Proxy)
-		if err != nil {
-			return nil, err
-		}
-		httpClient = &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: &http.Transport{Proxy: proxy},
-		}
+	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
@@ -112,6 +105,9 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("token endpoint redirect refused (HTTP %d)", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("token endpoint returned HTTP %d (check credentials and scopes)", resp.StatusCode)
 	}
@@ -203,16 +199,9 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 		"code_verifier": {cfg.PKCEVerifier},
 	}
 
-	httpClient := client
-	if httpClient == nil {
-		proxy, err := httpx.ProxyFunc(cfg.Proxy)
-		if err != nil {
-			return nil, err
-		}
-		httpClient = &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: &http.Transport{Proxy: proxy},
-		}
+	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
@@ -229,6 +218,9 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("token endpoint redirect refused (HTTP %d)", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("token endpoint returned HTTP %d (check authorization code and redirect URI)", resp.StatusCode)
 	}
@@ -245,6 +237,31 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 	}
 
 	return &tok, nil
+}
+
+// tokenEndpointClient returns a client that never follows redirects. Token
+// requests carry credentials in their bodies, and body-preserving redirects
+// would replay those credentials to a destination chosen by the endpoint.
+func tokenEndpointClient(client *http.Client, timeout time.Duration, proxyURL string) (*http.Client, error) {
+	if client != nil {
+		clone := *client
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		return &clone, nil
+	}
+
+	proxy, err := httpx.ProxyFunc(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: proxy},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
 }
 
 // DiscoverTokenURL attempts to discover the OAuth 2.0 token endpoint from an
