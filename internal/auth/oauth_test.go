@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/auth"
@@ -99,6 +100,33 @@ func TestFetchClientCredentialsToken_RejectsHTTP(t *testing.T) {
 	}
 }
 
+func TestFetchClientCredentialsToken_RefusesRedirect(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"leaked"}`))
+	}))
+	defer target.Close()
+
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer endpoint.Close()
+
+	_, err := auth.FetchClientCredentialsTokenWithClient(context.Background(), auth.ClientCredentialsConfig{
+		TokenURL:     endpoint.URL,
+		ClientID:     "client",
+		ClientSecret: "secret",
+	}, endpoint.Client())
+	if err == nil || !strings.Contains(err.Error(), "redirect refused") {
+		t.Fatalf("expected redirect refusal, got %v", err)
+	}
+	if redirected.Load() {
+		t.Fatal("token request followed a redirect and replayed its credentials")
+	}
+}
+
 func TestExchangeAuthCode_RejectsHTTP(t *testing.T) {
 	// The public function must reject http:// token URLs to prevent cleartext
 	// transmission of authorization codes.
@@ -114,6 +142,35 @@ func TestExchangeAuthCode_RejectsHTTP(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTPS") {
 		t.Errorf("expected HTTPS-related error, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_RefusesRedirect(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"leaked"}`))
+	}))
+	defer target.Close()
+
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusPermanentRedirect)
+	}))
+	defer endpoint.Close()
+
+	_, err := auth.ExchangeAuthCodeWithClient(context.Background(), auth.AuthCodeConfig{
+		TokenURL:     endpoint.URL,
+		ClientID:     "client",
+		Code:         "authorization-code",
+		RedirectURI:  "http://127.0.0.1/callback",
+		PKCEVerifier: "verifier",
+	}, endpoint.Client())
+	if err == nil || !strings.Contains(err.Error(), "redirect refused") {
+		t.Fatalf("expected redirect refusal, got %v", err)
+	}
+	if redirected.Load() {
+		t.Fatal("authorization-code exchange followed a redirect and replayed its credentials")
 	}
 }
 
