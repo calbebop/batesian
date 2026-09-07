@@ -26,7 +26,7 @@ import (
 // SAFETY: creating a task requires invoking a real tool, which no other rule in
 // this package does (mcp-tools-unauth-001 deliberately calls a non-existent tool
 // so nothing executes). To bound that, the rule only invokes a task-capable tool
-// whose annotations declare it read-only or explicitly non-destructive, and
+// whose annotations explicitly and consistently declare it read-only, and
 // skips entirely when no such tool exists.
 //
 // Tasks are marked experimental in 2025-11-25, so this rule is version-scoped.
@@ -517,9 +517,9 @@ func containsTaskID(ids []string, taskID string) bool {
 // synthesizes arguments for it from its input schema.
 //
 // Task creation is the one place this package executes real server-side
-// functionality, so the tool must declare itself read-only or explicitly
-// non-destructive. A tool with no annotations is not invoked: MCP treats
-// destructiveHint as true by default when a tool is not read-only.
+// functionality, so the tool must explicitly declare itself read-only. A tool
+// with no annotations is not invoked. Neither is a tool that only declares
+// destructiveHint false: MCP defines that as additive mutation, not read-only.
 func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, randID string) (safeTool, taskPremise) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -558,9 +558,7 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		if t.Annotations == nil {
 			continue // unannotated: assume it may be destructive
 		}
-		readOnly := t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint
-		nonDestructive := t.Annotations.DestructiveHint != nil && !*t.Annotations.DestructiveHint
-		if !readOnly && !nonDestructive {
+		if !declaresReadOnlyTool(t.Annotations.ReadOnlyHint, t.Annotations.DestructiveHint) {
 			continue
 		}
 		return safeTool{name: t.Name, args: synthesizeArgs(t.InputSchema, randID)}, premiseMet

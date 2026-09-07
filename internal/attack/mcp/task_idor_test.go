@@ -35,6 +35,8 @@ import (
 //   - "no-tasks-cap":  the tasks capability is absent => skip.
 //   - "unsafe-tool":   the only task-capable tool carries no safety annotations,
 //     so the rule refuses to invoke it => skip.
+//   - "non-read-only": the only task-capable tool declares non-destructive
+//     additive writes but not read-only behavior => skip.
 //   - "not-mcp":       everything 404s => silent.
 //   - "anon-init-hidden": initialize without a bearer 404s (the endpoint is
 //     hidden from anonymous callers) while credentialed initialize works.
@@ -114,7 +116,8 @@ func taskIDORServer(mode string) *httptest.Server {
 			}
 			// The rule refuses to invoke a tool that does not declare itself safe.
 			if mode != "unsafe-tool" {
-				tool["annotations"] = map[string]interface{}{"readOnlyHint": false, "destructiveHint": false}
+				readOnly := mode != "non-read-only"
+				tool["annotations"] = map[string]interface{}{"readOnlyHint": readOnly, "destructiveHint": false}
 			}
 			result(map[string]interface{}{"tools": []interface{}{tool}})
 
@@ -464,6 +467,16 @@ func TestTaskIDOR_UnsafeToolSkipped(t *testing.T) {
 
 	if findings := runTaskIDOR(t, srv); len(findings) != 0 {
 		t.Errorf("expected 0 findings when no safely-annotated task tool exists, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestTaskIDOR_NonDestructiveWriteToolSkipped(t *testing.T) {
+	srv := taskIDORServer("non-read-only")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) != 0 {
+		t.Errorf("expected no findings when no explicitly read-only task tool exists, got %d: %+v", len(findings), findings)
 	}
 }
 

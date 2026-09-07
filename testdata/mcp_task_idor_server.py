@@ -36,8 +36,9 @@ TOOL = {
     "description": "Long running research query",
     # Task augmentation is required for this tool.
     "execution": {"taskSupport": "required"},
-    # Declared non-destructive, so the scanner is willing to invoke it.
-    "annotations": {"readOnlyHint": False, "destructiveHint": False},
+    # The fixture models a read-only research operation. Task bookkeeping does
+    # not modify the tool's external environment.
+    "annotations": {"readOnlyHint": True, "destructiveHint": False},
     "inputSchema": {
         "type": "object",
         "properties": {"topic": {"type": "string", "description": "Research topic"}},

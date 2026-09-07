@@ -23,9 +23,9 @@ import (
 // SAFETY. This rule invokes real tools by name, which only mcp-task-idor-001
 // also does, so it inherits that rule's gate and adds one of its own:
 //
-//   - Only tools whose annotations declare readOnlyHint true (or explicitly
-//     destructiveHint false) are dispatched at all. An unannotated tool is
-//     never touched.
+//   - Only tools whose annotations explicitly and consistently declare
+//     readOnlyHint true are dispatched. An unannotated tool, or a tool that only
+//     declares destructiveHint false, is never touched.
 //   - Every probe reads a file that does not exist. The canary name is unique
 //     per run, so there is nothing to find whatever the server resolves.
 //
@@ -147,18 +147,15 @@ func isPathParam(name string) bool {
 	return pathParamNames[lower]
 }
 
-// traversalCandidates selects tools this rule may drive: annotated read-only or
-// explicitly non-destructive (the mcp-task-idor-001 predicate), with at least
-// one path-like string parameter in their schema.
+// traversalCandidates selects tools this rule may drive: explicitly read-only
+// tools with at least one path-like string parameter in their schema.
 func traversalCandidates(tools []traversalTool) []traversalCandidate {
 	var out []traversalCandidate
 	for _, t := range tools {
 		if t.Annotations == nil {
 			continue // unannotated: assume it may be destructive
 		}
-		readOnly := t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint
-		nonDestructive := t.Annotations.DestructiveHint != nil && !*t.Annotations.DestructiveHint
-		if !readOnly && !nonDestructive {
+		if !declaresReadOnlyTool(t.Annotations.ReadOnlyHint, t.Annotations.DestructiveHint) {
 			continue
 		}
 		props, _ := t.InputSchema["properties"].(map[string]interface{})

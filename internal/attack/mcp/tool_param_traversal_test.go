@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -245,6 +246,36 @@ func TestTraversal_UnannotatedSkipped(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings: unannotated tools must not be dispatched, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestTraversal_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
+	tool := readOnlySchemaTool("create_note")
+	tool["annotations"] = map[string]interface{}{
+		"readOnlyHint":    false,
+		"destructiveHint": false,
+	}
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{tool},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			calls.Add(1)
+			return "created", false, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings when no explicitly read-only tool exists, got %d", len(findings))
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("non-read-only tool was called %d times", calls.Load())
 	}
 }
 

@@ -15,9 +15,9 @@ info:
     SAFETY. The rule invokes real tools by name, so it inherits and tightens the
     mcp-task-idor-001 gate:
 
-      1. Only tools whose annotations declare readOnlyHint true, or explicitly
-         destructiveHint false, are dispatched. An unannotated tool is never
-         touched.
+      1. Only tools whose annotations explicitly and consistently declare
+         readOnlyHint true are dispatched. destructiveHint false alone still
+         permits additive writes. An unannotated tool is never touched.
       2. Every probe reads a file that does not exist - a per-run canary name -
          so no file content is ever returned and nothing on the target changes.
 

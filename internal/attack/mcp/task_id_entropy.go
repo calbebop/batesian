@@ -42,7 +42,7 @@ import (
 //     (UUID hex at ~122 bits, nanoid at ~120) clear it comfortably.
 //
 // SAFETY mirrors mcp-task-idor-001 exactly: only tools whose annotations
-// declare readOnlyHint true or destructiveHint false and that declare
+// explicitly and consistently declare readOnlyHint true and that declare
 // taskSupport optional/required are invoked; their arguments are inert.
 type TaskIDEntropyExecutor struct {
 	rule attack.RuleContext
@@ -153,7 +153,7 @@ type teSafeTool struct {
 	schema map[string]interface{}
 }
 
-// teFindSafeTool picks the first annotated read-only/non-destructive tool
+// teFindSafeTool picks the first explicitly read-only tool
 // whose execution.taskSupport marks it task-augmentable.
 func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession) (teSafeTool, bool) {
 	resp, err := s.post(ctx, client, 20, "tools/list", nil)
@@ -185,9 +185,7 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 		if t.Annotations == nil {
 			continue
 		}
-		readOnly := t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint
-		nonDestructive := t.Annotations.DestructiveHint != nil && !*t.Annotations.DestructiveHint
-		if !readOnly && !nonDestructive {
+		if !declaresReadOnlyTool(t.Annotations.ReadOnlyHint, t.Annotations.DestructiveHint) {
 			continue
 		}
 		return teSafeTool{name: t.Name, schema: t.InputSchema}, true
