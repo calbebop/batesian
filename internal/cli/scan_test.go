@@ -227,6 +227,28 @@ func TestEffectiveOAuthOrigins(t *testing.T) {
 	}
 }
 
+func TestEffectiveMCPScopeTools(t *testing.T) {
+	configured := []string{"delete_item"}
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagValue   []string
+		want        []string
+	}{
+		{"config used by default", false, nil, configured},
+		{"flag replaces config", true, []string{"send_email"}, []string{"send_email"}},
+		{"empty flag clears config", true, []string{}, []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveMCPScopeTools(tc.flagChanged, tc.flagValue, configured)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestScan_ConfigOutputFieldApplies pins the WIRING, not just the helper: the
 // config file's output field is validated, documented in the generated
 // example, and was silently ignored because the --output default masked the

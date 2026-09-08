@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -22,11 +23,10 @@ func scopeRC() attack.RuleContext {
 	}
 }
 
-// scopeOpts carries the two identities every scope run needs: A full, B
-// limited, in the order the rule documents.
 func scopeOpts() attack.Options {
 	return attack.Options{
 		TimeoutSeconds: 5,
+		MCPScopeTools:  []string{"delete_item"},
 		Principals: []attack.Principal{
 			{Name: "full", Token: "tok-full-a"},
 			{Name: "limited", Token: "tok-lim-b"},
@@ -34,15 +34,11 @@ func scopeOpts() attack.Options {
 	}
 }
 
-// scopeServer models an MCP server with a read-only listing tool and a
-// privileged delete tool.
-//
-//   - auth gates every non-initialize method on a known bearer token
-//   - enforceWriteScope additionally refuses delete_item without the write
-//     scope, before argument validation (the patched posture)
 type scopeServer struct {
 	auth              bool
 	enforceWriteScope bool
+	extraTool         bool
+	toolCalls         atomic.Int32
 }
 
 func (s *scopeServer) validToken(token string) bool {
@@ -52,7 +48,7 @@ func (s *scopeServer) validToken(token string) bool {
 func (s *scopeServer) hasWrite(token string) bool { return token == "tok-full-a" }
 
 func (s *scopeServer) tools() []map[string]interface{} {
-	return []map[string]interface{}{
+	tools := []map[string]interface{}{
 		{
 			"name":        "list_items",
 			"annotations": map[string]interface{}{"readOnlyHint": true},
@@ -72,6 +68,14 @@ func (s *scopeServer) tools() []map[string]interface{} {
 			},
 		},
 	}
+	if s.extraTool {
+		tools = append(tools, map[string]interface{}{
+			"name":        "send_email",
+			"annotations": map[string]interface{}{"readOnlyHint": false},
+			"inputSchema": map[string]interface{}{"type": "object"},
+		})
+	}
+	return tools
 }
 
 func (s *scopeServer) handler() http.HandlerFunc {
@@ -130,6 +134,7 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			}, http.StatusOK)
 
 		case "tools/call":
+			s.toolCalls.Add(1)
 			switch req.Params.Name {
 			case "list_items":
 				reply(map[string]interface{}{
@@ -164,9 +169,6 @@ func runScope(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 	return mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, scopeOpts())
 }
 
-// TestScope_VulnerableFires: both tokens authenticate; only the full one
-// should reach delete_item. The limited one dispatches identically while the
-// anonymous control is refused, which is the confirmed failure.
 func TestScope_VulnerableFires(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: true}).handler())
 	defer ts.Close()
@@ -187,9 +189,6 @@ func TestScope_VulnerableFires(t *testing.T) {
 	}
 }
 
-// TestScope_PatchedStaysSilent: the limited token is refused with
-// insufficient_scope before validation on the privileged call. The boundary
-// held; MUST stay silent.
 func TestScope_PatchedStaysSilent(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: true, enforceWriteScope: true}).handler())
 	defer ts.Close()
@@ -203,9 +202,6 @@ func TestScope_PatchedStaysSilent(t *testing.T) {
 	}
 }
 
-// TestScope_OpenSuppressed: no authentication anywhere. The anonymous control
-// dispatches, so identity gates nothing and the surface belongs to
-// mcp-tools-unauth-001 rather than to a scope verdict.
 func TestScope_OpenSuppressed(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: false}).handler())
 	defer ts.Close()
@@ -219,9 +215,6 @@ func TestScope_OpenSuppressed(t *testing.T) {
 	}
 }
 
-// TestScope_MissingPrincipalsNotTested: one identity cannot cross a scope
-// boundary. With no credentials configured but the tool surface reachable,
-// the rule reports not tested naming what is missing, never clean.
 func TestScope_MissingPrincipalsNotTested(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: false}).handler())
 	defer ts.Close()
@@ -239,8 +232,6 @@ func TestScope_MissingPrincipalsNotTested(t *testing.T) {
 	}
 }
 
-// TestScope_LimitedRefusedNotTested: the limited token is dead, so its
-// refusals say nothing about scoping. The rule reports not tested naming it.
 func TestScope_LimitedRefusedNotTested(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: true, enforceWriteScope: true}).handler())
 	defer ts.Close()
@@ -259,9 +250,6 @@ func TestScope_LimitedRefusedNotTested(t *testing.T) {
 	}
 }
 
-// TestScope_NoPrivilegedCandidatesClean: only read-only annotated tools are
-// listed, so nothing qualifies as privileged and the wire is clean by
-// determination rather than by silence.
 func TestScope_NoPrivilegedCandidatesClean(t *testing.T) {
 	base := (&scopeServer{auth: true}).handler()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -290,8 +278,7 @@ func TestScope_NoPrivilegedCandidatesClean(t *testing.T) {
 			})
 			return
 		}
-		// Hand the buffered body back before delegating: the probe above
-		// consumed the stream, and the wrapped handler routes on it too.
+		// Restore the body for the wrapped handler.
 		r.Body = io.NopCloser(strings.NewReader(string(raw)))
 		base.ServeHTTP(w, r)
 	}))
@@ -303,5 +290,55 @@ func TestScope_NoPrivilegedCandidatesClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings with no privileged candidates, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestScope_RequiresToolApproval(t *testing.T) {
+	srv := &scopeServer{auth: true}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	opts := scopeOpts()
+	opts.MCPScopeTools = nil
+	findings, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+	if err == nil || !strings.Contains(err.Error(), "--mcp-scope-tool") {
+		t.Fatalf("expected an approval error, got findings=%d err=%v", len(findings), err)
+	}
+	if srv.toolCalls.Load() != 0 {
+		t.Fatalf("unapproved tool received %d call(s)", srv.toolCalls.Load())
+	}
+}
+
+func TestScope_ToolApprovalIsExact(t *testing.T) {
+	for _, name := range []string{"delete", "Delete_Item", "*", "delete_item "} {
+		t.Run(name, func(t *testing.T) {
+			srv := &scopeServer{auth: true}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+
+			opts := scopeOpts()
+			opts.MCPScopeTools = []string{name}
+			_, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+			if err == nil {
+				t.Fatal("expected an approval error")
+			}
+			if srv.toolCalls.Load() != 0 {
+				t.Fatalf("inexact approval made %d call(s)", srv.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_PartialApprovalBlocksAllCalls(t *testing.T) {
+	srv := &scopeServer{auth: true, extraTool: true}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	_, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, scopeOpts())
+	if err == nil || !strings.Contains(err.Error(), "send_email") {
+		t.Fatalf("expected missing approval for send_email, got %v", err)
+	}
+	if srv.toolCalls.Load() != 0 {
+		t.Fatalf("partial approval made %d call(s)", srv.toolCalls.Load())
 	}
 }

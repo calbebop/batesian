@@ -61,6 +61,9 @@ type Options struct {
 	// allowed. Everything else is denied unless it appears here.
 	OAuthOrigins []string
 
+	// MCPScopeTools are exact tool names the scope-confusion rule may invoke.
+	MCPScopeTools []string
+
 	// Verbose enables debug logging.
 	Verbose bool
 

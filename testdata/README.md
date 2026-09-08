@@ -73,7 +73,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
 | `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
-| `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (three postures, see below; needs `--token tok-a` and two principals) |
+| `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (needs two principals and `--mcp-scope-tool delete_item`) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
@@ -365,7 +365,8 @@ python testdata/mcp_scope_confusion_server.py open        # rule must stay silen
 
 ```sh
 batesian scan --target http://127.0.0.1:7806 --token tok-a \
-  --principal name=full,token=tok-a --principal name=limited,token=tok-b -v
+  --principal name=full,token=tok-a --principal name=limited,token=tok-b \
+  --mcp-scope-tool delete_item -v
 ```
 
 All postures authenticate every non-initialize method; `tok-a` is the full
@@ -375,8 +376,8 @@ the confirmed failure. In `patched` the limited token draws
 `insufficient_scope` before argument validation and the boundary held. In
 `open` nothing authenticates at all, the anonymous control dispatches, and the
 rule suppresses itself because identity gates nothing here (that surface is
-`mcp-tools-unauth-001`'s). Every call names an item id that does not exist, so
-nothing is ever deleted in any posture.
+`mcp-tools-unauth-001`'s). The fixture has no stored items, so its approved
+`delete_item` probes cannot remove data.
 
 **`mcp_shadow_surface_server.py` binds two ports** and takes a posture argument,
 defaulting to `shadow-open`:
