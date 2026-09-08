@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"github.com/calbebop/batesian/internal/config"
+	"github.com/calbebop/batesian/internal/rules"
 )
 
 func TestParsePrincipalFlag_Valid(t *testing.T) {
@@ -405,6 +406,84 @@ func TestScan_InvalidRulePackStopsBeforeNetwork(t *testing.T) {
 	}
 	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
 		t.Fatalf("network calls before rule validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+	}
+}
+
+func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
+	loaded := []*rules.Rule{
+		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high", Tags: []string{"auth"}}, Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low", Tags: []string{"injection"}}, Attack: rules.AttackBlock{Protocol: "mcp"}},
+	}
+	tests := []struct {
+		name       string
+		protocol   string
+		severities []string
+		tags       []string
+		ids        []string
+	}{
+		{name: "protocol", protocol: "smtp"},
+		{name: "severity", severities: []string{"critical"}},
+		{name: "tag", tags: []string{"transport"}},
+		{name: "ID", ids: []string{"missing"}},
+		{name: "protocol and ID", protocol: "a2a", ids: []string{"mcp-test"}},
+		{name: "severity and ID", severities: []string{"high"}, ids: []string{"mcp-test"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := selectScanRules(loaded, tc.protocol, tc.severities, tc.tags, tc.ids)
+			if err == nil || !strings.Contains(err.Error(), "no rules matched") {
+				t.Fatalf("expected empty selection error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestSelectScanRules_AllowsMatches(t *testing.T) {
+	loaded := []*rules.Rule{{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}}}
+	selected, err := selectScanRules(loaded, "a2a", []string{"high"}, nil, []string{"a2a-test"})
+	if err != nil {
+		t.Fatalf("selecting rules: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != loaded[0] {
+		t.Fatalf("selected rules = %v, want input rule", selected)
+	}
+}
+
+func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	var oauthHits, targetHits atomic.Int32
+	oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		oauthHits.Add(1)
+	}))
+	defer oauth.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+	t.Setenv("BATESIAN_TOKEN", "")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "rules-dir", "")
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "protocol", "smtp")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", oauth.URL)
+	setScanFlag(t, "dry-run", "false")
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "no rules matched") {
+		t.Fatalf("expected empty selection error, got %v", err)
+	}
+	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
 	}
 }
 

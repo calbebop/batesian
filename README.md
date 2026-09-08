@@ -148,7 +148,8 @@ jq -e 'all(.runs[].invocations[]; .executionSuccessful)' results.sarif
 ```
 
 `scan` exits non-zero only on a command-level error, not findings or per-rule
-skips. Gate findings through the Security tab or `--output json`.
+skips. Filters that select no rules are a command-level error. Gate findings
+through the Security tab or `--output json`.
 
 ## Rule packs
 
