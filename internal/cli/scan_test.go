@@ -249,13 +249,7 @@ func TestEffectiveMCPScopeTools(t *testing.T) {
 	}
 }
 
-// TestScan_ConfigOutputFieldApplies pins the WIRING, not just the helper: the
-// config file's output field is validated, documented in the generated
-// example, and was silently ignored because the --output default masked the
-// empty-string sentinel. Driven through the real command against a target
-// that answers nothing, so the run is fast and sends no attack traffic: a
-// 404-everything server leaves every rule not-tested and the payload on
-// stdout must be the JSON envelope the config asked for.
+// TestScan_ConfigOutputFieldApplies verifies config output through the command.
 func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
@@ -265,10 +259,7 @@ func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 		t.Fatalf("writing config: %v", err)
 	}
 
-	// The machine-readable payload goes to os.Stdout; banner and status go to
-	// stderr for json output, so stdout must carry the envelope alone. The
-	// reader runs concurrently: the payload exceeds a pipe's buffer, and a
-	// reader that starts only after Execute returns deadlocks the writer.
+	// Drain stdout concurrently because the JSON payload exceeds the pipe buffer.
 	stdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -298,5 +289,27 @@ func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 	}
 	if _, ok := doc["findings"]; !ok {
 		t.Errorf("payload missing the findings key: %.200s", buf.String())
+	}
+}
+
+func TestScan_ConfigLoadErrorStopsScan(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(cfgPath, []byte("protocol: [invalid"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	flag := scanCmd.Flags().Lookup("config")
+	oldValue, oldChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(oldValue)
+		flag.Changed = oldChanged
+	})
+	if err := scanCmd.Flags().Set("config", cfgPath); err != nil {
+		t.Fatalf("setting config flag: %v", err)
+	}
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "loading configuration") {
+		t.Fatalf("expected config load error, got %v", err)
 	}
 }

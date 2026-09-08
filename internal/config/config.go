@@ -91,16 +91,17 @@ type PrincipalConfig struct {
 	Headers map[string]string `yaml:"headers"`
 }
 
-// Load reads a config file from path. If path is empty, it searches
-// for a config file in the current working directory and its parents,
-// trying each name in defaultFilenames. Returns an empty Config (not an error)
-// if no file is found.
+// Load reads path or discovers a config in the current directory and its parents.
+// A missing discovered config returns defaults; all other errors are returned.
 func Load(path string) (*Config, error) {
 	if path == "" {
 		var err error
 		path, err = findConfigFile()
-		if err != nil || path == "" {
-			return &Config{}, nil // No config file found; use flag defaults.
+		if err != nil {
+			return nil, err
+		}
+		if path == "" {
+			return &Config{}, nil
 		}
 	}
 
@@ -166,12 +167,14 @@ func findConfigFile() (string, error) {
 			candidate := filepath.Join(dir, name)
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
+			} else if !os.IsNotExist(err) {
+				return "", fmt.Errorf("checking config file %s: %w", candidate, err)
 			}
 		}
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break // Reached filesystem root.
+			break
 		}
 		dir = parent
 	}
