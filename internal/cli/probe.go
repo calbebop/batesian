@@ -82,6 +82,9 @@ func runProbe(cmd *cobra.Command, args []string) error {
 	if format == report.FormatSARIF {
 		return fmt.Errorf("--output sarif is not supported for probe; use scan for SARIF output")
 	}
+	if err := validateTargetURL(target); err != nil {
+		return err
+	}
 	// In JSON mode, status messages go to stderr so stdout is machine-parseable.
 	statusOut := os.Stdout
 	if format == report.FormatJSON {

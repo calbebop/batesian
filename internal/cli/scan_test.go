@@ -601,6 +601,59 @@ func TestScan_InvalidFilterStopsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestScan_InvalidTargetStopsBeforeOAuth(t *testing.T) {
+	tests := []struct {
+		name       string
+		configData string
+		target     string
+		dryRun     string
+	}{
+		{name: "flag target", configData: "{}\n", target: "ftp://agent.example.com", dryRun: "false"},
+		{name: "config target", configData: "target: ftp://agent.example.com\n", dryRun: "false"},
+		{name: "dry run", configData: "{}\n", target: "ftp://agent.example.com", dryRun: "true"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.configData), 0o644); err != nil {
+				t.Fatalf("writing config: %v", err)
+			}
+
+			var oauthConnections atomic.Int32
+			oauth := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+			oauth.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					oauthConnections.Add(1)
+				}
+			}
+			oauth.StartTLS()
+			defer oauth.Close()
+
+			t.Setenv("BATESIAN_TOKEN", "")
+			if scanCmd.Flags().Lookup("target") == nil {
+				scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+			}
+			setScanFlag(t, "config", configPath)
+			setScanFlag(t, "rules-dir", "")
+			setScanFlag(t, "target", tc.target)
+			setScanFlag(t, "token", "")
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "token-url", oauth.URL)
+			setScanFlag(t, "auth-url", "")
+			setScanFlag(t, "dry-run", tc.dryRun)
+
+			err := runScan(scanCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), `target URL must use http or https scheme, got "ftp"`) {
+				t.Fatalf("expected target URL error, got %v", err)
+			}
+			if oauthConnections.Load() != 0 {
+				t.Fatalf("OAuth connections before target validation: %d", oauthConnections.Load())
+			}
+		})
+	}
+}
+
 func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
 	configData := "rule_ids:\n  - mcp-resources-unauth-001\n"
