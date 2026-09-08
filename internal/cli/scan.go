@@ -322,8 +322,16 @@ func ruleWarningsError(source string, warns []rules.LoadWarning) error {
 }
 
 func selectScanRules(loaded []*rules.Rule, protocol string, severities, tags, ids []string) ([]*rules.Rule, error) {
+	protocols, err := parseProtocols(protocol)
+	if err != nil {
+		return nil, err
+	}
+	severities, err = normalizeSeverities(severities)
+	if err != nil {
+		return nil, err
+	}
 	filter := &rules.Filter{
-		Protocols:  splitProtocols(protocol),
+		Protocols:  protocols,
 		Severities: severities,
 		Tags:       tags,
 		IDs:        ids,
@@ -343,20 +351,32 @@ func coalesceProtocol(p string) string {
 	return p
 }
 
-// splitProtocols splits a comma-separated protocol string into a slice.
-// Each token is trimmed and lowercased so that values like "a2a, mcp" match correctly.
-func splitProtocols(p string) []string {
+func parseProtocols(p string) ([]string, error) {
 	if p == "" {
-		return nil
+		return nil, nil
 	}
-	raw := strings.Split(strings.ToLower(p), ",")
+	raw := strings.Split(p, ",")
 	out := make([]string, 0, len(raw))
 	for _, v := range raw {
-		if t := strings.TrimSpace(v); t != "" {
-			out = append(out, t)
+		value := strings.ToLower(strings.TrimSpace(v))
+		if value != "a2a" && value != "mcp" {
+			return nil, fmt.Errorf("unknown protocol %q; supported: a2a, mcp", strings.TrimSpace(v))
 		}
+		out = append(out, value)
 	}
-	return out
+	return out, nil
+}
+
+func normalizeSeverities(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		canonical := severity.Canonical(value)
+		if canonical == "" {
+			return nil, fmt.Errorf("unknown severity %q; supported: %s", strings.TrimSpace(value), severity.List())
+		}
+		out = append(out, canonical)
+	}
+	return out, nil
 }
 
 // buildPrincipals merges principals from the config file with any supplied via
