@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 	protoa2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
@@ -296,7 +297,7 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	}
 
 	// Source 1: protected-resource metadata.
-	if resp, err := client.GET(ctx, baseURL+"/.well-known/oauth-protected-resource", nil); err == nil && resp.IsSuccess() {
+	if resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, "/.well-known/oauth-protected-resource"), nil); err == nil && resp.IsSuccess() {
 		var meta struct {
 			Resource             string   `json:"resource"`
 			AuthorizationServers []string `json:"authorization_servers"`

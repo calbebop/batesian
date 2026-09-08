@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // JWSAlgConfExecutor inspects A2A AgentCard JWS signatures for algorithm
@@ -47,7 +48,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	cardURL := vars.BaseURL + "/.well-known/agent-card.json"
+	cardURL := endpoint.AppendPath(vars.BaseURL, "/.well-known/agent-card.json")
 	resp, err := client.GET(ctx, cardURL, nil)
 	if err != nil || !resp.IsSuccess() {
 		// The rule analyses signatures on the card. Without one it was not

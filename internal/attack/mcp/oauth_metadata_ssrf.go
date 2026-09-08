@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 	"github.com/calbebop/batesian/internal/oob"
 )
 
@@ -151,8 +152,8 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 
 func (e *OAuthMetadataSSRFExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, error) {
 	for _, ep := range []string{
-		baseURL + "/.well-known/oauth-authorization-server",
-		baseURL + "/.well-known/openid-configuration",
+		endpoint.AppendPath(baseURL, "/.well-known/oauth-authorization-server"),
+		endpoint.AppendPath(baseURL, "/.well-known/openid-configuration"),
 	} {
 		resp, err := client.GET(ctx, ep, nil)
 		if err != nil || !resp.IsSuccess() {

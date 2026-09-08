@@ -32,16 +32,62 @@ import (
 // One trailing slash is trimmed from baseURL first, so https://host/mcp/ is
 // treated as https://host/mcp rather than producing https://host/mcp//mcp.
 func Candidates(baseURL string, paths []string) []string {
-	base := strings.TrimSuffix(baseURL, "/")
+	base := AppendPath(baseURL, "")
 
 	out := make([]string, 0, len(paths)+1)
 	if hasPath(base) {
 		out = append(out, base)
 	}
 	for _, p := range paths {
-		out = append(out, base+p)
+		out = append(out, appendPath(base, p, false))
 	}
 	return dedupe(out)
+}
+
+// AppendPath adds a path suffix without moving it into the query or fragment.
+func AppendPath(baseURL, suffix string) string {
+	return appendPath(baseURL, suffix, true)
+}
+
+// TrimTrailingSlashes trims path slashes without changing the query.
+func TrimTrailingSlashes(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return strings.TrimRight(baseURL, "/")
+	}
+	escaped := strings.TrimRight(u.EscapedPath(), "/")
+	path, err := url.PathUnescape(escaped)
+	if err != nil {
+		return strings.TrimRight(baseURL, "/")
+	}
+	u.Path = path
+	u.RawPath = escaped
+	return u.String()
+}
+
+func appendPath(baseURL, suffix string, trimTrailing bool) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		if trimTrailing {
+			baseURL = strings.TrimSuffix(baseURL, "/")
+		}
+		return baseURL + suffix
+	}
+	escaped := u.EscapedPath()
+	if trimTrailing {
+		escaped = strings.TrimSuffix(escaped, "/")
+	}
+	escaped += suffix
+	path, err := url.PathUnescape(escaped)
+	if err != nil {
+		if trimTrailing {
+			baseURL = strings.TrimSuffix(baseURL, "/")
+		}
+		return baseURL + suffix
+	}
+	u.Path = path
+	u.RawPath = escaped
+	return u.String()
 }
 
 // hasPath reports whether the URL names a path beyond the root. A URL that will

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // hostInjectCanary is the value injected into host-related headers.
@@ -63,7 +64,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 
 	for _, path := range cardPaths {
 		for _, probe := range probes {
-			resp, err := client.GET(ctx, vars.BaseURL+path, map[string]string{
+			resp, err := client.GET(ctx, endpoint.AppendPath(vars.BaseURL, path), map[string]string{
 				probe.header: probe.value,
 			})
 			if err != nil || !resp.IsSuccess() {
@@ -133,7 +134,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 					"GET %s%s\n%s: %s\nReflected in field(s): %v\nResponse snippet: %.300s",
 					vars.BaseURL, path, probe.header, probe.value, reflectedIn, string(resp.Body)),
 				Remediation: e.rule.Remediation,
-				TargetURL:   vars.BaseURL + path,
+				TargetURL:   endpoint.AppendPath(vars.BaseURL, path),
 			})
 		}
 	}

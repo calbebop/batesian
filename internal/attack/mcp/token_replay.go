@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // TokenReplayExecutor tests whether an MCP server accepts forged or unsigned
@@ -293,7 +294,7 @@ var oauthWellKnownPaths = []string{
 // servers that plainly do not use OAuth; the document contents are not used.
 func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) bool {
 	for _, p := range oauthWellKnownPaths {
-		resp, err := client.GET(ctx, baseURL+p, nil)
+		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, p), nil)
 		if err != nil {
 			continue
 		}

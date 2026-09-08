@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // ExtensionDowngradeExecutor tests whether an A2A server fails OPEN on an
@@ -101,7 +102,7 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 // coverage the scan does not have.
 func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) (uris []string, cardServed bool) {
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
-		resp, err := client.GET(ctx, baseURL+path, nil)
+		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, path), nil)
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}

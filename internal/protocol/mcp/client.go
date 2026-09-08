@@ -105,7 +105,7 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport:     &http.Transport{TLSClientConfig: &tls.Config{}, Proxy: http.ProxyFromEnvironment}, //nolint:gosec
 		},
-		baseURL: strings.TrimRight(u.String(), "/"),
+		baseURL: endpoint.TrimTrailingSlashes(u.String()),
 	}
 	for _, o := range opts {
 		o(c)

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // OAuthAudienceExecutor implements rule mcp-oauth-audience-002.
@@ -307,7 +308,7 @@ func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HT
 			return resource, mcpReached, observed, nil
 		}
 	}
-	wellKnown := baseURL + "/.well-known/oauth-protected-resource"
+	wellKnown := endpoint.AppendPath(baseURL, "/.well-known/oauth-protected-resource")
 	resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown)
 	return resource, mcpReached, observed, err
 }

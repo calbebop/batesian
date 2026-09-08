@@ -728,6 +728,39 @@ func TestFetchAgentCard_V1Path(t *testing.T) {
 	}
 }
 
+func TestClient_PreservesTargetQueryWhenAppendingPaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("tenant") != "one/" {
+			http.Error(w, "missing tenant", http.StatusBadRequest)
+			return
+		}
+		switch r.URL.Path {
+		case WellKnownPath:
+			_, _ = w.Write([]byte(minimalV1CardJSON))
+		case ExtendedCardPath:
+			_, _ = w.Write([]byte(`{"name":"Extended"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL + "?tenant=one/")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, _, err := client.FetchAgentCard(t.Context()); err != nil {
+		t.Fatalf("FetchAgentCard: %v", err)
+	}
+	result, err := client.ProbeExtendedCard(t.Context())
+	if err != nil {
+		t.Fatalf("ProbeExtendedCard: %v", err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("extended card status = %d, want 200", result.StatusCode)
+	}
+}
+
 func TestFetchAgentCard_LegacyFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only serve the legacy v0.3 path
