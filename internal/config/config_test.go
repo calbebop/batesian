@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -247,6 +248,98 @@ func TestLoad_MalformedYAML(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsUnknownFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		field   string
+	}{
+		{"top level", "rule_id: mcp-tool-poison-001\n", "rule_id"},
+		{"principal", "principals:\n  - name: tenant-a\n    tokne: secret\n", "tokne"},
+		{"merged principal", "principals:\n  - name: tenant-a\n    <<: &defaults\n      tokne: secret\n", "tokne"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfig(t, tc.content)
+			if err == nil || !strings.Contains(err.Error(), "field "+tc.field+" not found") {
+				t.Fatalf("expected unknown field error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsDuplicateFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"top level", "protocol: mcp\nprotocol: a2a\n"},
+		{"principal", "principals:\n  - name: first\n    name: second\n"},
+		{"header", "principals:\n  - name: tenant-a\n    headers:\n      X-Tenant: A\n      X-Tenant: B\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfig(t, tc.content)
+			if err == nil || !strings.Contains(err.Error(), "already defined") {
+				t.Fatalf("expected duplicate field error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsMultipleDocuments(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"valid second document", "protocol: mcp\n---\nprotocol: a2a\n"},
+		{"empty second document", "protocol: mcp\n---\n"},
+		{"malformed second document", "protocol: mcp\n---\nprotocol: [invalid\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := loadConfig(t, tc.content); err == nil {
+				t.Fatal("expected trailing document to fail")
+			}
+		})
+	}
+}
+
+func TestLoad_AllowsEmptyContent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"empty", ""},
+		{"whitespace", " \n"},
+		{"comment", "# defaults only\n"},
+		{"empty mapping", "{}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadConfig(t, tc.content)
+			if err != nil {
+				t.Fatalf("loading config: %v", err)
+			}
+			if !reflect.DeepEqual(cfg, &config.Config{}) {
+				t.Fatalf("config = %+v, want defaults", cfg)
+			}
+		})
+	}
+}
+
+func TestLoad_AllowsAliases(t *testing.T) {
+	cfg, err := loadConfig(t, "tags: [&tag auth, *tag]\n")
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Tags, []string{"auth", "auth"}) {
+		t.Fatalf("tags = %v, want repeated alias value", cfg.Tags)
+	}
+}
+
 func TestLoad_InvalidProtocol(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")
@@ -297,15 +390,22 @@ func TestExample_IsValidYAML(t *testing.T) {
 		t.Fatalf("writing example config: %v", err)
 	}
 
-	// Example config is mostly comments; loading it should succeed and return empty fields.
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Example() produced invalid YAML: %v", err)
 	}
-	// All commented-out fields should be zero-valued.
-	if cfg.Target != "" {
-		t.Errorf("example config target should be empty, got %q", cfg.Target)
+	if !reflect.DeepEqual(cfg, &config.Config{}) {
+		t.Fatalf("example config = %+v, want defaults", cfg)
 	}
+}
+
+func loadConfig(t *testing.T, content string) (*config.Config, error) {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	return config.Load(cfgPath)
 }
 
 func chdir(t *testing.T, dir string) {
