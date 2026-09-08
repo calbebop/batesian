@@ -3,6 +3,7 @@ package report_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,8 +13,6 @@ import (
 	"github.com/calbebop/batesian/internal/rules"
 )
 
-// sarifFixture builds a one-finding result set with an absolute network target,
-// which is the only shape Batesian ever produces (scan targets are URLs).
 func sarifFixture() []engine.RunResult {
 	r := &rules.Rule{}
 	r.ID = "mcp-test-001"
@@ -33,9 +32,26 @@ func sarifFixture() []engine.RunResult {
 	}}
 }
 
-// sarifDoc is a minimal view of the parts of a SARIF document this test inspects.
 type sarifDoc struct {
 	Runs []struct {
+		Invocations []struct {
+			ExecutionSuccessful *bool `json:"executionSuccessful"`
+			Notifications       []struct {
+				Level   string `json:"level"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+				AssociatedRule *struct {
+					ID string `json:"id"`
+				} `json:"associatedRule"`
+			} `json:"toolExecutionNotifications"`
+			Properties struct {
+				Selected  int `json:"rulesSelected"`
+				Completed int `json:"rulesCompleted"`
+				Skipped   int `json:"rulesSkipped"`
+				Errored   int `json:"rulesErrored"`
+			} `json:"properties"`
+		} `json:"invocations"`
 		Results []struct {
 			Locations []struct {
 				PhysicalLocation struct {
@@ -46,11 +62,6 @@ type sarifDoc struct {
 	} `json:"runs"`
 }
 
-// TestWriteSARIF_AbsoluteURIHasNoUriBaseId verifies the artifactLocation for a
-// network target carries the absolute target URL and NO uriBaseId. Per SARIF
-// 2.1.0: "if the uri property contains an absolute URI, the uriBaseId property
-// SHALL be absent." The previous output paired the absolute URI with a
-// %SRCROOT% uriBaseId, violating the spec.
 func TestWriteSARIF_AbsoluteURIHasNoUriBaseId(t *testing.T) {
 	var buf bytes.Buffer
 	if err := report.WriteSARIF(&buf, sarifFixture(), "test"); err != nil {
@@ -77,14 +88,12 @@ func TestWriteSARIF_AbsoluteURIHasNoUriBaseId(t *testing.T) {
 	if _, present := al["uriBaseId"]; present {
 		t.Errorf("artifactLocation must not contain uriBaseId for an absolute URI, got: %v", al)
 	}
+	invocation := doc.Runs[0].Invocations[0]
+	if invocation.ExecutionSuccessful == nil || !*invocation.ExecutionSuccessful {
+		t.Fatalf("complete scan must report a successful invocation: %+v", invocation)
+	}
 }
 
-// TestWriteSARIF_CleanScanEmptiesResultsArray verifies a zero-finding scan
-// writes "results": [] rather than "results": null. SARIF 2.1.0 types
-// runs[].results as an array - null is not a legal value - so a nil Go slice
-// here produced a document that schema-validating consumers (GitHub
-// code-scanning upload, VS Code SARIF viewer) reject, precisely when the
-// target was clean. A clean scan is the most common scan outcome.
 func TestWriteSARIF_CleanScanEmptiesResultsArray(t *testing.T) {
 	r := &rules.Rule{}
 	r.ID = "mcp-test-001"
@@ -112,13 +121,18 @@ func TestWriteSARIF_CleanScanEmptiesResultsArray(t *testing.T) {
 		t.Fatalf("expected one run with a non-nil empty results array; runs=%d results=%v",
 			len(doc.Runs), doc.Runs[0].Results)
 	}
+	invocation := doc.Runs[0].Invocations[0]
+	if invocation.ExecutionSuccessful == nil || !*invocation.ExecutionSuccessful {
+		t.Fatalf("clean scan must report success: %+v", invocation)
+	}
+	if invocation.Properties.Selected != 1 || invocation.Properties.Completed != 1 {
+		t.Fatalf("unexpected coverage counts: %+v", invocation.Properties)
+	}
+	if len(invocation.Notifications) != 0 {
+		t.Fatalf("complete scan emitted notifications: %+v", invocation.Notifications)
+	}
 }
 
-// TestSARIF_HelpURIFromReferences pins that a rule's first http(s) reference
-// becomes the driver rule's helpUri - the field GitHub code-scanning renders
-// as the alert's help link. HelpURI existed as a struct field but was never
-// assigned, so every alert shipped with no help link despite every rule
-// citing specs and advisories.
 func TestSARIF_HelpURIFromReferences(t *testing.T) {
 	r := &rules.Rule{}
 	r.ID = "mcp-helpuri-001"
@@ -160,11 +174,6 @@ func TestSARIF_HelpURIFromReferences(t *testing.T) {
 	}
 }
 
-// TestSARIF_PartialFingerprintStableAcrossTargetDrift pins the alert-
-// correlation property: two findings with identical rule ID and title but
-// different target URLs must produce the SAME fingerprint, since the whole
-// point is that one logical vulnerability keeps one alert when its endpoint
-// string moves. It also pins the negative - different titles hash differently.
 func TestSARIF_PartialFingerprintStableAcrossTargetDrift(t *testing.T) {
 	fp := func(ruleID, title, target string) string {
 		results := []engine.RunResult{{
@@ -200,5 +209,87 @@ func TestSARIF_PartialFingerprintStableAcrossTargetDrift(t *testing.T) {
 	}
 	if c := fp("mcp-x-001", "Different finding", "https://host.example/mcp"); c == a {
 		t.Fatalf("different titles must hash differently, got %q for both", a)
+	}
+}
+
+func TestWriteSARIF_ReportsIncompleteCoverage(t *testing.T) {
+	results := sarifFixture()
+	results = append(results,
+		engine.RunResult{
+			Rule:    &rules.Rule{ID: "mcp-skipped-001"},
+			Skipped: true,
+			SkipMsg: "not tested: missing second principal",
+		},
+		engine.RunResult{
+			Rule: &rules.Rule{ID: "mcp-error-001"},
+			Err:  errors.New("request failed"),
+		},
+	)
+
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+
+	var doc sarifDoc
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(doc.Runs[0].Results) != 1 {
+		t.Fatalf("coverage notifications must not become alerts: %+v", doc.Runs[0].Results)
+	}
+	invocation := doc.Runs[0].Invocations[0]
+	if invocation.ExecutionSuccessful == nil || *invocation.ExecutionSuccessful {
+		t.Fatalf("incomplete scan must report an unsuccessful invocation: %+v", invocation)
+	}
+	if got := invocation.Properties; got.Selected != 3 || got.Completed != 1 || got.Skipped != 1 || got.Errored != 1 {
+		t.Fatalf("unexpected coverage counts: %+v", got)
+	}
+	if len(invocation.Notifications) != 2 {
+		t.Fatalf("expected skip and error notifications, got %+v", invocation.Notifications)
+	}
+	skip := invocation.Notifications[0]
+	if skip.Level != "warning" || skip.Message.Text != "not tested: missing second principal" ||
+		skip.AssociatedRule == nil || skip.AssociatedRule.ID != "mcp-skipped-001" {
+		t.Fatalf("unexpected skip notification: %+v", skip)
+	}
+	failure := invocation.Notifications[1]
+	if failure.Level != "error" || failure.Message.Text != "request failed" ||
+		failure.AssociatedRule == nil || failure.AssociatedRule.ID != "mcp-error-001" {
+		t.Fatalf("unexpected error notification: %+v", failure)
+	}
+}
+
+func TestWriteSARIF_PreservesFindingWithRuleError(t *testing.T) {
+	results := sarifFixture()
+	results[0].Err = errors.New("follow-up failed")
+
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+
+	var doc sarifDoc
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(doc.Runs[0].Results) != 1 || len(doc.Runs[0].Invocations[0].Notifications) != 1 {
+		t.Fatalf("finding or error notification was lost: %+v", doc.Runs[0])
+	}
+}
+
+func TestWriteSARIF_NotificationWithoutRule(t *testing.T) {
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, []engine.RunResult{{Skipped: true}}, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+
+	var doc sarifDoc
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	n := doc.Runs[0].Invocations[0].Notifications[0]
+	if n.AssociatedRule != nil || n.Message.Text != "rule did not complete" {
+		t.Fatalf("unexpected fallback notification: %+v", n)
 	}
 }

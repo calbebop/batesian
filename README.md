@@ -138,7 +138,17 @@ jobs:
           sarif_file: results.sarif
 ```
 
-Findings surface as code-scanning alerts. `scan` exits non-zero only on an operational error, not on findings, so gating is handled by the Security tab (or by parsing `--output json`).
+Findings surface as code-scanning alerts. SARIF invocation metadata records
+completed, skipped, and errored rules; `executionSuccessful` is false when
+coverage is incomplete. GitHub accepts but does not display these fields, so CI
+can enforce coverage with:
+
+```sh
+jq -e 'all(.runs[].invocations[]; .executionSuccessful)' results.sarif
+```
+
+`scan` exits non-zero only on a command-level error, not findings or per-rule
+skips. Gate findings through the Security tab or `--output json`.
 
 ## Rule packs
 
