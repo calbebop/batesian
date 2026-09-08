@@ -333,6 +333,20 @@ func selectScanRules(loaded []*rules.Rule, protocol string, severities, tags, id
 	if err != nil {
 		return nil, err
 	}
+	knownIDs := make([]string, 0, len(loaded))
+	var knownTags []string
+	for _, rule := range loaded {
+		knownIDs = append(knownIDs, rule.ID)
+		knownTags = append(knownTags, rule.Info.Tags...)
+	}
+	ids, err = normalizeKnownSelectors(ids, knownIDs, "rule ID")
+	if err != nil {
+		return nil, err
+	}
+	tags, err = normalizeKnownSelectors(tags, knownTags, "tag")
+	if err != nil {
+		return nil, err
+	}
 	filter := &rules.Filter{
 		Protocols:  protocols,
 		Severities: severities,
@@ -378,6 +392,25 @@ func normalizeSeverities(values []string) ([]string, error) {
 			return nil, fmt.Errorf("unknown severity %q; supported: %s", strings.TrimSpace(value), severity.List())
 		}
 		out = append(out, canonical)
+	}
+	return out, nil
+}
+
+func normalizeKnownSelectors(values, known []string, label string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		matched := ""
+		for _, candidate := range known {
+			if strings.EqualFold(value, strings.TrimSpace(candidate)) {
+				matched = candidate
+				break
+			}
+		}
+		if matched == "" {
+			return nil, fmt.Errorf("unknown %s %q", label, value)
+		}
+		out = append(out, matched)
 	}
 	return out, nil
 }
