@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -33,7 +34,9 @@ const (
 // entropyServer advertises one task-capable read-only tool and mints handles
 // in the configured style on every task-augmented tools/call.
 type entropyServer struct {
-	style entropyStyle
+	style       entropyStyle
+	annotations map[string]interface{}
+	calls       *atomic.Int32
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -80,11 +83,15 @@ func (s *entropyServer) handler() http.HandlerFunc {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			annotations := s.annotations
+			if annotations == nil {
+				annotations = map[string]interface{}{"readOnlyHint": true}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]interface{}{"tools": []map[string]interface{}{{
 					"name":        "wait_a_moment",
-					"annotations": map[string]interface{}{"readOnlyHint": true},
+					"annotations": annotations,
 					"execution":   map[string]interface{}{"taskSupport": "optional"},
 					"inputSchema": map[string]interface{}{
 						"type":       "object",
@@ -94,6 +101,9 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				}}},
 			})
 		case "tools/call":
+			if s.calls != nil {
+				s.calls.Add(1)
+			}
 			if req.Params.Task == nil {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": req.ID,
@@ -235,6 +245,28 @@ func TestEntropy_NoSafeToolSilent(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when no safe tool exists, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestEntropy_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
+	var calls atomic.Int32
+	srv := &entropyServer{
+		style:       styleSequential,
+		annotations: map[string]interface{}{"readOnlyHint": false, "destructiveHint": false},
+		calls:       &calls,
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings when no explicitly read-only tool exists, got %d", len(findings))
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("non-read-only tool was called %d times", calls.Load())
 	}
 }
 

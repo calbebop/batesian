@@ -448,12 +448,12 @@ no safely-annotated tool is a genuine not-applicable.
 **Safety.** Creating a task requires invoking a real tool, which is unique among
 the rules in this package (`mcp-tools-unauth-001` deliberately calls a
 non-existent tool so nothing executes). The rule therefore only invokes a
-task-capable tool whose annotations declare it `readOnlyHint: true` or
-explicitly `destructiveHint: false`, and skips entirely when no such tool is
-advertised; an unannotated tool is never invoked, since MCP treats a non-read-only
-tool as potentially destructive by default. Because `tasks/result` blocks until a
-task is terminal, the rule polls `tasks/get` within a bounded budget and requests
-the result only once the task has finished.
+task-capable tool whose annotations explicitly and consistently declare
+`readOnlyHint: true`, and skips entirely when no such tool is advertised. A
+`destructiveHint: false` declaration alone permits additive writes under MCP and
+is not sufficient; an unannotated tool is never invoked. Because `tasks/result`
+blocks until a task is terminal, the rule polls `tasks/get` within a bounded
+budget and requests the result only once the task has finished.
 
 **Currency.** Tasks were introduced as experimental in 2025-11-25, and the
 **2026-07-28** revision moved them out of the core protocol into the
@@ -872,9 +872,10 @@ than in the transport or authorization layer the other rules here cover.
 **Safety.** This rule invokes real tools by name, which only
 `mcp-task-idor-001` also does, so it inherits that rule's gate and tightens it:
 
-1. Only tools whose annotations declare `readOnlyHint: true`, or explicitly
-   `destructiveHint: false`, are dispatched. An unannotated tool is never
-   touched, even one the scanner believes is vulnerable - the fixture keeps an
+1. Only tools whose annotations explicitly and consistently declare
+   `readOnlyHint: true` are dispatched. `destructiveHint: false` alone permits
+   additive writes and is not sufficient. An unannotated tool is never touched,
+   even one the scanner believes is vulnerable - the fixture keeps an
    unannotated broken tool precisely to pin this.
 2. Every probe reads a file that does not exist: a per-run canary name. No file
    content is ever returned and nothing on the target changes.
@@ -1145,9 +1146,9 @@ Two measurable failures from five samples, both confirmed:
 The two checks are independent and both may fire on one manifest; sequential
 counter handles are also thin-alphabet by construction.
 
-Safety mirrors `mcp-task-idor-001`: only annotated read-only or explicitly
-non-destructive tools declaring taskSupport optional/required are invoked,
-with inert arguments. A server without such a tool reports clean rather than
-dispatching anything unannotated. Refusals before enough samples report not
-tested naming the refusal - fewer than two handles cannot distinguish any
-pattern from coincidence.
+Safety mirrors `mcp-task-idor-001`: only tools explicitly and consistently
+declaring `readOnlyHint: true` and taskSupport optional/required are invoked,
+with inert arguments. `destructiveHint: false` alone permits additive writes.
+A server without such a tool reports clean rather than dispatching anything
+unannotated. Refusals before enough samples report not tested naming the refusal
+- fewer than two handles cannot distinguish any pattern from coincidence.

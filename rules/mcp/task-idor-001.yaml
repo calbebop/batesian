@@ -43,10 +43,11 @@ info:
 
     Safety: creating a task requires invoking a real tool, which is unique among
     the rules in this package. The rule therefore only invokes a task-capable
-    tool whose annotations declare it read-only or explicitly non-destructive,
-    and skips entirely when no such tool is advertised. Because tasks/result
-    blocks until a task is terminal, the rule polls tasks/get within a bounded
-    budget and only requests the result once the task has finished.
+    tool whose annotations explicitly and consistently declare it read-only,
+    and skips entirely when no such tool is advertised. A destructiveHint of
+    false alone still permits additive writes and is not sufficient. Because
+    tasks/result blocks until a task is terminal, the rule polls tasks/get within
+    a bounded budget and only requests the result once the task has finished.
 
     Currency: tasks were introduced as experimental in 2025-11-25, and the
     2026-07-28 revision moved them out of the core protocol into the

@@ -30,9 +30,10 @@ info:
          what samples reveal only makes real entropy higher. Under 64 bits a
          bearer-token MUST is violated before prediction is even attempted.
 
-    SAFETY mirrors mcp-task-idor-001: only annotated read-only or explicitly
-    non-destructive tools declaring taskSupport optional/required are invoked,
-    with inert arguments. A server without such a tool reports clean rather
+    SAFETY mirrors mcp-task-idor-001: only tools explicitly and consistently
+    declaring readOnlyHint true and taskSupport optional/required are invoked,
+    with inert arguments. destructiveHint false alone still permits additive
+    writes. A server without such a tool reports clean rather
     than dispatching anything unannotated.
 
     Refusals before enough samples are collected report NOT TESTED naming the
