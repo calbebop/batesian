@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // TaskIDORExecutor tests whether A2A task history is subject to broken
@@ -212,7 +213,7 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 	}
 	var listEndpoints []string
 	for _, b := range bases {
-		listEndpoints = append(listEndpoints, b+"/v1/tasks", b+"/tasks")
+		listEndpoints = append(listEndpoints, endpoint.AppendPath(b, "/v1/tasks"), endpoint.AppendPath(b, "/tasks"))
 	}
 	reached := false
 	for _, le := range listEndpoints {

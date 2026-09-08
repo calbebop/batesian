@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // A rule that finds nothing has to say which of two things happened: the target
@@ -29,7 +30,7 @@ import (
 // most rules have already made this call for their own reasons.
 func cardServed(ctx context.Context, client *attack.HTTPClient, baseURL string) bool {
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
-		if _, _, ok := fetchCard(ctx, client, baseURL+path); ok {
+		if _, _, ok := fetchCard(ctx, client, endpoint.AppendPath(baseURL, path)); ok {
 			return true
 		}
 	}

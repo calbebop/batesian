@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"net/url"
 
-	"strings"
 	"time"
 
+	"github.com/calbebop/batesian/internal/endpoint"
 	"github.com/calbebop/batesian/internal/httpx"
 )
 
@@ -107,7 +107,7 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	}
 
 	// Normalize: strip trailing slash
-	base := strings.TrimRight(u.String(), "/")
+	base := endpoint.TrimTrailingSlashes(u.String())
 
 	c := &Client{
 		http: &http.Client{
@@ -142,7 +142,7 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 
 	var lastResult *ProbeResult
 	for _, path := range paths {
-		target := c.baseURL + path
+		target := endpoint.AppendPath(c.baseURL, path)
 		result, body, err := c.get(ctx, target)
 		lastResult = result
 
@@ -166,13 +166,13 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 	}
 
 	return nil, lastResult, fmt.Errorf("no Agent Card found at %s or %s (HTTP %d) - is this an A2A agent?",
-		c.baseURL+WellKnownPath, c.baseURL+WellKnownPathLegacy, lastResult.StatusCode)
+		endpoint.AppendPath(c.baseURL, WellKnownPath), endpoint.AppendPath(c.baseURL, WellKnownPathLegacy), lastResult.StatusCode)
 }
 
 // ProbeExtendedCard attempts to fetch /extendedAgentCard without authentication.
 // Returns the HTTP status code and whether the card was disclosed.
 func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
-	target := c.baseURL + ExtendedCardPath
+	target := endpoint.AppendPath(c.baseURL, ExtendedCardPath)
 	result, _, err := c.get(ctx, target)
 	return result, err
 }
@@ -180,7 +180,7 @@ func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
 // ProbeExtendedCardWithInvalidToken attempts to fetch /extendedAgentCard with
 // a fabricated, invalid Bearer token. If this returns 200, auth is not enforced.
 func (c *Client) ProbeExtendedCardWithInvalidToken(ctx context.Context, token string) (*ProbeResult, error) {
-	target := c.baseURL + ExtendedCardPath
+	target := endpoint.AppendPath(c.baseURL, ExtendedCardPath)
 	req, err := c.newRequest(ctx, http.MethodGet, target)
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // CardSecurityUnenforcedExecutor tests whether an A2A server enforces the
@@ -234,10 +235,10 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 // fetchAgentCardBody returns the raw card body from the primary (v1.0) path,
 // falling back to the legacy (v0.3) path.
 func fetchAgentCardBody(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]byte, bool) {
-	if body, _, ok := fetchCard(ctx, client, baseURL+cardPathPrimary); ok {
+	if body, _, ok := fetchCard(ctx, client, endpoint.AppendPath(baseURL, cardPathPrimary)); ok {
 		return body, true
 	}
-	if body, _, ok := fetchCard(ctx, client, baseURL+cardPathLegacy); ok {
+	if body, _, ok := fetchCard(ctx, client, endpoint.AppendPath(baseURL, cardPathLegacy)); ok {
 		return body, true
 	}
 	return nil, false

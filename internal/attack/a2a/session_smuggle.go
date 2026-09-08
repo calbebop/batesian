@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // SessionSmuggleExecutor tests A2A agent role injection.
@@ -54,7 +55,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	// The A2A JSON-RPC endpoint is POST / in most implementations.
 	// Some HTTP+JSON bindings also use /v1/message:send.
 	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, client, vars.BaseURL)
-	endpoints := []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"}
+	endpoints := []string{jsonrpcEP, endpoint.AppendPath(vars.BaseURL, "/v1/message:send")}
 
 	// A2A-sdk v1.0.x uses gRPC-style PascalCase methods and requires
 	// the A2A-Version: 1.0 header. Role is passed as an integer enum:

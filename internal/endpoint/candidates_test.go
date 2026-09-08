@@ -58,6 +58,15 @@ func TestCandidates(t *testing.T) {
 			},
 		},
 		{
+			name:  "only one trailing slash is trimmed",
+			base:  "https://example.com/base//",
+			paths: []string{"/child"},
+			want: []string{
+				"https://example.com/base/",
+				"https://example.com/base//child",
+			},
+		},
+		{
 			name:  "trailing slash on an origin is not a path",
 			base:  "https://mcp.example.com/",
 			paths: mcpPaths,
@@ -66,6 +75,25 @@ func TestCandidates(t *testing.T) {
 				"https://mcp.example.com/",
 				"https://mcp.example.com/api",
 				"https://mcp.example.com/rpc",
+			},
+		},
+		{
+			name:  "origin query is preserved",
+			base:  "https://mcp.example.com?tenant=one",
+			paths: []string{"/mcp", "/api"},
+			want: []string{
+				"https://mcp.example.com/mcp?tenant=one",
+				"https://mcp.example.com/api?tenant=one",
+			},
+		},
+		{
+			name:  "path query stays after appended paths",
+			base:  "https://mcp.example.com/services/mcp/?tenant=one",
+			paths: []string{"/mcp", "/"},
+			want: []string{
+				"https://mcp.example.com/services/mcp?tenant=one",
+				"https://mcp.example.com/services/mcp/mcp?tenant=one",
+				"https://mcp.example.com/services/mcp/?tenant=one",
 			},
 		},
 		{
@@ -119,6 +147,39 @@ func TestCandidates(t *testing.T) {
 				t.Errorf("Candidates(%q, %v):\n got %q\nwant %q", tt.base, tt.paths, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAppendPath(t *testing.T) {
+	tests := []struct {
+		name, base, suffix, want string
+	}{
+		{"query", "https://example.com/base?tenant=one", "/mcp", "https://example.com/base/mcp?tenant=one"},
+		{"fragment", "https://example.com/base#section", "/mcp", "https://example.com/base/mcp#section"},
+		{"escaped path", "https://example.com/a%2Fb?tenant=one", "/mcp", "https://example.com/a%2Fb/mcp?tenant=one"},
+		{"trailing slash", "https://example.com/base/?tenant=one", "/mcp", "https://example.com/base/mcp?tenant=one"},
+		{"root suffix", "https://example.com/base?tenant=one", "/", "https://example.com/base/?tenant=one"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AppendPath(tc.base, tc.suffix); got != tc.want {
+				t.Fatalf("AppendPath(%q, %q) = %q, want %q", tc.base, tc.suffix, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrimTrailingSlashes(t *testing.T) {
+	tests := []struct {
+		base, want string
+	}{
+		{"https://example.com/base///?value=x/", "https://example.com/base?value=x/"},
+		{"https://example.com/a%2F?value=x/", "https://example.com/a%2F?value=x/"},
+	}
+	for _, tc := range tests {
+		if got := TrimTrailingSlashes(tc.base); got != tc.want {
+			t.Errorf("TrimTrailingSlashes(%q) = %q, want %q", tc.base, got, tc.want)
+		}
 	}
 }
 

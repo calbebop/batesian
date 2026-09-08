@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // ConfusedDeputyExecutor tests whether an MCP server's OAuth authorization
@@ -164,7 +165,7 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 // authorization-server document first, then the OIDC openid-configuration.
 func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, baseURL string) (registrationEndpoint, authorizationEndpoint string, err error) {
 	for _, p := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
-		resp, err := client.GET(ctx, baseURL+p, nil)
+		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, p), nil)
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}

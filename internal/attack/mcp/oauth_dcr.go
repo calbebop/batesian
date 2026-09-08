@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // OAuthDCRExecutor tests whether an MCP server's OAuth 2.1 dynamic client
@@ -143,8 +144,8 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 // then /.well-known/openid-configuration.
 func (e *OAuthDCRExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, error) {
 	endpoints := []string{
-		baseURL + "/.well-known/oauth-authorization-server",
-		baseURL + "/.well-known/openid-configuration",
+		endpoint.AppendPath(baseURL, "/.well-known/oauth-authorization-server"),
+		endpoint.AppendPath(baseURL, "/.well-known/openid-configuration"),
 	}
 	for _, ep := range endpoints {
 		resp, err := client.GET(ctx, ep, nil)

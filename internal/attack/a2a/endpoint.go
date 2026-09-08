@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
+	endpointpkg "github.com/calbebop/batesian/internal/endpoint"
 )
 
 // A2A agent cards declare where the JSON-RPC transport actually lives; it is not
@@ -122,7 +122,7 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 	if weak != "" && !looksLikeMCPServer(ctx, client, baseURL, weak) {
 		return weak, true
 	}
-	return baseURL + "/", false
+	return endpointpkg.AppendPath(baseURL, "/"), false
 }
 
 // looksLikeMCPServer reports whether a path that gave only weak A2A evidence is in
@@ -154,7 +154,7 @@ func looksLikeMCPServer(ctx context.Context, client *attack.HTTPClient, baseURL,
 // protected-resource metadata, either at the well-known path or through a
 // WWW-Authenticate challenge on the endpoint itself.
 func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
-	if resp, err := client.GET(ctx, baseURL+"/.well-known/oauth-protected-resource", nil); err == nil &&
+	if resp, err := client.GET(ctx, endpointpkg.AppendPath(baseURL, "/.well-known/oauth-protected-resource"), nil); err == nil &&
 		resp.IsSuccess() && resp.ContainsAny(`"resource"`, `"authorization_servers"`) {
 		return true
 	}
@@ -175,7 +175,7 @@ func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, b
 // well-known path then the v0.3 legacy path.
 func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL string) (a2aDiscoveryCard, bool) {
 	for _, path := range []string{"/.well-known/agent-card.json", "/.well-known/agent.json"} {
-		resp, err := client.GET(ctx, baseURL+path, nil)
+		resp, err := client.GET(ctx, endpointpkg.AppendPath(baseURL, path), nil)
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}
@@ -216,7 +216,7 @@ func selectJSONRPCURL(card a2aDiscoveryCard) string {
 func pinToTargetOrigin(cardURL, baseURL string) string {
 	cu, err := url.Parse(cardURL)
 	if err != nil {
-		return baseURL + "/"
+		return endpointpkg.AppendPath(baseURL, "/")
 	}
 	tu, err := url.Parse(baseURL)
 	if err != nil {
@@ -239,7 +239,7 @@ var candidatePaths = []string{"/", "/a2a/jsonrpc", "/a2a", "/rpc"}
 // already names a path is probed as given before these paths are appended to
 // it; see endpoint.Candidates.
 func candidateEndpoints(baseURL string) []string {
-	return endpoint.Candidates(baseURL, candidatePaths)
+	return endpointpkg.Candidates(baseURL, candidatePaths)
 }
 
 // methodNotFound is the JSON-RPC code for an unimplemented method. It is the

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 const (
@@ -45,8 +46,8 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	primaryURL := vars.BaseURL + cardPathPrimary
-	legacyURL := vars.BaseURL + cardPathLegacy
+	primaryURL := endpoint.AppendPath(vars.BaseURL, cardPathPrimary)
+	legacyURL := endpoint.AppendPath(vars.BaseURL, cardPathLegacy)
 
 	primaryBody, primaryCacheControl, primaryOK := fetchCard(ctx, client, primaryURL)
 	legacyBody, _, legacyOK := fetchCard(ctx, client, legacyURL)

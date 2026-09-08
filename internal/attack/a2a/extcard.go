@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
+	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 const (
@@ -57,7 +58,7 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	// finding max, preferring the invalid-token (critical) signal.
 	reached := false
 	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
-	for _, ep := range []string{jsonrpcEP, vars.BaseURL + "/v1/message:send"} {
+	for _, ep := range []string{jsonrpcEP, endpoint.AppendPath(vars.BaseURL, "/v1/message:send")} {
 		resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID)
 		if resp != nil && resp.StatusCode != 404 {
 			reached = true
@@ -77,7 +78,7 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	}
 
 	// HTTP GET transport - legacy path (a2a-sdk < 1.0.0, a2a-samples reference impl).
-	extURL := vars.BaseURL + extCardHTTPPath
+	extURL := endpoint.AppendPath(vars.BaseURL, extCardHTTPPath)
 	respA, errA := unauthClient.GET(ctx, extURL, map[string]string{"Authorization": "Bearer " + invalidToken})
 	if errA == nil && respA.StatusCode != 404 {
 		reached = true
