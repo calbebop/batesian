@@ -3,12 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"sort"
 	"strings"
 	"text/tabwriter"
 
 	batesian "github.com/calbebop/batesian"
+	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
 	"github.com/spf13/cobra"
 )
@@ -41,32 +42,48 @@ func init() {
 }
 
 func runRules(cmd *cobra.Command, args []string) error {
+	outputFmt, _ := cmd.Flags().GetString("output")
+	format, err := parseRulesFormat(outputFmt)
+	if err != nil {
+		return err
+	}
+
 	loaded, err := loadRules(batesian.RulesFS(), "")
 	if err != nil {
 		return fmt.Errorf("loading rules: %w", err)
 	}
 
 	if len(args) == 1 {
-		return describeRule(loaded, args[0])
+		return describeRule(cmd.OutOrStdout(), loaded, args[0], format)
 	}
 
 	protocol, _ := cmd.Flags().GetString("protocol")
 	severities, _ := cmd.Flags().GetStringSlice("severity")
 	tags, _ := cmd.Flags().GetStringSlice("tags")
-	outputFmt, _ := cmd.Flags().GetString("output")
 
 	filtered := filterRules(loaded, protocol, severities, tags)
 	sort.Slice(filtered, func(i, j int) bool {
 		return filtered[i].ID < filtered[j].ID
 	})
 
-	switch outputFmt {
-	case "json":
-		return outputRulesJSON(filtered)
+	switch format {
+	case report.FormatJSON:
+		return outputRulesJSON(cmd.OutOrStdout(), filtered)
 	default:
-		outputRulesTable(filtered)
+		outputRulesTable(cmd.OutOrStdout(), filtered)
 		return nil
 	}
+}
+
+func parseRulesFormat(value string) (report.Format, error) {
+	format, err := report.ParseFormat(value)
+	if err != nil {
+		return report.FormatTable, fmt.Errorf("unknown output format %q; supported: table, json", value)
+	}
+	if format == report.FormatSARIF {
+		return report.FormatTable, fmt.Errorf("--output sarif is not supported for rules; use table or json")
+	}
+	return format, nil
 }
 
 func filterRules(rs []*rules.Rule, protocol string, severities, tags []string) []*rules.Rule {
@@ -86,17 +103,17 @@ func filterRules(rs []*rules.Rule, protocol string, severities, tags []string) [
 	return out
 }
 
-func outputRulesTable(rs []*rules.Rule) {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+func outputRulesTable(w io.Writer, rs []*rules.Rule) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  ID\tPROTOCOL\tSEVERITY\tNAME")
 	for _, r := range rs {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.ID, r.Attack.Protocol, r.Info.Severity, r.Info.Name)
 	}
 	tw.Flush()
-	fmt.Printf("\n%d rule(s)\n", len(rs))
+	fmt.Fprintf(w, "\n%d rule(s)\n", len(rs))
 }
 
-func outputRulesJSON(rs []*rules.Rule) error {
+func outputRulesJSON(w io.Writer, rs []*rules.Rule) error {
 	type jsonRule struct {
 		ID       string   `json:"id"`
 		Protocol string   `json:"protocol"`
@@ -114,35 +131,63 @@ func outputRulesJSON(rs []*rules.Rule) error {
 			Tags:     r.Info.Tags,
 		}
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func describeRule(rs []*rules.Rule, id string) error {
+func describeRule(w io.Writer, rs []*rules.Rule, id string, format report.Format) error {
 	for _, r := range rs {
 		if r.ID == id {
-			fmt.Printf("ID:          %s\n", r.ID)
-			fmt.Printf("Name:        %s\n", r.Info.Name)
-			fmt.Printf("Protocol:    %s\n", r.Attack.Protocol)
-			fmt.Printf("Severity:    %s\n", r.Info.Severity)
-			if len(r.Info.Tags) > 0 {
-				fmt.Printf("Tags:        %s\n", strings.Join(r.Info.Tags, ", "))
+			if format == report.FormatJSON {
+				return outputRuleJSON(w, r)
 			}
-			fmt.Printf("\n%s\n", r.Info.Description)
+			fmt.Fprintf(w, "ID:          %s\n", r.ID)
+			fmt.Fprintf(w, "Name:        %s\n", r.Info.Name)
+			fmt.Fprintf(w, "Protocol:    %s\n", r.Attack.Protocol)
+			fmt.Fprintf(w, "Severity:    %s\n", r.Info.Severity)
+			if len(r.Info.Tags) > 0 {
+				fmt.Fprintf(w, "Tags:        %s\n", strings.Join(r.Info.Tags, ", "))
+			}
+			fmt.Fprintf(w, "\n%s\n", r.Info.Description)
 			if len(r.Info.References) > 0 {
-				fmt.Printf("\nReferences:\n")
+				fmt.Fprintln(w, "\nReferences:")
 				for _, ref := range r.Info.References {
-					fmt.Printf("  - %s\n", ref)
+					fmt.Fprintf(w, "  - %s\n", ref)
 				}
 			}
 			if r.Remediation != "" {
-				fmt.Printf("\nRemediation:\n  %s\n", r.Remediation)
+				fmt.Fprintf(w, "\nRemediation:\n  %s\n", r.Remediation)
 			}
 			return nil
 		}
 	}
 	return fmt.Errorf("no rule with ID %q (run 'batesian rules' to list all)", id)
+}
+
+func outputRuleJSON(w io.Writer, r *rules.Rule) error {
+	out := struct {
+		ID          string   `json:"id"`
+		Protocol    string   `json:"protocol"`
+		Severity    string   `json:"severity"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		References  []string `json:"references"`
+		Remediation string   `json:"remediation"`
+	}{
+		ID:          r.ID,
+		Protocol:    r.Attack.Protocol,
+		Severity:    r.Info.Severity,
+		Name:        r.Info.Name,
+		Description: r.Info.Description,
+		Tags:        r.Info.Tags,
+		References:  r.Info.References,
+		Remediation: r.Remediation,
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func containsAny(val string, list []string) bool {
