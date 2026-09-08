@@ -17,7 +17,7 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 >
 > **Artifacts.** JSON and SARIF can contain URLs, snippets, and evidence. Treat exports the same way you treat other sensitive scanner output in shared pipelines.
 >
-> **Custom rules.** `--rules-dir` loads YAML from disk. Treat rule packs as untrusted input: they define what gets sent to the target.
+> **Custom rules.** `--rules-dir` loads strict YAML descriptors from disk. Review rule packs before use: they select compiled executors and supply report metadata, but cannot define arbitrary traffic.
 
 ## What ships
 
@@ -152,7 +152,7 @@ skips. Gate findings through the Security tab or `--output json`.
 
 ## Rule packs
 
-Rules are YAML. New checks can ship without recompiling the binary. Authoring, schema, and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
+Rules pair YAML metadata with compiled Go executors. New descriptors for existing executors can load at runtime; new attack logic requires recompilation. Authoring, schema, and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 

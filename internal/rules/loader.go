@@ -1,7 +1,10 @@
 package rules
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,21 +13,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// maxRuleFileBytes is the maximum size of a single rule YAML file. Files larger
-// than this are skipped with a warning to prevent accidental large-file DoS.
+// maxRuleFileBytes is the maximum accepted rule file size.
 const maxRuleFileBytes = 4 * 1024 * 1024 // 4 MiB
 
-// LoadDir loads all .yaml and .yml rule files from dir and its subdirectories.
-// Files that fail to parse or validate are collected as warnings, not fatal errors,
-// so a single bad rule file does not block the scan.
+// LoadDir loads rule files recursively and reports invalid files as warnings.
 func LoadDir(dir string) ([]*Rule, []LoadWarning, error) {
-	return loadFS(os.DirFS(dir), ".")
+	return loadFS(os.DirFS(dir))
 }
 
-// LoadFS loads all .yaml and .yml rule files from an fs.FS.
-// Used to load the built-in rules from the embedded filesystem.
+// LoadFS loads rule files from an fs.FS.
 func LoadFS(fsys fs.FS) ([]*Rule, []LoadWarning, error) {
-	return loadFS(fsys, ".")
+	return loadFS(fsys)
 }
 
 // LoadWarning records a non-fatal error encountered while loading rules.
@@ -106,11 +105,11 @@ func (f *Filter) matchesID(r *Rule) bool {
 }
 
 // loadFS walks fsys starting at root and loads all YAML rule files.
-func loadFS(fsys fs.FS, root string) ([]*Rule, []LoadWarning, error) {
+func loadFS(fsys fs.FS) ([]*Rule, []LoadWarning, error) {
 	var rules []*Rule
 	var warns []LoadWarning
 
-	err := fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -152,11 +151,31 @@ func loadFS(fsys fs.FS, root string) ([]*Rule, []LoadWarning, error) {
 // parseRule decodes and validates a single rule from YAML bytes.
 func parseRule(data []byte, path string) (*Rule, error) {
 	var rule Rule
-	if err := yaml.Unmarshal(data, &rule); err != nil {
+	if err := decodeRule(data, &rule); err != nil {
 		return nil, fmt.Errorf("parsing YAML in %s: %w", path, err)
 	}
 	if err := rule.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &rule, nil
+}
+
+func decodeRule(data []byte, rule *Rule) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(rule); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	return errors.New("multiple YAML documents are not supported")
 }
