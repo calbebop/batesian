@@ -48,6 +48,9 @@ type Config struct {
 	// endpoints may use. The target origin itself is always allowed.
 	OAuthOrigins []string `yaml:"oauth_origins"`
 
+	// MCPScopeTools are exact tool names the scope-confusion rule may invoke.
+	MCPScopeTools []string `yaml:"mcp_scope_tools"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -213,6 +216,10 @@ func Example() string {
 # when they are part of the scan scope.
 # oauth_origins:
 #   - https://login.example.com
+
+# Tools the scope-confusion rule may invoke under all three test identities.
+# mcp_scope_tools:
+#   - delete_item
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

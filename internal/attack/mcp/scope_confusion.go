@@ -11,33 +11,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ScopeConfusionExecutor tests whether MCP tools/call enforces the scopes of
-// the credential it is handed, or merely that a credential exists
-// (rule mcp-scope-confusion-001).
-//
-// The failure sits between two rules that already ship. mcp-token-replay-001
-// covers tokens the server cannot have validated (signature checks absent);
-// mcp-oauth-dcr-001 covers registration granting privileged scopes. Neither
-// says anything about a validly-signed, genuinely-issued token whose scope set
-// is too small: servers that authenticate correctly and then authorize nothing
-// per-tool hand every authenticated caller every tool. That is OWASP MCP02,
-// and the spec's own Security Best Practices call for least privilege.
-//
-// Two identities drive it, via the same --principal machinery the
-// cross-principal rules use: principal A holds full privilege, principal B
-// holds a deliberately limited one. For each privileged-looking candidate tool
-// the rule sends the SAME invalid-subject call twice, once as A and once as B:
-//
-//	full principal    -> dispatches (argument validation answers)   [baseline]
-//	limited principal -> refused with an authz error                [scope held]
-//	limited principal -> dispatches like A                          [scope ignored]
-//
-// SAFETY: the arguments are invalid on purpose - a subject id that does not
-// exist - so a scope-ignoring server stops at argument validation and executes
-// nothing. The oracle never needs a successful state-changing call, only the
-// difference between "refused before validating" and "validated and not
-// found". This is the same never-executes trick mcp-tools-unauth-001 uses on
-// its dispatch probe.
+// ScopeConfusionExecutor checks whether tools/call enforces credential scopes.
+// Mutating tools run only when named in Options.MCPScopeTools.
 type ScopeConfusionExecutor struct {
 	rule attack.RuleContext
 }
@@ -50,12 +25,8 @@ func NewScopeConfusionExecutor(r attack.RuleContext) *ScopeConfusionExecutor {
 	return &ScopeConfusionExecutor{rule: r}
 }
 
-// scopeCandidateCap bounds how many candidate tools one wire will drive. Each
-// costs two calls (the identical pair), so the cap keeps cost off the target's
-// tool count.
 const scopeCandidateCap = 6
 
-// scopeCallIDs space the rule's request ids apart from any other stage.
 const (
 	scopeIDListFull = 3
 	scopeIDListLim  = 4
@@ -68,10 +39,7 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	// The credential check defers until the tool surface is confirmed present,
-	// the same ordering mcp-task-idor-001 uses: telling an operator to add a
-	// second principal when adding one would change nothing is worse than
-	// saying the feature is absent.
+	// Check credentials only after confirming a tool surface.
 	princA, princB, credErr := scopePrincipals(opts)
 	discovery := princA
 	if credErr != nil {
@@ -93,14 +61,11 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 		}
 		capabilityKnown = true
 
-		// The tool surface exists on at least one wire, so a missing or shared
-		// second identity is now the reason the rule cannot run rather than a
-		// detail about a server it does not apply to.
 		if credErr != nil {
 			return nil, credErr
 		}
 
-		fs, reason, determined := e.probeSession(ctx, client, sessA, princA, princB, vars.RandID)
+		fs, reason, determined := e.probeSession(ctx, client, sessA, princA, princB, vars.RandID, opts.MCPScopeTools)
 		findings = append(findings, labelEra(sessA, fs)...)
 		if determined {
 			lastReason = ""
@@ -119,9 +84,6 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	return findings, nil
 }
 
-// scopePrincipals resolves the two identities this rule needs: a full one and
-// a deliberately limited one, in that order. It mirrors taskPrincipals'
-// distinctness rules with wording about scopes rather than tasks.
 func scopePrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 	if len(opts.Principals) < 2 {
 		return a, b, fmt.Errorf("%w: telling whether tool access honours granted scopes needs two "+
@@ -141,10 +103,6 @@ func scopePrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 	return a, b, nil
 }
 
-// openSessionsAs opens every wire the target serves, handshaking as the given
-// principal. openSessions itself presents no credential, which reads every
-// gated server as unreachable; the handshake here carries the principal the
-// way mcp-task-idor-001's does.
 func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) ([]mcpSession, error) {
 	sess, err := scopeHandshake(ctx, client, baseURL, p)
 	if err != nil {
@@ -162,8 +120,6 @@ func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL stri
 	return out, nil
 }
 
-// scopeHandshake performs an initialize as the given principal, walking the
-// candidate paths and reporting why none answered.
 func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) (mcpSession, error) {
 	var observed initObservation
 	for _, ep := range endpointCandidates(baseURL) {
@@ -206,7 +162,6 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)
 }
 
-// scopeTool is the slice of a tools/list entry this rule grades.
 type scopeTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -217,19 +172,12 @@ type scopeTool struct {
 	InputSchema map[string]interface{} `json:"inputSchema"`
 }
 
-// scopeWriteVocabulary names the tool-name fragments treated as privileged
-// when annotations are absent or ambiguous. Matching is on the lowercase name
-// containing the fragment; a read-only annotated tool never qualifies through
-// the name path.
 var scopeWriteVocabulary = []string{
 	"write", "create", "delete", "remove", "update", "set_", "send", "exec",
 	"run", "invoke", "admin", "install", "deploy", "restart", "shutdown",
 	"grant", "revoke", "cancel",
 }
 
-// scopeLooksPrivileged reports whether a tool plausibly mutates state: its
-// annotations say so, or its name carries write vocabulary without a
-// read-only declaration contradicting it.
 func scopeLooksPrivileged(t scopeTool) bool {
 	if t.Annotations != nil {
 		if t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint {
@@ -251,10 +199,8 @@ func scopeLooksPrivileged(t scopeTool) bool {
 	return false
 }
 
-// probeSession drives one wire. determined reports whether the wire produced a
-// verdict anywhere; reason carries what stopped it when it did not.
 func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, sessA mcpSession,
-	princA, princB taskPrincipal, randID string) (findings []attack.Finding, stopReason string, determined bool) {
+	princA, princB taskPrincipal, randID string, allowedTools []string) (findings []attack.Finding, stopReason string, determined bool) {
 
 	candidates, reason, ok := e.scopeCandidates(ctx, client, sessA, princA)
 	if !ok {
@@ -263,9 +209,15 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	if len(candidates) == 0 {
 		return nil, "", true // listed, and nothing privileged-shaped to test
 	}
+	if len(candidates) > scopeCandidateCap {
+		candidates = candidates[:scopeCandidateCap]
+	}
+	if missing := unapprovedScopeTools(candidates, allowedTools); len(missing) > 0 {
+		return nil, fmt.Sprintf("active scope probes require explicit approval for: %s; pass --mcp-scope-tool for each exact name",
+			strings.Join(missing, ", ")), false
+	}
 
-	// Validity control: the limited credential must succeed somewhere before a
-	// refusal below can be read as a scope decision rather than a dead token.
+	// Confirm the limited credential works before grading its refusals.
 	listResp, listErr := sessA.postShaping(ctx, client, scopeIDListLim, "tools/list", nil,
 		func(h map[string]string) { attachPrincipal(h, princB) })
 	if verdict, _ := classifyProbe(listResp, listErr); verdict != probeAnswered {
@@ -273,19 +225,13 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			"level was never established", princB.name, scopeVerdictName(verdict)), false
 	}
 
-	// Anonymous control on the first candidate: a server that dispatches an
-	// unauthenticated call gates nothing by identity, which is
-	// mcp-tools-unauth-001's finding rather than a scope boundary.
+	// Open dispatch belongs to mcp-tools-unauth-001.
 	anonymousText := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
 	if scopeShowsDispatch(anonymousText) {
 		return nil, "", true
 	}
 
 	for i, cand := range candidates {
-		if i >= scopeCandidateCap {
-			break
-		}
-
 		fullText := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
 		if !scopeShowsDispatch(fullText) {
 			continue // baseline did not establish dispatch; nothing to compare
@@ -296,17 +242,28 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		case scopeShowsDispatch(limText):
 			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))
 		case scopeShowsAuthRefusal(limText):
-			// The boundary held on this candidate: exactly the pass sought.
+			// Scope enforcement held.
 		default:
-			// No verdict either way; this candidate says nothing about scoping.
+			// No verdict.
 		}
 	}
 	return findings, "", true
 }
 
-// scopeCandidates lists the tools as the full principal and selects the
-// privileged-looking ones. ok is false when the listing produced no usable
-// answer, in which case reason says why the rule could not run on this wire.
+func unapprovedScopeTools(candidates []scopeTool, allowed []string) []string {
+	allow := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		allow[name] = true
+	}
+	var missing []string
+	for _, candidate := range candidates {
+		if !allow[candidate.Name] {
+			missing = append(missing, candidate.Name)
+		}
+	}
+	return missing
+}
+
 func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *attack.HTTPClient, sessA mcpSession, princA taskPrincipal) (cands []scopeTool, reason string, ok bool) {
 	resp, err := sessA.postShaping(ctx, client, scopeIDListFull, "tools/list", nil,
 		func(h map[string]string) { attachPrincipal(h, princA) })
@@ -332,9 +289,6 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 	return cands, "", true
 }
 
-// attachPrincipal adds a principal's credential to headers this session's era
-// already built. Explicit attachment is what lets one transport carry two
-// identities without an ambient token deciding for them.
 func attachPrincipal(h map[string]string, p taskPrincipal) {
 	if p.token != "" {
 		h["Authorization"] = "Bearer " + p.token
@@ -344,24 +298,14 @@ func attachPrincipal(h map[string]string, p taskPrincipal) {
 	}
 }
 
-// callAs issues one tools/call with invalid subject arguments as the given
-// principal and returns the response text the oracle reads: the JSON-RPC error
-// message when the envelope carries one, otherwise the result's textual
-// content. Both shapes occur, since many servers report tool failures inside
-// result.isError rather than as protocol errors.
-//
-// The call goes through postShaping so the modern wire's mandatory mirrored
-// headers and _meta travel with it; building headers by hand here would send a
-// legacy-shaped request onto the stateless wire and read its -32020 refusals
-// as authorization decisions.
+// callAs invokes an approved tool and returns text used by the oracle.
 func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, id int, cand scopeTool, randID string) string {
-	args := scopeInvalidArgs(cand.InputSchema, randID)
+	args := scopeProbeArgs(cand.InputSchema, randID)
 	params := map[string]interface{}{"name": cand.Name, "arguments": args}
 	resp, err := s.postShaping(ctx, client, id, "tools/call", params,
 		func(h map[string]string) { attachPrincipal(h, p) })
 	if err != nil || !resp.IsSuccess() {
-		// An HTTP-level auth rejection still speaks: read the status line plus
-		// any challenge header into the same text the classifier reads.
+		// Preserve HTTP authorization failures for the classifier.
 		if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return fmt.Sprintf("http %d %s", resp.StatusCode, resp.Headers.Get("WWW-Authenticate"))
 		}
@@ -391,10 +335,8 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 	return sb.String()
 }
 
-// scopeInvalidArgs builds arguments that fail validation after authorization:
-// every required string gets a subject id that cannot exist, other required
-// types get inert values. A server that ignores scopes stops right here.
-func scopeInvalidArgs(schema map[string]interface{}, randID string) map[string]interface{} {
+// scopeProbeArgs fills required fields with canary values.
+func scopeProbeArgs(schema map[string]interface{}, randID string) map[string]interface{} {
 	args := map[string]interface{}{}
 	props, _ := schema["properties"].(map[string]interface{})
 	required := map[string]bool{}
@@ -432,9 +374,7 @@ var scopeAuthFlavored = regexp.MustCompile(`(?i)(insufficient[_ ]?scope|missing[
 	`unauthorized|forbidden|access denied|not authorized|not permitted|permission denied|requires?[_ ](a )?scope|` +
 	`scope[s]? required|insufficient.?privilege|not allowed)`)
 
-// scopeShowsAuthRefusal reads a response text as an authorization refusal:
-// HTTP 401/403 with a challenge, or a message carrying authz vocabulary. A
-// validation message ("Item x not found") matches none of these.
+// scopeShowsAuthRefusal detects HTTP and message-level authorization failures.
 func scopeShowsAuthRefusal(text string) bool {
 	if strings.HasPrefix(text, "http 401") || strings.HasPrefix(text, "http 403") {
 		return true
@@ -442,9 +382,7 @@ func scopeShowsAuthRefusal(text string) bool {
 	return text != "" && scopeAuthFlavored.MatchString(text)
 }
 
-// scopeShowsDispatch reads a response text as evidence the dispatcher ran past
-// authorization: a protocol validation error, a not-found style tool error, or
-// any result content at all.
+// scopeShowsDispatch detects responses produced after authorization.
 func scopeShowsDispatch(text string) bool {
 	if text == "" {
 		return false
@@ -464,11 +402,7 @@ func scopeShowsDispatch(text string) bool {
 			return true
 		}
 	}
-	// Any other result text means the handler ran too - but only report that as
-	// dispatch when it looks like an error outcome, since arbitrary success
-	// output would mean the tool genuinely executed. The invalid-subject probe
-	// makes real success implausible; treat non-empty as dispatched anyway and
-	// let the finding's evidence show the text.
+	// Any other result text means the handler ran.
 	return strings.TrimSpace(text) != ""
 }
 
@@ -489,12 +423,11 @@ func (e *ScopeConfusionExecutor) finding(endpoint string, cand scopeTool, fullNa
 		Confidence: attack.ConfirmedExploit,
 		Title:      fmt.Sprintf("MCP tools/call runs %q under a scope-limited credential", cand.Name),
 		Description: fmt.Sprintf(
-			"The identical invalid-subject tools/call for %q at %s was sent as two principals: %q "+
+			"The same approved tools/call for %q at %s was sent as two principals: %q "+
 				"(full) and %q (limited). Both reached argument validation, while an unauthenticated "+
 				"call was refused, so the server authenticates callers and then ignores what their "+
 				"credential is scoped to do. Every authenticated caller can reach the privileged tool "+
-				"surface regardless of granted scopes. Nothing executed during the probe: the subject "+
-				"arguments name objects that do not exist, and both calls stopped at validation.",
+				"surface regardless of granted scopes.",
 			cand.Name, endpoint, fullName, limName),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\ntool: %s\nfull principal %q: dispatched (validation answered)\n"+

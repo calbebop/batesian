@@ -13,7 +13,7 @@ CLI for adversarial testing of [A2A](https://a2a-protocol.org) and [MCP](https:/
 >
 > **Secrets and TLS.** Prefer `BATESIAN_TOKEN` or your secret manager over embedding long-lived bearer material in shared terminals, config repos, or CI logs. Use `--skip-tls` only when you must hit a host with intentionally broken TLS, such as a local lab on self-signed certificates.
 >
-> **State on the target.** Three OAuth rules register a client on the authorization server, because that is the only way to test what dynamic client registration will accept. Each one deletes its client afterwards via RFC 7592 client management. A server that does not implement that protocol keeps the registration: the scan says so in the finding's evidence and names the client, which is always prefixed `batesian-`, so leftovers can be found and removed. Nothing else a scan does persists.
+> **State on the target.** Three OAuth rules temporarily register clients and remove them when RFC 7592 management is available. The scope-confusion rule can invoke mutating tools only when their exact names are approved with `--mcp-scope-tool`; those calls may have side effects.
 >
 > **Artifacts.** JSON and SARIF can contain URLs, snippets, and evidence. Treat exports the same way you treat other sensitive scanner output in shared pipelines.
 >
@@ -109,6 +109,9 @@ against `127.0.0.1` needs the explicit flag.
 Target-advertised OAuth URLs are confined to the target's exact origin. When a
 deployment uses a separate authorization server, add its origin to the scan scope
 with `--oauth-origin https://login.example.com` (or `oauth_origins` in config).
+
+The scope-confusion rule discovers mutating tools but does not invoke them unless
+each exact name is approved with `--mcp-scope-tool` or `mcp_scope_tools`.
 
 `probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
 

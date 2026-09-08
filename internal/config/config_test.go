@@ -37,6 +37,8 @@ skip_tls: true
 oob_url: https://oob.example.com
 oauth_origins:
   - https://login.example.com
+mcp_scope_tools:
+  - delete_item
 rule_ids:
   - mcp-oauth-audience-002
   - a2a-push-ssrf-001
@@ -78,6 +80,9 @@ severities:
 	}
 	if len(cfg.OAuthOrigins) != 1 || cfg.OAuthOrigins[0] != "https://login.example.com" {
 		t.Errorf("oauth_origins: got %v", cfg.OAuthOrigins)
+	}
+	if len(cfg.MCPScopeTools) != 1 || cfg.MCPScopeTools[0] != "delete_item" {
+		t.Errorf("mcp_scope_tools: got %v", cfg.MCPScopeTools)
 	}
 	if len(cfg.RuleIDs) != 2 {
 		t.Errorf("rule_ids: expected 2, got %d", len(cfg.RuleIDs))

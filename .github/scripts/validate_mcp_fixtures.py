@@ -290,7 +290,8 @@ def scope_confusion():
     rid = "mcp-scope-confusion-001"
     principals = ["--token", "tok-a",
                   "--principal", "name=full,token=tok-a",
-                  "--principal", "name=limited,token=tok-b"]
+                  "--principal", "name=limited,token=tok-b",
+                  "--mcp-scope-tool", "delete_item"]
     for posture, expect_fire in [("vulnerable", True), ("patched", False), ("open", False)]:
         p, l = start("mcp_scope_confusion_server.py", 7806, posture)
         try:

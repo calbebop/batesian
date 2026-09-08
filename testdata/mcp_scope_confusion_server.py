@@ -18,13 +18,10 @@ Postures:
                          this rule can speak about, and it MUST stay silent
                          (the surface belongs to mcp-tools-unauth-001).
 
-Tokens: tok-a is the full principal, tok-b the limited one. Pass
---token tok-a plus two --principal flags exactly as validate_secured_agent.py
-does for the cross-principal rules.
+Tokens: tok-a is the full principal and tok-b is limited. The scan also needs
+--mcp-scope-tool delete_item.
 
-Both postures serve list_items (readOnlyHint true) and delete_item (explicitly
-non-read-only). Every probe call names an item_id that does not exist, so
-nothing is ever deleted regardless of posture.
+The fixture stores no items, so delete_item cannot remove data.
 
 Validate against it:
   python testdata/mcp_scope_confusion_server.py              # vulnerable
