@@ -14,17 +14,13 @@ import (
 	"github.com/calbebop/batesian/internal/severity"
 )
 
-// SARIF v2.1.0 output for SARIF consumers (DAST viewers, dashboards) and CI.
-// Findings are network targets (absolute URIs), not repository files, so when
-// uploaded to GitHub Code Scanning they appear as alerts without source-line
-// annotations - GitHub resolves SARIF locations as repository paths.
+// SARIF findings use absolute network URIs, not repository paths.
 // Spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 // GitHub docs: https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning
 
 const sarifSchema = "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json"
 const sarifVersion = "2.1.0"
 
-// sarifLog is the top-level SARIF document.
 type sarifLog struct {
 	Schema  string     `json:"$schema"`
 	Version string     `json:"version"`
@@ -32,8 +28,32 @@ type sarifLog struct {
 }
 
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool        sarifTool         `json:"tool"`
+	Invocations []sarifInvocation `json:"invocations"`
+	Results     []sarifResult     `json:"results"`
+}
+
+type sarifInvocation struct {
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []sarifNotification `json:"toolExecutionNotifications,omitempty"`
+	Properties                 sarifCoverage       `json:"properties"`
+}
+
+type sarifCoverage struct {
+	RulesSelected  int `json:"rulesSelected"`
+	RulesCompleted int `json:"rulesCompleted"`
+	RulesSkipped   int `json:"rulesSkipped"`
+	RulesErrored   int `json:"rulesErrored"`
+}
+
+type sarifNotification struct {
+	Level          string              `json:"level"`
+	Message        sarifMessage        `json:"message"`
+	AssociatedRule *sarifRuleReference `json:"associatedRule,omitempty"`
+}
+
+type sarifRuleReference struct {
+	ID string `json:"id"`
 }
 
 type sarifTool struct {
@@ -57,17 +77,11 @@ type sarifRule struct {
 }
 
 type sarifRuleProperties struct {
-	// Tags must include "security" for GitHub to route findings to the Security tab.
 	Tags     []string `json:"tags,omitempty"`
-	Severity string   `json:"security-severity,omitempty"` // CVSS-like 0.0-10.0 string
+	Severity string   `json:"security-severity,omitempty"`
 }
 
-// sarifResult carries partialFingerprints so GitHub code-scanning correlates
-// one logical finding to one alert across scans: without it, identity is
-// ruleId + artifact URI, and a discovered endpoint that moves (the candidate
-// walk appending or dropping a path) re-opens the same vulnerability as a new
-// alert. The fingerprint hashes rule ID plus the finding title - both stable
-// while the endpoint string is not.
+// sarifResult includes a stable fingerprint for alert correlation.
 type sarifResult struct {
 	RuleID              string            `json:"ruleId"`
 	Level               string            `json:"level"` // error, warning, note, none
@@ -107,18 +121,13 @@ func WriteSARIF(w io.Writer, results []engine.RunResult, toolVersion string) err
 }
 
 func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
-	// De-duplicate rules from the results.
 	ruleMap := make(map[string]sarifRule)
-	// A clean scan is the most common outcome, and a nil slice here marshals as
-	// "results": null. SARIF 2.1.0 types runs[].results as an array - null is
-	// not a legal value - so schema-validating consumers (GitHub code-scanning
-	// upload, VS Code SARIF viewer) can reject exactly the scans that found
-	// nothing. rules below builds with make for the same reason.
+	// SARIF requires an array even when the scan finds nothing.
 	sarifResults := make([]sarifResult, 0, len(results))
+	invocation := buildSARIFInvocation(results)
 
 	for _, r := range results {
 		if r.Rule != nil {
-			// Prepend "security" tag so GitHub routes findings to the Security tab.
 			tags := append([]string{"security"}, r.Rule.Info.Tags...)
 			ruleMap[r.Rule.ID] = sarifRule{
 				ID:               r.Rule.ID,
@@ -137,7 +146,6 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 		}
 	}
 
-	// Collect unique rules sorted by ID for deterministic output.
 	ruleIDs := make([]string, 0, len(ruleMap))
 	for id := range ruleMap {
 		ruleIDs = append(ruleIDs, id)
@@ -165,10 +173,46 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 						Rules:          rules,
 					},
 				},
-				Results: sarifResults,
+				Invocations: []sarifInvocation{invocation},
+				Results:     sarifResults,
 			},
 		},
 	}
+}
+
+func buildSARIFInvocation(results []engine.RunResult) sarifInvocation {
+	var invocation sarifInvocation
+	invocation.Properties.RulesSelected = len(results)
+
+	for _, result := range results {
+		switch {
+		case result.Err != nil:
+			invocation.Properties.RulesErrored++
+			invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications,
+				newSARIFNotification(result, "error", result.Err.Error()))
+		case result.Skipped:
+			invocation.Properties.RulesSkipped++
+			reason := result.SkipMsg
+			if reason == "" {
+				reason = "rule did not complete"
+			}
+			invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications,
+				newSARIFNotification(result, "warning", reason))
+		default:
+			invocation.Properties.RulesCompleted++
+		}
+	}
+
+	invocation.ExecutionSuccessful = invocation.Properties.RulesCompleted == invocation.Properties.RulesSelected
+	return invocation
+}
+
+func newSARIFNotification(result engine.RunResult, level, detail string) sarifNotification {
+	n := sarifNotification{Level: level, Message: sarifMessage{Text: detail}}
+	if result.Rule != nil && result.Rule.ID != "" {
+		n.AssociatedRule = &sarifRuleReference{ID: result.Rule.ID}
+	}
+	return n
 }
 
 // findingToSARIF converts a Finding into a SARIF result.
@@ -182,7 +226,6 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 		"confidence": confidence,
 	}
 	if f.Evidence != "" {
-		// Truncate evidence for SARIF - full evidence goes in table/JSON output.
 		props["evidence"] = truncate(f.Evidence, 500)
 	}
 
@@ -195,9 +238,7 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 		Locations: []sarifLocation{
 			{
 				PhysicalLocation: sarifPhysicalLocation{
-					// Batesian targets are network endpoints, so TargetURL is an
-					// absolute URI. Per SARIF 2.1.0 an absolute uri MUST NOT carry a
-					// uriBaseId (and %SRCROOT% would be an undefined base id anyway).
+					// Absolute URIs cannot carry uriBaseId.
 					ArtifactLocation: sarifArtifactLocation{
 						URI: f.TargetURL,
 					},
@@ -211,20 +252,13 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 	}
 }
 
-// fingerprint derives the stable per-finding identity used for
-// partialFingerprints: SHA-256 over rule ID and finding title, hex-encoded.
-// Both fields survive endpoint-string drift, which is exactly the churn that
-// used to re-open one vulnerability as a fresh alert.
+// fingerprint remains stable when only the endpoint changes.
 func fingerprint(f attackpkg.Finding) string {
 	sum := sha256.Sum256([]byte(f.RuleID + "\x00" + f.Title))
 	return hex.EncodeToString(sum[:])
 }
 
-// firstHTTPReference picks the first http(s) reference from a rule's
-// reference list for helpUri. Rules cite specs and advisories there; GitHub
-// code-scanning renders the field as the alert's help link. A rule with no
-// http reference (or none at all) yields an empty helpUri, which the
-// omitempty tag drops.
+// firstHTTPReference selects the alert help link.
 func firstHTTPReference(refs []string) string {
 	for _, r := range refs {
 		if strings.HasPrefix(r, "https://") || strings.HasPrefix(r, "http://") {
@@ -234,16 +268,8 @@ func firstHTTPReference(refs []string) string {
 	return ""
 }
 
-// severityLevel maps Batesian severity strings to SARIF level values.
-// GitHub Security tab shows:
-//
-//	error   -> High/Critical
-//	warning -> Medium
-//	note    -> Low/Info
+// severityLevel maps Batesian severity to SARIF level.
 func severityLevel(sev string) string {
-	// Canonicalize first. This switch compared the raw string, so a severity that
-	// differed only in case was demoted to "note" here while the engine ranked it
-	// as the worst severity there.
 	switch severity.Canonical(sev) {
 	case "critical", "high":
 		return "error"
@@ -254,10 +280,5 @@ func severityLevel(sev string) string {
 	}
 }
 
-// severityScore maps severity to a CVSS-like numeric string for GitHub's
-// security-severity tag, which GitHub uses to categorize findings.
-//
-// It defers to internal/severity. This copy compared the raw string while the
-// engine's rank lowercased first, so a severity that differed only in case scored
-// as the least severe here and ranked as the worst there.
+// severityScore maps severity to GitHub's numeric security score.
 func severityScore(sev string) string { return severity.SARIFScore(sev) }

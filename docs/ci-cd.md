@@ -54,7 +54,14 @@ jobs:
         # Always upload, even if the scan found vulnerabilities, so results
         # appear in the Security tab regardless of exit code.
         if: always()
+
+      - name: Require complete rule coverage
+        run: jq -e 'all(.runs[].invocations[]; .executionSuccessful)' results.sarif
 ```
+
+Skipped and errored rules are stored as SARIF invocation notifications, not
+alerts. GitHub accepts these fields but does not display them, so the explicit
+coverage check prevents a partial scan from passing unnoticed.
 
 ### Fail the build on findings above a severity threshold
 
