@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/fstest"
 
 	"github.com/calbebop/batesian/internal/config"
 )
@@ -312,4 +314,113 @@ func TestScan_ConfigLoadErrorStopsScan(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "loading configuration") {
 		t.Fatalf("expected config load error, got %v", err)
 	}
+}
+
+const cliRuleYAML = `
+id: a2a-cli-test-001
+info:
+  name: CLI Test Rule
+  severity: high
+attack:
+  protocol: a2a
+  type: extcard-unauth-disclosure
+`
+
+func TestLoadRules_RejectsIncompletePacks(t *testing.T) {
+	t.Run("built-in", func(t *testing.T) {
+		fsys := fstest.MapFS{
+			"valid.yaml": {Data: []byte(cliRuleYAML)},
+			"first.yaml": {Data: []byte(cliRuleYAML + "unexpected: true\n")},
+			"second.yml": {Data: []byte(cliRuleYAML + "unknown: true\n")},
+		}
+		_, err := loadRules(fsys, "")
+		if err == nil || !strings.Contains(err.Error(), "first.yaml") || !strings.Contains(err.Error(), "second.yml") {
+			t.Fatalf("expected every warning in the error, got %v", err)
+		}
+	})
+
+	t.Run("extra", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "invalid.yaml"), []byte(cliRuleYAML+"unexpected: true\n"), 0o644); err != nil {
+			t.Fatalf("writing rule: %v", err)
+		}
+		fsys := fstest.MapFS{"valid.yaml": {Data: []byte(cliRuleYAML)}}
+		_, err := loadRules(fsys, dir)
+		if err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "invalid.yaml") {
+			t.Fatalf("expected extra rule error, got %v", err)
+		}
+	})
+}
+
+func TestLoadRules_AppendsValidExtraRules(t *testing.T) {
+	dir := t.TempDir()
+	extra := strings.Replace(cliRuleYAML, "a2a-cli-test-001", "a2a-cli-test-002", 1)
+	if err := os.WriteFile(filepath.Join(dir, "extra.yaml"), []byte(extra), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+
+	loaded, err := loadRules(fstest.MapFS{"valid.yaml": {Data: []byte(cliRuleYAML)}}, dir)
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("loaded %d rules, want 2", len(loaded))
+	}
+}
+
+func TestScan_InvalidRulePackStopsBeforeNetwork(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "invalid.yaml"), []byte(cliRuleYAML+"unexpected: true\n"), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	var oauthHits, targetHits atomic.Int32
+	oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		oauthHits.Add(1)
+	}))
+	defer oauth.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+	t.Setenv("BATESIAN_TOKEN", "")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "rules-dir", dir)
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", oauth.URL)
+	setScanFlag(t, "dry-run", "false")
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid.yaml") {
+		t.Fatalf("expected rule load error, got %v", err)
+	}
+	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before rule validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+	}
+}
+
+func setScanFlag(t *testing.T, name, value string) {
+	t.Helper()
+	flag := scanCmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("unknown scan flag %q", name)
+	}
+	oldValue, oldChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		_ = flag.Value.Set(oldValue)
+		flag.Changed = oldChanged
+	})
+	if err := flag.Value.Set(value); err != nil {
+		t.Fatalf("setting %s: %v", name, err)
+	}
+	flag.Changed = true
 }
