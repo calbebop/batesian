@@ -485,7 +485,7 @@ func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 		tags       []string
 		ids        []string
 	}{
-		{name: "protocol", protocol: "smtp"},
+		{name: "protocol and severity", protocol: "mcp", severities: []string{"high"}},
 		{name: "severity", severities: []string{"critical"}},
 		{name: "tag", tags: []string{"transport"}},
 		{name: "ID", ids: []string{"missing"}},
@@ -503,6 +503,52 @@ func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 	}
 }
 
+func TestSelectScanRules_RejectsInvalidFilters(t *testing.T) {
+	loaded := []*rules.Rule{
+		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low"}, Attack: rules.AttackBlock{Protocol: "mcp"}},
+	}
+	tests := []struct {
+		name       string
+		protocol   string
+		severities []string
+		want       string
+	}{
+		{name: "invalid protocol last", protocol: "mcp,smtp", want: `unknown protocol "smtp"`},
+		{name: "invalid protocol first", protocol: "smtp,mcp", want: `unknown protocol "smtp"`},
+		{name: "blank protocol", protocol: " ", want: `unknown protocol ""`},
+		{name: "empty protocol token", protocol: "mcp,", want: `unknown protocol ""`},
+		{name: "commas only", protocol: " , ", want: `unknown protocol ""`},
+		{name: "invalid severity last", severities: []string{"high", "hihg"}, want: `unknown severity "hihg"`},
+		{name: "invalid severity first", severities: []string{"hihg", "high"}, want: `unknown severity "hihg"`},
+		{name: "protocol reported first", protocol: "smtp", severities: []string{"urgent"}, want: `unknown protocol "smtp"`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := selectScanRules(loaded, tc.protocol, tc.severities, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectScanRules_NormalizesFilters(t *testing.T) {
+	loaded := []*rules.Rule{
+		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low"}, Attack: rules.AttackBlock{Protocol: "mcp"}},
+	}
+
+	selected, err := selectScanRules(loaded, " A2A , MCP ", []string{" HIGH ", "low"}, nil, nil)
+	if err != nil {
+		t.Fatalf("selecting rules: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("selected %d rules, want 2", len(selected))
+	}
+}
+
 func TestSelectScanRules_AllowsMatches(t *testing.T) {
 	loaded := []*rules.Rule{{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}}}
 	selected, err := selectScanRules(loaded, "a2a", []string{"high"}, nil, []string{"a2a-test"})
@@ -514,16 +560,20 @@ func TestSelectScanRules_AllowsMatches(t *testing.T) {
 	}
 }
 
-func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
+func TestScan_InvalidFilterStopsBeforeNetwork(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
 	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
 
-	var oauthHits, targetHits atomic.Int32
-	oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		oauthHits.Add(1)
-	}))
+	var oauthConnections, targetHits atomic.Int32
+	oauth := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	oauth.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			oauthConnections.Add(1)
+		}
+	}
+	oauth.StartTLS()
 	defer oauth.Close()
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		targetHits.Add(1)
@@ -536,7 +586,50 @@ func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
 	setScanFlag(t, "config", configPath)
 	setScanFlag(t, "rules-dir", "")
 	setScanFlag(t, "target", target.URL)
-	setScanFlag(t, "protocol", "smtp")
+	setScanFlag(t, "protocol", "a2a,smtp")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", oauth.URL)
+	setScanFlag(t, "dry-run", "false")
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown protocol "smtp"`) {
+		t.Fatalf("expected invalid protocol error, got %v", err)
+	}
+	if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
+	}
+}
+
+func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	configData := "rule_ids:\n  - mcp-resources-unauth-001\n"
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	var oauthConnections, targetHits atomic.Int32
+	oauth := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	oauth.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			oauthConnections.Add(1)
+		}
+	}
+	oauth.StartTLS()
+	defer oauth.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+
+	t.Setenv("BATESIAN_TOKEN", "")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "rules-dir", "")
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "protocol", "a2a")
 	setScanFlag(t, "token", "")
 	setScanFlag(t, "client-id", "client")
 	setScanFlag(t, "token-url", oauth.URL)
@@ -546,8 +639,8 @@ func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no rules matched") {
 		t.Fatalf("expected empty selection error, got %v", err)
 	}
-	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
-		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+	if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
 	}
 }
 

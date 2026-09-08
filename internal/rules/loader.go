@@ -71,7 +71,7 @@ func (f *Filter) matchesSeverity(r *Rule) bool {
 		return true
 	}
 	for _, s := range f.Severities {
-		if strings.EqualFold(r.Info.Severity, s) {
+		if strings.EqualFold(strings.TrimSpace(r.Info.Severity), strings.TrimSpace(s)) {
 			return true
 		}
 	}

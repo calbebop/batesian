@@ -215,12 +215,12 @@ func TestFilter_Protocol(t *testing.T) {
 
 func TestFilter_Severity(t *testing.T) {
 	rules := []*Rule{
-		{ID: "r1", Attack: AttackBlock{Protocol: "a2a", Type: "x"}, Info: RuleInfo{Severity: "critical"}},
+		{ID: "r1", Attack: AttackBlock{Protocol: "a2a", Type: "x"}, Info: RuleInfo{Severity: " critical "}},
 		{ID: "r2", Attack: AttackBlock{Protocol: "a2a", Type: "x"}, Info: RuleInfo{Severity: "high"}},
 		{ID: "r3", Attack: AttackBlock{Protocol: "mcp", Type: "x"}, Info: RuleInfo{Severity: "low"}},
 	}
 
-	f := &Filter{Severities: []string{"critical", "high"}}
+	f := &Filter{Severities: []string{"critical", " high "}}
 	got := f.Apply(rules)
 	if len(got) != 2 {
 		t.Errorf("severity filter: got %d rules, want 2", len(got))
