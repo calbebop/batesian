@@ -223,25 +223,34 @@ func TestDiscoverTokenURL(t *testing.T) {
 	}
 }
 
-func TestDiscoverTokenURL_RejectsHTTPTokenEndpoint(t *testing.T) {
-	// Verify that a metadata document advertising an http:// token_endpoint is
-	// rejected even when the issuer itself is valid (security: prevent SSRF / plaintext creds).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/.well-known/openid-configuration" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"issuer":         "https://auth.example.com",
-				"token_endpoint": "http://auth.example.com/oauth/token",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
+func TestDiscoverTokenURL_RejectsInvalidTokenEndpoint(t *testing.T) {
+	tests := []string{
+		"http://auth.example.com/oauth/token",
+		"https:///oauth/token",
+		"https://auth.example.com/oauth/token#fragment",
+		"https://auth.example.com/oauth/token?one=1;two=2",
+		"https://auth.example.com:65536/oauth/token",
+	}
 
-	ep := auth.DiscoverTokenURLWithClient(context.Background(), srv.URL, &http.Client{})
-	if ep != "" {
-		t.Errorf("expected empty string for http:// token_endpoint, got %q", ep)
+	for _, tokenEndpoint := range tests {
+		t.Run(tokenEndpoint, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/openid-configuration" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"issuer":         "https://auth.example.com",
+						"token_endpoint": tokenEndpoint,
+					})
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+
+			if got := auth.DiscoverTokenURLWithClient(context.Background(), srv.URL, &http.Client{}); got != "" {
+				t.Fatalf("discovered token endpoint %q", got)
+			}
+		})
 	}
 }
 
