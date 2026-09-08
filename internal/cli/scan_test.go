@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -484,6 +485,73 @@ func TestScan_EmptySelectionStopsBeforeNetwork(t *testing.T) {
 	}
 	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
 		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+	}
+}
+
+func TestScan_InvalidOutputStopsBeforeOAuth(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	var oauthConnections, targetHits atomic.Int32
+	oauth := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	oauth.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			oauthConnections.Add(1)
+		}
+	}
+	oauth.StartTLS()
+	defer oauth.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+
+	t.Setenv("BATESIAN_TOKEN", "")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "output", "jsno")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", oauth.URL)
+	setScanFlag(t, "dry-run", "false")
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown output format "jsno"`) {
+		t.Fatalf("expected output format error, got %v", err)
+	}
+	if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before output validation: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
+	}
+}
+
+func TestScan_InvalidOutputStopsBeforePKCE(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	t.Setenv("BATESIAN_TOKEN", "")
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", "https://target.example.com")
+	setScanFlag(t, "output", "xml")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "auth-url", "http://auth.example.com/authorize")
+	setScanFlag(t, "token-url", "https://auth.example.com/token")
+	setScanFlag(t, "no-browser", "true")
+	setScanFlag(t, "dry-run", "false")
+
+	err := runScan(scanCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown output format "xml"`) {
+		t.Fatalf("expected output format error, got %v", err)
 	}
 }
 
