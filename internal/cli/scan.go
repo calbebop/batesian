@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"sort"
@@ -164,6 +166,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return perr
 	}
 
+	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
+	if err != nil {
+		return err
+	}
+
 	if target == "" {
 		return fmt.Errorf("--target is required")
 	}
@@ -217,15 +224,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	printer := report.New(statusOut, verbose)
 	printer.Banner()
 	printer.ProbeHeader(target, coalesceProtocol(protocol))
-
-	loaded, warns, err := loadRules(rulesDir)
-	if err != nil {
-		printer.Error("Failed to load rules: " + err.Error())
-		return err
-	}
-	for _, w := range warns {
-		printer.Warn(fmt.Sprintf("Skipping malformed rule %s: %v", w.Path, w.Err))
-	}
 
 	filter := &rules.Filter{
 		Protocols:  splitProtocols(protocol),
@@ -295,24 +293,40 @@ func runScan(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// loadRules loads built-in rules from the embedded filesystem, with an optional
-// override from a local directory on disk (--rules-dir flag).
-func loadRules(extraDir string) ([]*rules.Rule, []rules.LoadWarning, error) {
-	loaded, warns, err := rules.LoadFS(batesian.RulesFS())
+// loadRules loads built-ins and optional supplements, rejecting incomplete packs.
+func loadRules(builtins fs.FS, extraDir string) ([]*rules.Rule, error) {
+	loaded, warns, err := rules.LoadFS(builtins)
 	if err != nil {
-		return nil, warns, fmt.Errorf("loading built-in rules: %w", err)
+		return nil, fmt.Errorf("loading built-in rules: %w", err)
+	}
+	if err := ruleWarningsError("built-in rules", warns); err != nil {
+		return nil, err
 	}
 
 	if extraDir != "" {
 		extra, extraWarns, extraErr := rules.LoadDir(extraDir)
-		warns = append(warns, extraWarns...)
 		if extraErr != nil {
-			return loaded, warns, fmt.Errorf("loading extra rules from %s: %w", extraDir, extraErr)
+			return nil, fmt.Errorf("loading extra rules from %s: %w", extraDir, extraErr)
+		}
+		if err := ruleWarningsError("extra rules from "+extraDir, extraWarns); err != nil {
+			return nil, err
 		}
 		loaded = append(loaded, extra...)
 	}
 
-	return loaded, warns, nil
+	return loaded, nil
+}
+
+func ruleWarningsError(source string, warns []rules.LoadWarning) error {
+	if len(warns) == 0 {
+		return nil
+	}
+
+	errList := make([]error, 0, len(warns))
+	for _, warning := range warns {
+		errList = append(errList, fmt.Errorf("%s: %w", warning.Path, warning.Err))
+	}
+	return fmt.Errorf("%s contain invalid files: %w", source, errors.Join(errList...))
 }
 
 // coalesceProtocol returns "a2a/mcp" when protocol is empty.

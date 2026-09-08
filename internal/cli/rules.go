@@ -41,7 +41,7 @@ func init() {
 }
 
 func runRules(cmd *cobra.Command, args []string) error {
-	loaded, _, err := rules.LoadFS(batesian.RulesFS())
+	loaded, err := loadRules(batesian.RulesFS(), "")
 	if err != nil {
 		return fmt.Errorf("loading rules: %w", err)
 	}

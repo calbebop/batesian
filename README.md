@@ -154,6 +154,8 @@ skips. Gate findings through the Security tab or `--output json`.
 
 Rules pair YAML metadata with compiled Go executors. New descriptors for existing executors can load at runtime; new attack logic requires recompilation. Authoring, schema, and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Rule packs load atomically: an unreadable, invalid, or oversized descriptor stops the command instead of running a partial pack.
+
 ## Contributing
 
 Rules and code are welcome under [Apache 2.0](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerable fixtures and port layout for tests: [`testdata/README.md`](testdata/README.md).
