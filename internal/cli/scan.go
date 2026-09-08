@@ -117,6 +117,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// The flag carries a default, so this is the same sentinel problem as
 	// --proxy: an empty value cannot say "not passed".
 	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
+	format, err := report.ParseFormat(outputFmt)
+	if err != nil {
+		return err
+	}
 	if protocol == "" {
 		protocol = cfg.Protocol
 	}
@@ -218,10 +222,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	format, fmtErr := report.ParseFormat(outputFmt)
-	if fmtErr != nil {
-		return fmtErr
-	}
 	statusOut := os.Stdout
 	if format == report.FormatJSON || format == report.FormatSARIF {
 		statusOut = os.Stderr
