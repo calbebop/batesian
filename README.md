@@ -113,7 +113,7 @@ with `--oauth-origin https://login.example.com` (or `oauth_origins` in config).
 The scope-confusion rule discovers mutating tools but does not invoke them unless
 each exact name is approved with `--mcp-scope-tool` or `mcp_scope_tools`.
 
-`probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
+`probe` is reconnaissance (table or JSON). It does not emit SARIF. `batesian init` writes an annotated `batesian.yaml` to the current directory (it will not overwrite an existing one) so targets, tokens, and rule selections can live in version-controlled config. Missing auto-discovered configuration is optional; an explicit or discovered file that cannot be read or validated stops the scan. For flags, filters, config files, OAuth, and extra rule paths: `batesian scan --help`.
 
 ## CI integration
 

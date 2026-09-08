@@ -85,10 +85,9 @@ func init() {
 
 func runScan(cmd *cobra.Command, args []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
-	cfg, cfgErr := config.Load(configPath)
-	if cfgErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not load config file: %v\n", cfgErr)
-		cfg = &config.Config{}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
 	}
 
 	target, _ := cmd.Flags().GetString("target")

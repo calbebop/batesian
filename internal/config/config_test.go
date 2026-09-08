@@ -3,17 +3,15 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/config"
 )
 
 func TestLoad_EmptyPath_NoFile(t *testing.T) {
-	// Change to a temp dir that has no config file.
 	tmp := t.TempDir()
-	original, _ := os.Getwd()
-	os.Chdir(tmp)
-	defer os.Chdir(original)
+	chdir(t, tmp)
 
 	cfg, err := config.Load("")
 	if err != nil {
@@ -21,6 +19,94 @@ func TestLoad_EmptyPath_NoFile(t *testing.T) {
 	}
 	if cfg.Target != "" {
 		t.Errorf("expected empty target, got %q", cfg.Target)
+	}
+}
+
+func TestLoad_AutoDiscoveredMalformed(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "batesian.yaml"), []byte("target: [invalid yaml"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	chdir(t, tmp)
+
+	if _, err := config.Load(""); err == nil {
+		t.Fatal("expected malformed discovered config to fail")
+	}
+}
+
+func TestLoad_AutoDiscoversParent(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatalf("creating child directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "batesian.yaml"), []byte("protocol: mcp\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	chdir(t, child)
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("loading parent config: %v", err)
+	}
+	if cfg.Protocol != "mcp" {
+		t.Fatalf("protocol = %q, want mcp", cfg.Protocol)
+	}
+}
+
+func TestLoad_MalformedChildDoesNotUseParent(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatalf("creating child directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "batesian.yaml"), []byte("protocol: mcp\n"), 0o644); err != nil {
+		t.Fatalf("writing parent config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "batesian.yaml"), []byte("protocol: [invalid"), 0o644); err != nil {
+		t.Fatalf("writing child config: %v", err)
+	}
+
+	chdir(t, child)
+
+	if _, err := config.Load(""); err == nil {
+		t.Fatal("expected malformed child config to fail")
+	}
+}
+
+func TestLoad_DiscoveredConfigReadError(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "batesian.yaml"), 0o755); err != nil {
+		t.Fatalf("creating config directory: %v", err)
+	}
+
+	chdir(t, tmp)
+
+	if _, err := config.Load(""); err == nil {
+		t.Fatal("expected discovered config read error")
+	}
+}
+
+func TestLoad_DiscoveryStatError(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatalf("creating child directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "batesian.yaml"), []byte("protocol: mcp\n"), 0o644); err != nil {
+		t.Fatalf("writing parent config: %v", err)
+	}
+	if err := os.Symlink("batesian.yaml", filepath.Join(child, "batesian.yaml")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	chdir(t, child)
+
+	_, err := config.Load("")
+	if err == nil || !strings.Contains(err.Error(), "checking config file") {
+		t.Fatalf("expected discovery error, got %v", err)
 	}
 }
 
@@ -220,4 +306,16 @@ func TestExample_IsValidYAML(t *testing.T) {
 	if cfg.Target != "" {
 		t.Errorf("example config target should be empty, got %q", cfg.Target)
 	}
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getting working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("changing directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
 }
