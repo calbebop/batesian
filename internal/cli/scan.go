@@ -175,6 +175,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--target is required")
 	}
 
+	filtered, err := selectScanRules(loaded, protocol, severities, tags, ruleIDs)
+	if err != nil {
+		return err
+	}
+
 	// A dry run must not reach the network at all, including the authorization
 	// server, so skip live OAuth token acquisition. Rules preview as unauthenticated.
 	if token == "" && dryRun {
@@ -225,18 +230,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	printer.Banner()
 	printer.ProbeHeader(target, coalesceProtocol(protocol))
 
-	filter := &rules.Filter{
-		Protocols:  splitProtocols(protocol),
-		Severities: severities,
-		Tags:       tags,
-		IDs:        ruleIDs,
-	}
-	filtered := filter.Apply(loaded)
-
-	if len(filtered) == 0 {
-		printer.Warn("No rules matched the current filters. Check --protocol, --rule-ids, --severity, --tags.")
-		return nil
-	}
 	printer.Info(fmt.Sprintf("Running %d rule(s) against %s", len(filtered), target))
 	if verbose {
 		for _, r := range filtered {
@@ -327,6 +320,20 @@ func ruleWarningsError(source string, warns []rules.LoadWarning) error {
 		errList = append(errList, fmt.Errorf("%s: %w", warning.Path, warning.Err))
 	}
 	return fmt.Errorf("%s contain invalid files: %w", source, errors.Join(errList...))
+}
+
+func selectScanRules(loaded []*rules.Rule, protocol string, severities, tags, ids []string) ([]*rules.Rule, error) {
+	filter := &rules.Filter{
+		Protocols:  splitProtocols(protocol),
+		Severities: severities,
+		Tags:       tags,
+		IDs:        ids,
+	}
+	selected := filter.Apply(loaded)
+	if len(selected) == 0 {
+		return nil, errors.New("no rules matched the current filters; check --protocol, --rule-ids, --severity, --tags")
+	}
+	return selected, nil
 }
 
 // coalesceProtocol returns "a2a/mcp" when protocol is empty.
