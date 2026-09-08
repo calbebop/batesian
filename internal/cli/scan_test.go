@@ -487,8 +487,7 @@ func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 	}{
 		{name: "protocol and severity", protocol: "mcp", severities: []string{"high"}},
 		{name: "severity", severities: []string{"critical"}},
-		{name: "tag", tags: []string{"transport"}},
-		{name: "ID", ids: []string{"missing"}},
+		{name: "protocol and tag", protocol: "mcp", tags: []string{"auth"}},
 		{name: "protocol and ID", protocol: "a2a", ids: []string{"mcp-test"}},
 		{name: "severity and ID", severities: []string{"high"}, ids: []string{"mcp-test"}},
 	}
@@ -505,13 +504,15 @@ func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 
 func TestSelectScanRules_RejectsInvalidFilters(t *testing.T) {
 	loaded := []*rules.Rule{
-		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}},
-		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low"}, Attack: rules.AttackBlock{Protocol: "mcp"}},
+		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high", Tags: []string{"auth"}}, Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low", Tags: []string{"injection"}}, Attack: rules.AttackBlock{Protocol: "mcp"}},
 	}
 	tests := []struct {
 		name       string
 		protocol   string
 		severities []string
+		tags       []string
+		ids        []string
 		want       string
 	}{
 		{name: "invalid protocol last", protocol: "mcp,smtp", want: `unknown protocol "smtp"`},
@@ -522,11 +523,17 @@ func TestSelectScanRules_RejectsInvalidFilters(t *testing.T) {
 		{name: "invalid severity last", severities: []string{"high", "hihg"}, want: `unknown severity "hihg"`},
 		{name: "invalid severity first", severities: []string{"hihg", "high"}, want: `unknown severity "hihg"`},
 		{name: "protocol reported first", protocol: "smtp", severities: []string{"urgent"}, want: `unknown protocol "smtp"`},
+		{name: "invalid ID last", ids: []string{"a2a-test", "missing"}, want: `unknown rule ID "missing"`},
+		{name: "invalid ID first", ids: []string{"missing", "a2a-test"}, want: `unknown rule ID "missing"`},
+		{name: "blank ID", ids: []string{" "}, want: `unknown rule ID ""`},
+		{name: "invalid tag last", tags: []string{"auth", "missing"}, want: `unknown tag "missing"`},
+		{name: "invalid tag first", tags: []string{"missing", "auth"}, want: `unknown tag "missing"`},
+		{name: "blank tag", tags: []string{" "}, want: `unknown tag ""`},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := selectScanRules(loaded, tc.protocol, tc.severities, nil, nil)
+			_, err := selectScanRules(loaded, tc.protocol, tc.severities, tc.tags, tc.ids)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -536,16 +543,38 @@ func TestSelectScanRules_RejectsInvalidFilters(t *testing.T) {
 
 func TestSelectScanRules_NormalizesFilters(t *testing.T) {
 	loaded := []*rules.Rule{
-		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high"}, Attack: rules.AttackBlock{Protocol: "a2a"}},
-		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low"}, Attack: rules.AttackBlock{Protocol: "mcp"}},
+		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high", Tags: []string{"auth"}}, Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-test", Info: rules.RuleInfo{Severity: "low", Tags: []string{"injection"}}, Attack: rules.AttackBlock{Protocol: "mcp"}},
 	}
 
-	selected, err := selectScanRules(loaded, " A2A , MCP ", []string{" HIGH ", "low"}, nil, nil)
+	selected, err := selectScanRules(
+		loaded,
+		" A2A , MCP ",
+		[]string{" HIGH ", "low"},
+		[]string{" AUTH ", "injection"},
+		[]string{" A2A-TEST ", "mcp-test"},
+	)
 	if err != nil {
 		t.Fatalf("selecting rules: %v", err)
 	}
 	if len(selected) != 2 {
 		t.Fatalf("selected %d rules, want 2", len(selected))
+	}
+}
+
+func TestSelectScanRules_PreservesEqualFoldMatching(t *testing.T) {
+	loaded := []*rules.Rule{{
+		ID:     "Σ",
+		Info:   rules.RuleInfo{Severity: "high", Tags: []string{"ssrf"}},
+		Attack: rules.AttackBlock{Protocol: "a2a"},
+	}}
+
+	selected, err := selectScanRules(loaded, "a2a", nil, []string{"ſſrf"}, []string{"ς"})
+	if err != nil {
+		t.Fatalf("selecting rules: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != loaded[0] {
+		t.Fatalf("selected rules = %v, want input rule", selected)
 	}
 }
 
@@ -598,6 +627,75 @@ func TestScan_InvalidFilterStopsBeforeNetwork(t *testing.T) {
 	}
 	if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
 		t.Fatalf("network calls before selection: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
+	}
+}
+
+func TestScan_InvalidSelectorsStopBeforeNetwork(t *testing.T) {
+	tests := []struct {
+		name       string
+		configData string
+		ruleIDs    []string
+		want       string
+	}{
+		{
+			name:       "flag rule IDs",
+			configData: "{}\n",
+			ruleIDs:    []string{"a2a-artifact-tamper-001", "missing"},
+			want:       `unknown rule ID "missing"`,
+		},
+		{
+			name:       "config tags",
+			configData: "tags:\n  - auth\n  - missing\n",
+			want:       `unknown tag "missing"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(configPath, []byte(tc.configData), 0o644); err != nil {
+				t.Fatalf("writing config: %v", err)
+			}
+
+			var oauthConnections, targetHits atomic.Int32
+			oauth := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+			oauth.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					oauthConnections.Add(1)
+				}
+			}
+			oauth.StartTLS()
+			defer oauth.Close()
+			target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				targetHits.Add(1)
+			}))
+			defer target.Close()
+
+			t.Setenv("BATESIAN_TOKEN", "")
+			if scanCmd.Flags().Lookup("target") == nil {
+				scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+			}
+			setScanFlag(t, "config", configPath)
+			setScanFlag(t, "rules-dir", "")
+			setScanFlag(t, "target", target.URL)
+			setScanFlag(t, "protocol", "")
+			setScanFlag(t, "token", "")
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "token-url", oauth.URL)
+			setScanFlag(t, "auth-url", "")
+			setScanFlag(t, "dry-run", "false")
+			if tc.ruleIDs != nil {
+				setScanSliceFlag(t, "rule-ids", tc.ruleIDs)
+			}
+
+			err := runScan(scanCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
+				t.Fatalf("network calls before selector validation: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
+			}
+		})
 	}
 }
 
@@ -776,6 +874,30 @@ func setScanFlag(t *testing.T, name, value string) {
 		flag.Changed = oldChanged
 	})
 	if err := flag.Value.Set(value); err != nil {
+		t.Fatalf("setting %s: %v", name, err)
+	}
+	flag.Changed = true
+}
+
+func setScanSliceFlag(t *testing.T, name string, values []string) {
+	t.Helper()
+	flag := scanCmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("unknown scan flag %q", name)
+	}
+	slice, ok := flag.Value.(interface {
+		GetSlice() []string
+		Replace([]string) error
+	})
+	if !ok {
+		t.Fatalf("scan flag %q is not a slice", name)
+	}
+	oldValues, oldChanged := append([]string(nil), slice.GetSlice()...), flag.Changed
+	t.Cleanup(func() {
+		_ = slice.Replace(oldValues)
+		flag.Changed = oldChanged
+	})
+	if err := slice.Replace(values); err != nil {
 		t.Fatalf("setting %s: %v", name, err)
 	}
 	flag.Changed = true
