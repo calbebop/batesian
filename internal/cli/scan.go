@@ -184,6 +184,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		return fmt.Errorf("--target is required")
 	}
+	if err := validateTargetURL(target); err != nil {
+		return err
+	}
 
 	filtered, err := selectScanRules(loaded, protocol, severities, tags, ruleIDs)
 	if err != nil {
