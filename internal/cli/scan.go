@@ -63,13 +63,13 @@ func init() {
 	scanCmd.Flags().StringSlice("mcp-scope-tool", nil, "Allow the scope-confusion rule to call this exact tool name (comma-separated)")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")
-	// OAuth 2.0 flags for automatic token acquisition.
+	// OAuth token acquisition.
 	scanCmd.Flags().String("token-url", "", "OAuth 2.0 token endpoint URL")
 	scanCmd.Flags().String("client-id", "", "OAuth 2.0 client ID (used with --token-url or --auth-url)")
 	scanCmd.Flags().String("client-secret", "", "OAuth 2.0 client secret (client credentials flow only)")
 	scanCmd.Flags().StringSlice("oauth-scopes", nil, "OAuth 2.0 scopes to request (comma-separated)")
 	scanCmd.Flags().String("oauth-audience", "", "OAuth 2.0 audience (Auth0/Okta-style)")
-	// PKCE authorization code flow (interactive; opens a browser for user consent).
+	// Interactive PKCE flow.
 	scanCmd.Flags().String("auth-url", "", "OAuth 2.0 authorization endpoint URL (enables PKCE flow)")
 	scanCmd.Flags().Int("redirect-port", 9876, "Local TCP port for the OAuth callback listener (PKCE flow)")
 	scanCmd.Flags().Bool("no-browser", false, "Do not auto-open the browser for PKCE consent (print URL only)")
@@ -101,6 +101,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 	tags, _ := cmd.Flags().GetStringSlice("tags")
 	rulesDir, _ := cmd.Flags().GetString("rules-dir")
 	token, _ := cmd.Flags().GetString("token")
+	tokenURL, _ := cmd.Flags().GetString("token-url")
+	authURL, _ := cmd.Flags().GetString("auth-url")
+	clientID, _ := cmd.Flags().GetString("client-id")
+	clientSecret, _ := cmd.Flags().GetString("client-secret")
+	oauthScopes, _ := cmd.Flags().GetStringSlice("oauth-scopes")
+	oauthAudience, _ := cmd.Flags().GetString("oauth-audience")
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
@@ -184,23 +190,18 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// A dry run must not reach the network at all, including the authorization
-	// server, so skip live OAuth token acquisition. Rules preview as unauthenticated.
+	if err := validateOAuthAcquisition(token, authURL, tokenURL, clientID, clientSecret, oauthScopes, oauthAudience); err != nil {
+		return err
+	}
+
+	// Dry runs skip OAuth and preview rules without authentication.
 	if token == "" && dryRun {
-		tokenURL, _ := cmd.Flags().GetString("token-url")
-		authURL, _ := cmd.Flags().GetString("auth-url")
 		if tokenURL != "" || authURL != "" {
 			fmt.Fprintln(os.Stderr, "dry run: skipping OAuth token acquisition; rules preview as unauthenticated")
 		}
 	}
 
 	if token == "" && !dryRun {
-		tokenURL, _ := cmd.Flags().GetString("token-url")
-		authURL, _ := cmd.Flags().GetString("auth-url")
-		clientID, _ := cmd.Flags().GetString("client-id")
-		clientSecret, _ := cmd.Flags().GetString("client-secret")
-		oauthScopes, _ := cmd.Flags().GetStringSlice("oauth-scopes")
-		oauthAudience, _ := cmd.Flags().GetString("oauth-audience")
 		redirectPort, _ := cmd.Flags().GetInt("redirect-port")
 		noBrowser, _ := cmd.Flags().GetBool("no-browser")
 
@@ -217,8 +218,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("OAuth token acquisition failed: %w", err)
 			}
 			token = tok
-		case authURL != "" && (clientID == "" || tokenURL == ""):
-			return fmt.Errorf("--auth-url requires --client-id and --token-url for the PKCE flow")
 		}
 	}
 
@@ -459,6 +458,23 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 		return p, fmt.Errorf("--principal %q is missing name=", raw)
 	}
 	return p, nil
+}
+
+func validateOAuthAcquisition(token, authURL, tokenURL, clientID, clientSecret string, scopes []string, audience string) error {
+	if token != "" {
+		return nil
+	}
+	if authURL != "" {
+		if clientID == "" || tokenURL == "" {
+			return fmt.Errorf("--auth-url requires --client-id and --token-url for the PKCE flow")
+		}
+		return nil
+	}
+	configured := tokenURL != "" || clientID != "" || clientSecret != "" || len(scopes) > 0 || audience != ""
+	if configured && (clientID == "" || tokenURL == "") {
+		return fmt.Errorf("OAuth token acquisition requires --client-id and --token-url")
+	}
+	return nil
 }
 
 // firstNonEmpty returns the first non-empty string from the arguments.

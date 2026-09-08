@@ -253,6 +253,69 @@ func TestEffectiveMCPScopeTools(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthAcquisition(t *testing.T) {
+	const (
+		credentialsError = "OAuth token acquisition requires --client-id and --token-url"
+		pkceError        = "--auth-url requires --client-id and --token-url for the PKCE flow"
+	)
+	tests := []struct {
+		name                                       string
+		token, authURL, tokenURL, clientID, secret string
+		scopes                                     []string
+		audience, want                             string
+	}{
+		{name: "unset"},
+		{name: "client credentials", tokenURL: "https://auth.example/token", clientID: "client"},
+		{name: "client credentials options", tokenURL: "https://auth.example/token", clientID: "client", secret: "secret", scopes: []string{"mcp:read"}, audience: "mcp"},
+		{name: "PKCE", authURL: "https://auth.example/authorize", tokenURL: "https://auth.example/token", clientID: "client"},
+		{name: "token URL only", tokenURL: "https://auth.example/token", want: credentialsError},
+		{name: "client ID only", clientID: "client", want: credentialsError},
+		{name: "client secret only", secret: "secret", want: credentialsError},
+		{name: "scopes only", scopes: []string{"mcp:read"}, want: credentialsError},
+		{name: "audience only", audience: "mcp", want: credentialsError},
+		{name: "PKCE missing client ID", authURL: "https://auth.example/authorize", tokenURL: "https://auth.example/token", want: pkceError},
+		{name: "PKCE missing token URL", authURL: "https://auth.example/authorize", clientID: "client", want: pkceError},
+		{name: "bearer token takes precedence", token: "bearer", authURL: "https://auth.example/authorize"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOAuthAcquisition(tc.token, tc.authURL, tc.tokenURL, tc.clientID, tc.secret, tc.scopes, tc.audience)
+			if tc.want == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.want != "" && (err == nil || err.Error() != tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestScan_DryRunRejectsIncompleteOAuth(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	t.Setenv("BATESIAN_TOKEN", "")
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", "https://target.example.com")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", "")
+	setScanFlag(t, "auth-url", "")
+	setScanFlag(t, "dry-run", "true")
+
+	err := runScan(scanCmd, nil)
+	const want = "OAuth token acquisition requires --client-id and --token-url"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
 // TestScan_ConfigOutputFieldApplies verifies config output through the command.
 func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
