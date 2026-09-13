@@ -245,6 +245,7 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 func tokenEndpointClient(client *http.Client, timeout time.Duration, proxyURL string) (*http.Client, error) {
 	if client != nil {
 		clone := *client
+		clone.Timeout = timeout
 		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
