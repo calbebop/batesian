@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	batesian "github.com/calbebop/batesian"
@@ -146,7 +147,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
-	if _, err := requestTimeout(timeoutSecs); err != nil {
+	timeout, err := requestTimeout(timeoutSecs)
+	if err != nil {
 		return err
 	}
 	skipTLS = effectiveSkipTLS(cmd.Flags().Changed("skip-tls"), skipTLS, cfg.SkipTLS)
@@ -209,13 +211,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 		switch {
 		case authURL != "" && clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, clientID, oauthScopes, oauthAudience, redirectPort, !noBrowser)
+			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, clientID, oauthScopes, oauthAudience, timeout, redirectPort, !noBrowser)
 			if err != nil {
 				return fmt.Errorf("OAuth PKCE flow failed: %w", err)
 			}
 			token = tok
 		case clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience)
+			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience, timeout)
 			if err != nil {
 				return fmt.Errorf("OAuth token acquisition failed: %w", err)
 			}
@@ -591,13 +593,14 @@ func effectiveMCPScopeTools(flagChanged bool, flagVal, cfgVal []string) []string
 }
 
 // fetchOAuthToken acquires a bearer token via client credentials grant.
-func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret string, scopes []string, audience string) (string, error) {
+func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret string, scopes []string, audience string, timeout time.Duration) (string, error) {
 	tok, err := auth.FetchClientCredentialsToken(ctx, auth.ClientCredentialsConfig{
 		TokenURL:     tokenURL,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Audience:     audience,
+		Timeout:      timeout,
 	})
 	if err != nil {
 		return "", err
@@ -605,17 +608,15 @@ func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret strin
 	return tok.AccessToken, nil
 }
 
-// fetchOAuthTokenPKCE drives the interactive PKCE flow: opens a browser, listens
-// for the OAuth callback on 127.0.0.1, and exchanges the returned code at the
-// token endpoint. Status messages are printed to stderr so JSON/SARIF output
-// on stdout stays clean.
-func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string, scopes []string, audience string, redirectPort int, openBrowser bool) (string, error) {
+// fetchOAuthTokenPKCE runs the interactive authorization-code flow.
+func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string, scopes []string, audience string, timeout time.Duration, redirectPort int, openBrowser bool) (string, error) {
 	tok, err := auth.PerformPKCEFlow(ctx, auth.PKCEFlowConfig{
 		AuthURL:      authURL,
 		TokenURL:     tokenURL,
 		ClientID:     clientID,
 		Scopes:       scopes,
 		Audience:     audience,
+		Timeout:      timeout,
 		RedirectPort: redirectPort,
 		OpenBrowser:  openBrowser,
 		Logger: func(format string, args ...interface{}) {
