@@ -63,22 +63,20 @@ type PKCEFlowConfig struct {
 // Both AuthURL and TokenURL must use HTTPS. The function blocks until the user
 // completes the consent flow or CallbackTimeout elapses.
 func PerformPKCEFlow(ctx context.Context, cfg PKCEFlowConfig) (*TokenResponse, error) {
-	if !strings.HasPrefix(cfg.AuthURL, "https://") {
-		return nil, fmt.Errorf("authorization URL must use HTTPS (got: %s)", cfg.AuthURL)
+	return performPKCEFlowWithClient(ctx, cfg, nil)
+}
+
+// performPKCEFlowWithClient runs the flow with an optional token client.
+func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenClient *http.Client) (*TokenResponse, error) {
+	if _, err := parseOAuthEndpoint(cfg.AuthURL, "authorization URL"); err != nil {
+		return nil, err
 	}
-	if !strings.HasPrefix(cfg.TokenURL, "https://") {
-		return nil, fmt.Errorf("token URL must use HTTPS (got: %s)", cfg.TokenURL)
+	if _, err := parseOAuthEndpoint(cfg.TokenURL, "token URL"); err != nil {
+		return nil, err
 	}
 	if cfg.ClientID == "" {
 		return nil, errors.New("PKCE flow requires a client ID")
 	}
-	return performPKCEFlowWithClient(ctx, cfg, nil)
-}
-
-// performPKCEFlowWithClient is the inner implementation. When tokenClient is
-// non-nil it is used for the token exchange; this allows tests to inject a
-// trusted client when the token endpoint is an httptest TLS server.
-func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenClient *http.Client) (*TokenResponse, error) {
 	if cfg.RedirectPort == 0 {
 		cfg.RedirectPort = 9876
 	}
@@ -140,11 +138,14 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 
 // buildAuthURL constructs the authorization URL with PKCE parameters.
 func buildAuthURL(cfg PKCEFlowConfig, challenge, state, redirectURI string) (string, error) {
-	parsed, err := url.Parse(cfg.AuthURL)
+	parsed, err := parseOAuthEndpoint(cfg.AuthURL, "authorization URL")
 	if err != nil {
 		return "", err
 	}
-	q := parsed.Query()
+	q, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", err
+	}
 	q.Set("response_type", "code")
 	q.Set("client_id", cfg.ClientID)
 	q.Set("redirect_uri", redirectURI)
@@ -288,24 +289,10 @@ func respondCallbackError(w http.ResponseWriter, errParam, desc string) {
 	_ = errorPage.Execute(w, struct{ Err, Desc string }{Err: errParam, Desc: desc})
 }
 
-// openInBrowser launches the user's default web browser for the given URL.
-// It returns an error if no platform-appropriate command is available.
-//
-// The target is validated as an https:// authorization URL by PerformPKCEFlow
-// before reaching this function, so the variable arg to exec.Command is bounded
-// to URLs we generated ourselves.
-//
-// Windows uses rundll32 rather than "cmd /c start". Two reasons, both
-// structural: cmd treats & in an unquoted argument as a command separator,
-// and every authorization URL here contains one (query parameters joined by
-// q.Encode), which truncated what opened and injected whatever followed;
-// routing through CreateProcess directly means no shell ever re-parses the
-// command line, so the URL arrives byte-for-byte regardless of metacharacters.
-// rundll32 ships with every Windows release back to NT and dispatches to the
-// default browser via its URL protocol association.
+// openInBrowser launches the authorization URL without a shell.
 func openInBrowser(target string) error {
-	if !strings.HasPrefix(target, "https://") {
-		return fmt.Errorf("refusing to open non-https URL in browser: %q", target)
+	if _, err := parseOAuthEndpoint(target, "authorization URL"); err != nil {
+		return fmt.Errorf("refusing to open browser: %w", err)
 	}
 	switch runtime.GOOS {
 	case "windows":

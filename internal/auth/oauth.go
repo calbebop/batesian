@@ -57,8 +57,8 @@ type ClientCredentialsConfig struct {
 // The TokenURL must use HTTPS to prevent cleartext transmission of client
 // credentials. HTTP token endpoints are rejected with an explicit error.
 func FetchClientCredentialsToken(ctx context.Context, cfg ClientCredentialsConfig) (*TokenResponse, error) {
-	if !strings.HasPrefix(cfg.TokenURL, "https://") {
-		return nil, fmt.Errorf("token URL must use HTTPS to protect client credentials in transit (got: %s)", cfg.TokenURL)
+	if _, err := parseOAuthEndpoint(cfg.TokenURL, "token URL"); err != nil {
+		return nil, err
 	}
 	return fetchClientCredentialsTokenWithClient(ctx, cfg, nil)
 }
@@ -177,8 +177,8 @@ type AuthCodeConfig struct {
 // The TokenURL must use HTTPS to prevent cleartext transmission of authorization
 // codes. HTTP token endpoints are rejected with an explicit error.
 func ExchangeAuthCode(ctx context.Context, cfg AuthCodeConfig) (*TokenResponse, error) {
-	if !strings.HasPrefix(cfg.TokenURL, "https://") {
-		return nil, fmt.Errorf("token URL must use HTTPS to protect authorization codes in transit (got: %s)", cfg.TokenURL)
+	if _, err := parseOAuthEndpoint(cfg.TokenURL, "token URL"); err != nil {
+		return nil, err
 	}
 	return exchangeAuthCodeWithClient(ctx, cfg, nil)
 }
@@ -311,9 +311,7 @@ func discoverTokenURLWithClient(ctx context.Context, issuer string, client *http
 			continue
 		}
 		if ep, ok := meta["token_endpoint"].(string); ok && ep != "" {
-			// Reject non-HTTPS token endpoints to prevent SSRF and cleartext
-			// credential transmission, even when the issuer itself is valid HTTPS.
-			if !strings.HasPrefix(ep, "https://") {
+			if _, err := parseOAuthEndpoint(ep, "discovered token endpoint"); err != nil {
 				continue
 			}
 			return ep
