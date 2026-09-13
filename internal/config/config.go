@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/calbebop/batesian/internal/httpx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -147,6 +148,12 @@ func decodeConfig(data []byte, cfg *Config) error {
 
 // validate checks that enum fields contain only recognized values.
 func (c *Config) validate(path string) error {
+	if c.TimeoutSeconds != 0 {
+		if _, err := httpx.TimeoutDuration(c.TimeoutSeconds); err != nil {
+			return fmt.Errorf("config %s: invalid timeout: %w", path, err)
+		}
+	}
+
 	validProtocols := map[string]bool{"": true, "a2a": true, "mcp": true}
 	if !validProtocols[c.Protocol] {
 		return fmt.Errorf("config %s: invalid protocol %q; must be \"a2a\", \"mcp\", or omit for all", path, c.Protocol)

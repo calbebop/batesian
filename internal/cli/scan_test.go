@@ -149,7 +149,7 @@ func TestEffectiveTimeout(t *testing.T) {
 		{"explicit flag wins even when config is zero", true, 25, 0, 25},
 		{"config used when flag not set", false, 10, 30, 30},
 		{"flag default when neither set", false, 10, 0, 10},
-		{"non-positive config ignored", false, 10, -5, 10},
+		{"negative config preserved for validation", false, 10, -5, -5},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

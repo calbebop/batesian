@@ -211,7 +211,7 @@ func TestProbeA2A_ContextCancellationInterruptsStalledFetch(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := probeA2A(ctx, srv.URL, "", 30, false, "", report.FormatTable, report.New(io.Discard, false))
+	err := probeA2A(ctx, srv.URL, "", 30*time.Second, false, "", report.FormatTable, report.New(io.Discard, false))
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -241,7 +241,7 @@ func TestProbeMCP_ContextCancellationInterruptsInitialize(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := probeMCP(ctx, srv.URL, "", 30, false, "", report.FormatTable, report.New(io.Discard, false))
+	err := probeMCP(ctx, srv.URL, "", 30*time.Second, false, "", report.FormatTable, report.New(io.Discard, false))
 	elapsed := time.Since(start)
 
 	if err == nil {

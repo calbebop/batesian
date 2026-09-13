@@ -65,8 +65,11 @@ func runProbe(cmd *cobra.Command, args []string) error {
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
-	// Validate once, up front: a broken proxy should not look like an unreachable
-	// target.
+	timeout, err := requestTimeout(timeoutSecs)
+	if err != nil {
+		return err
+	}
+	// Reject invalid proxies before contacting the target.
 	if _, err := httpx.ProxyFunc(proxy); err != nil {
 		return err
 	}
@@ -95,20 +98,17 @@ func runProbe(cmd *cobra.Command, args []string) error {
 
 	switch strings.ToLower(protocol) {
 	case "a2a":
-		return probeA2A(cmd.Context(), target, token, timeoutSecs, skipTLS, proxy, format, printer)
+		return probeA2A(cmd.Context(), target, token, timeout, skipTLS, proxy, format, printer)
 	case "mcp":
-		return probeMCP(cmd.Context(), target, token, timeoutSecs, skipTLS, proxy, format, printer)
+		return probeMCP(cmd.Context(), target, token, timeout, skipTLS, proxy, format, printer)
 	default:
 		return fmt.Errorf("unknown protocol %q; supported: a2a, mcp", protocol)
 	}
 }
 
-func probeA2A(ctx context.Context, target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
-	if timeoutSecs <= 0 {
-		timeoutSecs = 10
-	}
+func probeA2A(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
 	opts := []a2a.ClientOption{
-		a2a.WithTimeout(time.Duration(timeoutSecs) * time.Second),
+		a2a.WithTimeout(timeout),
 	}
 	if token != "" {
 		opts = append(opts, a2a.WithBearerToken(token))
@@ -228,12 +228,9 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 	return r
 }
 
-func probeMCP(ctx context.Context, target, token string, timeoutSecs int, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
-	if timeoutSecs <= 0 {
-		timeoutSecs = 10
-	}
+func probeMCP(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
 	opts := []mcp.ClientOption{
-		mcp.WithTimeout(time.Duration(timeoutSecs) * time.Second),
+		mcp.WithTimeout(timeout),
 	}
 	if token != "" {
 		opts = append(opts, mcp.WithBearerToken(token))
