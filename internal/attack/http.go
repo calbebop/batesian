@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/sse"
 )
 
@@ -204,8 +205,8 @@ func NewUnauthHTTPClient(opts Options, vars Vars) *HTTPClient {
 
 // NewHTTPClient creates an attack HTTP client.
 func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
-	timeout := time.Duration(opts.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
+	timeout, err := httpx.TimeoutDuration(opts.TimeoutSeconds)
+	if err != nil {
 		timeout = 10 * time.Second
 	}
 	oauthOrigins := make(map[string]struct{}, len(opts.OAuthOrigins))

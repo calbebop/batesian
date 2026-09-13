@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -367,6 +368,42 @@ func TestLoad_InvalidSeverity(t *testing.T) {
 	_, err := config.Load(cfgPath)
 	if err == nil {
 		t.Error("expected error for invalid severity level, got nil")
+	}
+}
+
+func TestLoad_InvalidTimeout(t *testing.T) {
+	type testCase struct {
+		name    string
+		content string
+		want    string
+	}
+	tests := []testCase{
+		{name: "negative", content: "timeout: -1\n", want: "invalid timeout: must be greater than zero"},
+	}
+	if strconv.IntSize == 64 {
+		tests = append(tests, testCase{
+			name: "overflow", content: "timeout: 9223372037\n",
+			want: "invalid timeout: must not exceed 9223372036 seconds",
+		})
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfig(t, tc.content)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_ZeroTimeoutUsesDefault(t *testing.T) {
+	cfg, err := loadConfig(t, "timeout: 0\n")
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if cfg.TimeoutSeconds != 0 {
+		t.Fatalf("timeout = %d, want 0", cfg.TimeoutSeconds)
 	}
 }
 

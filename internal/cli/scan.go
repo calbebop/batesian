@@ -146,10 +146,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
+	if _, err := requestTimeout(timeoutSecs); err != nil {
+		return err
+	}
 	skipTLS = effectiveSkipTLS(cmd.Flags().Changed("skip-tls"), skipTLS, cfg.SkipTLS)
-	// Same sentinel problem as skip-tls: an empty string is indistinguishable from
-	// "not passed", so the flag only wins when it was actually set. That lets
-	// --proxy="" force a direct connection over a config proxy.
+	// An explicit empty proxy overrides the config.
 	if !cmd.Flags().Changed("proxy") {
 		proxy = cfg.Proxy
 	}
@@ -158,9 +159,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	mcpScopeTools = effectiveMCPScopeTools(cmd.Flags().Changed("mcp-scope-tool"), mcpScopeTools, cfg.MCPScopeTools)
-	// Validate here rather than letting each rule fail its own requests. A broken
-	// proxy is one configuration mistake, and surfacing it as "31 of 36 rules could
-	// not reach a testable endpoint" reads as an unreachable target instead.
+	// Reject invalid proxies before running rules.
 	if _, err := httpx.ProxyFunc(proxy); err != nil {
 		return err
 	}
@@ -543,12 +542,9 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// effectiveTimeout resolves the per-request timeout from the --timeout flag and
-// the config file. An explicitly-set flag always wins, even when it equals the
-// default, so `--timeout 10` is never silently overridden by a config value.
-// Otherwise a positive config value is used; otherwise the flag value (default).
+// effectiveTimeout lets an explicit flag override the config value.
 func effectiveTimeout(flagChanged bool, flagVal, cfgVal int) int {
-	if !flagChanged && cfgVal > 0 {
+	if !flagChanged && cfgVal != 0 {
 		return cfgVal
 	}
 	return flagVal
