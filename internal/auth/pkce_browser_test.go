@@ -104,6 +104,23 @@ func TestPerformPKCEFlow_RequiresClientID(t *testing.T) {
 	}
 }
 
+func TestPerformPKCEFlowRejectsInvalidRedirectPort(t *testing.T) {
+	for _, port := range []int{-1, 65536} {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			_, err := auth.PerformPKCEFlow(context.Background(), auth.PKCEFlowConfig{
+				AuthURL:      "https://auth.example.com/authorize",
+				TokenURL:     "https://auth.example.com/token",
+				ClientID:     "client",
+				RedirectPort: port,
+			})
+			want := fmt.Sprintf("redirect port must be between 1 and 65535, got %d", port)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("expected %q, got %v", want, err)
+			}
+		})
+	}
+}
+
 // TestPerformPKCEFlow_HappyPath completes consent through a local callback.
 func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	const fakeCode = "fake-auth-code-xyz"

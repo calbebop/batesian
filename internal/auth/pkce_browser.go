@@ -88,6 +88,9 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 	if cfg.RedirectPort == 0 {
 		cfg.RedirectPort = 9876
 	}
+	if cfg.RedirectPort < 1 || cfg.RedirectPort > 65535 {
+		return nil, fmt.Errorf("redirect port must be between 1 and 65535, got %d", cfg.RedirectPort)
+	}
 	if cfg.CallbackTimeout == 0 {
 		cfg.CallbackTimeout = 5 * time.Minute
 	}
