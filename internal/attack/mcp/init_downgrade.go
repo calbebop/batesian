@@ -41,15 +41,7 @@ func NewInitDowngradeExecutor(r attack.RuleContext) *InitDowngradeExecutor {
 	return &InitDowngradeExecutor{rule: r}
 }
 
-// legacyVersion is the pre-OAuth MCP spec version published before authorization
-// was mandated. modernVersion is the auth-enforcing baseline it is compared
-// against: the current handshake revision, which specifies authorization.
-//
-// It tracks latestStable rather than naming a revision, because what the oracle
-// needs is a version that mandates authorization AND that a current server will
-// accept, and those are the same thing. The comment here used to call it "the
-// version that introduced the authorization spec", which it was not: authorization
-// arrived before the revision this then pointed at.
+// Compare the pre-authorization revision with the current auth-enforcing baseline.
 const (
 	legacyVersion = "2024-11-05"
 	modernVersion = latestStable
@@ -57,13 +49,8 @@ const (
 
 func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	// Probe UNAUTHENTICATED. This rule detects a server that enforces
-	// authorization under the modern protocol version but not under the legacy
-	// one. If we attached opts.Token, a server that gates the modern path on a
-	// valid token would grant it, so the discriminator (modern REJECTED + legacy
-	// GRANTED) could never fire - silently masking the very bug we look for. A
-	// downgrade auth bypass is, by definition, reaching protected functionality
-	// WITHOUT proper credentials, so the probe must run with no bearer token.
+	// Probe without credentials so modern rejection and legacy acceptance remain
+	// distinguishable.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
 	// Why no candidate could be compared, so an undetermined probe does not surface as
@@ -190,13 +177,8 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 	return nil, true
 }
 
-// responsiveMCP reports whether ep answered an MCP initialize with a JSON-RPC
-// response (a result OR an error envelope). A version-rejection error still
-// counts: the endpoint speaks MCP, it just declined the offered version, so the
-// rule reached a testable endpoint (clean) rather than being unable to test.
-//
-// One request, and no session bookkeeping, which is why the OAuth-gated rules use
-// it rather than a full handshake to answer "is this even an MCP server".
+// responsiveMCP accepts negotiated initialization or an MCP-specific, auth, or
+// version rejection. It avoids session setup when only responsiveness matters.
 func responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bool {
 	resp, err := client.POST(ctx, ep, nil, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -214,28 +196,13 @@ func responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bo
 	return answersMCPInitialize(resp.Body)
 }
 
-// answersMCPInitialize reports whether a reply to an MCP initialize came from
-// something that actually implements MCP.
-//
-// This used to be looksJSONRPC, which matches any body containing "jsonrpc",
-// "result", "error" or "protocolVersion" — that is every JSON-RPC service in
-// existence. Since this oracle decides clean-versus-skipped for five rules, an A2A
-// agent answering `-32601 Method not found` to initialize was accepted as an MCP
-// server and mcp-oauth-dcr-001, mcp-confused-deputy-001,
-// mcp-oauth-metadata-ssrf-001, mcp-token-replay-001 and mcp-init-downgrade-001 all
-// reported it clean, with nothing skipped. The A2A side already guards the mirror
-// of this with answersMCPInitialize in a2a/endpoint.go; the MCP side never did.
-//
-// A version rejection still counts, deliberately: the endpoint speaks MCP and only
-// declined the offered revision, which is a reachable endpoint rather than an
-// untestable one. That is why this cannot simply require a result envelope.
-//
-// Uncertain cases resolve to false, so the rule reports not-tested rather than
-// clean. That is the direction this project errs in.
 // mcpMethodNotFound is the JSON-RPC code a server returns for a method it does
 // not implement. Real SDKs return it at HTTP 200.
 const mcpMethodNotFound = -32601
 
+// answersMCPInitialize accepts a negotiated version, MCP-reserved errors,
+// auth-flavored refusals, and protocol-version rejections. Generic JSON-RPC and
+// uncertain replies return false so callers report the rule as untested.
 func answersMCPInitialize(body []byte) bool {
 	// A successful handshake names the negotiated revision. This reads
 	// result.protocolVersion directly rather than calling negotiatedVersion, which
@@ -265,13 +232,7 @@ func answersMCPInitialize(body []byte) bool {
 	if code >= modernErrCodeMin && code <= modernErrCodeMax {
 		return true
 	}
-	// An auth rejection also proves an endpoint is listening and processing the
-	// request, which is what this oracle asks. Excluding it would give every
-	// credential-gated MCP server a spurious "not tested" on all five OAuth rules
-	// when the honest answer is that it publishes no OAuth metadata and there is
-	// nothing for them to test. Measured against
-	// testdata/mcp_secret_canary_server.py, which answers initialize with
-	// -32000 "authentication failed for token".
+	// An auth-flavored MCP error proves the endpoint processed initialize.
 	if authFlavoredError(code, jsonRPCErrorMessage(body)) {
 		return true
 	}

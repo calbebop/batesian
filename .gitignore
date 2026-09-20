@@ -13,8 +13,6 @@
 *.out
 /vendor/
 
-# go.sum is intentionally tracked (ensures reproducible builds)
-
 # Python
 __pycache__/
 *.py[cod]
@@ -33,12 +31,7 @@ env/
 *.key
 secrets.yaml
 secrets.json
-# Per-developer agent settings. The local file holds an auth token in
-# cleartext, and the shared settings.json holds personal gateway and model
-# choices, so neither belongs in the repo: one `git add .` away from being
-# published, and permanent untracked noise in every git status before it was
-# ignored wholesale. If a project-level agent config is ever wanted, negate
-# that specific file here rather than un-ignoring the directory.
+# Local agent settings may contain credentials and developer-specific configuration.
 .claude/
 
 # IDE

@@ -1,12 +1,7 @@
 name: Validation
 
-# A regression gate against live protocol traffic. The Go test suite proves each
-# rule against an in-process httptest harness, and testdata/README.md documents
-# what each Python fixture must do when the real binary scans it - but nothing
-# ran that second check, so every shipped A2A false negative (#175, #176, #177)
-# was found only by hand. This job runs the binary against the one fixture that
-# ENFORCES authorization (a2a_secured_agent.py), which is the false-positive
-# coverage no no-auth fixture can provide.
+# Runs the CLI against live A2A and MCP targets to catch false positives, false
+# negatives, and probe-contract regressions.
 
 on:
   schedule:
@@ -37,8 +32,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Tags and history feed git describe in the ldflags below, so these
-          # gates exercise the same version string a released binary carries.
+          # Fetch tags and history for git describe below.
           fetch-depth: 0
 
       - name: Set up Go
@@ -53,12 +47,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install fixture dependencies
-        # a2a_secured_agent.py imports starlette and uvicorn only.
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        # Match the Makefile's ldflags so the gates validate the real binary
-        # identity (User-Agent included), not a bare 'dev' build.
+        # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the secured-agent validation
@@ -76,8 +68,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Tags and history feed git describe in the ldflags below, so these
-          # gates exercise the same version string a released binary carries.
+          # Fetch tags and history for git describe below.
           fetch-depth: 0
 
       - name: Set up Go
@@ -92,12 +83,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install fixture dependencies
-        # The fixture dials the registered webhook itself, so it needs httpx.
         run: pip install starlette uvicorn httpx
 
       - name: Build batesian
-        # Match the Makefile's ldflags so the gates validate the real binary
-        # identity (User-Agent included), not a bare 'dev' build.
+        # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the push callback-auth validation
@@ -115,8 +104,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Tags and history feed git describe in the ldflags below, so these
-          # gates exercise the same version string a released binary carries.
+          # Fetch tags and history for git describe below.
           fetch-depth: 0
 
       - name: Set up Go
@@ -131,12 +119,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install fixture dependencies
-        # All four fixtures are plain Starlette; none imports the MCP SDK.
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        # Match the Makefile's ldflags so the gates validate the real binary
-        # identity (User-Agent included), not a bare 'dev' build.
+        # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the MCP property-fixture validations
@@ -154,8 +140,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Tags and history feed git describe in the ldflags below, so these
-          # gates exercise the same version string a released binary carries.
+          # Fetch tags and history for git describe below.
           fetch-depth: 0
 
       - name: Set up Go
@@ -170,14 +155,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install FastMCP
-        # Unpinned on purpose, the era-watch way: a FastMCP release that changes
-        # the server's defaults is exactly the kind of drift this job exists to
-        # surface.
+        # Track current FastMCP defaults so upstream security drift breaks this gate.
         run: pip install "fastmcp>=3"
 
       - name: Build batesian
-        # Match the Makefile's ldflags so the gates validate the real binary
-        # identity (User-Agent included), not a bare 'dev' build.
+        # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the FastMCP validation
@@ -195,8 +177,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Tags and history feed git describe in the ldflags below, so these
-          # gates exercise the same version string a released binary carries.
+          # Fetch tags and history for git describe below.
           fetch-depth: 0
 
       - name: Set up Go
@@ -214,8 +195,7 @@ jobs:
         run: pip install starlette uvicorn
 
       - name: Build batesian
-        # Match the Makefile's ldflags so the gates validate the real binary
-        # identity (User-Agent included), not a bare 'dev' build.
+        # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the OAuth DCR validation

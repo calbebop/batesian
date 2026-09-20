@@ -1,23 +1,7 @@
 name: MCP era watch
 
-# Batesian's MCP rules target the handshake-based protocol revisions. Era
-# detection (internal/attack/mcp/era.go) exists so a server speaking the
-# stateless 2026-07-28 revision is reported as unsupported rather than as
-# unreachable, which is the difference between "this scanner does not speak your
-# protocol version" and a bare "could not connect".
-#
-# That detection was written from the specification, at a time when nothing
-# implemented the revision. It does now: the Tier-1 SDKs shipped 2026-07-28
-# support on 2026-07-27 and 2026-07-28 (TypeScript @modelcontextprotocol/server
-# 2.0.0, Python mcp 2.0.0, Go 1.7.0, C# 2.0). So this job stopped being a watch
-# for something to appear and became a check that detection still works against
-# what did.
-#
-# It boots testdata/mcp_modern_era_server.py, built on the official Python SDK,
-# and runs the real detectEra against it rather than a reimplementation. A
-# failure means the specification, the SDK, or our detection has moved, and a
-# scheduled failure notifies on its own; there is no issue-filing step and this
-# job needs no write permission.
+# Validates MCP era detection against the current official Python SDK. Failures
+# indicate protocol, SDK, or detector drift.
 
 on:
   schedule:
@@ -53,17 +37,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install the MCP Python SDK
-        # Unpinned on purpose. The point of this job is to notice when the
-        # current SDK stops matching our detection, so it has to track the
-        # version an operator would actually install.
+        # Intentionally track the current SDK to detect upstream protocol drift.
         run: pip install "mcp>=2" uvicorn
 
       - name: Start the modern-era server
         run: |
           nohup python testdata/mcp_modern_era_server.py > /tmp/mcp-modern-server.log 2>&1 &
-          # Readiness is a real server/discover, not a port check: the point is
-          # that the endpoint answers the request detection sends, so a server
-          # that is listening but not yet serving does not race the test.
+          # Probe server/discover readiness, not just an open port.
           for _ in $(seq 1 30); do
             if curl -sf -o /dev/null http://127.0.0.1:7799/mcp \
               -X POST -H 'Content-Type: application/json' \

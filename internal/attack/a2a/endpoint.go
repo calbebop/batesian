@@ -81,23 +81,8 @@ func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
 	if card, found := fetchDiscoveryCard(ctx, client, baseURL); found {
 		if cardURL := selectJSONRPCURL(card); cardURL != "" {
-			// The card's path has to answer before it is returned as reachable.
-			//
-			// It used to be returned on trust, which broke the contract this
-			// function's own doc comment states. A card advertises the URL clients
-			// reach the agent on, which for anything behind a proxy is not the path
-			// the operator is scanning: an agent published at
-			// https://public.example/a2a/v1 may be mounted at / on the origin. The
-			// card URL then 404s, the candidate walk that would have found / was
-			// skipped, and ok=true told a dozen rules their failed probes were a
-			// tested-clean result. Measured against a wide-open agent in exactly
-			// that shape: two POSTs to the dead path, nothing reached the handler,
-			// and a-task-idor reported clean.
-			//
-			// A card that declares a JSONRPC interface is itself A2A evidence, so the
-			// declared path only has to ANSWER; it need not prove A2A again. That
-			// keeps an auth-gated agent discoverable, since its 401 is weak evidence
-			// alone but the card corroborates it.
+			// The card corroborates weak JSON-RPC or auth evidence. A dead path falls
+			// through to conventional candidates.
 			pinned := pinToTargetOrigin(cardURL, baseURL)
 			if probeA2AEvidence(ctx, client, pinned) != a2aEvidenceNone {
 				return pinned, true
@@ -125,24 +110,9 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 	return endpointpkg.AppendPath(baseURL, "/"), false
 }
 
-// looksLikeMCPServer reports whether a path that gave only weak A2A evidence is in
-// fact an MCP server. Weak evidence is accepted for A2A unless this says no.
-//
-// The check stays negative on purpose. A2A servers exist that implement neither
-// task-get spelling, including two of this repository's own fixtures, so demanding
-// positive A2A proof would lose them. What the previous code got wrong was WHEN it
-// asked: only on the method-not-found branch, so a 401 and every other error code
-// bypassed it.
-//
-// Two signals, both cheap and both MCP-specific:
-//
-//   - The path answers an MCP initialize with a protocolVersion. Conclusive, but
-//     useless against a server that gates the handshake.
-//   - The host advertises RFC 9728 protected-resource metadata, at the well-known
-//     path or in a WWW-Authenticate challenge. That is the MCP authorization spec's
-//     discovery mechanism and A2A does not use it. It is what identifies the
-//     official C# SDK's OAuth-protected sample, which refuses every unauthenticated
-//     request with a 401 and so offers no other evidence at all.
+// looksLikeMCPServer rejects weak A2A evidence when MCP initialize or RFC 9728
+// resource metadata identifies the target. The check stays negative because some
+// A2A servers implement neither task-get method used for positive proof.
 func looksLikeMCPServer(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
 	if answersMCPInitialize(ctx, client, endpoint) {
 		return true
@@ -246,38 +216,6 @@ func candidateEndpoints(baseURL string) []string {
 // one error a task lookup can earn that says nothing about what the server is.
 const methodNotFound = -32601
 
-// probeJSONRPCEndpoint reports whether a path answers JSON-RPC as an A2A agent.
-// It sends a read-only task lookup for a non-existent id and treats a JSON-RPC
-// envelope (result or error) or an auth rejection (401/403) as a live endpoint;
-// a 404 or transport error means this is not the endpoint.
-//
-// It tries both the v0.3 (tasks/get) and v1.0 (GetTask) method names, because a
-// server that does not implement one may answer 404 for it while still being a
-// JSON-RPC endpoint that handles the other. Probing only one method would miss
-// such servers.
-//
-// Evidence is graded, because weak evidence let MCP servers through and that is
-// what this function's own history is about. "Method not found" was already
-// treated as weak, but two other shapes were not, and both were measured
-// accepting the official MCP C# SDK as an A2A agent:
-//
-//   - Any JSON-RPC error other than -32601 was accepted, via a body check for the
-//     string "jsonrpc" that every JSON-RPC message contains. The SDK answers an
-//     A2A tasks/get with -32000 "Bad Request: A new session can only be created by
-//     an initialize request... Include a valid Mcp-Session-Id header", which named
-//     itself as MCP and was accepted anyway.
-//   - A 401 or 403 was accepted outright. The SDK's OAuth-protected sample refuses
-//     every unauthenticated request that way, so a secured MCP server was accepted
-//     with no A2A evidence at all.
-//
-// In both cases roughly a dozen A2A rules then reported the target tested-and-clean.
-//
-// Strong evidence is a JSON-RPC result, or an error in A2A's own -32001..-32006
-// range (TaskNotFound and friends) which only something implementing A2A produces.
-// Everything else is weak and has to be corroborated by the caller; see
-// resolveA2AEndpoint. The grading stays deliberately loose about requiring a
-// task-shaped answer, because A2A servers exist that implement neither task-get
-// spelling, including two of this repository's own fixtures.
 // a2aEvidence grades what a candidate path revealed about being an A2A endpoint.
 type a2aEvidence int
 
@@ -299,6 +237,8 @@ const (
 	a2aErrorCodeMin = -32006
 )
 
+// probeA2AEvidence tries both A2A task-get method names. A result or A2A-reserved
+// error is strong evidence; generic errors require corroboration to exclude MCP.
 func probeA2AEvidence(ctx context.Context, client *attack.HTTPClient, endpoint string) a2aEvidence {
 	probes := []struct {
 		method  string
@@ -366,13 +306,8 @@ func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoi
 	return resp.ContainsAny(`"protocolVersion"`)
 }
 
-// mcpProbeVersion is the MCP revision these probes offer when asking whether a
-// candidate is an MCP server rather than an A2A agent. It mirrors the mcp package's
-// latestStable, duplicated because that constant is unexported and this is a
-// different package. A stale value is less harmful here than there, since
-// answersMCPInitialize counts a version rejection as proof the endpoint speaks MCP,
-// but offering the current handshake revision keeps the two probes saying the same
-// thing about the same server.
+// mcpProbeVersion mirrors the MCP package's current handshake revision. A
+// successful probe must return protocolVersion.
 const mcpProbeVersion = "2025-11-25"
 
 // jsonRPCErrorMessage extracts the message from a JSON-RPC error envelope, or ""

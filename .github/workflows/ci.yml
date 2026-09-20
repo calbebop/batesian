@@ -12,17 +12,10 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main, dev]
-  # Manual trigger, for a branch with no open pull request yet and as the way in
-  # when event delivery is unavailable. During the 2026-08-06 Actions incident,
-  # webhooks were throttled to roughly 15% and neither a push nor a
-  # close/reopen produced a run, while the re-run endpoints deadlocked
-  # ("already running" against "has not yet queued"). workflow_dispatch is a
-  # direct API call and does not depend on webhook delivery.
+  # Supports pre-PR runs and manual fallback when event delivery is unavailable.
   workflow_dispatch:
 
-# One run per branch or pull request. A superseded run is cancelled rather than
-# left competing for a runner, which is what made the incident above worse.
-# Tag runs are never cancelled: that is the release path.
+# Cancel superseded branch and PR runs; never cancel tag-based releases.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}

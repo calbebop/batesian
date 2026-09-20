@@ -8,26 +8,10 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// This file backs one control shared by the two forged-token rules
-// (mcp-token-replay-001 and mcp-oauth-audience-002): where on a server can a
-// bearer token actually be judged?
-//
-// Both rules present their forged tokens to `initialize`. That was taken to
-// mean the token was examined, but plenty of servers leave initialize ungated
-// and authorize the calls that follow (session-as-credential documented the
-// same posture for its own controls). On such a server every forged token is
-// "accepted" for a method that never looked at it, and the rules reported
-// absent signature validation - with the operator's own token rules elsewhere
-// in this package relying on that posture being common, the false positive was
-// not hypothetical.
-//
-// The control is an anonymous initialize. If it is refused, initialize itself
-// gates, and forged-token acceptance there is a genuine finding. If it is
-// accepted, initialize proves nothing about tokens; the rule then finds a
-// method that DOES gate - the first listing the server advertises - confirms
-// it refuses an anonymous caller, and judges the forged tokens there instead.
-// A server that answers both anonymously authenticates nothing these rules can
-// reach, which is the unauth rules' territory, not a token-validation verdict.
+// Forged tokens must be judged at a method that enforces authentication. An
+// anonymous initialize determines whether initialize is gated; otherwise the
+// probe selects an advertised listing, or ping as a fallback, that rejects
+// anonymous access. Without that boundary, token validation cannot be evaluated.
 
 // initGate is what the anonymous-initialize control established about one
 // endpoint.

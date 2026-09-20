@@ -1,16 +1,7 @@
 name: Lint sweep
 
-# golangci-lint caches analysis results per file, and the CI lint job restores
-# that cache between runs. A file whose content has not changed keeps its cached
-# verdict, which means a latent finding in a file nobody has edited stays
-# invisible until the next PR that touches it - where it surfaces as a red job
-# mixed into unrelated work (#222: an unparam finding on a test helper that had
-# been there since the helper was written, exposed only because that PR edited
-# the file).
-#
-# This job re-analyzes the whole tree with the cache disabled on a schedule, so
-# those findings surface here instead. A scheduled failure notifies on its own
-# and blocks nothing.
+# Disables golangci-lint's file cache on a schedule so latent findings surface
+# before unrelated pull requests touch those files.
 
 on:
   schedule:

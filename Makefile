@@ -6,17 +6,14 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Container images for docker-check, matching what CI pins in ci.yml and
-# go.mod. Keep the two in step when bumping either side.
+# Keep container versions aligned with ci.yml and go.mod.
 GO_IMAGE := golang:1.25.13
 LINT_IMAGE := golangci/golangci-lint:v2.11.4
 
-# Named volumes cache modules and compiled packages between runs; without them
-# every invocation redownloads the module graph from scratch.
+# Reuse module and build caches across container runs.
 GO_CACHE_VOLS := -v batesian-gomod:/go/pkg/mod -v batesian-gocache:/root/.cache/go-build
 
-# Repo root as seen by the container. On Docker Desktop the Windows path is
-# mounted read-write so coverage.out lands back on the host.
+# Mount the repo read-write so container outputs persist on the host.
 MOUNT := -v "$(CURDIR):/app" -w /app
 
 LDFLAGS := -s -w \
@@ -51,10 +48,7 @@ install:
 run: build
 	./bin/$(BINARY) $(ARGS)
 
-# docker-check runs the same gates CI runs (build, vet, race tests, lint) in
-# the pinned containers, so a contributor without a local Go toolchain gets
-# pre-push verification that matches the CI verdict. First run downloads
-# images and modules; later runs are warm.
+# Run build, vet, race tests, and lint without requiring a local Go toolchain.
 docker-check: docker-build-vet docker-test docker-lint
 
 docker-build-vet:

@@ -58,21 +58,8 @@ checksum:
 sboms:
   - artifacts: archive
 
-# Keyless cosign signing of the checksums file. Each tagged release is signed
-# with a short-lived certificate from Sigstore's Fulcio CA, anchored by the
-# GitHub Actions OIDC token. Verifiers can confirm the binary came from this
-# repo's release pipeline. Requires cosign on the runner and id-token: write
-# permission on the release job.
-#
-# cosign v3 removed --output-signature and --output-certificate from sign-blob
-# and made --bundle required: the Sigstore bundle now carries the signature,
-# the certificate and the transparency-log entry in one file, and replaces the
-# separate .sig and .pem rather than accompanying them. GoReleaser publishes
-# whatever `signature` names, so the bundle is named there.
-#
-# Releases up to v1.5.0 published checksums.txt.sig and checksums.txt.pem and
-# remain verifiable exactly as before; from v1.6.0 the artifact is
-# checksums.txt.sigstore.json instead.
+# Sign checksums keylessly with GitHub OIDC. Cosign v3 stores the signature,
+# certificate, and transparency-log entry in one Sigstore bundle.
 signs:
   - cmd: cosign
     signature: "${artifact}.sigstore.json"
@@ -91,16 +78,9 @@ changelog:
   sort: asc
   use: git
   filters:
-    # Routine maintenance is filtered out of release notes. Two behaviours to
-    # know when reading a generated changelog:
-    #   - These excludes are applied BEFORE grouping, so a security fix
-    #     committed as `chore:` is dropped outright and never reaches the
-    #     Security group below.
-    #   - The patterns are not scope-aware: `^chore:` matches `chore: x` but NOT
-    #     `chore(ci): x`, so a scoped maintenance commit still lands under
-    #     "Other" rather than being excluded.
-    # Either way a security fix filed as a chore is mislabelled, so commit it as
-    # `fix(deps):` or `fix(security):` (see CONTRIBUTING.md, Commit Style).
+    # Filters run before groups. Unscoped chore: commits are excluded; scoped
+    # chore(...): commits fall through to Other. Use fix(deps): or fix(security):
+    # for security fixes.
     exclude:
       - '^docs:'
       - '^test:'
@@ -133,16 +113,8 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  # The header is intentionally evergreen: it describes what Batesian is, not
-  # what changed in a particular release. Per-release narrative used to live here
-  # and went stale every time, because it had to be rewritten by hand before each
-  # tag and nothing failed when it was not. The generated changelog below already
-  # lists every change, grouped by Security, New attack rules, Features and Bug
-  # fixes, with a link to each PR.
-  #
-  # The one value here that still needs a human is the rule count, since
-  # goreleaser has no variable for it. Verify it against `ls rules/*/*.yaml | wc -l`
-  # before tagging.
+  # Keep the header release-agnostic; the changelog covers release-specific
+  # changes. Update the bundled rule count before tagging.
   header: |
     ## Batesian {{.Version}}
 
