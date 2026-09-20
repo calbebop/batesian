@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,46 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func newTunnelProxy(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	hits := &atomic.Int32{}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		upstream, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			_ = upstream.Close()
+			http.Error(w, "hijacking unavailable", http.StatusInternalServerError)
+			return
+		}
+		client, _, err := hijacker.Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		go func() {
+			_, _ = io.Copy(upstream, client)
+			_ = upstream.Close()
+		}()
+		_, _ = io.Copy(client, upstream)
+		_ = client.Close()
+	}))
+	t.Cleanup(func() {
+		proxy.CloseClientConnections()
+		proxy.Close()
+	})
+	return proxy, hits
 }
 
 // TestPerformPKCEFlow_RejectsHTTPAuthURL verifies the public function refuses
@@ -242,6 +283,83 @@ func TestPerformPKCEFlowUsesRequestTimeoutAfterCallback(t *testing.T) {
 	case <-tokenStarted:
 	default:
 		t.Fatal("flow timed out before the token exchange")
+	}
+}
+
+func TestPerformPKCEFlowUsesProxyAndSkipTLS(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "close")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"proxied-token"}`))
+	}))
+	defer target.Close()
+
+	proxy, proxyHits := newTunnelProxy(t)
+
+	port := pickFreePort(t)
+	urlCh := make(chan string, 1)
+	logger := func(format string, args ...interface{}) {
+		msg := fmt.Sprintf(format, args...)
+		if strings.Contains(msg, "code_challenge") {
+			urlCh <- strings.TrimSpace(msg)
+		}
+	}
+
+	type flowResult struct {
+		token string
+		err   error
+	}
+	resultCh := make(chan flowResult, 1)
+	go func() {
+		token, err := auth.PerformPKCEFlow(context.Background(), auth.PKCEFlowConfig{
+			AuthURL:         "https://auth.example.com/authorize",
+			TokenURL:        target.URL + "/token",
+			ClientID:        "client",
+			RedirectPort:    port,
+			OpenBrowser:     false,
+			Logger:          logger,
+			Timeout:         time.Second,
+			Proxy:           proxy.URL,
+			SkipTLS:         true,
+			CallbackTimeout: 2 * time.Second,
+		})
+		result := flowResult{err: err}
+		if token != nil {
+			result.token = token.AccessToken
+		}
+		resultCh <- result
+	}()
+
+	var authURL string
+	select {
+	case authURL = <-urlCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flow did not print an authorization URL")
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing authorization URL: %v", err)
+	}
+	callback := fmt.Sprintf("http://127.0.0.1:%d/callback?code=test&state=%s", port, parsed.Query().Get("state"))
+	resp, err := http.Get(callback)
+	if err != nil {
+		t.Fatalf("hitting callback: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("flow failed: %v", result.err)
+		}
+		if result.token != "proxied-token" {
+			t.Fatalf("token = %q, want proxied-token", result.token)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("token exchange did not return")
+	}
+	if proxyHits.Load() == 0 {
+		t.Fatal("proxy was not contacted")
 	}
 }
 

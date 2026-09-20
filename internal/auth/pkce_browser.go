@@ -53,6 +53,11 @@ type PKCEFlowConfig struct {
 	// Timeout is the HTTP timeout for the token exchange. Defaults to 15 seconds.
 	Timeout time.Duration
 
+	// Proxy routes the token exchange. Empty uses environment settings.
+	Proxy string
+	// SkipTLS disables certificate verification for the token exchange.
+	SkipTLS bool
+
 	// CallbackTimeout is the maximum time to wait for the redirect callback.
 	// Defaults to 5 minutes when zero.
 	CallbackTimeout time.Duration
@@ -126,6 +131,8 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 		Code:         code,
 		PKCEVerifier: pkce.Verifier,
 		Timeout:      cfg.Timeout,
+		Proxy:        cfg.Proxy,
+		SkipTLS:      cfg.SkipTLS,
 	}
 	var tok *TokenResponse
 	if tokenClient != nil {
