@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -44,11 +45,10 @@ type ClientCredentialsConfig struct {
 	// Timeout is the HTTP timeout for the token request (default: 15s).
 	Timeout time.Duration
 
-	// Proxy routes the token exchange through an intercepting proxy. Empty means
-	// consult the environment, which these clients already did by leaving
-	// Transport nil; the field is what lets an explicit --proxy win over it, so
-	// the OAuth leg and the scan leg agree on where traffic goes.
+	// Proxy routes the token request. Empty uses environment settings.
 	Proxy string
+	// SkipTLS disables certificate verification for the token request.
+	SkipTLS bool
 }
 
 // FetchClientCredentialsToken performs an OAuth 2.0 client credentials grant
@@ -86,7 +86,7 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 		form.Set("audience", cfg.Audience)
 	}
 
-	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy)
+	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy, cfg.SkipTLS)
 	if err != nil {
 		return nil, err
 	}
@@ -165,11 +165,10 @@ type AuthCodeConfig struct {
 	// Timeout is the HTTP timeout for the token request.
 	Timeout time.Duration
 
-	// Proxy routes the token exchange through an intercepting proxy. Empty means
-	// consult the environment, which these clients already did by leaving
-	// Transport nil; the field is what lets an explicit --proxy win over it, so
-	// the OAuth leg and the scan leg agree on where traffic goes.
+	// Proxy routes the token request. Empty uses environment settings.
 	Proxy string
+	// SkipTLS disables certificate verification for the token request.
+	SkipTLS bool
 }
 
 // ExchangeAuthCode exchanges an authorization code (plus PKCE verifier) for tokens.
@@ -199,7 +198,7 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 		"code_verifier": {cfg.PKCEVerifier},
 	}
 
-	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy)
+	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy, cfg.SkipTLS)
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +241,26 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 // tokenEndpointClient returns a client that never follows redirects. Token
 // requests carry credentials in their bodies, and body-preserving redirects
 // would replay those credentials to a destination chosen by the endpoint.
-func tokenEndpointClient(client *http.Client, timeout time.Duration, proxyURL string) (*http.Client, error) {
+func tokenEndpointClient(client *http.Client, timeout time.Duration, proxyURL string, skipVerify bool) (*http.Client, error) {
 	if client != nil {
 		clone := *client
 		clone.Timeout = timeout
+		if skipVerify {
+			var transport *http.Transport
+			switch current := clone.Transport.(type) {
+			case nil:
+				transport = http.DefaultTransport.(*http.Transport).Clone()
+			case *http.Transport:
+				transport = current.Clone()
+			default:
+				return nil, fmt.Errorf("cannot disable TLS verification for custom transport %T", clone.Transport)
+			}
+			if transport.TLSClientConfig == nil {
+				transport.TLSClientConfig = &tls.Config{} //nolint:gosec
+			}
+			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
+			clone.Transport = transport
+		}
 		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
@@ -256,9 +271,13 @@ func tokenEndpointClient(client *http.Client, timeout time.Duration, proxyURL st
 	if err != nil {
 		return nil, err
 	}
+	transport := &http.Transport{Proxy: proxy}
+	if skipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: &http.Transport{Proxy: proxy},
+		Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

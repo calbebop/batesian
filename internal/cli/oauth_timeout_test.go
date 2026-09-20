@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -34,7 +37,7 @@ func TestFetchOAuthTokenUsesRequestTimeout(t *testing.T) {
 
 	const timeout = 250 * time.Millisecond
 	start := time.Now()
-	_, err = fetchOAuthToken(context.Background(), "https://"+listener.Addr().String()+"/token", "client", "secret", nil, "", timeout)
+	_, err = fetchOAuthToken(context.Background(), "https://"+listener.Addr().String()+"/token", "client", "secret", nil, "", timeout, "", false)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected stalled token request to fail")
@@ -46,5 +49,51 @@ func TestFetchOAuthTokenUsesRequestTimeout(t *testing.T) {
 	case <-accepted:
 	default:
 		t.Fatal("token endpoint was not contacted")
+	}
+}
+
+func TestFetchOAuthTokenUsesExplicitProxy(t *testing.T) {
+	var targetConnections atomic.Int32
+	target := httptest.NewUnstartedServer(http.NotFoundHandler())
+	target.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			targetConnections.Add(1)
+		}
+	}
+	target.StartTLS()
+	defer target.Close()
+
+	var proxyHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Add(1)
+		http.Error(w, "blocked", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	_, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", time.Second, proxy.URL, false)
+	if err == nil {
+		t.Fatal("expected proxy rejection")
+	}
+	if proxyHits.Load() == 0 {
+		t.Fatal("proxy was not contacted")
+	}
+	if targetConnections.Load() != 0 {
+		t.Fatalf("token endpoint received %d direct connections", targetConnections.Load())
+	}
+}
+
+func TestFetchOAuthTokenUsesSkipTLS(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token"}`))
+	}))
+	defer target.Close()
+
+	token, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", time.Second, "", true)
+	if err != nil {
+		t.Fatalf("fetching token: %v", err)
+	}
+	if token != "token" {
+		t.Fatalf("token = %q, want token", token)
 	}
 }
