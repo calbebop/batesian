@@ -114,9 +114,8 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	return nil, obs.errIfAuthRefused()
 }
 
-// evaluateAcceptance reports only when an accepted task read contains the marker
-// under the agent role. Acceptance alone is not a finding; no accepted read is
-// inconclusive.
+// evaluateAcceptance reports only when task history contains the marker under a
+// known role. Missing, partial, or malformed history is inconclusive.
 func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client *attack.HTTPClient, ep string,
 	headers map[string]string, sendBody []byte, marker string, vars attack.Vars) (*attack.Finding, error) {
 	taskID, _ := extractTaskContext(sendBody)
@@ -140,22 +139,29 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		TargetURL:   ep,
 	}
 
+	why := "the task history could not be read back"
 	if taskID != "" {
-		history, ok := readTaskHistory(ctx, client, ep, headers, taskID, vars)
+		body, ok := readTaskHistory(ctx, client, ep, headers, taskID, vars)
 		if ok {
-			switch {
-			case injectedAgentMessagePresent(history, marker):
-				confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(history, 400))
-				return &confirmed, nil
-			case containsAnyStr(string(history), marker):
-				// Marker present but not as an agent message: the server normalized the
-				// role. Injection neutralized, and a real result: the history was read
-				// and the role had been rewritten.
-				return nil, nil
-			default:
-				// History readable and the marker is absent, so the message was not
-				// persisted. Nothing was injected.
-				return nil, nil
+			history, valid := taskHistory(body)
+			if !valid {
+				why = "the task response contained no usable history"
+			} else {
+				switch classifyHistoryMarker(history, marker) {
+				case historyMarkerAgent:
+					confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(body, 400))
+					return &confirmed, nil
+				case historyMarkerUser:
+					// Marker present but not as an agent message: the server normalized the
+					// role. Injection neutralized, and a real result: the history was read
+					// and the role had been rewritten.
+					return nil, nil
+				case historyMarkerUnknown:
+					why = "the injected marker was returned with an unrecognized role"
+				case historyMarkerAbsent:
+					// historyLength is a maximum, so omission does not prove non-persistence.
+					why = "the returned history did not include the injected marker"
+				}
 			}
 		}
 	}
@@ -164,7 +170,6 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 	// rule is whether the client-authored turn is STORED with the agent role, so
 	// without the history nothing was determined and there is nothing to report.
 	// Acceptance on its own is not a finding: the specification requires no rejection.
-	why := "the task history could not be read back"
 	if taskID == "" {
 		// A2A permits answering a send with a Message rather than a Task, and then
 		// there is no history to inspect at all.
@@ -174,6 +179,33 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		"the turn is stored as an agent turn could not be established; what this rule reports is the "+
 		"stored turn, not the acceptance",
 		attack.ErrInconclusive, ep, why)
+}
+
+// taskHistory extracts a flat or nested Task history array.
+func taskHistory(body []byte) ([]interface{}, bool) {
+	var envelope struct {
+		Result *struct {
+			History json.RawMessage `json:"history"`
+			Task    *struct {
+				History json.RawMessage `json:"history"`
+			} `json:"task"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+		return nil, false
+	}
+	raw := envelope.Result.History
+	if len(raw) == 0 && envelope.Result.Task != nil {
+		raw = envelope.Result.Task.History
+	}
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return nil, false
+	}
+	var history []interface{}
+	if json.Unmarshal(raw, &history) != nil {
+		return nil, false
+	}
+	return history, true
 }
 
 // readTaskHistory fetches a task via GetTask or tasks/get. ok reports whether
@@ -199,31 +231,40 @@ func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, 
 	return resp.Body, true
 }
 
-// injectedAgentMessagePresent reports whether the task history contains a
-// message that (a) carries our marker and (b) is stored with the agent role.
-// It tolerates the integer-enum (2), string ("agent"), and proto-name
-// ("ROLE_AGENT") encodings used by different A2A bindings.
-func injectedAgentMessagePresent(body []byte, marker string) bool {
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return false
-	}
-	result, _ := m["result"].(map[string]interface{})
-	if result == nil {
-		return false
-	}
-	history, _ := result["history"].([]interface{})
+type historyMarkerState int
+
+const (
+	historyMarkerAbsent historyMarkerState = iota
+	historyMarkerUser
+	historyMarkerUnknown
+	historyMarkerAgent
+)
+
+// classifyHistoryMarker determines how history stored the injected marker.
+func classifyHistoryMarker(history []interface{}, marker string) historyMarkerState {
+	state := historyMarkerAbsent
 	for _, item := range history {
-		msg, ok := item.(map[string]interface{})
-		if !ok || !isAgentRole(msg["role"]) {
+		raw, err := json.Marshal(item)
+		if err != nil || !containsAnyStr(string(raw), marker) {
 			continue
 		}
-		raw, _ := json.Marshal(msg)
-		if containsAnyStr(string(raw), marker) {
-			return true
+		msg, ok := item.(map[string]interface{})
+		if !ok {
+			state = historyMarkerUnknown
+			continue
+		}
+		switch {
+		case isAgentRole(msg["role"]):
+			return historyMarkerAgent
+		case isUserRole(msg["role"]):
+			if state == historyMarkerAbsent {
+				state = historyMarkerUser
+			}
+		default:
+			state = historyMarkerUnknown
 		}
 	}
-	return false
+	return state
 }
 
 // isAgentRole reports whether a JSON role value denotes the A2A agent role.
@@ -233,6 +274,17 @@ func isAgentRole(v interface{}) bool {
 		return r == 2
 	case string:
 		return strings.EqualFold(r, "agent") || strings.EqualFold(r, "ROLE_AGENT")
+	default:
+		return false
+	}
+}
+
+func isUserRole(v interface{}) bool {
+	switch r := v.(type) {
+	case float64:
+		return r == 1
+	case string:
+		return strings.EqualFold(r, "user") || strings.EqualFold(r, "ROLE_USER")
 	default:
 		return false
 	}
