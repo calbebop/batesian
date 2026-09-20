@@ -1,14 +1,8 @@
 name: Scorecard
 
-# OpenSSF Scorecard grades the repository's supply-chain security posture
-# (signed releases, SBOMs, dependency pinning, branch protection, SAST,
-# vulnerability scanning). Results are published so the README badge resolves,
-# and uploaded to the Security tab as SARIF.
-#
-# Note: with GitHub's classic Branch Protection, the Branch-Protection check
-# needs a fine-grained PAT to read the settings; without one that single check
-# is reported with reduced confidence. Every other check works with the default
-# token.
+# Publishes OpenSSF Scorecard results for the README badge and Security tab.
+# Classic branch-protection scoring may have reduced confidence without a
+# fine-grained PAT.
 
 on:
   push:
@@ -18,9 +12,7 @@ on:
   schedule:
     # Weekly, Monday 05:30 UTC.
     - cron: '30 5 * * 1'
-  # Manual trigger, matching every other scheduled workflow in this repo: a
-  # direct API call that works when event delivery is degraded (the
-  # 2026-08-06 Actions incident is the precedent documented in ci.yml).
+  # Manual fallback when event delivery is unavailable.
   workflow_dispatch:
 
 permissions: read-all

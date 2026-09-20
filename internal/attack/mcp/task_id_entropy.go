@@ -13,37 +13,10 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TaskIDEntropyExecutor collects task handles the server mints for task-
-// augmented calls and judges whether they meet the tasks extension's own
-// unguessability requirement (rule mcp-task-id-entropy-001).
-//
-// The 2026-07-28 revision moved tasks out of core into
-// io.modelcontextprotocol/tasks and deliberately DROPPED context binding:
-// its Security Considerations permit a server to treat task ids as bearer
-// tokens for stored state, provided they carry enough entropy:
-//
-//	"Servers MUST generate them with sufficient entropy that a third party
-//	 cannot enumerate or guess them."
-//
-// That MUST is what this rule measures, and it is why the cross-context
-// reads mcp-task-idor-001 performs on the core wire would be wrong here: a
-// conformant extension-era server answering a guessed handle is doing what
-// the spec allows. What is never permitted is an id a third party can guess.
-//
-// Two measurable failures, both from N samples (spec has no "minimum
-// samples"; five distinguish the classes below while keeping cost bounded):
-//
-//   - Sequential or uniformly stepped numeric handles -> CONFIRMED high.
-//     The next id is demonstrated, not estimated.
-//   - Sub-threshold alphabet entropy -> CONFIRMED medium. Bits are counted
-//     as length * log2(distinct characters) over the observed set, which is
-//     an upper bound on real entropy per id; falling under 64 bits violates
-//     a bearer-token MUST even before prediction. Exotic-but-fine formats
-//     (UUID hex at ~122 bits, nanoid at ~120) clear it comfortably.
-//
-// SAFETY mirrors mcp-task-idor-001 exactly: only tools whose annotations
-// explicitly and consistently declare readOnlyHint true and that declare
-// taskSupport optional/required are invoked; their arguments are inert.
+// TaskIDEntropyExecutor checks 2026-07-28 task-extension handles for sequential
+// values or less than 64 bits of estimated upper-bound alphabet search space. The
+// extension permits task IDs as bearer capabilities but requires them to resist
+// guessing. Only task-capable, explicitly read-only tools receive inert inputs.
 type TaskIDEntropyExecutor struct {
 	rule attack.RuleContext
 }
@@ -195,15 +168,10 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 
 var teNumericOnly = regexp.MustCompile(`^[0-9]+$`)
 
-// entropyThresholdBits is where "a third party cannot guess" becomes
-// measurable: at or above 64 bits, brute enumeration is out of reach of any
-// realistic window; below it, offline guessing is a spreadsheet exercise.
+// entropyThresholdBits is the minimum accepted bearer-handle search space.
 const entropyThresholdBits = 64
 
-// teGradeHandles runs the two analyses and returns every failure found. The
-// checks are independent: a timestamp-stamped id with a short random tail
-// clears the sequence check but fails the alphabet bar, and both readings
-// belong in one report rather than short-circuiting each other.
+// teGradeHandles reports sequence and entropy failures independently.
 func (e *TaskIDEntropyExecutor) teGradeHandles(endpoint, tool string, ids []string) []attack.Finding {
 	var findings []attack.Finding
 
@@ -250,10 +218,8 @@ func teConstantStep(ids []string) (int64, bool) {
 	return step, true
 }
 
-// teAlphabetBits upper-bounds per-id entropy as length * log2(alphabet),
-// using the longest observed id and every distinct character seen anywhere.
-// This is deliberately generous to the server: a server that adds hidden
-// randomness beyond what any sample shows only makes real entropy higher.
+// teAlphabetBits uses the longest ID and full observed alphabet for a generous
+// upper bound on per-ID entropy.
 func teAlphabetBits(ids []string) (bits float64, alphabet string, maxLen int) {
 	set := map[rune]bool{}
 	maxLen = 0

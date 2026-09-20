@@ -121,8 +121,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		target = cfg.Target
 	}
-	// The flag carries a default, so this is the same sentinel problem as
-	// --proxy: an empty value cannot say "not passed".
+	// Cobra's default cannot distinguish an omitted flag from explicit "table".
 	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
 	format, err := report.ParseFormat(outputFmt)
 	if err != nil {
@@ -453,26 +452,9 @@ func buildPrincipals(cfgPrincipals []config.PrincipalConfig, flags []string) ([]
 	return out, nil
 }
 
-// parsePrincipalFlag parses a --principal value of the form
-// "name=tenant-a,token=eyJ...,tenant=A,header=X-Tenant-Id:A" into an
-// attackpkg.Principal. Recognized keys are name, token, tenant and header; an
-// unknown key is an error.
-//
-// header= is repeatable and each occurrence adds one entry, so a routing header
-// does not need a second level of delimiters inside a comma-separated value. The
-// value keeps everything after the first colon, which is what lets a header carry
-// a URL.
-//
-// A principal's headers were reachable from the config file but not from this
-// flag, even though five multi-principal A2A rules send them. Multi-tenant
-// deployments commonly resolve the tenant at a gateway and pass it downstream in a
-// header, so without this the CLI could not describe the identities it was asked
-// to compare. Measured against an agent that scopes tasks by X-Tenant-Id and
-// isolates them correctly: two false-positive cross-tenant findings from the flag
-// form, none from the equivalent config file.
-//
-// One shape still needs the config file: a header value containing a comma, since
-// the comma separates segments here.
+// parsePrincipalFlag parses comma-separated name, token, tenant, and repeatable
+// header fields. Header values may contain colons; values containing commas must
+// use the config file.
 func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 	var p attackpkg.Principal
 	for _, part := range strings.Split(raw, ",") {
@@ -552,11 +534,7 @@ func effectiveTimeout(flagChanged bool, flagVal, cfgVal int) int {
 	return flagVal
 }
 
-// effectiveOutput resolves --output from the flag and the config file. The flag
-// carries a default ("table"), so its value can never distinguish "not passed"
-// from "explicitly table" and the config file's documented, validated output
-// field could never apply; the flag therefore wins only when it was actually
-// passed, the same treatment --proxy got for the same sentinel problem.
+// effectiveOutput lets an explicit flag override the configured format.
 func effectiveOutput(flagChanged bool, flagVal, cfgVal string) string {
 	if flagChanged {
 		return flagVal
@@ -567,10 +545,7 @@ func effectiveOutput(flagChanged bool, flagVal, cfgVal string) string {
 	return flagVal
 }
 
-// effectiveSkipTLS resolves --skip-tls from the flag and config. An explicitly-set
-// flag always wins, so `--skip-tls=false` overrides a config `skipTLS: true`
-// instead of being masked by the false-is-default sentinel; otherwise the config
-// value is used.
+// effectiveSkipTLS lets an explicit flag, including false, override the config.
 func effectiveSkipTLS(flagChanged, flagVal, cfgVal bool) bool {
 	if flagChanged {
 		return flagVal
@@ -633,33 +608,9 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 	return tok.AccessToken, nil
 }
 
-// printDryRunPlan writes the request plan captured during a dry run. Nothing was
-// sent; this is the preview an operator reviews before authorizing a real scan.
-// Requests are grouped by the rule that issued them, in execution order.
-//
-// The plan is an approximation, and it diverges in both directions, so it says so
-// rather than presenting a count as fact. Measured against
-// testdata/mcp_unauth_resources_server.py, 344 recorded against 221 actually sent:
-//
-//   - Too many endpoint probes. No candidate endpoint can answer in a dry run, so
-//     every endpoint-discovery walk runs to exhaustion. The real scan stops at the
-//     first endpoint that responds, so it contacted /mcp and never touched /mcp/api
-//     or /mcp/mcp at all. The fallback attempts are marked, since those are the
-//     ones a real scan mostly skips; the first attempt in each walk is not marked
-//     because it is the one that goes out.
-//   - Too few follow-ups. A rule that branches on response content cannot proceed
-//     past that branch, so its later requests never appear. The real scan sent 92
-//     POSTs to /mcp where the plan records 58.
-//
-// The exhaustive recording is deliberately kept: over-showing endpoint probes is
-// the safe bias for a review, and the alternative was measured. Making the
-// synthetic response a valid JSON-RPC result envelope, so acceptance-gated walks
-// short-circuit like they do live, brought the total closer (202 against 221) but
-// silently dropped 32 requests to /mcp/a2a and /mcp/a2a/jsonrpc that a real scan
-// does send. A plan used to authorize a scan must not hide traffic.
-//
-// The host list is exact, which is the part an operator authorizes on. Only the
-// counts are approximate.
+// printDryRunPlan writes requests grouped by rule. Hosts are exact, but request
+// counts are approximate: discovery records fallback paths while response-driven
+// follow-ups cannot be expanded. Keeping all candidate paths avoids hiding traffic.
 func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 	reqs := rec.Requests()
 	fmt.Fprintf(out, "\nDry run: nothing was sent. Planned requests against %s (%d recorded, see the notes below):\n\n",
@@ -705,18 +656,7 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 	fmt.Fprintln(out, "    callbacks) cannot be expanded here, so a real scan sends more than this.")
 }
 
-// endpointCandidateProbes marks the recorded requests that are FALLBACK attempts in
-// an endpoint-discovery walk: the same rule sending the same method and body to a
-// further URL after an earlier one.
-//
-// Only the attempts after the first are marked, because the first is the one a real
-// scan sends. Marking the whole group would flag 97% of a typical plan and imply
-// that all of it is skipped, when in fact one probe per group goes out.
-//
-// This is derived from what was recorded rather than from any change in behaviour,
-// so the plan still lists every candidate. It exists because these entries are the
-// ones a real scan mostly does not send, and an unmarked plan invites an operator to
-// authorize traffic to paths that will never be contacted.
+// endpointCandidateProbes marks every repeated endpoint probe after the first.
 func endpointCandidateProbes(reqs []attackpkg.RecordedRequest) map[int]bool {
 	type probeKey struct{ rule, method, body string }
 	urlsFor := map[probeKey]map[string]bool{}
@@ -825,11 +765,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 			findings = append(findings, jsonFinding{
 				RuleID:   f.RuleID,
 				RuleName: f.RuleName,
-				// Canonical, matching the summary buckets and SARIF output:
-				// a finding carrying "Critical" used to serialize as
-				// "Critical" while being counted under "critical" in the
-				// same document. Unknown severities fall back to the raw
-				// string rather than collapsing to empty.
+				// Match summary and SARIF spelling without discarding unknown values.
 				Severity:    severity.CanonicalOrRaw(f.Severity),
 				Confidence:  confidence,
 				Title:       f.Title,
@@ -863,11 +799,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 	}
 }
 
-// buildSummary counts findings into the canonical severity buckets. An
-// "unknown" bucket accounts for findings whose severity is not one of the
-// known values, so the buckets always sum to total - executors set severity
-// as a plain string, and a value nothing validates used to be counted in
-// total while vanishing from every bucket.
+// buildSummary uses an unknown bucket so severity totals remain complete.
 func buildSummary(results []engine.RunResult) map[string]int {
 	total := engine.TotalFindings(results)
 	bySev := engine.FindingsBySeverity(results)

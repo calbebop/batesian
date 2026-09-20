@@ -1,24 +1,12 @@
-// Package severity is the single source of truth for finding severities: which
-// values are legal, how they order, and how they map onto the numbers other
-// formats want.
-//
-// It exists because three places encoded that knowledge independently and had
-// already drifted. internal/engine ranked severities for coalescing and
-// lowercased its input; internal/report scored them for SARIF and did not; the
-// table printer carried its own inline ordering. So "Critical" ranked as the worst
-// severity when two findings were merged, scored 1.0 (the value meaning "least
-// severe") in SARIF, and was omitted from the table entirely while still being
-// counted in its header.
+// Package severity defines valid finding severities, ordering, and output scores.
 package severity
 
 import "strings"
 
-// ordered lists every legal severity, worst first. This order is the report's
-// grouping order and the basis of Rank.
+// ordered lists legal severities from worst to least severe.
 var ordered = []string{"critical", "high", "medium", "low", "info"}
 
-// sarifScore maps a severity onto GitHub's security-severity tag, a CVSS-like
-// number it uses to bucket findings.
+// sarifScore maps severities to GitHub security-severity values.
 var sarifScore = map[string]string{
 	"critical": "9.5",
 	"high":     "7.5",
@@ -34,8 +22,7 @@ func Ordered() []string {
 	return out
 }
 
-// Canonical folds a severity to its legal spelling, or returns "" when the value
-// is not a severity at all. Callers that must not lose data check for "".
+// Canonical returns the normalized severity, or "" for an unknown value.
 func Canonical(s string) string {
 	folded := strings.ToLower(strings.TrimSpace(s))
 	for _, k := range ordered {
@@ -49,9 +36,7 @@ func Canonical(s string) string {
 // Valid reports whether s names a severity, ignoring case and surrounding space.
 func Valid(s string) bool { return Canonical(s) != "" }
 
-// CanonicalOrRaw returns Canonical(s), or s verbatim when it names no known
-// severity - for output sites that must not collapse an unrecognized value
-// to the empty string.
+// CanonicalOrRaw preserves unknown severity values for output.
 func CanonicalOrRaw(s string) string {
 	if c := Canonical(s); c != "" {
 		return c
@@ -59,9 +44,7 @@ func CanonicalOrRaw(s string) string {
 	return s
 }
 
-// Rank orders severities for comparison, higher being worse. An unrecognized
-// value ranks below every legal one rather than tying with "info", so a typo can
-// never win a coalescing contest against a real severity.
+// Rank orders severities with higher values being worse. Unknown values rank 0.
 func Rank(s string) int {
 	c := Canonical(s)
 	if c == "" {
@@ -75,9 +58,7 @@ func Rank(s string) int {
 	return 0
 }
 
-// SARIFScore returns the security-severity value for s. An unrecognized severity
-// gets the lowest score, because inventing a high one for a value we do not
-// understand would overstate it.
+// SARIFScore returns the security-severity value for s, defaulting to 1.0.
 func SARIFScore(s string) string {
 	if v, ok := sarifScore[Canonical(s)]; ok {
 		return v

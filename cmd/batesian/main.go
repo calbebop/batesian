@@ -11,8 +11,7 @@ import (
 	"github.com/calbebop/batesian/internal/cli"
 )
 
-// Version variables are injected at build time by goreleaser via -ldflags.
-// Defaults make `go run ./cmd/batesian` display useful information in development.
+// Release builds inject version metadata with -ldflags.
 var (
 	version = "dev"
 	commit  = "none"
@@ -22,12 +21,7 @@ var (
 func main() {
 	cli.SetVersion(version, commit, date)
 
-	// Interrupt and SIGTERM cancel the context cobra hands to every command,
-	// which propagates into executor HTTP requests and the engine's
-	// between-rules checks: a Ctrl+C now unwinds in-flight work and runs the
-	// cleanup defers (OOB listeners especially) instead of killing the
-	// process with ports still bound. The second signal restores immediate
-	// termination for an operator who wants out regardless.
+	// Signals cancel in-flight work so cleanup can run.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

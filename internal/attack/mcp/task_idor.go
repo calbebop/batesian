@@ -10,55 +10,15 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TaskIDORExecutor tests whether MCP tasks are bound to the authorization
-// context that created them (rule mcp-task-idor-001).
+// TaskIDORExecutor checks whether 2025-11-25 durable tasks are scoped to their
+// creating authorization context. It tests metadata, result, and list access and
+// invokes only task-capable tools explicitly marked read-only.
 //
-// MCP 2025-11-25 added durable tasks: a task-augmented tools/call returns a
-// taskId, and the caller later reads state with tasks/get and the underlying
-// tool output with tasks/result. The spec is explicit that these are scoped:
-// "receivers MUST reject tasks/get, tasks/result, and tasks/cancel requests for
-// tasks that do not belong to the same authorization context as the requestor."
-//
-// Two failures are reported. Reading another context's task metadata discloses
-// status, timing and status messages. Reading its result discloses the actual
-// tool output, which is the payload the task existed to produce.
-//
-// SAFETY: creating a task requires invoking a real tool, which no other rule in
-// this package does (mcp-tools-unauth-001 deliberately calls a non-existent tool
-// so nothing executes). To bound that, the rule only invokes a task-capable tool
-// whose annotations explicitly and consistently declare it read-only, and
-// skips entirely when no such tool exists.
-//
-// Tasks are marked experimental in 2025-11-25, so this rule is version-scoped.
-//
-// DO NOT PORT THIS CLAIM TO THE 2026-07-28 TASKS EXTENSION. In 2026-07-28 tasks
-// left the core spec for extension io.modelcontextprotocol/tasks, whose normative
-// text lives in the separate modelcontextprotocol/ext-tasks repository and releases
-// independently. That extension deliberately DROPPED the requirement this rule
-// tests. Its Security Considerations read, in full on this point:
-//
-//	"Task ID unguessability. A server MAY use task IDs as bearer tokens for a
-//	server's stored state. Servers MUST generate them with sufficient entropy that
-//	a third party cannot enumerate or guess them."
-//
-// So on the extension wire a server is EXPLICITLY PERMITTED to treat a
-// high-entropy task ID as a capability, and answering tasks/get for anyone holding
-// one is conformant. Reporting that as an IDOR would accuse a compliant server.
-// The extension also removes tasks/result and tasks/list outright, so the two
-// stronger findings here have no wire to sit on, and its own text notes that
-// without tasks/list "a server cannot inadvertently leak the existence of one
-// caller's tasks to another".
-//
-// What IS testable on the extension wire is the entropy MUST above, which is a
-// different rule with a different oracle: predict the next task ID, committed
-// before observation, and compare byte-for-byte.
-//
-// The 2025-11-25 requirement this rule does test is also conditional, which is why
-// the anonymous-access discriminator below is not optional: "If context-binding is
-// available, receivers MUST reject tasks/get, tasks/result, and tasks/cancel
-// requests for tasks that do not belong to the same authorization context as the
-// requestor." A server with no authorization context is held to the entropy
-// requirement instead, not to this one.
+// This oracle does not apply to the 2026-07-28 tasks extension. That extension
+// permits high-entropy task IDs as bearer capabilities and removes tasks/result
+// and tasks/list; mcp-task-id-entropy-001 covers its requirement instead. Because
+// 2025-11-25 context binding is conditional, an anonymous control must first
+// establish that the server enforces an authorization boundary.
 type TaskIDORExecutor struct {
 	rule attack.RuleContext
 }
@@ -86,21 +46,13 @@ type safeTool struct {
 	args map[string]interface{}
 }
 
-// authEvidence records what the discriminator established about the target's
-// authentication, so a finding describes the boundary it actually measured rather
-// than the one the rule originally assumed. enforcedOn names the surface a
-// credential is required for; anonProbe is the single anonymous request that
-// demonstrated it.
+// authEvidence describes the authentication boundary proven by the control.
 type authEvidence struct {
 	enforcedOn string
 	anonProbe  string
 }
 
-// taskPrincipal is one identity the rule acts as. Headers are carried alongside the
-// token because a multi-tenant deployment commonly resolves the tenant at a gateway
-// from a header, so two identities can differ by header and share a token. Ignoring
-// them collapsed such a pair into one identity, which is how the same-credential
-// false positive below could arise even from a correctly configured scan.
+// taskPrincipal includes headers because gateways may use them to resolve tenants.
 type taskPrincipal struct {
 	name    string
 	token   string
@@ -110,19 +62,8 @@ type taskPrincipal struct {
 // anonymous is the no-credential principal used by the discriminator.
 var anonymousPrincipal = taskPrincipal{name: "anonymous"}
 
-// taskPrincipals resolves the two identities this rule needs.
-//
-// It requires two DISTINCT credentials and reports not tested otherwise. The
-// requirement under test is "receivers MUST bind tasks to said [authorization]
-// context", so crossing it needs two contexts. The rule used to fall back to
-// opts.Token for both identities and run anyway: two sessions of the same credential
-// then satisfied the oracle, and a plain --token scan of a server that binds tasks to
-// the authorization context exactly as the spec requires reported an IDOR at high and
-// two more at critical. Session ids are not authorization contexts, so a server that
-// declines to additionally bind to the session is not in violation.
-//
-// Two identities differing only by header are still two contexts, so distinctness is
-// judged on the credential as sent, not on the token alone.
+// taskPrincipals requires two distinct credentials; session IDs are not
+// authorization contexts. Headers participate in credential identity.
 func taskPrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 	if len(opts.Principals) < 2 {
 		return a, b, fmt.Errorf("%w: this rule reads one authorization context's task as another "+
@@ -153,18 +94,13 @@ func sameHeaders(a, b map[string]string) bool {
 	return true
 }
 
-// taskPremise is why one of this rule's preconditions did or did not hold.
-//
-// The distinction is the whole difference between "this server has no task surface"
-// and "we could not find out". Both used to return clean, so a server whose tools/list
-// was scope-gated, or whose task creation hit a 403 or a gateway error, was reported as
-// having sound task scoping without a single task ever existing.
+// taskPremise distinguishes success, an explicit negative response, and no verdict.
 type taskPremise int
 
 const (
 	// premiseMet: the precondition holds and the rule can continue.
 	premiseMet taskPremise = iota
-	// premiseAbsent: the feature genuinely is not here. Not applicable, so clean.
+	// premiseAbsent: the server explicitly refused or lacks the requested feature.
 	premiseAbsent
 	// premiseUndetermined: the probe returned no protocol-level verdict. Not tested.
 	premiseUndetermined
@@ -237,25 +173,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			attack.ErrInconclusive, princA.name, tool.name, sessA.Endpoint)
 	}
 
-	// Step 2: discriminator. This rule claims task reads are not bound to the
-	// creating authorization context, which presupposes there is an authorization
-	// context at all. A server that authenticates nothing is a different and more
-	// obvious failure, owned by mcp-tools-unauth-001, and must not be called an IDOR.
-	//
-	// "Authenticates nothing" has to be measured on the read surface too, not on
-	// creation alone. A server can leave a task-augmented tools/call open while
-	// gating tasks/get and tasks/result, and that gate is a real authorization
-	// boundary: an anonymous caller is refused, an authenticated one is not, and
-	// which tasks the authenticated one may read is exactly this rule's question.
-	// Suppressing on open creation alone hid that server completely.
-	// Each branch below records only what it actually observed, so no finding
-	// claims a probe that was skipped. The read probe runs only when creation was
-	// open, because a refused creation already proves a credential is required.
-	// Every branch records only what it observed. A control that produced no verdict
-	// stops the rule instead of being written down as a refusal: the evidence line
-	// "anonymous task creation: refused" used to be emitted whenever the anonymous
-	// create returned nothing, including when it failed in transport or hit a 429, so a
-	// finding asserted an authorization boundary the rule had not seen.
+	// Step 2: establish authentication on task creation or reads. An unanswered
+	// control is inconclusive, and a fully open surface belongs to the unauth rules.
 	auth := authEvidence{
 		enforcedOn: "the MCP endpoint",
 		anonProbe:  "anonymous initialize: refused",
@@ -290,12 +209,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			}
 		}
 	} else {
-		// The anonymous initialize itself returned no verdict. A refusal that
-		// was actually answered is exactly what the default anonProbe above
-		// records. An endpoint where nothing answered is not: the evidence line
-		// "anonymous initialize: refused" used to stand anyway, stamping an
-		// unobserved refusal into every finding this rule emitted - the same
-		// defect the branches inside this control were fixed for.
+		// Only an explicit refusal establishes the default authentication evidence.
 		var refusal handshakeRefusal
 		if !errors.As(anonErr, &refusal) {
 			return nil, fmt.Errorf("%w: the anonymous initialize control at %s returned no verdict "+
@@ -304,12 +218,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 	}
 
-	// Step 3: a second session, as principal B, tries to read A's task.
-	//
-	// No session-id comparison. Session ids are not authorization contexts, and
-	// requiring them to differ made the rule a silent no-op against every stateless
-	// deployment: those mint no Mcp-Session-Id, both ids were empty, and the rule
-	// returned clean without sending step 4 at all.
+	// Step 3: principal B opens a session. Session IDs are not auth contexts.
 	sessB, errB := e.initSession(ctx, client, vars.BaseURL, princB)
 	if errB != nil {
 		return nil, fmt.Errorf("%w: principal %s could not open a session at %s (%v), so its access "+
@@ -527,9 +436,7 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	})
-	// A listing this principal cannot read is not an absent task surface. It used to
-	// collapse into the same "no safe tool" verdict as an answered-but-empty listing,
-	// so a scope-gated tools/call reported task scoping sound with no task ever made.
+	// A refused listing is undetermined, not evidence that tasks are absent.
 	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
 		return safeTool{}, premiseUndetermined
 	}
@@ -591,18 +498,7 @@ func synthesizeArgs(schema map[string]interface{}, randID string) map[string]int
 	return args
 }
 
-// createTask issues a task-augmented tools/call and returns the created task id.
-//
-// The premise distinguishes a refusal, which the anonymous control reads as "a
-// credential is required here", from a probe that produced no verdict at all. Both
-// used to return an empty id, so a transport failure or a 429 on the anonymous control
-// was written into a finding's evidence as "anonymous task creation: refused".
-//
-// A refusal can arrive as a JSON-RPC error envelope at HTTP 200, the spec'd
-// refusal shape, and that is a real answer rather than a missing verdict. It
-// used to fall into the empty-taskId branch below, so a server that refused
-// creation politely suppressed the rule with "the anonymous control returned no
-// verdict"; getTask in this file already read the identical shape as a refusal.
+// createTask distinguishes protocol refusal from an unanswered task probe.
 func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, tool safeTool) (string, taskPremise) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -653,13 +549,7 @@ type taskState struct {
 	CreatedAt     string `json:"createdAt"`
 }
 
-// getTask reads a task as the given principal.
-//
-// probeAnswered means the task came back, probeRejected means the server refused (the
-// correctly-scoped outcome, a -32602 per spec), and probeInconclusive means the request
-// produced no verdict. The third used to be indistinguishable from a refusal, in both
-// directions: on the anonymous control it read as "reads are gated", and on the
-// cross-principal read it read as "the task is bound to its creating context".
+// getTask distinguishes a returned task, an explicit rejection, and no verdict.
 func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (taskState, probeVerdict) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",

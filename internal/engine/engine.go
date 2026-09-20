@@ -1,5 +1,4 @@
-// Package engine orchestrates rule loading and attack execution for the scan command.
-// It imports both the rules and attack packages, sitting above both in the dependency graph.
+// Package engine resolves and executes attack rules.
 package engine
 
 import (
@@ -9,9 +8,7 @@ import (
 	"strings"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
-	// Blank imports run each executor package's init(), which registers its
-	// attack types with the attack registry. Resolution then happens by
-	// lookup rather than a central switch statement.
+	// Register built-in executors through their init functions.
 	_ "github.com/calbebop/batesian/internal/attack/a2a"
 	_ "github.com/calbebop/batesian/internal/attack/mcp"
 	"github.com/calbebop/batesian/internal/rules"
@@ -32,10 +29,7 @@ type Engine struct {
 	opts attackpkg.Options
 }
 
-// New creates an Engine with the given execution options. The engine owns
-// one discovery cache per scan and injects it into the options it hands to
-// executors, so endpoint resolution happens once per target rather than once
-// per rule.
+// New creates an Engine with a scan-scoped discovery cache.
 func New(opts attackpkg.Options) *Engine {
 	if opts.Discovery == nil {
 		opts.Discovery = attackpkg.NewDiscoveryCache()
@@ -52,12 +46,8 @@ type planEntry struct {
 
 // Run executes a slice of rules against target and returns all results.
 //
-// Rules are resolved to executors, ordered so that producers of an artifact kind
-// run before its consumers (see orderPlan), then executed in that order against a
-// single shared Blackboard. Executors that implement attackpkg.ChainExecutor read
-// and write that blackboard so later rules can build on earlier findings; plain
-// executors are unaffected. Errors from individual rules are captured in
-// RunResult.Err rather than aborting the entire scan.
+// Producers run before consumers against a shared blackboard. Rule errors are
+// captured in RunResult instead of aborting the scan.
 func (e *Engine) Run(ctx context.Context, target string, rs []*rules.Rule) []RunResult {
 	plan := make([]planEntry, 0, len(rs))
 	for _, r := range rs {
@@ -81,9 +71,7 @@ func (e *Engine) Run(ctx context.Context, target string, rs []*rules.Rule) []Run
 	return results
 }
 
-// runOne executes a single plan entry and returns its RunResult.
-// A panic inside any executor is caught and surfaced as RunResult.Err so that
-// the rest of the scan can continue rather than crashing the process.
+// runOne catches executor panics so the remaining rules can continue.
 func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb *attackpkg.Blackboard) (result RunResult) {
 	r := entry.rule
 
@@ -128,18 +116,8 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	// A rule that could not reach a testable endpoint is recorded as skipped, not
 	// as a (misleading) clean result and not as an error.
 	if errors.Is(err, attackpkg.ErrInconclusive) {
-		// Executors may wrap ErrInconclusive with the reason the rule could not
-		// run. Surface that detail rather than discarding it: "not tested because
-		// your server speaks MCP 2026-07-28" is actionable, while a bare "could
-		// not reach a testable endpoint" invites the operator to assume a network
-		// problem.
-		//
-		// When a reason is supplied it REPLACES the generic sentence instead of
-		// being appended to it. Most reasons describe a target that was reached
-		// and then could not be assessed (an unsupported protocol revision, an
-		// absent agent card, a probe that established nothing after a successful
-		// handshake), so prefixing them with a reachability claim produced a
-		// message that contradicted itself.
+		// A specific reason replaces the generic reachability message because the
+		// target may have answered but remained untestable.
 		msg := "could not reach a testable endpoint"
 		if detail := inconclusiveDetail(err); detail != "" {
 			msg = "not tested: " + detail
@@ -157,13 +135,8 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	}
 }
 
-// orderPlan stably reorders entries so that any executor producing an artifact
-// kind runs before any executor that requires that kind. It uses Kahn's
-// algorithm over the producer->consumer edges implied by the executors'
-// attackpkg.Dependencies declarations. Entries that declare no dependencies keep
-// their original relative order. If a dependency cycle exists, the remaining
-// entries are appended in their original order (the chained executors tolerate a
-// partial blackboard, so a cycle degrades gracefully rather than deadlocking).
+// orderPlan stably places artifact producers before consumers. Cyclic entries
+// retain their original order and run with a partial blackboard.
 func orderPlan(plan []planEntry) []planEntry {
 	n := len(plan)
 	if n < 2 {
@@ -266,12 +239,7 @@ func TotalFindings(results []RunResult) int {
 	return n
 }
 
-// FindingsBySeverity groups findings by severity level, folded to canonical
-// (lowercase) spelling. The JSON summary buckets it by lowercase key, while the
-// table printer canonicalizes on its own end, so bucketing by raw f.Severity left
-// a capitalized severity ("High") in its own bucket and the summary count
-// disagreeing with the findings list. Canonical is idempotent, so a finding
-// already carrying a lowercase severity is unchanged.
+// FindingsBySeverity groups known severities canonically and unknown values under "".
 func FindingsBySeverity(results []RunResult) map[string][]attackpkg.Finding {
 	out := make(map[string][]attackpkg.Finding)
 	for _, r := range results {
@@ -282,10 +250,7 @@ func FindingsBySeverity(results []RunResult) map[string][]attackpkg.Finding {
 	return out
 }
 
-// inconclusiveDetail returns the reason an executor attached when wrapping
-// ErrInconclusive, or "" when it wrapped nothing. Executors wrap with
-// fmt.Errorf("%w: <reason>", attack.ErrInconclusive), so the reason is whatever
-// follows the sentinel's own message.
+// inconclusiveDetail extracts a reason appended to ErrInconclusive.
 func inconclusiveDetail(err error) string {
 	full := err.Error()
 	base := attackpkg.ErrInconclusive.Error()

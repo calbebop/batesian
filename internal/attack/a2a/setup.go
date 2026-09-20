@@ -6,22 +6,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// Eight A2A rules need a task before they can test anything: task IDOR, push SSRF,
-// session smuggling, context fixation, delegation integrity, multi-tenant
-// isolation, push binding, cross-principal cancel. Each of them used to return a
-// clean result when no task could be created, and "this agent does not leak tasks
-// across principals" and "the scan never got a task" are different claims.
-//
-// It went unnoticed because it needs an agent that is reachable AND enforces
-// authorization, and no fixture in testdata/ is one. Measured against an a2a-sdk
-// agent that requires a bearer token: with no credential three rules reported
-// clean, and with two configured principals whose tokens the agent rejected, eight
-// did. That is the shape of every correctly secured production deployment scanned
-// with the wrong credential, which is the worst place to be silently wrong.
-//
-// a2a-artifact-tamper-001 already reported this honestly, because PR #150 fixed it
-// there. This is the same fix for the rest, with one shared judgement rather than
-// eight copies.
+// Task-dependent rules are inconclusive when setup is refused or unanswered.
+// Explicitly unsupported task surfaces remain not applicable.
 
 // Ranked because a task-creating attempt is made on more than one wire, and the
 // wires can fail differently: v1.0 SendMessage may be absent while v0.3
@@ -36,8 +22,7 @@ const (
 	setupFeatureAbsent
 	// setupOtherRefusal is any other refusal, or an answer carrying no task.
 	setupOtherRefusal
-	// setupAuthRefused is an authorization refusal, which is the case that used to
-	// be read as clean.
+	// setupAuthRefused means authorization blocked the setup probe.
 	setupAuthRefused
 )
 
@@ -76,14 +61,9 @@ func (s setupObservation) err() error {
 
 // errIfAuthRefused is err() narrowed to authorization refusals.
 //
-// Two rules send a request the agent is SUPPOSED to reject, so for them a non-auth
-// rejection is the secure behaviour they test for rather than a failure to test:
-// a2a-session-smuggle-001 sends a message claiming the agent role, which the
-// specification requires the server to refuse, and a2a-context-fixation-001 sends a
-// client-chosen contextId, which a server is right to refuse outright. Mapping
-// those refusals to "not tested" would take a genuine pass away from every
-// well-behaved agent. An authorization refusal is different in kind: it says nothing
-// about the behaviour under test, because the request never reached it.
+// For session smuggling and context fixation, a non-auth rejection prevents the
+// unsafe state and is clean. An auth refusal never exercises the behavior and is
+// therefore inconclusive.
 func (s setupObservation) errIfAuthRefused() error {
 	if s.rank != setupAuthRefused {
 		return nil

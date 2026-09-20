@@ -1,12 +1,5 @@
-// Package sse parses Server-Sent Events streams.
-//
-// MCP Streamable HTTP carries JSON-RPC responses over SSE. An SSE event's
-// payload may span several "data:" lines, which the client joins with a newline
-// (HTML "Interpreting an event stream"). Returning only the first "data:" line
-// (as a naive reader does) captures a fragment when a server chunks a response
-// that way, so the payload fails to parse and a rule silently reports clean.
-// This package implements the spec-correct join so the first complete event is
-// returned intact.
+// Package sse parses Server-Sent Events, including multiline data payloads used
+// by MCP Streamable HTTP.
 package sse
 
 import (
@@ -20,9 +13,7 @@ import (
 // stream, matching the body cap used by the scan and recon clients.
 const MaxBytes int64 = 32 << 20
 
-// defaultLineBytes caps a single line when no limit is supplied. initialLineBytes
-// is what the scanner starts with; it grows from there on demand, so the cap
-// costs nothing until a line actually approaches it.
+// defaultLineBytes caps a line; initialLineBytes is the starting allocation.
 const (
 	defaultLineBytes = 32 << 20
 	initialLineBytes = 64 << 10
@@ -46,24 +37,19 @@ type Reader struct {
 	hasData bool
 }
 
-// NewReader returns a Reader over r with the default 1 MB per-line buffer.
+// NewReader returns a Reader over r with the default 32 MiB line limit.
 func NewReader(r io.Reader) *Reader {
 	return NewReaderSize(r, defaultLineBytes)
 }
 
-// NewReaderSize returns a Reader over r whose per-line buffer grows to maxLine
-// bytes; a longer line ends the stream with bufio.ErrTooLong. The total stream
-// length is unbounded, so callers that read to completion should bound the
-// reader themselves (a context deadline, or io.LimitReader via FirstData).
+// NewReaderSize returns a Reader whose line buffer grows to maxLine bytes.
+// Callers reading to completion must bound the total stream separately.
 func NewReaderSize(r io.Reader, maxLine int) *Reader {
 	if maxLine <= 0 {
 		maxLine = defaultLineBytes
 	}
 	sc := bufio.NewScanner(r)
-	// Start small and let the scanner grow to maxLine only if a line needs it.
-	// Allocating maxLine up front made the ceiling cost real on every read: an
-	// SSE reply is the normal case for MCP streamable HTTP, so a large ceiling
-	// would allocate that much per response even for a few hundred bytes of data.
+	// Grow on demand instead of allocating maxLine for every response.
 	initial := initialLineBytes
 	if maxLine < initial {
 		initial = maxLine
@@ -74,10 +60,7 @@ func NewReaderSize(r io.Reader, maxLine int) *Reader {
 
 // Next returns the next event that carries a non-empty data payload.
 //
-// It returns io.EOF when the stream is exhausted and another error (for example
-// bufio.ErrTooLong) when a line could not be read. A trailing block with no
-// terminating blank line is still dispatched at EOF, so servers that omit the
-// final blank line are handled.
+// It returns io.EOF when exhausted and dispatches a trailing unterminated block.
 func (r *Reader) Next() (Event, error) {
 	for {
 		if !r.sc.Scan() {
@@ -114,9 +97,7 @@ func (r *Reader) Next() (Event, error) {
 	}
 }
 
-// flush materializes and clears the buffered event. It returns the event and
-// true only when the block carried a non-empty joined payload; otherwise it
-// resets the buffer and returns false.
+// flush returns a non-empty buffered event and resets the buffer.
 func (r *Reader) flush() (Event, bool) {
 	defer r.reset()
 	if !r.hasData {
@@ -148,12 +129,8 @@ func parseField(line string) (name, value string) {
 	return line, ""
 }
 
-// FirstData returns the joined payload of the first event that carries data, or
-// nil when the stream ends with no such event. It reads at most max bytes and
-// stops at the first event without draining the rest of the stream, which keeps
-// a long-lived SSE connection from blocking. A non-nil error means the stream
-// could not be read (for example a single line overrunning max); callers that
-// treat "no payload" as a clean result should ignore it.
+// FirstData returns the first data payload while reading at most max bytes. It
+// stops without draining the stream and returns nil when no payload exists.
 func FirstData(r io.Reader, max int64) ([]byte, error) {
 	if max <= 0 {
 		max = MaxBytes
@@ -169,23 +146,13 @@ func FirstData(r io.Reader, max int64) ([]byte, error) {
 	return []byte(ev.Data), nil
 }
 
-// maxScannedEvents bounds how many events FirstMatching will look at. The byte
-// budget already bounds the read; this additionally bounds a stream that emits
-// many small non-matching events, so a keepalive loop cannot spin.
+// maxScannedEvents bounds streams with many small non-matching events.
 const maxScannedEvents = 64
 
-// FirstMatching returns the joined payload of the first event whose data
-// satisfies want, skipping events that do not. It reads at most max bytes and
-// stops as soon as one matches, without draining the rest of the stream.
-//
-// This exists because taking the FIRST data event is wrong for MCP Streamable
-// HTTP. The binding permits a server to send notifications and requests on the
-// POST response stream before the response itself, so a progress notification or
-// a data-bearing keepalive arriving first was read as the answer to the request.
-//
-// found is false when the stream ended with no matching event, which the caller
-// must not confuse with an empty answer. A non-nil error means the stream could
-// not be read.
+// FirstMatching returns the first payload accepted by want, reading at most max
+// bytes without draining the stream. MCP permits notifications and requests
+// before the response, so callers cannot assume the first event is the answer.
+// found is false when no match is found within the byte and event limits.
 func FirstMatching(r io.Reader, max int64, want func([]byte) bool) (data []byte, found bool, err error) {
 	if max <= 0 {
 		max = MaxBytes
@@ -210,22 +177,9 @@ func FirstMatching(r io.Reader, max int64, want func([]byte) bool) (data []byte,
 	return nil, false, nil
 }
 
-// IsJSONRPCResponse reports whether an SSE payload is a reply to a request rather
-// than a server-initiated notification or a keepalive. Pass it to FirstMatching.
-//
-// This lives here, in the transport package, because both consumers of SSE in this
-// repository carry JSON-RPC over it: the scan client in internal/attack and the
-// recon client in internal/protocol/mcp. Both took the first data event and both
-// were wrong in the same way, and a second copy of this judgement is how three
-// other predicates in this codebase drifted apart.
-//
-// A response carries "result" or "error". A notification carries "method" and no
-// "id", which is exactly what MCP Streamable HTTP allows a server to interleave on
-// the POST response stream. An "id" with neither result nor error is a
-// server-initiated request, also permitted, and also not the caller's answer.
-//
-// Unparseable data returns true: a server sending malformed JSON has answered, and
-// that is a result the caller should see rather than something to scan past.
+// IsJSONRPCResponse reports whether payload contains a JSON-RPC result or error.
+// Notifications and server requests return false. Malformed JSON returns true so
+// callers surface the invalid response instead of scanning past it.
 func IsJSONRPCResponse(payload []byte) bool {
 	var envelope struct {
 		Result json.RawMessage `json:"result"`

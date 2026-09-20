@@ -8,12 +8,7 @@ import (
 	"github.com/calbebop/batesian/internal/severity"
 )
 
-// vulnClass maps a rule ID to a coalescing class. Two rules in the SAME class
-// that both fire on the SAME target describe one compound failure rather than
-// two independent vulnerabilities, so reporting both inflates apparent impact.
-// Coalesce keeps the strongest finding in such a group and notes the rest as
-// subsumed. Rules absent from this table are never coalesced (each is its own
-// class), so this can only ever merge intentionally-overlapping rules.
+// vulnClass identifies rules that describe the same failure on one target.
 var vulnClass = map[string]string{
 	// A server that fails both JWT signature validation (token-replay) and
 	// audience binding (oauth-audience) is one broken token validator, not two
@@ -22,14 +17,8 @@ var vulnClass = map[string]string{
 	"mcp-oauth-audience-002": "mcp-token-validation",
 }
 
-// Coalesce merges findings from overlapping rules. It groups findings by
-// (vulnerability class, TargetURL); within any group that contains findings from
-// two or more DISTINCT rules, it keeps the highest-confidence/highest-severity
-// finding and drops the others, appending a note to the survivor that records
-// what it subsumed. Findings whose rule has no class are returned untouched.
-//
-// The returned slice is a shallow copy with per-result Findings rebuilt; the
-// input is not mutated.
+// Coalesce keeps the strongest finding for each class and target when distinct
+// rules overlap. It rebuilds affected results without mutating input findings.
 func Coalesce(results []RunResult) []RunResult {
 	type loc struct{ ri, fi int }
 
@@ -129,8 +118,5 @@ func confidenceLabel(c attackpkg.Confidence) string {
 	return string(c)
 }
 
-// severityRank defers to internal/severity so ranking, SARIF scoring and the
-// report's grouping order cannot disagree. This copy lowercased its input while
-// the SARIF copy did not, so "Critical" ranked as the worst severity here and as
-// the least severe there.
+// severityRank uses the shared severity ordering.
 func severityRank(s string) int { return severity.Rank(s) }

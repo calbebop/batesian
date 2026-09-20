@@ -5,42 +5,8 @@ import (
 	"strings"
 )
 
-// resultReferencesTask reports whether a JSON-RPC result really is the task
-// identified by taskID/contextID, by comparing the identifiers rather than
-// searching the body for text.
-//
-// Two rules used to decide this with
-// resp.ContainsAny(`"history"`, `"contextId"`, taskID, contextID). ContainsAny is
-// OR, and the first two needles are KEY NAMES present in virtually every A2A Task
-// envelope, so the check reduced to "the caller got some accepted result".
-//
-// That is a live false positive in a2a-delegation-integrity-001, which asks
-// whether principal B's continuation landed on principal A's task. A server with
-// tenant-scoped task stores does not error on an unknown taskId: it treats the
-// message as a new conversation and answers with a NEW task, whose envelope
-// contains "contextId" and therefore matched. The rule then emitted
-// high/ConfirmedExploit "A2A delegated task continued by the wrong principal",
-// with a chain step asserting the wrong principal advanced the delegated step,
-// about a server that had correctly refused to expose A's task.
-//
-// a2a-multitenant-isolation-001 carried the same needles. There the secure answer
-// to a get-by-id is a JSON-RPC error, which IsAccepted already filters, so it was
-// latent rather than live; it is corrected here because the flaw is identical.
-//
-// A Task carries id and contextId in both revisions. A result that is a Message
-// rather than a Task has neither, and returns false: whether it touched A's task
-// cannot be established from it.
-//
-// Both envelope shapes are read, and the first version of this helper knew only the
-// flat one, which cost a2a-delegation-integrity-001 its whole oracle on the v1.0
-// wire. In v1.0 a send-style reply is a SendMessageResponse, a protobuf oneof of
-// task or message, so protobuf JSON mapping renders the Task NESTED under
-// result.task. GetTask returns a bare Task, so it arrives flat. Reading only the
-// flat shape therefore worked for the read checks and silently failed for the
-// continuation check: measured against an a2a-sdk agent with no ownership check,
-// principal B's continuation landed on A's task, the agent confirmed it by
-// returning A's task under result.task, and the rule reported that the delegation
-// binding held.
+// resultReferencesTask matches task or context identifiers in bare Task results
+// and nested v1.0 SendMessageResponse tasks. Message results cannot prove access.
 func resultReferencesTask(body []byte, taskID, contextID string) bool {
 	// task carries the identifiers wherever it appears in the envelope.
 	type task struct {
@@ -75,21 +41,8 @@ func resultReferencesTask(body []byte, taskID, contextID string) bool {
 	return false
 }
 
-// countListedTasks returns how many tasks a task-list response actually carried.
-//
-// The oracle it replaced was ContainsAny(`"tasks"`, `"contextId"`, `"history"`) over
-// the raw body, which are KEY NAMES. A server that scopes its list correctly and
-// answers an anonymous caller with {"tasks":[],"totalSize":0} contains `"tasks"`, so
-// it matched, and a2a-task-idor-001 reported "server-wide task disclosure" at
-// critical/confirmed against a server that disclosed nothing at all. That is the same
-// vacuous-needle class as the checks corrected in PR #163 and PR #169, and the
-// highest-severity instance of it.
-//
-// Both shapes are counted: the documented {"tasks":[...]} envelope, and the bare
-// array some REST bindings return. An element counts only when it is an object with
-// at least one non-empty field, so an empty list, a list of empty objects, and a
-// bare count all fail to qualify. Something has to have been disclosed before this
-// says something was disclosed.
+// countListedTasks counts non-empty task objects in an envelope or bare array.
+// Empty collections, objects, and count-only responses do not prove disclosure.
 func countListedTasks(body []byte) int {
 	var envelope struct {
 		Tasks []map[string]json.RawMessage `json:"tasks"`
