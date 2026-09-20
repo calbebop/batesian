@@ -16,10 +16,14 @@ import (
 	"github.com/calbebop/batesian/internal/auth"
 )
 
-// performPKCEFlowForTest forwards to the test-only export that lets us pass a
-// trusted http.Client for the token exchange leg.
 func performPKCEFlowForTest(ctx context.Context, cfg auth.PKCEFlowConfig, client *http.Client) (*auth.TokenResponse, error) {
 	return auth.PerformPKCEFlowWithClient(ctx, cfg, client)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // TestPerformPKCEFlow_RejectsHTTPAuthURL verifies the public function refuses
@@ -59,15 +63,7 @@ func TestPerformPKCEFlow_RequiresClientID(t *testing.T) {
 	}
 }
 
-// TestPerformPKCEFlow_HappyPath drives the full flow using a fake authorization
-// server and a programmatic browser stand-in. The test:
-//  1. Spins up an httptest TLS server acting as both auth + token endpoint.
-//  2. Picks an unused local port for the redirect listener.
-//  3. Starts PerformPKCEFlow in a goroutine.
-//  4. Parses the printed authorization URL to capture state and challenge.
-//  5. Issues a callback to 127.0.0.1:<port>/callback with a fake code.
-//  6. The flow exchanges the code at the fake token endpoint.
-//  7. Asserts the access token comes back correctly.
+// TestPerformPKCEFlow_HappyPath completes consent through a local callback.
 func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	const fakeCode = "fake-auth-code-xyz"
 	const fakeAccess = "test-access-token"
@@ -77,13 +73,9 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 		seenCode     string
 	)
 
-	// Use NewTLSServer so AuthURL/TokenURL satisfy the https:// guard.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/authorize":
-			// In a real flow the server would render a consent screen here;
-			// the test simulates user approval by hitting the callback directly,
-			// so this branch is unused.
 			http.NotFound(w, r)
 		case "/token":
 			_ = r.ParseForm()
@@ -101,34 +93,22 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Pick an unused port so this test doesn't conflict with the default 9876.
 	port := pickFreePort(t)
 
-	// Channel to capture the authorization URL printed by the flow.
 	urlCh := make(chan string, 1)
 	logger := func(format string, args ...interface{}) {
 		msg := fmt.Sprintf(format, args...)
-		// The auth URL line starts with "  https://" (leading double-space prefix).
 		if strings.Contains(msg, "https://") && strings.Contains(msg, "code_challenge") {
 			urlCh <- strings.TrimSpace(msg)
 		}
 	}
 
-	// Drive the flow in a goroutine; we'll feed it a callback below.
 	type flowResult struct {
 		tok *auth.TokenResponse
 		err error
 	}
 	resultCh := make(chan flowResult, 1)
 	go func() {
-		// PerformPKCEFlow will hit srv's TLS endpoints; we need a CA-aware client
-		// for the token exchange. Since we cannot inject one through the public
-		// API, the test redirects the token URL to our trusted test server by
-		// stashing the cert in the system pool would be heavy. Instead we use
-		// the fact that NewTLSServer produces a self-signed cert and rely on
-		// the InsecureSkipVerify option below. For this test we use the helper
-		// performPKCEFlowForTest which exercises the same code path via a custom
-		// http.Client that trusts the test server.
 		tok, err := performPKCEFlowForTest(context.Background(), auth.PKCEFlowConfig{
 			AuthURL:         srv.URL + "/authorize",
 			TokenURL:        srv.URL + "/token",
@@ -142,7 +122,6 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 		resultCh <- flowResult{tok: tok, err: err}
 	}()
 
-	// Wait until the flow has printed the authorization URL.
 	var authURL string
 	select {
 	case authURL = <-urlCh:
@@ -168,7 +147,6 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 		t.Errorf("expected response_type=code, got %q", got)
 	}
 
-	// Simulate the user being redirected to the local callback after consenting.
 	cb := fmt.Sprintf("http://127.0.0.1:%d/callback?code=%s&state=%s", port, fakeCode, state)
 	resp, err := http.Get(cb)
 	if err != nil {
@@ -180,7 +158,6 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 		t.Fatalf("callback returned %d, expected 200", resp.StatusCode)
 	}
 
-	// Wait for the flow to complete the token exchange and return.
 	var res flowResult
 	select {
 	case res = <-resultCh:
@@ -194,12 +171,77 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 		t.Errorf("expected access_token=%q, got %q", fakeAccess, res.tok.AccessToken)
 	}
 
-	// Verify the token endpoint received the matching verifier and code.
 	if seenVerifier == "" {
 		t.Error("token endpoint did not see code_verifier")
 	}
 	if seenCode != fakeCode {
 		t.Errorf("token endpoint received code=%q, expected %q", seenCode, fakeCode)
+	}
+}
+
+func TestPerformPKCEFlowUsesRequestTimeoutAfterCallback(t *testing.T) {
+	tokenStarted := make(chan struct{}, 1)
+	tokenClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		tokenStarted <- struct{}{}
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+
+	port := pickFreePort(t)
+	urlCh := make(chan string, 1)
+	logger := func(format string, args ...interface{}) {
+		msg := fmt.Sprintf(format, args...)
+		if strings.Contains(msg, "code_challenge") {
+			urlCh <- strings.TrimSpace(msg)
+		}
+	}
+
+	resultCh := make(chan error, 1)
+	const requestTimeout = 50 * time.Millisecond
+	go func() {
+		_, err := performPKCEFlowForTest(context.Background(), auth.PKCEFlowConfig{
+			AuthURL:         "https://auth.example.com/authorize",
+			TokenURL:        "https://auth.example.com/token",
+			ClientID:        "client",
+			RedirectPort:    port,
+			OpenBrowser:     false,
+			Logger:          logger,
+			Timeout:         requestTimeout,
+			CallbackTimeout: 2 * time.Second,
+		}, tokenClient)
+		resultCh <- err
+	}()
+
+	var authURL string
+	select {
+	case authURL = <-urlCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flow did not print an authorization URL")
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing authorization URL: %v", err)
+	}
+	time.Sleep(2 * requestTimeout)
+	callback := fmt.Sprintf("http://127.0.0.1:%d/callback?code=test&state=%s", port, parsed.Query().Get("state"))
+	resp, err := http.Get(callback)
+	if err != nil {
+		t.Fatalf("hitting callback: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case err := <-resultCh:
+		if err == nil || (!strings.Contains(err.Error(), "Client.Timeout") && !strings.Contains(err.Error(), "context deadline exceeded")) {
+			t.Fatalf("expected token request timeout, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("token exchange ignored its request timeout")
+	}
+	select {
+	case <-tokenStarted:
+	default:
+		t.Fatal("flow timed out before the token exchange")
 	}
 }
 

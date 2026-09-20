@@ -50,6 +50,9 @@ type PKCEFlowConfig struct {
 	// confirmations). Pass io.Discard for silent operation. May be nil.
 	Logger func(format string, args ...interface{})
 
+	// Timeout is the HTTP timeout for the token exchange. Defaults to 15 seconds.
+	Timeout time.Duration
+
 	// CallbackTimeout is the maximum time to wait for the redirect callback.
 	// Defaults to 5 minutes when zero.
 	CallbackTimeout time.Duration
@@ -122,6 +125,7 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 		RedirectURI:  redirectURI,
 		Code:         code,
 		PKCEVerifier: pkce.Verifier,
+		Timeout:      cfg.Timeout,
 	}
 	var tok *TokenResponse
 	if tokenClient != nil {
