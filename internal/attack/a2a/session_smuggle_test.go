@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/attack/a2a"
@@ -131,6 +133,124 @@ func TestSessionSmuggle_V03OnlyFallback(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
+	}
+}
+
+func TestSessionSmuggle_PollsDelayedHistory(t *testing.T) {
+	var reads atomic.Int32
+	var stored map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		switch method {
+		case "SendMessage", "message/send":
+			params, _ := body["params"].(map[string]interface{})
+			stored, _ = params["message"].(map[string]interface{})
+			taskResult(w, id, "task-delayed", "ctx-delayed")
+		case "GetTask", "tasks/get":
+			params, _ := body["params"].(map[string]interface{})
+			taskID, _ := params["id"].(string)
+			history := []interface{}{}
+			if taskID == "task-delayed" && reads.Add(1) > 1 {
+				history = []interface{}{stored}
+			}
+			writeJSON(w, map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"id": taskID, "status": map[string]string{"state": "working"}, "history": history,
+				},
+			})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding after history polling, got %d: %+v", len(findings), findings)
+	}
+	if got := reads.Load(); got != 2 {
+		t.Fatalf("expected two task reads, got %d", got)
+	}
+}
+
+func TestSessionSmuggle_StopsWhenHistoryBecomesUnreadable(t *testing.T) {
+	var reads atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		switch method {
+		case "SendMessage", "message/send":
+			taskResult(w, id, "task-unreadable", "ctx-unreadable")
+		case "GetTask", "tasks/get":
+			params, _ := body["params"].(map[string]interface{})
+			if params["id"] != "task-unreadable" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			if reads.Add(1) == 1 {
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{"id": "task-unreadable", "history": []interface{}{}},
+				})
+				return
+			}
+			rpcErr(w, id, -32001, "Task not found")
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "could not be read back") {
+		t.Fatalf("expected an unreadable-history result, got %v", err)
+	}
+	if got := reads.Load(); got != 3 {
+		t.Fatalf("expected polling to stop after the failed read, got %d requests", got)
+	}
+}
+
+func TestSessionSmuggle_BoundsBlockedHistoryRead(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		method, _ := body["method"].(string)
+		id := body["id"]
+		switch method {
+		case "SendMessage", "message/send":
+			taskResult(w, id, "task-blocked", "ctx-blocked")
+		case "GetTask", "tasks/get":
+			params, _ := body["params"].(map[string]interface{})
+			if params["id"] != "task-blocked" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			<-r.Context().Done()
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	started := time.Now()
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("history polling exceeded its budget: %s", elapsed)
 	}
 }
 
@@ -352,13 +472,15 @@ func TestSessionSmuggle_UnusableHistoryIsNotTested(t *testing.T) {
 		name    string
 		include bool
 		history interface{}
+		retry   bool
 	}{
-		{name: "missing"},
-		{name: "null", include: true, history: nil},
+		{name: "missing", retry: true},
+		{name: "null", include: true, history: nil, retry: true},
 		{name: "wrong type", include: true, history: map[string]interface{}{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var reads atomic.Int32
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body := readBody(r)
 				id := body["id"]
@@ -367,6 +489,10 @@ func TestSessionSmuggle_UnusableHistoryIsNotTested(t *testing.T) {
 				case "SendMessage", "message/send":
 					taskResult(w, id, "task-no-history", "ctx-no-history")
 				case "GetTask", "tasks/get":
+					params, _ := body["params"].(map[string]interface{})
+					if params["id"] == "task-no-history" {
+						reads.Add(1)
+					}
 					result := map[string]interface{}{
 						"id": "task-no-history", "contextId": "ctx-no-history", "status": "working",
 					}
@@ -387,8 +513,15 @@ func TestSessionSmuggle_UnusableHistoryIsNotTested(t *testing.T) {
 			if !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("expected ErrInconclusive, got %v", err)
 			}
-			if !strings.Contains(err.Error(), "no usable history") {
-				t.Fatalf("reason should name unusable history; got: %v", err)
+			if got := reads.Load(); (tt.retry && got < 2) || (!tt.retry && got != 1) {
+				t.Fatalf("unexpected task read count: %d", got)
+			}
+			wantReason := "no usable history"
+			if tt.name == "wrong type" {
+				wantReason = "malformed history"
+			}
+			if !strings.Contains(err.Error(), wantReason) {
+				t.Fatalf("reason should name %s; got: %v", wantReason, err)
 			}
 		})
 	}
