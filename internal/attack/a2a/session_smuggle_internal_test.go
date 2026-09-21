@@ -1,6 +1,10 @@
 package a2a
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestClassifyHistoryMarker(t *testing.T) {
 	const marker = "probe-marker"
@@ -38,5 +42,13 @@ func TestClassifyHistoryMarker(t *testing.T) {
 				t.Fatalf("classifyHistoryMarker() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWaitForSessionHistoryStopsOnContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForSessionHistory(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForSessionHistory() error = %v, want context.Canceled", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -17,6 +18,12 @@ import (
 type SessionSmuggleExecutor struct {
 	rule attack.RuleContext
 }
+
+const (
+	sessionHistoryPollAttempts = 4
+	sessionHistoryPollBudget   = 2 * time.Second
+	sessionHistoryPollInterval = 250 * time.Millisecond
+)
 
 // NewSessionSmuggleExecutor creates an executor for the agent-role-injection attack type.
 func init() {
@@ -141,12 +148,28 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 
 	why := "the task history could not be read back"
 	if taskID != "" {
-		body, ok := readTaskHistory(ctx, client, ep, headers, taskID, vars)
-		if ok {
-			history, valid := taskHistory(body)
-			if !valid {
+		pollCtx, cancel := context.WithTimeout(ctx, sessionHistoryPollBudget)
+		defer cancel()
+		for attempt := 0; attempt < sessionHistoryPollAttempts; attempt++ {
+			body, ok := readTaskHistory(pollCtx, client, ep, headers, taskID, vars)
+			if !ok {
+				if err := ctx.Err(); err != nil {
+					return nil, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
+						attack.ErrInconclusive, ep, err)
+				}
+				why = "the task history could not be read back"
+				break
+			}
+
+			pollAgain := false
+			history, state := taskHistory(body)
+			switch state {
+			case taskHistoryMissing:
 				why = "the task response contained no usable history"
-			} else {
+				pollAgain = true
+			case taskHistoryMalformed:
+				why = "the task response contained malformed history"
+			case taskHistoryPresent:
 				switch classifyHistoryMarker(history, marker) {
 				case historyMarkerAgent:
 					confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(body, 400))
@@ -161,7 +184,18 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 				case historyMarkerAbsent:
 					// historyLength is a maximum, so omission does not prove non-persistence.
 					why = "the returned history did not include the injected marker"
+					pollAgain = true
 				}
+			}
+			if !pollAgain || attempt == sessionHistoryPollAttempts-1 {
+				break
+			}
+			if err := waitForSessionHistory(pollCtx); err != nil {
+				if parentErr := ctx.Err(); parentErr != nil {
+					return nil, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
+						attack.ErrInconclusive, ep, parentErr)
+				}
+				break
 			}
 		}
 	}
@@ -181,8 +215,27 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		attack.ErrInconclusive, ep, why)
 }
 
+func waitForSessionHistory(ctx context.Context) error {
+	timer := time.NewTimer(sessionHistoryPollInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+type taskHistoryState int
+
+const (
+	taskHistoryMissing taskHistoryState = iota
+	taskHistoryMalformed
+	taskHistoryPresent
+)
+
 // taskHistory extracts a flat or nested Task history array.
-func taskHistory(body []byte) ([]interface{}, bool) {
+func taskHistory(body []byte) ([]interface{}, taskHistoryState) {
 	var envelope struct {
 		Result *struct {
 			History json.RawMessage `json:"history"`
@@ -192,20 +245,20 @@ func taskHistory(body []byte) ([]interface{}, bool) {
 		} `json:"result"`
 	}
 	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
-		return nil, false
+		return nil, taskHistoryMalformed
 	}
 	raw := envelope.Result.History
 	if len(raw) == 0 && envelope.Result.Task != nil {
 		raw = envelope.Result.Task.History
 	}
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
-		return nil, false
+		return nil, taskHistoryMissing
 	}
 	var history []interface{}
 	if json.Unmarshal(raw, &history) != nil {
-		return nil, false
+		return nil, taskHistoryMalformed
 	}
-	return history, true
+	return history, taskHistoryPresent
 }
 
 // readTaskHistory fetches a task via GetTask or tasks/get. ok reports whether
