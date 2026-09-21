@@ -316,12 +316,7 @@ func TestSessionSmuggle_MessageReplyWithNoTaskMarkersIsNotTested(t *testing.T) {
 	}
 }
 
-// History readable and the marker absent: the server persisted nothing, which is a
-// real result and a clean one. The old switch had no branch for it, so it fell
-// through to the indicator and reported a high-severity finding about a server that
-// stores no history at all. Found by the fixture sweep, on two fixtures written for
-// entirely different rules.
-func TestSessionSmuggle_ReadableHistoryWithoutTheMarkerIsClean(t *testing.T) {
+func TestSessionSmuggle_EmptyHistoryIsNotTested(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -330,19 +325,124 @@ func TestSessionSmuggle_ReadableHistoryWithoutTheMarkerIsClean(t *testing.T) {
 		body := readBody(r)
 		id := body["id"]
 		w.Header().Set("Content-Type", "application/json")
-		// A minimal task, echoed back by tasks/get, carrying no history whatsoever.
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
-			"result": map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"},
+			"result": map[string]interface{}{
+				"id": "task-1", "contextId": "ctx-1", "status": "working",
+				"history": []interface{}{},
+			},
 		})
 	}))
 	defer ts.Close()
 
 	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("the history was readable, so this is a tested result: %v", err)
-	}
 	if len(findings) != 0 {
-		t.Errorf("nothing was persisted, so there is nothing to report; got %d: %+v", len(findings), findings)
+		t.Fatalf("empty history must not produce a finding, got %d: %+v", len(findings), findings)
+	}
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected ErrInconclusive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "did not include the injected marker") {
+		t.Fatalf("reason should name the absent marker; got: %v", err)
+	}
+}
+
+func TestSessionSmuggle_UnusableHistoryIsNotTested(t *testing.T) {
+	tests := []struct {
+		name    string
+		include bool
+		history interface{}
+	}{
+		{name: "missing"},
+		{name: "null", include: true, history: nil},
+		{name: "wrong type", include: true, history: map[string]interface{}{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := readBody(r)
+				id := body["id"]
+				method, _ := body["method"].(string)
+				switch method {
+				case "SendMessage", "message/send":
+					taskResult(w, id, "task-no-history", "ctx-no-history")
+				case "GetTask", "tasks/get":
+					result := map[string]interface{}{
+						"id": "task-no-history", "contextId": "ctx-no-history", "status": "working",
+					}
+					if tt.include {
+						result["history"] = tt.history
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 {
+				t.Fatalf("unusable history must not produce a finding, got %d: %+v", len(findings), findings)
+			}
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected ErrInconclusive, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "no usable history") {
+				t.Fatalf("reason should name unusable history; got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionSmuggle_MarkerWithUnknownRoleIsNotTested(t *testing.T) {
+	tests := []struct {
+		name        string
+		includeRole bool
+		role        interface{}
+	}{
+		{name: "missing role"},
+		{name: "unknown role", includeRole: true, role: "moderator"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var marker string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := readBody(r)
+				id := body["id"]
+				method, _ := body["method"].(string)
+				switch method {
+				case "SendMessage", "message/send":
+					marker = textOf(body)
+					taskResult(w, id, "task-unknown-role", "ctx-unknown-role")
+				case "GetTask", "tasks/get":
+					message := map[string]interface{}{
+						"parts": []interface{}{map[string]string{"text": marker}},
+					}
+					if tt.includeRole {
+						message["role"] = tt.role
+					}
+					writeJSON(w, map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{
+							"id": "task-unknown-role", "history": []interface{}{message},
+						},
+					})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 {
+				t.Fatalf("unknown role must not produce a finding, got %d: %+v", len(findings), findings)
+			}
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected ErrInconclusive, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "unrecognized role") {
+				t.Fatalf("reason should name the unrecognized role; got: %v", err)
+			}
+		})
 	}
 }
