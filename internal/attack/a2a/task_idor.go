@@ -8,31 +8,12 @@ import (
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
-// TaskIDORExecutor tests whether A2A task history is subject to broken
-// object-level authorization (IDOR / BOLA, CWE-639) - rule a2a-task-idor-001.
-//
-// IDOR is specifically an authorization failure: a caller can read an object
-// that belongs to a *different* principal. Detecting it requires distinguishing
-// that failure from a server that simply has no authentication at all (which is
-// a different, more obvious class and not what this rule claims). The executor
-// therefore uses an auth-enforcement discriminator:
-//
-//  1. Create a task as the authenticated owner (client carries opts.Token).
-//     No task id => not a responsive A2A server => skip.
-//  2. Probe whether creation requires auth: send the same request with NO
-//     credentials. If anonymous creation SUCCEEDS, the server enforces no auth
-//     at all - that is not IDOR, so the ownership finding is suppressed.
-//  3. Read the owner's task from an unauthenticated connection. Report IDOR only
-//     when creation WAS auth-gated (step 2 was rejected) yet the unauthenticated
-//     read still returns the task. That precisely demonstrates that the server
-//     authenticates creation but does not bind task lookup to the owner.
-//  4. Independently probe tasks/list (some bindings expose GET /v1/tasks) for
-//     unauthenticated server-wide task disclosure.
+// TaskIDORExecutor checks whether anonymous callers can read or list a task
+// created by an authenticated owner.
 type TaskIDORExecutor struct {
 	rule attack.RuleContext
 }
 
-// NewTaskIDORExecutor creates an executor for the a2a-task-idor attack type.
 func init() {
 	attack.Register("a2a-task-idor", func(rc attack.RuleContext) attack.Executor { return NewTaskIDORExecutor(rc) })
 }
@@ -47,93 +28,94 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	var findings []attack.Finding
 
 	authedClient := attack.NewHTTPClient(opts, vars)
-	// A separate Vars instance keeps the unauthenticated caller's RandID distinct,
-	// reinforcing that it is a different connection with no shared session state.
-	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
+	// Keep the anonymous client's state separate from the owner's.
+	anonVars := attack.NewVars(target, opts.OOBListenerURL)
+	unauthClient := attack.NewUnauthHTTPClient(opts, anonVars)
 
-	// sendCreate issues a SendMessage create request, trying the A2A v1.0 shape
-	// (PascalCase method, A2A-Version header, integer role) first and falling
-	// back to the v0.3 slash-method shape for older deployments. It reports
-	// whether the request was accepted (a task result was returned).
-	sendCreate := func(c *attack.HTTPClient) (resp *attack.Response, accepted bool) {
+	type createProbe struct {
+		response     *attack.Response
+		acceptedWire int
+		deniedWire   [2]bool
+	}
+	// Try v1.0, then v0.3. Keep the per-wire auth result for the owner check.
+	sendCreate := func(c *attack.HTTPClient, randID string) createProbe {
+		var probe createProbe
 		v1Headers := map[string]string{"A2A-Version": "1.0"}
 		resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-create-" + vars.RandID,
+			"id":      "batesian-create-" + randID,
 			"method":  "SendMessage",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
 					"role":      1, // USER
-					"parts":     []interface{}{map[string]string{"text": "batesian idor probe " + vars.RandID}},
-					"messageId": "batesian-" + vars.RandID,
+					"parts":     []interface{}{map[string]string{"text": "batesian idor probe " + randID}},
+					"messageId": "batesian-" + randID,
 				},
 			},
 		})
-		if err != nil || !resp.IsAccepted() {
-			resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "batesian-create-" + vars.RandID,
-				"method":  "message/send",
-				"params": map[string]interface{}{
-					"message": map[string]interface{}{
-						"role":      "user",
-						"parts":     []interface{}{map[string]string{"kind": "text", "text": "batesian idor probe " + vars.RandID}},
-						"messageId": "batesian-" + vars.RandID,
-					},
+		probe.response = resp
+		if err == nil && resp.IsAccepted() {
+			probe.acceptedWire = 1
+			return probe
+		}
+		probe.deniedWire[0] = resp != nil && isA2AAuthRejection(resp)
+		resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "batesian-create-" + randID,
+			"method":  "message/send",
+			"params": map[string]interface{}{
+				"message": map[string]interface{}{
+					"role":      "user",
+					"parts":     []interface{}{map[string]string{"kind": "text", "text": "batesian idor probe " + randID}},
+					"messageId": "batesian-" + randID,
 				},
-			})
+			},
+		})
+		probe.response = resp
+		if err == nil && resp.IsAccepted() {
+			probe.acceptedWire = 2
+			return probe
 		}
-		if err != nil || !resp.IsAccepted() {
-			return resp, false
-		}
-		return resp, true
+		probe.deniedWire[1] = resp != nil && isA2AAuthRejection(resp)
+		return probe
 	}
 
-	// Step 1: Create a probe task as the authenticated owner.
-	ownerResp, accepted := sendCreate(authedClient)
-	if !accepted {
-		// Not a responsive A2A server, or our credentials were rejected: there
-		// is no owner-created task to test ownership against.
-		f, restReached := e.probeTaskList(ctx, unauthClient, authedClient, vars)
-		if len(f) > 0 {
-			return f, nil
+	// Create an owner task to compare against anonymous responses.
+	owner := sendCreate(authedClient, vars.RandID)
+	if owner.acceptedWire == 0 {
+		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, "", "", false)
+		if list.unverified {
+			return nil, fmt.Errorf("%w: an anonymous task list answered, but no authenticated owner task was created to establish disclosure", attack.ErrInconclusive)
 		}
-		// JSON-RPC creation did not succeed and the REST task-list probe reached
-		// nothing: the rule could not be exercised against a testable endpoint.
-		if !ok && !restReached {
+		if !ok && !list.reached {
 			return nil, attack.ErrInconclusive
 		}
-		// It answered, and no task was created. Only an agent that does not implement
-		// task creation is a clean result here; a refused credential means this rule
-		// never got to look at the ownership boundary it reports on.
 		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
-			authedClient.PresentsCredential(endpoint), ownerResp).err()
+			authedClient.PresentsCredential(endpoint), owner.response).err()
 	}
-	taskID, contextID := extractTaskContext(ownerResp.Body)
+	taskID, contextID := extractTaskContext(owner.response.Body)
 	if taskID == "" {
-		f, restReached := e.probeTaskList(ctx, unauthClient, authedClient, vars)
-		if len(f) > 0 {
-			return f, nil
+		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, "", "", false)
+		if list.unverified {
+			return nil, fmt.Errorf("%w: an anonymous task list answered, but no authenticated owner task ID was returned to establish disclosure", attack.ErrInconclusive)
 		}
-		// JSON-RPC creation did not succeed and the REST task-list probe reached
-		// nothing: the rule could not be exercised against a testable endpoint.
-		if !ok && !restReached {
+		if !ok && !list.reached {
 			return nil, attack.ErrInconclusive
 		}
 		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
-			authedClient.PresentsCredential(endpoint), ownerResp).err()
+			authedClient.PresentsCredential(endpoint), owner.response).err()
 	}
 
-	// Step 2: Auth-enforcement discriminator. Attempt the same creation with no
-	// credentials. If anonymous creation SUCCEEDS, the server enforces no auth at
-	// all - reading a task back without credentials is then expected behaviour,
-	// not a broken-authorization (IDOR) finding. Suppress the ownership finding.
-	_, anonAccepted := sendCreate(unauthClient)
-	authEnforcedOnCreate := !anonAccepted
+	// Prove that the owner task's create method rejects anonymous callers.
+	anon := sendCreate(unauthClient, anonVars.RandID)
+	ownerProtected := authedClient.PresentsCredential(endpoint) && anon.acceptedWire == 0 &&
+		anon.deniedWire[owner.acceptedWire-1]
+	anonTaskID := ""
+	if anon.acceptedWire != 0 {
+		anonTaskID, _ = extractTaskContext(anon.response.Body)
+	}
 
-	// Step 3: Read the owner's task from an unauthenticated connection, trying the
-	// v1.0 GetTask shape first and falling back to the v0.3 tasks/get shape so the
-	// read works against either protocol version (mirrors sendCreate above).
+	// Try both task-read method names.
 	getParams := map[string]interface{}{"id": taskID, "historyLength": 10}
 	getResp, err := unauthClient.POST(ctx, endpoint, map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -149,19 +131,11 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			"params":  getParams,
 		})
 	}
-	// resultReferencesTask, not a text search. The needles used here were
-	// ContainsAny(`"history"`, `"contextId"`, taskID, contextID), and ContainsAny is
-	// OR: the first two are KEY NAMES carried by virtually every A2A Task envelope, so
-	// the check reduced to "the caller got some accepted result". A server that hides
-	// a task it will not disclose by answering with a redacted or empty Task stub
-	// matched on `"contextId"` alone, and the rule reported it at high/confirmed with
-	// the owner's real identifiers printed in the evidence as though they had come
-	// back. taskref.go removed this exact expression from two sibling rules; this was
-	// the third and last instance.
+	// Match task identifiers in the result, not arbitrary response text.
 	unauthReadSucceeded := err == nil && getResp.IsAccepted() &&
 		resultReferencesTask(getResp.Body, taskID, contextID)
 
-	if authEnforcedOnCreate && unauthReadSucceeded {
+	if ownerProtected && unauthReadSucceeded {
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -180,30 +154,24 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 
-	listFindings, _ := e.probeTaskList(ctx, unauthClient, authedClient, vars)
-	findings = append(findings, listFindings...)
+	list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
+	findings = append(findings, list.findings...)
+	if len(findings) == 0 && list.unverified {
+		return nil, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
+	}
 	return findings, nil
 }
 
-// probeTaskList probes the REST binding's task listing. An unauthenticated response
-// that lists tasks discloses every session's task IDs (and often history)
-// server-wide, which is the strongest form of the same broken-authorization failure.
-// It runs over the unauthenticated client and is independent of the per-task IDOR
-// check above.
-//
-// The base comes from the card, via resolveHTTPJSONBase, and not from a guess. This
-// probed vars.BaseURL+"/v1/tasks" and +"/tasks" only, while endpoint.go says plainly
-// that the REST prefix cannot be guessed: the deployment chooses it and chooses which
-// protocol version sits under it. A deployment mounting its HTTP+JSON binding
-// anywhere else 404'd both guesses, and the strongest finding this rule can emit was
-// silently never raised. The guessed paths are kept as a fallback, because an agent
-// that advertises no HTTP+JSON interface may still serve one, but the advertised base
-// is tried first and its own /v1/tasks and /tasks are what get probed.
+type taskListProbe struct {
+	findings   []attack.Finding
+	reached    bool
+	unverified bool
+}
+
+// probeTaskList compares an anonymous REST listing with the owner task ID.
 func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, cardClient *attack.HTTPClient,
-	vars attack.Vars) ([]attack.Finding, bool) {
-	// The card is fetched with the operator's credential because an agent may gate
-	// its own card; the LISTING probes below stay unauthenticated, which is the whole
-	// point of the check.
+	vars attack.Vars, ownerTaskID, anonTaskID string, ownerProtected bool) taskListProbe {
+	// Resolve the advertised REST base with owner credentials; list anonymously.
 	bases := []string{}
 	if restBase := resolveHTTPJSONBase(ctx, cardClient, vars.BaseURL); restBase != "" {
 		bases = append(bases, restBase)
@@ -215,37 +183,44 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 	for _, b := range bases {
 		listEndpoints = append(listEndpoints, endpoint.AppendPath(b, "/v1/tasks"), endpoint.AppendPath(b, "/tasks"))
 	}
-	reached := false
+	var probe taskListProbe
 	for _, le := range listEndpoints {
 		listResp, err := unauthClient.GET(ctx, le, nil)
 		if err == nil && listResp.StatusCode != 404 {
-			reached = true
+			probe.reached = true
 		}
-		// Count the tasks actually returned. The check here used to be
-		// ContainsAny(`"tasks"`, `"contextId"`, `"history"`) over the raw body, which
-		// are key names: a server that scopes its list correctly and answers an
-		// anonymous caller with {"tasks":[],"totalSize":0} matched, and this reported
-		// server-wide disclosure at critical/confirmed about a server that disclosed
-		// nothing. An empty list is the secure answer, not the finding.
 		if err == nil && listResp.IsSuccess() {
-			if n := countListedTasks(listResp.Body); n > 0 {
-				return []attack.Finding{{
-					RuleID:     e.rule.ID,
-					RuleName:   e.rule.Name,
-					Severity:   "critical",
-					Confidence: attack.ConfirmedExploit,
-					Title:      "A2A server exposes tasks/list without authentication - server-wide task disclosure",
-					Description: fmt.Sprintf(
-						"GET %s returned %d task(s) without authentication. This exposes task IDs, "+
-							"context IDs, and potentially conversation history for sessions the caller "+
-							"has no claim to.", le, n),
-					Evidence: fmt.Sprintf("HTTP %d from %s\ntasks returned to an unauthenticated caller: %d\n%s",
-						listResp.StatusCode, le, n, snippet(listResp.Body, 400)),
-					Remediation: e.rule.Remediation,
-					TargetURL:   le,
-				}}, reached
+			ids := listedTaskIDs(listResp.Body)
+			if len(ids) == 0 && countListedTasks(listResp.Body) > 0 {
+				probe.unverified = true
 			}
+			if !containsTaskID(ids, ownerTaskID) {
+				for _, id := range ids {
+					if id != anonTaskID {
+						probe.unverified = true
+					}
+				}
+				continue
+			}
+			if !ownerProtected {
+				probe.unverified = true
+				continue
+			}
+			probe.findings = []attack.Finding{{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "high",
+				Confidence: attack.ConfirmedExploit,
+				Title:      "A2A task list exposes an authenticated owner's task to an anonymous caller",
+				Description: fmt.Sprintf(
+					"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation but did not scope the task list to the caller.", le, ownerTaskID),
+				Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: %s",
+					listResp.StatusCode, le, ownerTaskID, snippet(listResp.Body, 400)),
+				Remediation: e.rule.Remediation,
+				TargetURL:   le,
+			}}
+			return probe
 		}
 	}
-	return nil, reached
+	return probe
 }

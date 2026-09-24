@@ -3,10 +3,12 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -272,9 +274,8 @@ func TestTaskIDOR_NoContextIdNullRead_NoFalsePositive(t *testing.T) {
 	}
 }
 
-// TestTaskIDOR_UnauthTaskList: the server exposes GET /v1/tasks without auth,
-// disclosing all tasks server-wide. The rule MUST fire (critical).
-func TestTaskIDOR_UnauthTaskList(t *testing.T) {
+// A populated list alone does not establish who owns its tasks.
+func TestTaskIDOR_ListWithoutOwnerTaskIsInconclusive(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/tasks" {
 			writeJSON(w, map[string]interface{}{
@@ -292,14 +293,131 @@ func TestTaskIDOR_UnauthTaskList(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unattributed list cannot prove disclosure; got findings=%+v err=%v", findings, err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected one tasks/list disclosure finding, got %d: %+v", len(findings), findings)
+}
+
+func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
+	tests := []struct {
+		name         string
+		anonCreate   bool
+		anonV1Error  bool
+		listedIDs    []string
+		wantFinding  bool
+		inconclusive bool
+	}{
+		{name: "anonymous task only", anonCreate: true, listedIDs: []string{"task-anon"}},
+		{name: "authenticated owner exposed", listedIDs: []string{"task-owner", "task-other"}, wantFinding: true},
+		{name: "empty list", listedIDs: nil},
+		{name: "other task has unknown owner", listedIDs: []string{"task-other"}, inconclusive: true},
+		{name: "anonymous task plus unknown task", anonCreate: true, listedIDs: []string{"task-anon", "task-other"}, inconclusive: true},
+		{name: "open creation cannot prove ownership", anonCreate: true, listedIDs: []string{"task-owner"}, inconclusive: true},
+		{name: "other wire rejection cannot prove ownership", anonV1Error: true, listedIDs: []string{"task-owner"}, inconclusive: true},
 	}
-	if findings[0].Severity != "critical" {
-		t.Errorf("want critical severity, got %q", findings[0].Severity)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					if r.URL.Path != "/v1/tasks" {
+						http.NotFound(w, r)
+						return
+					}
+					tasks := make([]map[string]string, 0, len(tc.listedIDs))
+					for _, id := range tc.listedIDs {
+						tasks = append(tasks, map[string]string{"id": id})
+					}
+					writeJSON(w, map[string]interface{}{"tasks": tasks})
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "SendMessage", "message/send":
+					if hasOwnerAuth(r) {
+						taskResult(w, id, "task-owner", "ctx-owner")
+					} else if tc.anonV1Error && method == "SendMessage" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+					} else if tc.anonCreate {
+						taskResult(w, id, "task-anon", "ctx-anon")
+					} else {
+						rpcErr(w, id, -32600, "authentication required")
+					}
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+			wantCount := 0
+			if tc.wantFinding {
+				wantCount = 1
+			}
+			if len(findings) != wantCount {
+				t.Fatalf("findings=%+v err=%v; want finding=%t", findings, err, tc.wantFinding)
+			}
+			if errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("err=%v; want inconclusive=%t", err, tc.inconclusive)
+			}
+			if !tc.inconclusive && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantFinding {
+				if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
+					t.Fatalf("want high/confirmed, got %s/%s", findings[0].Severity, findings[0].Confidence)
+				}
+				if !strings.Contains(findings[0].Evidence, "task-owner") {
+					t.Fatalf("finding must identify the disclosed owner task: %s", findings[0].Evidence)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_CreateProbesUseDistinctMessageIDs(t *testing.T) {
+	var mu sync.Mutex
+	ownerMessageID := ""
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Path == "/v1/tasks" {
+				writeJSON(w, map[string]interface{}{"tasks": []interface{}{map[string]string{"id": "task-owner"}}})
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		switch method {
+		case "SendMessage", "message/send":
+			params, _ := req["params"].(map[string]interface{})
+			message, _ := params["message"].(map[string]interface{})
+			messageID, _ := message["messageId"].(string)
+			mu.Lock()
+			if hasOwnerAuth(r) {
+				ownerMessageID = messageID
+			}
+			duplicate := !hasOwnerAuth(r) && messageID == ownerMessageID
+			mu.Unlock()
+			if hasOwnerAuth(r) || duplicate {
+				taskResult(w, id, "task-owner", "ctx-owner")
+			} else {
+				rpcErr(w, id, -32600, "authentication required")
+			}
+		case "GetTask", "tasks/get":
+			rpcErr(w, id, -32001, "Task not found")
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "task-owner") {
+		t.Fatalf("distinct create probes should reveal the owner task in the list; findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -342,30 +460,14 @@ func TestTaskIDOR_EmptyTaskListIsNotDisclosure(t *testing.T) {
 	}
 }
 
-// The true positive must survive the fix: a list that really does hand another
-// caller's tasks to an anonymous request is the finding, and the count is evidence.
-func TestTaskIDOR_PopulatedTaskListIsDisclosure(t *testing.T) {
+// A list without a known owner task cannot prove cross-principal disclosure.
+func TestTaskIDOR_PopulatedTaskListWithoutOwnerIsInconclusive(t *testing.T) {
 	srv := taskListServer(t, `{"tasks":[{"id":"t1","contextId":"c1"},{"id":"t2","contextId":"c2"}],"totalSize":2}`)
 	defer srv.Close()
 
 	exec := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001", Severity: "high"})
 	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var found *attack.Finding
-	for i := range findings {
-		if strings.Contains(findings[i].Title, "tasks/list") {
-			found = &findings[i]
-		}
-	}
-	if found == nil {
-		t.Fatalf("expected the unauthenticated task-list disclosure, got %d finding(s)", len(findings))
-	}
-	if found.Severity != "critical" || found.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want critical/confirmed, got %s/%s", found.Severity, found.Confidence)
-	}
-	if !strings.Contains(found.Evidence, "tasks returned to an unauthenticated caller: 2") {
-		t.Errorf("evidence should count what was disclosed; got:\n%s", found.Evidence)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unattributed list cannot prove disclosure; got findings=%+v err=%v", findings, err)
 	}
 }
