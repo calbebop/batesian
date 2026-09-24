@@ -72,6 +72,7 @@ async def rpc(request: Request) -> Response:
         result = {
             "id": task_id,
             "state": "completed",
+            "artifacts": [{"artifactId": "stored-output", "parts": [{"text": text}]}],
             "message": {
                 "role": "agent",
                 "parts": [{"type": "text", "text": f"Processed: {text}"}],
@@ -90,6 +91,7 @@ async def rpc(request: Request) -> Response:
         result = {
             "id": task_id,
             "state": "completed",
+            "artifacts": [{"artifactId": "stored-output", "parts": [{"text": text}]}],
             "message": {
                 "role": "user",
                 "parts": [{"type": "text", "text": text}],

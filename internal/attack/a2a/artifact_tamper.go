@@ -4,34 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ArtifactTamperExecutor tests whether an A2A server lets a client overwrite a
-// task's stored content by re-submitting against the same task ID with different
-// message content (rule a2a-artifact-tamper-001).
-//
-// The only sound proof is a read-back: submit original content, re-submit the SAME
-// task ID with tampered content, then read the task and observe that the STORED
-// content changed. The immediate echo of the tampered text proves nothing, since
-// every well-behaved server echoes the message it just processed and may have
-// created a separate task or ignored the duplicate ID.
-//
-// What counts as a finding is narrower than it looks, deliberately. REPLACEMENT is
-// a finding: the read-back shows the tampered text and the original is gone, so the
-// artifact was destroyed. APPENDING is not, because continuing a task by sending a
-// message carrying its taskId is exactly what the v1.0 and v0.3 wires define, so an
-// appended message is the protocol working. This probe uses a single principal and
-// cannot distinguish a conformant continuation from an injection; reading another
-// principal's task is a2a-task-idor-001 and a2a-multitenant-isolation-001 territory.
-// Claiming ConfirmedExploit for an append would fire against every conformant agent
-// that surfaces task history.
-//
-// Anything undeterminable is reported as not tested rather than as a clean pass or
-// an unverified indicator: no task could be created, the task could not be read
-// back, or the read-back surfaces neither marker.
+// ArtifactTamperExecutor checks whether a continuation replaces content already
+// stored on a completed task. Truncated history alone cannot prove replacement.
 type ArtifactTamperExecutor struct {
 	rule attack.RuleContext
 }
@@ -68,66 +48,185 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 			"(SendMessage, message/send or tasks/send), so there was no task whose immutability "+
 			"could be tested", attack.ErrInconclusive, endpoint)
 	}
+	baselineBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	if !ok {
+		return nil, fmt.Errorf("%w: task %s was created, but its original content could not be read back",
+			attack.ErrInconclusive, taskID)
+	}
+	baseline, ok := storedTaskContent(baselineBody, taskID)
+	if !ok || !baseline.completed() {
+		return nil, fmt.Errorf("%w: task %s did not expose a completed task with stored content",
+			attack.ErrInconclusive, taskID)
+	}
+	contentKeys := baseline.fieldsContaining(originalText)
+	if len(contentKeys) == 0 {
+		return nil, fmt.Errorf("%w: task %s did not expose the original marker in stored content",
+			attack.ErrInconclusive, taskID)
+	}
 
 	// Step 2: re-submit against the SAME task ID with different content, on the
 	// wire that created it.
 	tamperResp, err := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
-	if err != nil || !tamperResp.IsAccepted() {
-		// Rejected on status or via a JSON-RPC error envelope ("task already
-		// exists"): immutability enforced.
-		return nil, nil
+	if err != nil {
+		return nil, fmt.Errorf("%w: task %s continuation received no answer: %v",
+			attack.ErrInconclusive, taskID, err)
 	}
+	if !tamperResp.IsAccepted() {
+		if continuationRejected(tamperResp) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: task %s continuation returned an unjudged response (HTTP %d)",
+			attack.ErrInconclusive, taskID, tamperResp.StatusCode)
+	}
+	continuation, hasTask := storedTaskContent(tamperResp.Body, taskID)
 
-	// Step 3: acceptance alone proves nothing. Read the task back.
+	// Step 3: compare the same stored field after the continuation.
 	getBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
 	if !ok {
-		// The re-submission was accepted but the stored content is unknown, so
-		// whether the artifact changed cannot be established either way.
 		return nil, fmt.Errorf("%w: task %s was re-submitted and accepted, but reading it back "+
-			"returned no task history, so whether the stored artifact changed could not be "+
+			"returned no task content, so whether the stored artifact changed could not be "+
 			"established", attack.ErrInconclusive, taskID)
 	}
 
-	stored := string(getBody)
-	hasTampered := strings.Contains(stored, tamperedText)
-	hasOriginal := strings.Contains(stored, originalText)
-
-	switch {
-	case hasTampered && !hasOriginal:
-		return []attack.Finding{{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "critical",
-			Confidence: attack.ConfirmedExploit,
-			Title: fmt.Sprintf(
-				"A2A task %q content fully overwritten - the stored task returns tampered content only",
-				taskID),
-			Description: fmt.Sprintf(
-				"Reading task %q back returns tampered content %q and no trace of the original content "+
-					"%q. The original task artifact was replaced rather than preserved. Any downstream "+
-					"agent reading this task's history will process poisoned content.",
-				taskID, tamperedText, originalText),
-			Evidence: fmt.Sprintf(
-				"Task ID: %q\nWire: %s\nOriginal text: %q (absent from the read-back)\n"+
-					"Tampered text: %q (present)\nResponse: %.300s",
-				taskID, wire.name, originalText, tamperedText, stored),
-			Remediation: e.rule.Remediation,
-			TargetURL:   endpoint,
-		}}, nil
-
-	case hasOriginal:
-		// The original survives. Whether the tampered message was appended or
-		// dropped, the artifact was not destroyed, and an appended continuation is
-		// conformant behaviour rather than a tampering bug.
-		return nil, nil
-
-	default:
-		// Neither marker is visible, so the server does not surface message text and
-		// the read-back can neither confirm nor refute an overwrite.
-		return nil, fmt.Errorf("%w: task %s read back without either the original or the "+
-			"tampered marker, so this agent does not surface message text and an overwrite can "+
-			"be neither confirmed nor refuted", attack.ErrInconclusive, taskID)
+	current, ok := storedTaskContent(getBody, taskID)
+	if !ok {
+		return nil, fmt.Errorf("%w: task %s did not return a usable task after re-submission",
+			attack.ErrInconclusive, taskID)
 	}
+	allPreserved := current.completed()
+	for _, contentKey := range contentKeys {
+		stored, visible := current.fields[contentKey]
+		if !visible {
+			allPreserved = false
+			continue
+		}
+		hasTampered := strings.Contains(stored, tamperedText)
+		hasOriginal := strings.Contains(stored, originalText)
+		if hasTampered && !hasOriginal && current.completed() {
+			return []attack.Finding{{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "critical",
+				Confidence: attack.ConfirmedExploit,
+				Title:      fmt.Sprintf("A2A task %q stored content overwritten", taskID),
+				Description: fmt.Sprintf(
+					"The completed task %q stored %q in %s. After a continuation, the same field "+
+						"contains %q instead. A reader of that task receives altered content.",
+					taskID, originalText, contentKey, tamperedText),
+				Evidence: fmt.Sprintf(
+					"Task ID: %q\nWire: %s\nContent field: %s\nBefore: %.300s\nAfter: %.300s",
+					taskID, wire.name, contentKey, baseline.fields[contentKey], stored),
+				Remediation: e.rule.Remediation,
+				TargetURL:   endpoint,
+			}}, nil
+		}
+		if !hasOriginal {
+			allPreserved = false
+		}
+	}
+	if allPreserved && hasTask && continuation.completed() {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("%w: task %s did not show a completed replacement in its original artifacts",
+		attack.ErrInconclusive, taskID)
+}
+
+func continuationRejected(resp *attack.Response) bool {
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		return false
+	}
+	message := strings.ToLower(jsonRPCErrorMessage(resp.Body))
+	if message == "" {
+		return false
+	}
+	for _, reason := range []string{"already exists", "completed task", "task completed", "terminal state", "immutable", "cannot be restarted"} {
+		if strings.Contains(message, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+type taskContent struct {
+	state  string
+	fields map[string]string
+}
+
+func (c taskContent) completed() bool {
+	return strings.EqualFold(c.state, "completed") || c.state == "TASK_STATE_COMPLETED"
+}
+
+func (c taskContent) fieldsContaining(marker string) []string {
+	var keys []string
+	for key, value := range c.fields {
+		if strings.Contains(value, marker) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func storedTaskContent(body []byte, taskID string) (taskContent, bool) {
+	type storedField struct {
+		Parts json.RawMessage `json:"parts"`
+	}
+	type artifact struct {
+		ID string `json:"artifactId"`
+		storedField
+	}
+	type task struct {
+		ID     string `json:"id"`
+		State  string `json:"state"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+		Artifacts []artifact `json:"artifacts"`
+	}
+	var envelope struct {
+		Result *struct {
+			task
+			Task *task `json:"task"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+		return taskContent{}, false
+	}
+	result := envelope.Result.task
+	if envelope.Result.Task != nil {
+		result = *envelope.Result.Task
+	}
+	if result.ID != taskID {
+		return taskContent{}, false
+	}
+	content := taskContent{state: result.State, fields: make(map[string]string)}
+	if result.Status.State != "" {
+		content.state = result.Status.State
+	}
+	for _, artifact := range result.Artifacts {
+		if artifact.ID != "" {
+			if text := storedText(artifact.Parts); text != "" {
+				content.fields["artifact:"+artifact.ID] = text
+			}
+		}
+	}
+	return content, true
+}
+
+func storedText(raw json.RawMessage) string {
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var text []string
+	for _, part := range parts {
+		if part.Text != "" {
+			text = append(text, part.Text)
+		}
+	}
+	return strings.Join(text, "\n")
 }
 
 // tamperWire is one protocol revision's shapes for creating and continuing a task.
