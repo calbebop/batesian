@@ -35,6 +35,13 @@ func (ts *taskStore) get(id string) (string, bool) {
 	return v, ok
 }
 
+func storedArtifact(text string) []interface{} {
+	return []interface{}{map[string]interface{}{
+		"artifactId": "stored-output",
+		"parts":      []interface{}{map[string]interface{}{"text": text}},
+	}}
+}
+
 func vulnerableA2AServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	store := newTaskStore()
@@ -60,6 +67,7 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
 					"id": taskID, "state": "completed",
+					"artifacts": storedArtifact(text),
 					"message": map[string]interface{}{
 						"role":  "agent",
 						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
@@ -79,6 +87,7 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
 					"id": taskID, "state": "completed",
+					"artifacts": storedArtifact(text),
 					"message": map[string]interface{}{
 						"role":  "user",
 						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
@@ -151,6 +160,7 @@ func appendingA2AServer(t *testing.T) *httptest.Server {
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{"id": taskID, "state": "completed",
+					"artifacts": storedArtifact(text),
 					"message": map[string]interface{}{"role": "user",
 						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
 		default:
@@ -196,6 +206,7 @@ func idempotentPreserveServer(t *testing.T) *httptest.Server {
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{"id": taskID, "state": "completed",
+					"artifacts": storedArtifact(text),
 					"message": map[string]interface{}{"role": "user",
 						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
 		default:
@@ -204,16 +215,7 @@ func idempotentPreserveServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-// TestArtifactTamper_AppendIsNotAFinding: the re-submission is appended, so the
-// stored task holds both texts. This used to be reported as high/ConfirmedExploit
-// "artifact injection", and it must not be.
-//
-// Continuing a task by sending a message that carries its taskId is what the v1.0
-// and v0.3 wires define, so an appended message is the protocol working as
-// specified. The probe uses a single principal and cannot tell a conformant
-// continuation from an injection, so claiming a confirmed exploit here fires
-// against every conformant agent that surfaces task history. Only replacement,
-// where the original is gone, is evidence the artifact was tampered with.
+// An appended continuation preserves the artifact's original content.
 func TestArtifactTamper_AppendIsNotAFinding(t *testing.T) {
 	srv := appendingA2AServer(t)
 	defer srv.Close()
@@ -245,6 +247,223 @@ func TestArtifactTamper_AcceptedButPreserved(t *testing.T) {
 	}
 }
 
+func TestArtifactTamper_TruncatedHistoryDoesNotProveOverwrite(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		secondState  string
+		inconclusive bool
+	}{
+		{"completed continuation", "completed", false},
+		{"pending continuation", "working", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var original, latest string
+			var sends int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req := readBody(r)
+				method, _ := req["method"].(string)
+				params, _ := req["params"].(map[string]interface{})
+				id := req["id"]
+				switch method {
+				case "SendMessage":
+					message, _ := params["message"].(map[string]interface{})
+					parts, _ := message["parts"].([]interface{})
+					part, _ := parts[0].(map[string]interface{})
+					latest, _ = part["text"].(string)
+					if original == "" {
+						original = latest
+					}
+					sends++
+					state := "completed"
+					if sends == 2 {
+						state = tc.secondState
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": state},
+						}}})
+				case "GetTask":
+					if original == "" {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": "completed"},
+							"artifacts": storedArtifact(original),
+							"history": []interface{}{map[string]interface{}{
+								"role": "user", "parts": []interface{}{map[string]string{"text": latest}},
+							}},
+						}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || (tc.inconclusive && !errors.Is(err, attack.ErrInconclusive)) || (!tc.inconclusive && err != nil) {
+				t.Fatalf("unexpected verdict: findings=%+v err=%v", findings, err)
+			}
+			if sends != 2 {
+				t.Fatalf("expected a create and continuation, got %d sends", sends)
+			}
+		})
+	}
+}
+
+func TestArtifactTamper_HistoryWithoutStoredArtifactIsInconclusive(t *testing.T) {
+	var latest string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		switch method {
+		case "SendMessage":
+			params, _ := req["params"].(map[string]interface{})
+			message, _ := params["message"].(map[string]interface{})
+			parts, _ := message["parts"].([]interface{})
+			part, _ := parts[0].(map[string]interface{})
+			latest, _ = part["text"].(string)
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+		case "GetTask":
+			if latest == "" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"id": "task-1", "status": map[string]string{"state": "completed"},
+					"history": []interface{}{map[string]interface{}{
+						"role": "user", "parts": []interface{}{map[string]string{"text": latest}},
+					}},
+				}})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("history alone cannot prove stored replacement, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestArtifactTamper_UnjudgedContinuationIsInconclusive(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply func(http.ResponseWriter, interface{})
+	}{
+		{"service unavailable", func(w http.ResponseWriter, _ interface{}) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}},
+		{"invalid params", func(w http.ResponseWriter, id interface{}) {
+			rpcErr(w, id, -32602, "Invalid params")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var original string
+			var sends int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req := readBody(r)
+				method, _ := req["method"].(string)
+				id := req["id"]
+				switch method {
+				case "SendMessage":
+					sends++
+					if sends == 2 {
+						tc.reply(w, id)
+						return
+					}
+					params, _ := req["params"].(map[string]interface{})
+					message, _ := params["message"].(map[string]interface{})
+					parts, _ := message["parts"].([]interface{})
+					part, _ := parts[0].(map[string]interface{})
+					original, _ = part["text"].(string)
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+				case "GetTask":
+					if original == "" {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": "completed"},
+							"artifacts": storedArtifact(original),
+						}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unjudged continuation must be inconclusive, got findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestArtifactTamper_ChecksEveryOriginalArtifact(t *testing.T) {
+	var original, latest string
+	var sends int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		switch method {
+		case "SendMessage":
+			params, _ := req["params"].(map[string]interface{})
+			message, _ := params["message"].(map[string]interface{})
+			parts, _ := message["parts"].([]interface{})
+			part, _ := parts[0].(map[string]interface{})
+			latest, _ = part["text"].(string)
+			if original == "" {
+				original = latest
+			}
+			sends++
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+		case "GetTask":
+			if original == "" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			secondText := original
+			if sends > 1 {
+				secondText = latest
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"id": "task-1", "status": map[string]string{"state": "completed"},
+					"artifacts": []interface{}{
+						map[string]interface{}{"artifactId": "preserved", "parts": []interface{}{map[string]string{"text": original}}},
+						map[string]interface{}{"artifactId": "replaced", "parts": []interface{}{map[string]string{"text": secondText}}},
+					},
+				}})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected one finding for the replaced artifact, got findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "artifact:replaced") {
+		t.Fatalf("finding must identify the changed artifact: %s", findings[0].Evidence)
+	}
+}
+
 func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 	store := newTaskStore()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +491,16 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 			store.set(taskID, text)
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{"id": taskID, "state": "completed"}})
+		case "tasks/get":
+			params, _ := req["params"].(map[string]interface{})
+			taskID, _ := params["id"].(string)
+			text, ok := store.get(taskID)
+			if !ok {
+				rpcErr(w, req["id"], -32001, "Task not found")
+				return
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"id": taskID, "state": "completed", "artifacts": storedArtifact(text)}})
 		default:
 			// Realistic JSON-RPC: unknown methods return -32601, not HTTP 404.
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
@@ -296,14 +525,7 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 	}
 }
 
-// modernOnlyOverwritingServer speaks only the v1.0 wire and overwrites task
-// content, answering -32601 at HTTP 200 to any other method name.
-//
-// This is the shape that made the rule useless. It sent the v0.2 name tasks/send,
-// both real SDKs answer that with -32601 at HTTP 200, and the v0.3 fallback was
-// gated on !IsSuccess() so an HTTP-200 error never advanced to it. No task was
-// created, the tamper probe's own -32601 failed IsAccepted, and the rule read that
-// as immutability enforced and reported the agent secure.
+// modernOnlyOverwritingServer replaces an identified artifact on the v1 wire.
 func modernOnlyOverwritingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	stored := map[string]string{}
@@ -352,9 +574,10 @@ func modernOnlyOverwritingServer(t *testing.T) *httptest.Server {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": id, "history": []interface{}{
-					map[string]interface{}{"role": "user",
-						"parts": []interface{}{map[string]interface{}{"text": text}}}}}})
+				"result": map[string]interface{}{"id": id, "status": map[string]string{"state": "completed"},
+					"artifacts": storedArtifact(text), "history": []interface{}{
+						map[string]interface{}{"role": "user",
+							"parts": []interface{}{map[string]interface{}{"text": text}}}}}})
 		default:
 			// Every other name, including the v0.2 tasks/send the rule used to send.
 			notFound()
@@ -463,7 +686,7 @@ func legacyOnlyOverwritingServer(t *testing.T) *httptest.Server {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": id, "message": map[string]interface{}{
+				"result": map[string]interface{}{"id": id, "state": "completed", "artifacts": storedArtifact(text), "message": map[string]interface{}{
 					"role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
 		default:
 			// HTTP 200 with a JSON-RPC error, exactly as the real SDKs answer a name

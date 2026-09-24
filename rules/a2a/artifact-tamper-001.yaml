@@ -1,24 +1,13 @@
 id: a2a-artifact-tamper-001
 info:
-  name: A2A Task Artifact Tampering via Task ID Reuse
+  name: A2A Completed Task Artifact Replacement
   author: batesian
   severity: critical
   description: |
-    Tests whether an A2A server allows a client to overwrite or alter the content
-    of a completed task by re-submitting a tasks/send request with the same task ID
-    but different message content.
-
-    In the A2A protocol, task IDs are client-generated. If the server does not
-    enforce immutability on completed tasks, an attacker who knows a task ID (or
-    can guess it, see a2a-task-idor-001) can:
-    - Replace the original task input with a poisoned prompt
-    - Cause the agent to re-execute with attacker-controlled content
-    - Overwrite task artifacts that downstream systems trust as authoritative output
-
-    This is particularly severe in multi-agent pipelines where Agent B reads the
-    output of Agent A's tasks. If Agent A's task artifacts can be tampered with,
-    the attacker gains indirect control over Agent B's behavior without interacting
-    with Agent B directly.
+    Tests whether a continuation replaces an existing artifact on a completed task.
+    The rule reads the artifact before and after the continuation and compares
+    content under the same artifact ID. Task history alone is insufficient because
+    a server may return only recent messages.
 
   references:
     - https://a2a-protocol.org/latest/specification/
@@ -40,11 +29,6 @@ attack:
   type: a2a-artifact-tamper
 
 remediation: |
-  1. Treat task IDs as immutable keys: once a task is created (any status other than
-     "unknown"), reject subsequent tasks/send requests that use the same task ID with
-     a JSON-RPC error indicating the ID is already in use.
-  2. Validate task ID uniqueness at ingestion time, not only at completion.
-  3. If task re-submission is an intentional feature, version task artifacts and
-     require explicit authorization to overwrite a completed task.
-  4. Sign task artifacts with the server's private key (as specified in the A2A JWS
-     extension) so downstream consumers can detect tampering.
+  1. Reject continuations of completed tasks.
+  2. Preserve existing artifact content and identifiers across task updates.
+  3. If artifact changes are intentional, version them and authorize writers.
