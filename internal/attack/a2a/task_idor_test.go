@@ -31,6 +31,18 @@ func decodeRPC(r *http.Request) (method string, id interface{}) {
 	return method, req["id"]
 }
 
+func rpcMessageText(req map[string]interface{}) string {
+	params, _ := req["params"].(map[string]interface{})
+	message, _ := params["message"].(map[string]interface{})
+	parts, _ := message["parts"].([]interface{})
+	if len(parts) == 0 {
+		return ""
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	return text
+}
+
 // readBody decodes a JSON-RPC request body into a map. Shared across a2a tests.
 func readBody(r *http.Request) map[string]interface{} {
 	body, _ := io.ReadAll(r.Body)
@@ -53,7 +65,11 @@ func taskResult(w http.ResponseWriter, id interface{}, taskID, ctxID string) {
 }
 
 // taskWithHistory writes a GetTask success envelope including conversation history.
-func taskWithHistory(w http.ResponseWriter, id interface{}, taskID, ctxID string) {
+func taskWithHistory(w http.ResponseWriter, id interface{}, taskID, ctxID string, text ...string) {
+	messageText := "probe"
+	if len(text) > 0 {
+		messageText = text[0]
+	}
 	writeJSON(w, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -61,7 +77,7 @@ func taskWithHistory(w http.ResponseWriter, id interface{}, taskID, ctxID string
 			"id":        taskID,
 			"contextId": ctxID,
 			"history": []interface{}{
-				map[string]interface{}{"role": "user", "parts": []interface{}{map[string]string{"text": "probe"}}},
+				map[string]interface{}{"role": "user", "parts": []interface{}{map[string]string{"text": messageText}}},
 			},
 		},
 	})
@@ -79,21 +95,31 @@ func rpcErr(w http.ResponseWriter, id interface{}, code int, msg string) {
 // task history to an unauthenticated tasks/get. The rule MUST fire (confirmed).
 func TestTaskIDOR_Vulnerable(t *testing.T) {
 	const taskID, ctxID = "task-vuln-abc", "ctx-vuln-xyz"
+	var mu sync.Mutex
+	ownerText := ""
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" { // no tasks/list endpoint
 			http.NotFound(w, r)
 			return
 		}
-		method, id := decodeRPC(r)
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
 		switch method {
 		case "SendMessage", "message/send":
 			if !hasOwnerAuth(r) {
 				rpcErr(w, id, -32600, "authentication required") // creation is auth-gated
 				return
 			}
+			mu.Lock()
+			ownerText = rpcMessageText(req)
+			mu.Unlock()
 			taskResult(w, id, taskID, ctxID)
 		case "GetTask", "tasks/get":
-			taskWithHistory(w, id, taskID, ctxID) // BUG: no ownership check
+			mu.Lock()
+			text := ownerText
+			mu.Unlock()
+			taskWithHistory(w, id, taskID, ctxID, text)
 		default:
 			rpcErr(w, id, -32601, "Method not found")
 		}
@@ -124,21 +150,31 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 // circuits on the 200+error and the rule never fires (false negative).
 func TestTaskIDOR_Vulnerable_V03Only(t *testing.T) {
 	const taskID, ctxID = "task-v03-abc", "ctx-v03-xyz"
+	var mu sync.Mutex
+	ownerText := ""
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		method, id := decodeRPC(r)
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
 		switch method {
 		case "message/send":
 			if !hasOwnerAuth(r) {
 				rpcErr(w, id, -32600, "authentication required") // creation is auth-gated
 				return
 			}
+			mu.Lock()
+			ownerText = rpcMessageText(req)
+			mu.Unlock()
 			taskResult(w, id, taskID, ctxID)
 		case "tasks/get":
-			taskWithHistory(w, id, taskID, ctxID) // BUG: no ownership check
+			mu.Lock()
+			text := ownerText
+			mu.Unlock()
+			taskWithHistory(w, id, taskID, ctxID, text)
 		default:
 			// v1.0 PascalCase methods are unknown to this v0.3-only server:
 			// HTTP 200 carrying a JSON-RPC method-not-found error.
@@ -159,6 +195,50 @@ func TestTaskIDOR_Vulnerable_V03Only(t *testing.T) {
 	}
 	if findings[0].Severity != "high" {
 		t.Errorf("want high severity, got %q", findings[0].Severity)
+	}
+}
+
+func TestTaskIDOR_HybridReadChecksLegacyAfterStub(t *testing.T) {
+	var mu sync.Mutex
+	ownerText := ""
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		switch method {
+		case "SendMessage", "message/send":
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required")
+				return
+			}
+			mu.Lock()
+			ownerText = rpcMessageText(req)
+			mu.Unlock()
+			taskResult(w, id, "task-hybrid", "ctx-hybrid")
+		case "GetTask":
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]string{"id": "task-hybrid"}})
+		case "tasks/get":
+			mu.Lock()
+			text := ownerText
+			mu.Unlock()
+			taskWithHistory(w, id, "task-hybrid", "ctx-hybrid", text)
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("legacy read must expose the owner marker after a v1 stub; findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "anonymous tasks/get") {
+		t.Fatalf("finding must identify the leaking method: %s", findings[0].Evidence)
 	}
 }
 
