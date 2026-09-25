@@ -212,9 +212,15 @@ func restMountedAgent(t *testing.T, prefix string, hits *[]string) *httptest.Ser
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		// The JSON-RPC surface implements nothing, so only the REST probe can find
-		// anything here.
-		_, id := decodeRPC(r)
+		method, id := decodeRPC(r)
+		if method == "SendMessage" || method == "message/send" {
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required")
+				return
+			}
+			taskResult(w, id, "task-1", "ctx-1")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
@@ -223,8 +229,7 @@ func restMountedAgent(t *testing.T, prefix string, hits *[]string) *httptest.Ser
 	}))
 }
 
-// The strongest finding this rule can emit must be reachable at the base the CARD
-// declares, not only at two guessed paths off the target root.
+// The owner task must be found at the REST base declared by the card.
 func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 	var hits []string
 	const prefix = "/agents/finance"
@@ -237,12 +242,12 @@ func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 		t.Fatalf("the REST listing answered, so the rule reached a testable surface: %v", err)
 	}
 	if len(findings) != 1 {
-		t.Fatalf("an anonymous REST listing returning 2 tasks is the critical finding; got %d: %+v\n"+
+		t.Fatalf("anonymous listing must include the owner's task; got %d: %+v\n"+
 			"paths probed: %v", len(findings), findings, hits)
 	}
 	f := findings[0]
-	if f.Severity != "critical" {
-		t.Errorf("want critical, got %s", f.Severity)
+	if f.Severity != "high" {
+		t.Errorf("want high, got %s", f.Severity)
 	}
 	if !strings.Contains(f.TargetURL, prefix) {
 		t.Errorf("the finding should name the advertised REST base, got %q", f.TargetURL)
@@ -280,7 +285,15 @@ func TestA2ATaskIDOR_RootFallbackStillProbed(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_, id := decodeRPC(r)
+		method, id := decodeRPC(r)
+		if method == "SendMessage" || method == "message/send" {
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required")
+				return
+			}
+			taskResult(w, id, "task-1", "ctx-1")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
