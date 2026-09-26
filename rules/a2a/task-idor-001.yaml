@@ -1,21 +1,19 @@
 id: a2a-task-idor-001
 info:
-  name: A2A Task IDOR via Unauthenticated tasks/get
+  name: A2A Task Read or List Authorization Bypass
   author: batesian
   severity: high
   description: |
-    Detects broken object-level authorization (IDOR / BOLA) on A2A task lookup:
-    a server that authenticates task creation but does not bind tasks/get to the
-    owning session, so any caller who learns a task UUID can read another
-    principal's conversation history.
+    Detects broken object-level authorization (IDOR / BOLA) on A2A task reads
+    and listings. A confirmed read finding requires the authenticated owner's
+    unique probe text in an anonymous task response. An echoed task ID or generic
+    status alone does not prove content disclosure.
 
     To avoid mislabelling a server that simply has no authentication, the check
     uses an auth-enforcement discriminator. It (1) creates a task as the
-    authenticated owner, (2) confirms the server REJECTS the same creation when
-    sent with no credentials, then (3) reads the owner's task from an
-    unauthenticated connection. A finding is raised only when creation was
-    auth-gated yet the unauthenticated read still returns the task. The rule also
-    probes GET /v1/tasks and /tasks. A list finding requires the authenticated
+    authenticated owner, (2) confirms the same creation method rejects anonymous
+    callers, then (3) reads the task without credentials. The rule also probes
+    GET /v1/tasks and /tasks. A list finding requires the authenticated
     owner's task ID in the anonymous response; unrelated or anonymous-owned tasks
     do not establish disclosure.
 

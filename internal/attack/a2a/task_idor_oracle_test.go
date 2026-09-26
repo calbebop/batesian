@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,6 +109,8 @@ func TestA2ATaskIDOR_RedactedStubIsNotADisclosure(t *testing.T) {
 // The same agent, but the anonymous read really does return the owner's task. The
 // oracle must still fire, or the fix above would have been bought by breaking the rule.
 func TestA2ATaskIDOR_RealDisclosureStillFires(t *testing.T) {
+	var mu sync.Mutex
+	ownerText := ""
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/.well-known/") {
 			w.Header().Set("Content-Type", "application/json")
@@ -120,7 +123,9 @@ func TestA2ATaskIDOR_RealDisclosureStillFires(t *testing.T) {
 			})
 			return
 		}
-		method, id := decodeRPC(r)
+		req := readBody(r)
+		method, _ := req["method"].(string)
+		id := req["id"]
 		w.Header().Set("Content-Type", "application/json")
 		enc := func(v map[string]interface{}) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -133,16 +138,22 @@ func TestA2ATaskIDOR_RealDisclosureStillFires(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+			mu.Lock()
+			ownerText = rpcMessageText(req)
+			mu.Unlock()
 			enc(map[string]interface{}{"task": map[string]interface{}{
 				"id": "task-owner-1", "contextId": "ctx-owner-1",
 				"status": map[string]interface{}{"state": "working"},
 			}})
 		case "GetTask", "tasks/get":
 			// Hands the owner's task to anyone: the real defect.
+			mu.Lock()
+			text := ownerText
+			mu.Unlock()
 			enc(map[string]interface{}{
 				"id": "task-owner-1", "contextId": "ctx-owner-1",
 				"status":  map[string]interface{}{"state": "working"},
-				"history": []interface{}{map[string]interface{}{"role": "user"}},
+				"history": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]string{"text": text}}}},
 			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -164,6 +175,52 @@ func TestA2ATaskIDOR_RealDisclosureStillFires(t *testing.T) {
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %s/%s", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+func TestA2ATaskIDOR_TaskStubIsNotContentDisclosure(t *testing.T) {
+	tests := []struct {
+		name         string
+		result       interface{}
+		inconclusive bool
+	}{
+		{"id echo", map[string]interface{}{"id": "task-owner-1"}, true},
+		{"generic status", map[string]interface{}{"id": "task-owner-1", "status": map[string]string{"state": "working"}}, true},
+		{"unrelated history", map[string]interface{}{"id": "task-owner-1", "history": []interface{}{map[string]interface{}{"parts": []interface{}{map[string]string{"text": "unrelated"}}}}}, true},
+		{"null result", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "SendMessage", "message/send":
+					if !hasOwnerAuth(r) {
+						rpcErr(w, id, -32600, "authentication required")
+						return
+					}
+					taskResult(w, id, "task-owner-1", "ctx-owner-1")
+				case "GetTask", "tasks/get":
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": tc.result})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
+				Execute(context.Background(), ts.URL, idorOpts())
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("got findings=%+v err=%v; want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+			if !tc.inconclusive && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

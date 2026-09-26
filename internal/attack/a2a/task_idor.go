@@ -2,7 +2,9 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -93,7 +95,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
 			authedClient.PresentsCredential(endpoint), owner.response).err()
 	}
-	taskID, contextID := extractTaskContext(owner.response.Body)
+	taskID, _ := extractTaskContext(owner.response.Body)
 	if taskID == "" {
 		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, "", "", false)
 		if list.unverified {
@@ -115,40 +117,50 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		anonTaskID, _ = extractTaskContext(anon.response.Body)
 	}
 
-	// Try both task-read method names.
+	// Try both task-read method names before judging a redacted response.
+	marker := "batesian idor probe " + vars.RandID
 	getParams := map[string]interface{}{"id": taskID, "historyLength": 10}
-	getResp, err := unauthClient.POST(ctx, endpoint, map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-get-" + vars.RandID,
-		"method":  "GetTask",
-		"params":  getParams,
-	})
-	if err != nil || !getResp.IsAccepted() {
-		getResp, err = unauthClient.POST(ctx, endpoint, nil, map[string]interface{}{
+	type readProbe struct {
+		response *attack.Response
+		method   string
+		location string
+		matched  bool
+	}
+	readTask := func(method string, headers map[string]string) readProbe {
+		probe := readProbe{method: method}
+		resp, err := unauthClient.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-get-" + vars.RandID,
-			"method":  "tasks/get",
+			"method":  method,
 			"params":  getParams,
 		})
+		if err != nil || resp == nil || !resp.IsAccepted() {
+			return probe
+		}
+		probe.response = resp
+		probe.location, probe.matched = taskReadMarkerLocation(resp.Body, taskID, marker)
+		return probe
 	}
-	// Match task identifiers in the result, not arbitrary response text.
-	unauthReadSucceeded := err == nil && getResp.IsAccepted() &&
-		resultReferencesTask(getResp.Body, taskID, contextID)
-
-	if ownerProtected && unauthReadSucceeded {
+	read := readTask("GetTask", map[string]string{"A2A-Version": "1.0"})
+	readMatched := read.matched
+	if read.location == "" {
+		legacy := readTask("tasks/get", nil)
+		readMatched = readMatched || legacy.matched
+		if legacy.location != "" {
+			read = legacy
+		}
+	}
+	if ownerProtected && read.location != "" {
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
 			Severity:   "high",
 			Confidence: attack.ConfirmedExploit,
-			Title:      "A2A task readable without owner credentials despite auth-gated creation (IDOR)",
+			Title:      "A2A task content readable without owner credentials",
 			Description: fmt.Sprintf(
-				"The server rejected unauthenticated task creation but returned task %s "+
-					"(contextId %s), including its history, to a tasks/get request that presented "+
-					"no credentials. Task lookup is not bound to the owning session, so any caller "+
-					"who learns a task UUID can read another principal's full conversation history, "+
-					"including LLM responses, tool outputs, and embedded system context.", taskID, contextID),
-			Evidence:    fmt.Sprintf("taskId: %s\ncontextId: %s\nunauthenticated create: rejected\nunauthenticated tasks/get: HTTP %d\n%s", taskID, contextID, getResp.StatusCode, snippet(getResp.Body, 500)),
+				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers.", read.method, taskID, read.location),
+			Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous %s: HTTP %d\n%s",
+				taskID, marker, read.location, read.method, read.response.StatusCode, snippet(read.response.Body, 500)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 		})
@@ -159,7 +171,63 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	if len(findings) == 0 && list.unverified {
 		return nil, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
 	}
+	if len(findings) == 0 && ownerProtected && readMatched {
+		return nil, fmt.Errorf("%w: the anonymous task read returned task %s without its owner probe content",
+			attack.ErrInconclusive, taskID)
+	}
 	return findings, nil
+}
+
+// taskReadMarkerLocation checks content within the requested Task, not response metadata.
+func taskReadMarkerLocation(body []byte, taskID, marker string) (string, bool) {
+	type content struct {
+		Parts json.RawMessage `json:"parts"`
+	}
+	type task struct {
+		ID        string          `json:"id"`
+		TaskID    string          `json:"taskId"`
+		History   []content       `json:"history"`
+		Artifacts []content       `json:"artifacts"`
+		Status    json.RawMessage `json:"status"`
+	}
+	var envelope struct {
+		Result *struct {
+			task
+			Task *task `json:"task"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+		return "", false
+	}
+	candidates := []task{envelope.Result.task}
+	if envelope.Result.Task != nil {
+		candidates = append(candidates, *envelope.Result.Task)
+	}
+	matched := false
+	for _, candidate := range candidates {
+		if candidate.ID != taskID && candidate.TaskID != taskID {
+			continue
+		}
+		matched = true
+		for _, message := range candidate.History {
+			if strings.Contains(storedText(message.Parts), marker) {
+				return "history", true
+			}
+		}
+		for _, artifact := range candidate.Artifacts {
+			if strings.Contains(storedText(artifact.Parts), marker) {
+				return "artifact", true
+			}
+		}
+		var status struct {
+			Message content `json:"message"`
+		}
+		if json.Unmarshal(candidate.Status, &status) == nil &&
+			strings.Contains(storedText(status.Message.Parts), marker) {
+			return "status message", true
+		}
+	}
+	return "", matched
 }
 
 type taskListProbe struct {
