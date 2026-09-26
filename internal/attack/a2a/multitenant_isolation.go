@@ -7,14 +7,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// MultiTenantIsolationExecutor tests whether an authenticated A2A server enforces
-// a TENANT boundary on task lookup (rule a2a-multitenant-isolation-001).
-//
-// Unlike a2a-task-idor-001 (which tests anonymous access), this is a stateful,
-// multi-principal chained check: with two VALID but distinct identities it
-// confirms that one tenant cannot read the other tenant's task. It implements
-// attack.ChainExecutor and publishes the tokens and created task IDs to the
-// shared Blackboard so downstream chained rules can build on them.
+// MultiTenantIsolationExecutor checks cross-tenant task reads and publishes
+// created tasks for chained rules.
 type MultiTenantIsolationExecutor struct {
 	rule attack.RuleContext
 }
@@ -45,11 +39,7 @@ func (e *MultiTenantIsolationExecutor) Execute(ctx context.Context, target strin
 
 // ExecuteChained runs the multi-tenant isolation check.
 func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
-	// Precondition: need two valid, distinguishable principals.
-	// Two distinct identities are this rule's premise; without them it cannot run.
-	// See twoPrincipals: all five cross-principal rules used to report clean here,
-	// so a scan with no --principal flags called 29 percent of the A2A set secure
-	// without sending a packet.
+	// Cross-tenant reads require distinct principals.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err
@@ -65,14 +55,11 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 
-	// Step 1: each principal creates its own task. Both must succeed to prove two
-	// valid, distinct identities.
+	// Each principal creates a task with unique content.
 	taskA, ctxA, okA, obsA := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	taskB, ctxB, okB, obsB := e.createTask(ctx, clientB, endpoint, b, vars.RandID)
 	if !okA || !okB {
-		// Neither identity's task can be skipped: this rule compares one principal's
-		// task against the other's. Report the failure that explains most, and only
-		// call it clean when the agent implements no task surface at all.
+		// Both tasks are required for the comparison.
 		obs := obsA
 		obs.observe(obsB)
 		return nil, obs.err()
@@ -82,29 +69,29 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactTaskID, Value: taskA, Principal: a.Name, Producer: e.rule.ID, Meta: map[string]string{"contextId": ctxA}})
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactTaskID, Value: taskB, Principal: b.Name, Producer: e.rule.ID, Meta: map[string]string{"contextId": ctxB}})
 
-	// Step 2: open-server discriminator. If an UNAUTHENTICATED read of A's task
-	// succeeds, the server enforces no auth at all - not a tenant-isolation
-	// breach (owned by a2a-task-idor-001). Suppress.
-	if e.readTask(ctx, unauthClient, endpoint, nil, taskA, ctxA, vars.RandID) {
-		return nil, nil
-	}
+	markerA := "batesian mt probe " + a.Name + " " + vars.RandID
+	markerB := "batesian mt probe " + b.Name + " " + vars.RandID
+	// Anonymous disclosure belongs to the task IDOR rule.
+	anonA := e.readTask(ctx, unauthClient, endpoint, nil, taskA, markerA, vars.RandID)
+	anonB := e.readTask(ctx, unauthClient, endpoint, nil, taskB, markerB, vars.RandID)
 
-	// Step 3: cross-tenant reads in both directions.
+	// Check both directions for the owner's probe content.
 	var findings []attack.Finding
-	if e.readTask(ctx, clientB, endpoint, b.Headers, taskA, ctxA, vars.RandID) {
-		findings = append(findings, e.finding(endpoint, b, a, taskA, ctxA))
+	readA := e.readTask(ctx, clientB, endpoint, b.Headers, taskA, markerA, vars.RandID)
+	if readA.location != "" && anonA.location == "" {
+		findings = append(findings, e.finding(endpoint, b, a, taskA, markerA, readA))
 	}
-	if e.readTask(ctx, clientA, endpoint, a.Headers, taskB, ctxB, vars.RandID) {
-		findings = append(findings, e.finding(endpoint, a, b, taskB, ctxB))
+	readB := e.readTask(ctx, clientA, endpoint, a.Headers, taskB, markerB, vars.RandID)
+	if readB.location != "" && anonB.location == "" {
+		findings = append(findings, e.finding(endpoint, a, b, taskB, markerB, readB))
+	}
+	if len(findings) == 0 && ((readA.matched && anonA.location == "") || (readB.matched && anonB.location == "")) {
+		return nil, fmt.Errorf("%w: a cross-tenant task read returned a task identifier without its owner's probe content", attack.ErrInconclusive)
 	}
 	return findings, nil
 }
 
-// createTask issues a SendMessage create as the given principal, trying the A2A
-// v1.0 PascalCase shape first and falling back to the v0.3 slash-method shape.
-// It returns the created task/context IDs and whether the creation was accepted.
-// The observation is returned so a caller that got no task can say why. Both wires
-// are classified, and the one that explains most wins.
+// createTask tries v1 and v0.3 and keeps setup diagnostics from both.
 func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
@@ -156,41 +143,47 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 	return taskID, contextID, taskID != "", obs
 }
 
-// readTask attempts a GetTask for taskID over the given client (carrying its own
-// token) plus any extra principal headers. It reports whether the task content
-// was successfully returned (success, no JSON-RPC error, and the body references
-// the task/context).
-func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, contextID, randID string) bool {
-	headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		headers[k] = v
-	}
-	resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-mt-get-" + randID,
-		"method":  "GetTask",
-		"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
-	})
-	if err != nil || !resp.IsAccepted() {
-		// Fall back to the v0.3 slash-method shape.
-		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "batesian-mt-get-" + randID,
-			"method":  "tasks/get",
-			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
-		})
-	}
-	if err != nil || !resp.IsAccepted() {
-		return false
-	}
-	// Identifiers, not key names: "history" and "contextId" appear in every Task
-	// envelope. See resultReferencesTask.
-	return resultReferencesTask(resp.Body, taskID, contextID)
+type tenantRead struct {
+	method   string
+	location string
+	response string
+	matched  bool
 }
 
-// finding builds the confirmed cross-tenant isolation breach finding. reader is
-// the principal that performed the unauthorized read; owner owns the leaked task.
-func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner attack.Principal, taskID, contextID string) attack.Finding {
+// readTask checks both method names until owner content is found.
+func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID string) tenantRead {
+	shapes := []struct {
+		method  string
+		headers map[string]string
+	}{
+		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
+		{"tasks/get", extraHeaders},
+	}
+	for k, v := range extraHeaders {
+		shapes[0].headers[k] = v
+	}
+	var result tenantRead
+	for _, shape := range shapes {
+		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      "batesian-mt-get-" + randID,
+			"method":  shape.method,
+			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
+		})
+		if err != nil || resp == nil || !resp.IsAccepted() {
+			continue
+		}
+		location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
+		result.matched = result.matched || matched
+		if location != "" {
+			return tenantRead{method: shape.method, location: location, response: snippet(resp.Body, 500), matched: true}
+		}
+	}
+	return result
+}
+
+// finding describes the owner's content observed by another tenant.
+func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner attack.Principal, taskID, marker string, read tenantRead) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -198,22 +191,19 @@ func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner at
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A task readable across tenant boundary by an authenticated principal",
 		Description: fmt.Sprintf(
-			"Principal %q (tenant %q) successfully read task %s (contextId %s) created by "+
-				"principal %q (tenant %q), using only its own valid credentials. Task lookup "+
-				"is authenticated but not bound to the owning tenant, so any tenant can read "+
-				"another tenant's conversation history, tool outputs, and embedded context "+
-				"given a task ID.",
-			reader.Name, reader.Tenant, taskID, contextID, owner.Name, owner.Tenant),
+			"Principal %q (tenant %q) received principal %q's (tenant %q) unique probe text "+
+				"from task %s's %s through %s. The task content was returned across the tenant boundary.",
+			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.location, read.method),
 		Evidence: fmt.Sprintf(
-			"reader: %s (tenant %s)\nowner: %s (tenant %s)\ntask: %s\ncontextId: %s\n"+
-				"unauthenticated read: rejected (auth enforced)\ncross-tenant GetTask: granted",
-			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, contextID),
+			"reader: %s (tenant %s)\nowner: %s (tenant %s)\ntask: %s\nmethod: %s\n"+
+				"owner marker: %s\nlocation: %s\nresponse: %s",
+			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.method, marker, read.location, read.response),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "authenticate and create task " + taskID, Outcome: "task created (owner " + owner.Tenant + ")"},
 			{Hop: 2, Principal: reader.Name, Action: "authenticate as a different tenant", Outcome: "valid distinct credentials confirmed"},
-			{Hop: 3, Principal: reader.Name, Action: "GetTask " + taskID + " (cross-tenant)", Outcome: "GRANTED - read another tenant's task"},
+			{Hop: 3, Principal: reader.Name, Action: read.method + " " + taskID + " (cross-tenant)", Outcome: "GRANTED - read owner's probe content"},
 		},
 	}
 }
