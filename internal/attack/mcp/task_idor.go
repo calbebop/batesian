@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
 // TaskIDORExecutor checks whether 2025-11-25 durable tasks are scoped to their
-// creating authorization context. It tests metadata, result, and list access and
-// invokes only task-capable tools explicitly marked read-only.
+// creating authorization context. It invokes only approved, annotated tools.
 //
 // This oracle does not apply to the 2026-07-28 tasks extension. That extension
 // permits high-entropy task IDs as bearer capabilities and removes tasks/result
@@ -40,7 +41,7 @@ const (
 	taskPollMaxTries = 16
 )
 
-// safeTool is a task-capable tool the rule is willing to invoke.
+// safeTool is an approved task-capable tool.
 type safeTool struct {
 	name string
 	args map[string]interface{}
@@ -151,7 +152,12 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	// Gate on finding a tool this rule is willing to invoke.
-	tool, toolPremise := e.findSafeTaskTool(ctx, client, sessA, princA, vars.RandID)
+	tool, toolPremise, pending := e.findSafeTaskTool(ctx, client, sessA, princA, vars.RandID, opts.MCPInvokeTools)
+	if len(pending) > 0 {
+		sort.Strings(pending)
+		return nil, fmt.Errorf("%w: approve an exact task-capable tool name with --mcp-invoke-tool before task probes: %s",
+			attack.ErrInconclusive, strings.Join(pending, ", "))
+	}
 	switch toolPremise {
 	case premiseAbsent:
 		return nil, nil // no tool declares itself safe to invoke: nothing to test, honestly
@@ -422,14 +428,8 @@ func containsTaskID(ids []string, taskID string) bool {
 	return false
 }
 
-// findSafeTaskTool picks a task-capable tool the rule is willing to invoke, and
-// synthesizes arguments for it from its input schema.
-//
-// Task creation is the one place this package executes real server-side
-// functionality, so the tool must explicitly declare itself read-only. A tool
-// with no annotations is not invoked. Neither is a tool that only declares
-// destructiveHint false: MCP defines that as additive mutation, not read-only.
-func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, randID string) (safeTool, taskPremise) {
+// findSafeTaskTool requires exact approval in addition to a read-only hint.
+func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, randID string, approved []string) (safeTool, taskPremise, []string) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -438,7 +438,7 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 	})
 	// A refused listing is undetermined, not evidence that tasks are absent.
 	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
-		return safeTool{}, premiseUndetermined
+		return safeTool{}, premiseUndetermined, nil
 	}
 	var body struct {
 		Result struct {
@@ -454,10 +454,12 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 				InputSchema map[string]interface{} `json:"inputSchema"`
 			} `json:"tools"`
 		} `json:"result"`
+		Error map[string]interface{} `json:"error"`
 	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return safeTool{}, premiseUndetermined
+	if err := json.Unmarshal(resp.Body, &body); err != nil || body.Error != nil {
+		return safeTool{}, premiseUndetermined, nil
 	}
+	var pending []string
 	for _, t := range body.Result.Tools {
 		if t.Execution.TaskSupport != "optional" && t.Execution.TaskSupport != "required" {
 			continue
@@ -468,11 +470,12 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		if !declaresReadOnlyTool(t.Annotations.ReadOnlyHint, t.Annotations.DestructiveHint) {
 			continue
 		}
-		return safeTool{name: t.Name, args: synthesizeArgs(t.InputSchema, randID)}, premiseMet
+		if approvedToolName(t.Name, approved) {
+			return safeTool{name: t.Name, args: synthesizeArgs(t.InputSchema, randID)}, premiseMet, nil
+		}
+		pending = append(pending, t.Name)
 	}
-	// The listing was read and no tool declares itself safe to invoke. Genuinely not
-	// applicable, so clean.
-	return safeTool{}, premiseAbsent
+	return safeTool{}, premiseAbsent, pending
 }
 
 // synthesizeArgs builds a minimal argument object from a tool's JSON Schema,

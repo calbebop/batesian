@@ -253,6 +253,28 @@ func TestEffectiveMCPScopeTools(t *testing.T) {
 	}
 }
 
+func TestEffectiveMCPInvokeTools(t *testing.T) {
+	configured := []string{"read_note"}
+	tests := []struct {
+		name        string
+		flagChanged bool
+		flagValue   []string
+		want        []string
+	}{
+		{"config used by default", false, nil, configured},
+		{"flag replaces config", true, []string{"wait_a_moment"}, []string{"wait_a_moment"}},
+		{"empty flag clears config", true, []string{}, []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveMCPInvokeTools(tc.flagChanged, tc.flagValue, configured)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateOAuthAcquisition(t *testing.T) {
 	const (
 		credentialsError = "OAuth token acquisition requires --client-id and --token-url"

@@ -1,9 +1,13 @@
 package mcp
 
-// declaresReadOnlyTool reports whether annotations explicitly and consistently
-// describe a tool as read-only. destructiveHint=false is not sufficient: MCP
-// defines that as an additive update when readOnlyHint is false.
+import "slices"
+
+// declaresReadOnlyTool filters candidates; annotations do not authorize calls.
 func declaresReadOnlyTool(readOnlyHint, destructiveHint *bool) bool {
 	return readOnlyHint != nil && *readOnlyHint &&
 		(destructiveHint == nil || !*destructiveHint)
+}
+
+func approvedToolName(name string, allowed []string) bool {
+	return name != "" && slices.Contains(allowed, name)
 }

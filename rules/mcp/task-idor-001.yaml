@@ -41,11 +41,10 @@ info:
     mcp-tools-unauth-001, and is suppressed here rather than mislabelled as a
     broken object-level authorization check.
 
-    Safety: creating a task requires invoking a real tool, which is unique among
-    the rules in this package. The rule therefore only invokes a task-capable
-    tool whose annotations explicitly and consistently declare it read-only,
-    and skips entirely when no such tool is advertised. A destructiveHint of
-    false alone still permits additive writes and is not sufficient. Because
+    Safety: creating a task invokes a real tool. Approve its exact name with
+    --mcp-invoke-tool or mcp_invoke_tools after reviewing it. The rule also
+    requires consistent readOnlyHint true and task support, but annotations are
+    untrusted hints. Missing approval is NOT TESTED, not clean. Because
     tasks/result blocks until a task is terminal, the rule polls tasks/get within
     a bounded budget and only requests the result once the task has finished.
 
@@ -58,6 +57,7 @@ info:
     is skipped rather than mis-tested. Covering the extension is separate work.
 
   references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
     - https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
     - https://cwe.mitre.org/data/definitions/639.html
     - https://cwe.mitre.org/data/definitions/200.html

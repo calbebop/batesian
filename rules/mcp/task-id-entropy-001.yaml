@@ -30,17 +30,17 @@ info:
          what samples reveal only makes real entropy higher. Under 64 bits a
          bearer-token MUST is violated before prediction is even attempted.
 
-    SAFETY mirrors mcp-task-idor-001: only tools explicitly and consistently
-    declaring readOnlyHint true and taskSupport optional/required are invoked,
-    with inert arguments. destructiveHint false alone still permits additive
-    writes. A server without such a tool reports clean rather
-    than dispatching anything unannotated.
+    SAFETY mirrors mcp-task-idor-001: approve the exact tool name with
+    --mcp-invoke-tool or mcp_invoke_tools before a task-augmented call. The tool
+    must also declare readOnlyHint true and taskSupport optional/required, but
+    those annotations are untrusted hints. Missing approval is NOT TESTED.
 
     Refusals before enough samples are collected report NOT TESTED naming the
     refusal - two or more samples are required to distinguish any pattern from
     coincidence.
 
   references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
     - https://github.com/modelcontextprotocol/ext-tasks
     - https://modelcontextprotocol.io/specification/2026-07-28/changelog
     - https://cwe.mitre.org/data/definitions/330.html

@@ -64,6 +64,9 @@ type Options struct {
 	// MCPScopeTools are exact tool names the scope-confusion rule may invoke.
 	MCPScopeTools []string
 
+	// MCPInvokeTools are exact names the traversal and task rules may call.
+	MCPInvokeTools []string
+
 	// Verbose enables debug logging.
 	Verbose bool
 

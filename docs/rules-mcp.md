@@ -445,13 +445,12 @@ refused or errored, an anonymous control that returned no answer, and a
 cross-context read that never landed. Only a listing that was read and contained
 no safely-annotated tool is a genuine not-applicable.
 
-**Safety.** Creating a task requires invoking a real tool, which is unique among
-the rules in this package (`mcp-tools-unauth-001` deliberately calls a
-non-existent tool so nothing executes). The rule therefore only invokes a
-task-capable tool whose annotations explicitly and consistently declare
-`readOnlyHint: true`, and skips entirely when no such tool is advertised. A
-`destructiveHint: false` declaration alone permits additive writes under MCP and
-is not sufficient; an unannotated tool is never invoked. Because `tasks/result`
+**Safety.** Creating a task invokes a real tool. Pass its exact name with
+`--mcp-invoke-tool` (or `mcp_invoke_tools` in config) after reviewing it. The
+rule also requires a task-capable tool with a consistent `readOnlyHint: true`,
+but server-supplied annotations are not a safety guarantee. Missing approval
+reports not tested; unannotated and non-read-only tools are never called.
+Because `tasks/result`
 blocks until a task is terminal, the rule polls `tasks/get` within a bounded
 budget and requests the result only once the task has finished.
 
@@ -869,16 +868,16 @@ This is the defect class behind CVE-2025-53109 (Filesystem EscapeRoute) and
 CVE-2026-27825 (mcp-atlassian), and it lives in ordinary tool arguments rather
 than in the transport or authorization layer the other rules here cover.
 
-**Safety.** This rule invokes real tools by name, which only
-`mcp-task-idor-001` also does, so it inherits that rule's gate and tightens it:
+**Safety.** This rule invokes real tools. Review each candidate and approve its
+exact name with `--mcp-invoke-tool` or `mcp_invoke_tools` before scanning.
+Server-supplied annotations alone cannot establish that a call is safe:
 
-1. Only tools whose annotations explicitly and consistently declare
-   `readOnlyHint: true` are dispatched. `destructiveHint: false` alone permits
-   additive writes and is not sufficient. An unannotated tool is never touched,
-   even one the scanner believes is vulnerable - the fixture keeps an
-   unannotated broken tool precisely to pin this.
-2. Every probe reads a file that does not exist: a per-run canary name. No file
-   content is ever returned and nothing on the target changes.
+1. Only approved tools consistently declaring `readOnlyHint: true` are
+   dispatched. `destructiveHint: false` alone permits additive writes.
+2. Probes name a nonexistent per-run canary. The scanner does not request file
+   contents, but a dishonest or misannotated tool may still have side effects.
+
+If a candidate lacks approval, the rule reports not tested rather than clean.
 
 **Oracle.** Servers that resolve the joined path before opening it usually say
 where they looked when it is not there; a Node ENOENT names the resolved
@@ -897,7 +896,7 @@ accused of traversal for repeating what it was sent. Without a baseline
 resolution to compare against, the rule declines to report rather than guess
 containment from a single lookup.
 
-Candidates are annotated-safe tools exposing a string parameter named like a
+Candidates are approved, annotated tools exposing a string parameter named like a
 filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
 whose safe tools take no such parameter reports clean: the rule does not
 dispatch unannotated tools, and the catalog records that trade-off here rather
@@ -1099,9 +1098,9 @@ Two measurable failures from five samples, both confirmed:
 The two checks are independent and both may fire on one manifest; sequential
 counter handles are also thin-alphabet by construction.
 
-Safety mirrors `mcp-task-idor-001`: only tools explicitly and consistently
-declaring `readOnlyHint: true` and taskSupport optional/required are invoked,
-with inert arguments. `destructiveHint: false` alone permits additive writes.
-A server without such a tool reports clean rather than dispatching anything
-unannotated. Refusals before enough samples report not tested naming the refusal
+Safety mirrors `mcp-task-idor-001`: approve an exact tool name with
+`--mcp-invoke-tool` or `mcp_invoke_tools` before task-augmented calls. The tool
+must also declare `readOnlyHint: true` and taskSupport optional/required, but
+those server-supplied hints do not guarantee harmless behavior. Missing approval
+reports not tested. Refusals before enough samples report not tested naming the refusal
 - fewer than two handles cannot distinguish any pattern from coincidence.

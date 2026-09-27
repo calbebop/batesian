@@ -148,6 +148,7 @@ batesian scan --target https://agent.example.com \
 - Target-advertised OAuth endpoints are restricted to the target origin. Use `--oauth-origin https://login.example.com` to approve an additional exact origin.
 - Some OAuth rules temporarily register clients and remove them when RFC 7592 management is available.
 - The scope-confusion rule invokes a mutating tool only when its exact name is approved with `--mcp-scope-tool`.
+- Traversal and task rules require `--mcp-invoke-tool NAME` before calling a real MCP tool. Review the tool yourself; server-supplied read-only annotations are only hints.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 
 ## Results and exit behavior

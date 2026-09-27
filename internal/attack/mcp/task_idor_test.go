@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -41,6 +42,10 @@ import (
 //   - "anon-init-hidden": initialize without a bearer 404s (the endpoint is
 //     hidden from anonymous callers) while credentialed initialize works.
 func taskIDORServer(mode string) *httptest.Server {
+	return taskIDORServerWithCalls(mode, nil)
+}
+
+func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server {
 	var mu sync.Mutex
 	sessions := 0
 	// taskID -> owning session id
@@ -122,6 +127,9 @@ func taskIDORServer(mode string) *httptest.Server {
 			result(map[string]interface{}{"tools": []interface{}{tool}})
 
 		case "tools/call":
+			if calls != nil {
+				calls.Add(1)
+			}
 			if _, isTask := params["task"]; !isTask {
 				rpcErr(-32600, "task augmentation required")
 				return
@@ -214,6 +222,7 @@ func runTaskIDOR(t *testing.T, srv *httptest.Server) []attack.Finding {
 	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
 	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
 		TimeoutSeconds: 5,
+		MCPInvokeTools: []string{"research"},
 		Principals: []attack.Principal{
 			{Name: "tenant-a", Token: "tok-a"},
 			{Name: "tenant-b", Token: "tok-b"},
@@ -240,6 +249,7 @@ func TestTaskIDOR_HiddenAnonInitializeIsNotTested(t *testing.T) {
 	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
 	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
 		TimeoutSeconds: 5,
+		MCPInvokeTools: []string{"research"},
 		Principals: []attack.Principal{
 			{Name: "tenant-a", Token: "tok-a"},
 			{Name: "tenant-b", Token: "tok-b"},
@@ -467,6 +477,33 @@ func TestTaskIDOR_UnsafeToolSkipped(t *testing.T) {
 
 	if findings := runTaskIDOR(t, srv); len(findings) != 0 {
 		t.Errorf("expected 0 findings when no safely-annotated task tool exists, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestTaskIDOR_RequiresExactToolApproval(t *testing.T) {
+	var calls atomic.Int32
+	srv := taskIDORServerWithCalls("vuln", &calls)
+	defer srv.Close()
+	exec := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"})
+	for _, approved := range [][]string{nil, {"other_tool"}} {
+		findings, err := exec.Execute(t.Context(), srv.URL, attack.Options{
+			TimeoutSeconds: 5,
+			MCPInvokeTools: approved,
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"},
+				{Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+		if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "research") {
+			t.Fatalf("approval %v: findings=%+v err=%v", approved, findings, err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("tool was called without exact approval: %d", calls.Load())
+		}
+	}
+	findings := runTaskIDOR(t, srv)
+	if len(findings) == 0 || calls.Load() == 0 {
+		t.Fatalf("exact approval did not enable the probe: findings=%d calls=%d", len(findings), calls.Load())
 	}
 }
 

@@ -12,14 +12,15 @@ info:
     EscapeRoute) and CVE-2026-27825 (mcp-atlassian): ordinary tool arguments,
     not the transport or authorization layer.
 
-    SAFETY. The rule invokes real tools by name, so it inherits and tightens the
-    mcp-task-idor-001 gate:
+    SAFETY. The rule invokes real tools. Approve each exact name with
+    --mcp-invoke-tool or mcp_invoke_tools after reviewing it:
 
-      1. Only tools whose annotations explicitly and consistently declare
-         readOnlyHint true are dispatched. destructiveHint false alone still
-         permits additive writes. An unannotated tool is never touched.
-      2. Every probe reads a file that does not exist - a per-run canary name -
-         so no file content is ever returned and nothing on the target changes.
+      1. Only approved tools consistently declaring readOnlyHint true are
+         dispatched. Server-supplied annotations are not a safety guarantee.
+      2. Probes name a nonexistent per-run canary and do not request file
+         contents. A dishonest tool may still have side effects.
+
+    Missing approval is NOT TESTED, not clean.
 
     ORACLE. Many servers resolve the joined path before opening it, and say
     where they looked when it is not there (a Node ENOENT names the resolved
@@ -32,13 +33,14 @@ info:
     its dot-dot segments intact is not resolution evidence and is ignored, so a
     chatty tool is not accused of traversal for repeating what it was sent.
 
-    Candidates are read-only annotated tools exposing a string parameter named
+    Candidates are approved, read-only annotated tools exposing a string parameter named
     like a filesystem path ("path", "file_path", "filename", "directory", ...).
     Tools without such a parameter, and servers advertising none, are reported
     clean; unannotated tools are out of scope by construction, which the scan's
     evidence states rather than hides.
 
   references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
     - https://cymulate.com/blog/cve-2025-53109-53110-escaperoute-anthropic/
     - https://github.com/advisories/GHSA-gjv4-ghm7-q58q

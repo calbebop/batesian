@@ -32,7 +32,8 @@ type ctxScopedConfig struct {
 	// stateless mints no Mcp-Session-Id, as a stateless Streamable HTTP deployment.
 	stateless bool
 	// listStatus, when non-zero, is the HTTP status tools/list answers with.
-	listStatus int
+	listStatus   int
+	listRPCError bool
 	// createStatus, when non-zero, is the HTTP status a CREDENTIALLED tools/call gets.
 	createStatus int
 	// anonCreateStatus, when non-zero, is what an ANONYMOUS tools/call gets, which is
@@ -107,6 +108,10 @@ func ctxScopedServer(t *testing.T, cfg ctxScopedConfig) *httptest.Server {
 			w.WriteHeader(http.StatusAccepted)
 
 		case "tools/list":
+			if cfg.listRPCError {
+				rpcErr(-32001, "not authorized")
+				return
+			}
 			if cfg.listStatus != 0 {
 				w.WriteHeader(cfg.listStatus)
 				return
@@ -199,6 +204,9 @@ func execTaskIDOR(t *testing.T, srv *httptest.Server, opts attack.Options) ([]at
 	t.Helper()
 	if opts.TimeoutSeconds == 0 {
 		opts.TimeoutSeconds = 5
+	}
+	if opts.MCPInvokeTools == nil {
+		opts.MCPInvokeTools = []string{"research"}
 	}
 	return mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
 		Execute(t.Context(), srv.URL, opts)
@@ -325,6 +333,7 @@ func TestTaskIDOR_PremiseFailuresAreNotClean(t *testing.T) {
 		want string
 	}{
 		{"tools/list scope-gated", ctxScopedConfig{listStatus: http.StatusForbidden}, "tools/list"},
+		{"tools/list RPC error", ctxScopedConfig{listRPCError: true}, "tools/list"},
 		{"task creation refused", ctxScopedConfig{createStatus: http.StatusForbidden}, "could not create a task"},
 		{"task creation errors", ctxScopedConfig{createStatus: http.StatusBadGateway}, "could not create a task"},
 	}

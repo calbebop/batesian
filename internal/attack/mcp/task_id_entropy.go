@@ -16,7 +16,7 @@ import (
 // TaskIDEntropyExecutor checks 2026-07-28 task-extension handles for sequential
 // values or less than 64 bits of estimated upper-bound alphabet search space. The
 // extension permits task IDs as bearer capabilities but requires them to resist
-// guessing. Only task-capable, explicitly read-only tools receive inert inputs.
+// guessing. Only approved, annotated task-capable tools receive probe inputs.
 type TaskIDEntropyExecutor struct {
 	rule attack.RuleContext
 }
@@ -48,6 +48,7 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 	var findings []attack.Finding
 	capabilityKnown := false
 	lastReason := ""
+	pending := map[string]bool{}
 
 	for _, session := range sessions {
 		if !session.ServerSupports("tools") {
@@ -55,8 +56,11 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 		}
 		capabilityKnown = true
 
-		fs, reason, determined := e.probeSession(ctx, client, session)
+		fs, reason, determined, unapproved := e.probeSession(ctx, client, session, opts.MCPInvokeTools)
 		findings = append(findings, labelEra(session, fs)...)
+		for _, name := range unapproved {
+			pending[name] = true
+		}
 		if determined {
 			lastReason = ""
 		} else if reason != "" && lastReason == "" {
@@ -68,18 +72,28 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 		return nil, fmt.Errorf("%w: no served wire advertises the tools capability at %s",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
+	if len(findings) == 0 && len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for name := range pending {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("%w: approve an exact task-capable tool name with --mcp-invoke-tool before task probes: %s",
+			attack.ErrInconclusive, strings.Join(names, ", "))
+	}
 	if len(findings) == 0 && lastReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, lastReason)
 	}
 	return findings, nil
 }
 
-func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, stopReason string, determined bool) {
-	safeTool, ok := teFindSafeTool(ctx, client, session)
+func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, approved []string) (findings []attack.Finding, stopReason string, determined bool, unapproved []string) {
+	safeTool, ok, pending, listed := teFindSafeTool(ctx, client, session, approved)
+	if !listed {
+		return nil, "tools/list returned no usable answer on this wire", false, nil
+	}
 	if !ok {
-		// Consistent with mcp-task-idor-001: nothing declared safe to invoke,
-		// so no handle could exist without breaking that gate first.
-		return nil, "", true
+		return nil, "", len(pending) == 0, pending
 	}
 
 	var ids []string
@@ -92,7 +106,7 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("task-augmented tools/call against %q was %s on this wire, so "+
-					"no handle could be minted", safeTool.name, scopeVerdictName(verdict)), false
+					"no handle could be minted", safeTool.name, scopeVerdictName(verdict)), false, nil
 			}
 			break // mid-collection refusal: judge what was collected
 		}
@@ -107,7 +121,7 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 		if json.Unmarshal(resp.Body, &body) != nil || body.Error != nil || body.Result.Task.TaskID == "" {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("tools/call against %q answered but carried no task handle, so "+
-					"the handles-per-call premise was never established", safeTool.name), false
+					"the handles-per-call premise was never established", safeTool.name), false, nil
 			}
 			break
 		}
@@ -115,9 +129,9 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 	}
 	if len(ids) < 2 {
 		return nil, fmt.Sprintf("only %d task handle(s) were minted by %q on this wire, so no pattern "+
-			"could be distinguished from coincidence", len(ids), safeTool.name), false
+			"could be distinguished from coincidence", len(ids), safeTool.name), false, nil
 	}
-	return e.teGradeHandles(session.Endpoint, safeTool.name, ids), "", true
+	return e.teGradeHandles(session.Endpoint, safeTool.name, ids), "", true, nil
 }
 
 // teSafeTool is the invoke-capable candidate the rule settles on.
@@ -126,12 +140,11 @@ type teSafeTool struct {
 	schema map[string]interface{}
 }
 
-// teFindSafeTool picks the first explicitly read-only tool
-// whose execution.taskSupport marks it task-augmentable.
-func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession) (teSafeTool, bool) {
+// teFindSafeTool picks an approved, annotated task-capable tool.
+func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, approved []string) (teSafeTool, bool, []string, bool) {
 	resp, err := s.post(ctx, client, 20, "tools/list", nil)
 	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
-		return teSafeTool{}, false
+		return teSafeTool{}, false, nil, false
 	}
 	var body struct {
 		Result struct {
@@ -147,10 +160,12 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 				} `json:"annotations"`
 			} `json:"tools"`
 		} `json:"result"`
+		Error map[string]interface{} `json:"error"`
 	}
-	if json.Unmarshal(resp.Body, &body) != nil {
-		return teSafeTool{}, false
+	if json.Unmarshal(resp.Body, &body) != nil || body.Error != nil {
+		return teSafeTool{}, false, nil, false
 	}
+	var pending []string
 	for _, t := range body.Result.Tools {
 		if t.Execution.TaskSupport != "optional" && t.Execution.TaskSupport != "required" {
 			continue
@@ -161,9 +176,12 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 		if !declaresReadOnlyTool(t.Annotations.ReadOnlyHint, t.Annotations.DestructiveHint) {
 			continue
 		}
-		return teSafeTool{name: t.Name, schema: t.InputSchema}, true
+		if approvedToolName(t.Name, approved) {
+			return teSafeTool{name: t.Name, schema: t.InputSchema}, true, nil, true
+		}
+		pending = append(pending, t.Name)
 	}
-	return teSafeTool{}, false
+	return teSafeTool{}, false, pending, true
 }
 
 var teNumericOnly = regexp.MustCompile(`^[0-9]+$`)
