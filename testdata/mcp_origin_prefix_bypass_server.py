@@ -1,27 +1,4 @@
-"""
-Deliberately vulnerable MCP test server for validating:
-
-  mcp-origin-prefix-bypass-001: an Origin validator implemented as a string
-  prefix match. It rejects a fully foreign origin - so a plain DNS-rebinding
-  probe reads it as clean - while accepting any origin whose string starts
-  with its own, which is exactly what the rule's crafted twins exploit.
-
-Postures:
-  prefix (default) - HasPrefix(origin, own-origin) validation. The subdomain
-                     craft MUST fire confirmed/high.
-  hardened         - parsed scheme+host equality. Every craft MUST be
-                     rejected; the rule MUST stay silent.
-  open             - no validation at all. The control twin is accepted too,
-                     so the rule suppresses itself: that surface belongs to
-                     mcp-dns-rebind-origin-001.
-
-Only initialize and notifications are served; this rule is about header
-handling, not tool surface.
-
-Validate against it:
-  python testdata/mcp_origin_prefix_bypass_server.py prefix    # fires
-  python testdata/mcp_origin_prefix_bypass_server.py hardened  # silent
-  python testdata/mcp_origin_prefix_bypass_server.py open      # silent
+"""MCP Origin validator postures: prefix, port-prefix, hardened, and open.
 
 Run: python testdata/mcp_origin_prefix_bypass_server.py [posture]
 Scan: batesian scan --target http://127.0.0.1:7811 --rule-ids mcp-origin-prefix-bypass-001 -v
@@ -65,10 +42,10 @@ def make_allowed(posture):
     def allowed(origin: str) -> bool:
         if posture == "open" or origin == "":
             return True
-        # The server's own wire origin as a caller would see it in scripts.
         own = f"http://127.0.0.1:{PORT}"
         if posture == "prefix":
-            # VULNERABLE: literal string comparison.
+            return origin.startswith("http://127.0.0.1")
+        if posture == "port-prefix":
             return origin.startswith(own)
         # hardened: parse and compare components individually.
         from urllib.parse import urlsplit

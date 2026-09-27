@@ -4,42 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// OriginPrefixBypassExecutor tests whether an MCP server's Origin validation
-// compares strings instead of parsed hosts (rule mcp-origin-prefix-bypass-001).
-//
-// mcp-dns-rebind-origin-001 asks whether any validation exists at all, using a
-// completely unrelated origin. But the recurring real-world defect sits one
-// step inside: validators implemented as string prefix or containment checks -
-//
-//	strings.HasPrefix(origin, "https://trusted.example")
-//	strings.Contains(origin, "trusted.example")
-//
-// - reject that same unrelated origin and read clean under the existing rule,
-// while accepting anything that merely STARTS WITH the trusted string:
-//
-//	https://trusted.example.attacker.tld   (attacker subdomain)
-//	https://trusted.example@attacker.tld    (userinfo smuggle)
-//
-// Both published repeatedly as CVEs in MCP platform transports this quarter
-// (CVE-2026-55532 prefix match, CVE-2026-55637 local rebind), because every
-// naive implementation reaches for HasPrefix before reaching for url.Parse.
-//
-// The probe is a control pair on each served wire:
-//
-//	baseline        handshake without Origin                  -> must succeed
-//	control twin    same request + fully foreign origin       -> must FAIL
-//	                (a failure proves a validator exists)
-//	prefix twins    same request + <host>-sharing origins     -> any ACCEPT is
-//	                the bypass, confirmed against the rejecting control
-//
-// If the control twin is also accepted there is no validator to bypass; that
-// surface belongs to mcp-dns-rebind-origin-001 and is suppressed here rather
-// than double-counted.
+// OriginPrefixBypassExecutor checks whether a foreign, browser-shaped Origin
+// bypasses a validator that rejects an unrelated Origin.
 type OriginPrefixBypassExecutor struct {
 	rule attack.RuleContext
 }
@@ -54,29 +26,42 @@ func NewOriginPrefixBypassExecutor(r attack.RuleContext) *OriginPrefixBypassExec
 	return &OriginPrefixBypassExecutor{rule: r}
 }
 
-// prefixCanaryZone is the non-resolving RFC 6761 zone used to craft attacker
-// domains that share the target's hostname as a string prefix.
+// prefixCanaryZone is a non-resolving stand-in for an attacker domain.
 const prefixCanaryZone = "prefix-rebind.batesian-invalid.invalid"
 
-// originProbe is one crafted Origin value plus what its acceptance would mean.
 type originProbe struct {
-	label  string
-	origin string
+	label        string
+	origin       string
+	attackerHost string
 }
 
-// prefixProbes composes the crafted origins for a target exactly as a
-// prefix-matching validator sees them: raw strings starting with the trusted
-// value. The target's own scheme and host[:port] travel verbatim inside the
-// craft, because deployments allowlist whatever they themselves serve - an
-// http server never accepts https-prefixed strings, so the mirror is what
-// makes a prefix bug observable rather than merely another rejection.
-func prefixProbes(trustedOrigin string) []originProbe {
-	return []originProbe{
-		{"attacker subdomain sharing the trusted hostname",
-			trustedOrigin + "." + prefixCanaryZone},
-		{"userinfo-smuggled attacker domain",
-			trustedOrigin + "@" + prefixCanaryZone},
+// prefixProbes keeps the target port after the foreign hostname, as browsers do.
+func prefixProbes(target *url.URL) []originProbe {
+	host := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	scheme := strings.ToLower(target.Scheme)
+	if host == "" || strings.Contains(host, ":") || (scheme != "http" && scheme != "https") {
+		return nil
 	}
+	for _, r := range host {
+		if r > 127 {
+			return nil
+		}
+	}
+	attackerHost := host + "." + prefixCanaryZone
+	origin := scheme + "://" + attackerHost
+	port := target.Port()
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return nil
+		}
+		port = strconv.Itoa(n)
+	}
+	isDefaultPort := (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
+	if port != "" && !isDefaultPort {
+		origin += ":" + port
+	}
+	return []originProbe{{"attacker hostname with trusted-host prefix", origin, attackerHost}}
 }
 
 func (e *OriginPrefixBypassExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -89,8 +74,10 @@ func (e *OriginPrefixBypassExecutor) Execute(ctx context.Context, target string,
 			attack.ErrInconclusive, vars.BaseURL)
 	}
 
-	targetHostPort := u.Host // kept raw incl. port: prefix matches are literal
-	trustedOrigin := u.Scheme + "://" + targetHostPort
+	probes := prefixProbes(u)
+	if len(probes) == 0 {
+		return nil, fmt.Errorf("%w: no browser-shaped prefix probe for %s", attack.ErrInconclusive, vars.BaseURL)
+	}
 
 	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 
@@ -104,14 +91,14 @@ func (e *OriginPrefixBypassExecutor) Execute(ctx context.Context, target string,
 			return nil, true // no gate: dns-rebind's surface, not ours
 		}
 
-		for _, probe := range prefixProbes(trustedOrigin) {
+		for _, probe := range probes {
 			ok, _ := e.originWith(ctx, client, session, probe.origin)
 			if !ok {
 				continue // this craft was rejected too: validator held on it
 			}
 			return []attack.Finding{e.finding(session, probe)}, true
 		}
-		// Every craft rejected against a live validator: the boundary held.
+		// The browser-shaped prefix was rejected.
 		return nil, true
 	})
 }
@@ -139,7 +126,6 @@ func (e *OriginPrefixBypassExecutor) originWith(ctx context.Context, client *att
 
 func (e *OriginPrefixBypassExecutor) finding(session mcpSession, probe originProbe) attack.Finding {
 	method := probeMethod(session)
-	host := sessionHost(session.Endpoint)
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -147,27 +133,17 @@ func (e *OriginPrefixBypassExecutor) finding(session mcpSession, probe originPro
 		Confidence: attack.ConfirmedExploit,
 		Title:      "MCP Origin validation accepts " + method + " with a prefix-forged origin (" + method + " reached)",
 		Description: fmt.Sprintf(
-			"The %s endpoint rejected a fully foreign Origin but accepted one whose string merely "+
-				"starts with the trusted value (%q). That is a string prefix or containment check, not "+
-				"host validation: parsed out, the accepted origin resolves to attacker infrastructure "+
-				"(%s), so the DNS rebinding protection the check pretends to provide does not exist. "+
-				"A page on such a domain can drive this server from a victim's browser exactly as if "+
-				"no check were present. Parse the Origin header into a URL and compare scheme and host "+
-				"components individually.", session.Endpoint, probe.origin, host),
+			"The %s endpoint rejected an unrelated Origin but accepted %q, whose foreign "+
+				"hostname (%s) shares a string prefix with the target hostname. This "+
+				"browser-shaped Origin bypasses the validator; exploitability also depends "+
+				"on network and TLS conditions. Compare parsed origins exactly, including "+
+				"scheme, hostname, and port.", session.Endpoint, probe.origin, probe.attackerHost),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nbaseline %s (no Origin): accepted\n"+
 				"control, unrelated origin %s: rejected\n"+
-				"probe (%s) %s: ACCEPTED\naccepted origin resolves to attacker infrastructure; "+
-				"shared substring only", session.Endpoint, method, foreignOrigin, probe.label, probe.origin),
+				"probe (%s) %s: ACCEPTED\nforeign hostname: %s",
+			session.Endpoint, method, foreignOrigin, probe.label, probe.origin, probe.attackerHost),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}
-}
-
-// sessionHost extracts the host component of an endpoint for finding text.
-func sessionHost(endpoint string) string {
-	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
-		return u.Host
-	}
-	return strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")
 }

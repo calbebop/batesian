@@ -1047,41 +1047,22 @@ Both wires are read where served: legacy carries identity in
 
 **Origin Prefix-Match Bypass** | Severity: High | confirmed | CWE-346
 
-Asks whether the Origin validation that exists actually means anything.
-mcp-dns-rebind-origin-001 establishes whether validation happens at all using
-a fully unrelated origin; the recurring real-world defect sits one step
-inside - validators written as string comparisons:
+Tests for a host-prefix validator, such as
+`strings.HasPrefix(origin, "https://trusted.example")`. An unrelated Origin
+must be rejected first; otherwise the unvalidated surface belongs to
+`mcp-dns-rebind-origin-001`.
 
-```go
-strings.HasPrefix(origin, "https://trusted.example")
-strings.Contains(origin, "trusted.example")
-```
+The bypass probe uses a foreign hostname beginning with the target hostname,
+for example `https://trusted.example.prefix-rebind.batesian-invalid.invalid`.
+It preserves the target's scheme and non-default port. The `.invalid` domain
+does not resolve, but has the shape of an Origin a browser could send from a
+resolvable attacker domain. Acceptance against the rejecting control confirms
+the validation gap; practical exploitation also depends on network and TLS
+conditions.
 
-Such validators reject that same unrelated origin and read clean under the
-sibling rule, while accepting anything whose STRING starts with (or contains)
-the trusted value:
-
-- `https://trusted.example.attacker.tld` - attacker subdomain
-- `https://trusted.example@attacker.tld` - userinfo smuggle
-
-Parsed out, both resolve to attacker infrastructure, so the browser-mediated
-exposure is identical to having no check at all. This family published
-repeatedly this quarter: CVE-2026-55532 prefix match, CVE-2026-55637 local
-rebind, GHSA-489g TOCTOU.
-
-The probe is a control pair on every served wire: the baseline handshake is
-repeated with a fully foreign Origin first, and its rejection is what proves
-a validator exists on that wire. Only then do the two crafted origins go out;
-acceptance of either against the rejecting control is **confirmed** at high,
-with evidence showing all three outcomes side by side. If the control twin is
-also accepted there is no validator to bypass - that surface belongs to
-`mcp-dns-rebind-origin-001` and is suppressed here rather than double-counted.
-
-The crafted domains are non-resolving RFC 6761 `.invalid` names, so nothing
-the probe accepts can call out to the scanner. Both crafts mirror the target's
-own scheme and host-port verbatim, because deployments allowlist what they
-themselves serve: an http server never accepts https-prefixed strings, and a
-craft that cannot fool a prefix validator measures nothing.
+Earlier versions also sent `https://trusted.example@attacker.tld` or appended
+text after a numeric port. Browsers cannot serialize either as an `Origin`, so
+acceptance of those headers alone no longer produces a confirmed finding.
 
 ---
 
