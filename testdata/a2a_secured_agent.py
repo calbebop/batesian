@@ -70,6 +70,7 @@ TOKENS = {"tok-a": "tenant-a", "tok-b": "tenant-b"}
 
 # task id -> {"ctx", "owner", "state", "history"}
 TASKS: dict = {}
+PUSH_CFG: dict = {}
 
 
 def _principal(request: Request) -> str:
@@ -212,14 +213,36 @@ def _list(req_id, params, caller, v1):
     }})
 
 
-def _set_push(req_id, params, caller):
+def _set_push(req_id, params, caller, v1):
     task_id = (params or {}).get("taskId") or ""
     if task_id not in TASKS:
         return _error(req_id, -32001, "Task not found")
     if not _may_touch(TASKS[task_id], caller):
         return _error(req_id, -32600, "not authorized for this task")
+    config = params if v1 else params.get("pushNotificationConfig") or {}
+    config_id = config.get("id") or uuid.uuid4().hex
+    stored = {"id": config_id, "url": config.get("url", ""),
+              "token": config.get("token", "")}
+    PUSH_CFG.setdefault(task_id, {})[config_id] = stored
+    response = {"taskId": task_id, **stored} if v1 else {
+        "taskId": task_id, "pushNotificationConfig": stored}
     return JSONResponse({"jsonrpc": "2.0", "id": req_id,
-                         "result": {"taskId": task_id, "url": "set", "token": "set"}})
+                         "result": response})
+
+
+def _get_push(req_id, params, caller, v1):
+    task_id = (params or {}).get("taskId" if v1 else "id") or ""
+    config_id = (params or {}).get("id" if v1 else "pushNotificationConfigId") or ""
+    if task_id not in TASKS:
+        return _error(req_id, -32001, "Task not found")
+    if not _may_touch(TASKS[task_id], caller):
+        return _error(req_id, -32600, "not authorized for this task")
+    config = PUSH_CFG.get(task_id, {}).get(config_id)
+    if config is None:
+        return _error(req_id, -32001, "Push config not found")
+    response = {"taskId": task_id, **config} if v1 else {
+        "taskId": task_id, "pushNotificationConfig": config}
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": response})
 
 
 async def agent_card(request: Request) -> JSONResponse:
@@ -276,7 +299,9 @@ async def jsonrpc(request: Request) -> Response:
     if method in ("ListTasks", "tasks/list"):
         return _list(req_id, params, caller, v1=method == "ListTasks")
     if method in ("CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set"):
-        return _set_push(req_id, params, caller)
+        return _set_push(req_id, params, caller, v1=method == "CreateTaskPushNotificationConfig")
+    if method in ("GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get"):
+        return _get_push(req_id, params, caller, v1=method == "GetTaskPushNotificationConfig")
     return _error(req_id, -32601, "Method not found")
 
 

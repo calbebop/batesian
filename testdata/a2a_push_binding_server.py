@@ -1,17 +1,8 @@
-"""
-Deliberately vulnerable A2A test server for validating:
-  - a2a-push-binding-001: push-notification config operations are authenticated
-    but NOT bound to the task's owning principal, so any valid principal can SET
-    (webhook hijack) or GET (callback-secret leak) another principal's task push
-    config (CWE-639/862/441).
+"""A2A push-config fixture with authentication but no task-owner binding.
 
 Two principals by bearer token:
   Authorization: Bearer tok-a -> tenant-a
   Authorization: Bearer tok-b -> tenant-b
-
-Messaging and push-config ops require auth (unauthenticated => rejected), which
-is what separates this from a no-auth control plane. The bug: set/get of a push
-config never checks that the caller owns the task.
 
 Validate (two principals required):
   python testdata/a2a_push_binding_server.py
@@ -22,6 +13,7 @@ Validate (two principals required):
 Run: python testdata/a2a_push_binding_server.py
 """
 import json
+import uuid
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
@@ -31,7 +23,7 @@ import uvicorn
 PORT = 3107
 TOKEN_TENANT = {"tok-a": "tenant-a", "tok-b": "tenant-b"}
 TASK_OWNER: dict = {}
-PUSH_CFG: dict = {}  # taskId -> {"url", "token"}
+PUSH_CFG: dict = {}  # taskId -> configId -> config
 _counter = 0
 
 
@@ -50,23 +42,6 @@ def error(req_id, msg):
     return Response(json.dumps({"jsonrpc": "2.0", "id": req_id,
                                 "error": {"code": -32600, "message": msg}}),
                     media_type="application/json")
-
-
-def push_url(params):
-    """Read the callback from the two shapes the protocol defines.
-
-    v0.3 nests it under pushNotificationConfig. v1.0 params ARE a
-    TaskPushNotificationConfig, so the callback is a flat `url` alongside taskId
-    and token.
-
-    A flat `pushNotificationUrl` used to be accepted here as well. No SDK defines
-    that field, a2a-sdk rejects it with -32602, and accepting it meant this
-    fixture agreed with the scanner instead of with the protocol.
-    """
-    cfg = params.get("pushNotificationConfig")
-    if isinstance(cfg, dict) and cfg.get("url"):
-        return cfg["url"]
-    return params.get("url", "")
 
 
 async def rpc(request: Request) -> Response:
@@ -89,16 +64,30 @@ async def rpc(request: Request) -> Response:
         if not who:
             return error(req_id, "authentication required")
         tid = params.get("taskId", "")
-        # VULNERABLE: no check that `who` owns `tid`.
-        PUSH_CFG[tid] = {"url": push_url(params), "token": params.get("token", "")}
-        return result(req_id, {"taskId": tid, "pushNotificationConfig": PUSH_CFG[tid]})
+        if tid not in TASK_OWNER:
+            return error(req_id, "Task not found")
+        v1 = method == "CreateTaskPushNotificationConfig"
+        config = params if v1 else params.get("pushNotificationConfig") or {}
+        config_id = config.get("id") or uuid.uuid4().hex
+        stored = {"id": config_id, "url": config.get("url", ""),
+                  "token": config.get("token", "")}
+        PUSH_CFG.setdefault(tid, {})[config_id] = stored
+        response = {"taskId": tid, **stored} if v1 else {
+            "taskId": tid, "pushNotificationConfig": stored}
+        return result(req_id, response)
 
     if method in ("GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get"):
         if not who:
             return error(req_id, "authentication required")
-        tid = params.get("taskId", "")
-        # VULNERABLE: returns another principal's callback URL/token.
-        return result(req_id, {"taskId": tid, "pushNotificationConfig": PUSH_CFG.get(tid, {})})
+        v1 = method == "GetTaskPushNotificationConfig"
+        tid = params.get("taskId" if v1 else "id", "")
+        config_id = params.get("id" if v1 else "pushNotificationConfigId", "")
+        config = PUSH_CFG.get(tid, {}).get(config_id)
+        if config is None:
+            return error(req_id, "Push config not found")
+        response = {"taskId": tid, **config} if v1 else {
+            "taskId": tid, "pushNotificationConfig": config}
+        return result(req_id, response)
 
     return error(req_id, "Method not found")
 
