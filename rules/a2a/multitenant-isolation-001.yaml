@@ -1,37 +1,21 @@
 id: a2a-multitenant-isolation-001
 info:
-  name: A2A Multi-Tenant Task Isolation Breach
+  name: A2A Cross-Tenant Task Content Disclosure
   author: batesian
   severity: high
   description: |
-    Tests whether an A2A server that authenticates callers still enforces a
-    TENANT boundary on task lookup - i.e. that a fully authenticated principal in
-    tenant A cannot read a task created by a principal in tenant B. This is the
-    cross-cutting multi-tenant isolation concern (distinct from a2a-task-idor-001,
-    which tests anonymous access): real deployments rely on tenant separation
-    while every caller holds a VALID token.
+    Creates a task with unique probe text for each of two authenticated
+    principals, then reads each task using the other principal's credentials.
+    Reports a cross-tenant disclosure only when the returned task contains the
+    owner's probe text in history, an artifact, or a status message. An echoed
+    task ID or context ID alone does not establish content access. If an
+    anonymous read exposes the same content, the anonymous task-read rule owns
+    that finding instead.
 
-    This is a stateful, multi-principal chained check and requires at least two
-    principals with valid, distinct credentials (configure them via the
-    `principals:` block in batesian.yaml or repeated --principal flags). Sequence:
-
-      1. Authenticate as principal A and create a task (TA); authenticate as
-         principal B and create a task (TB). Both creations must succeed, proving
-         A and B are two valid, distinct identities. If either fails, or the two
-         principals share a token, the check is skipped (cannot establish two
-         tenants).
-      2. Confirm the server is not simply open: an UNAUTHENTICATED tasks/get of
-         TA must be rejected. If the anonymous read succeeds, the server enforces
-         no auth at all - that is a2a-task-idor-001 / resources-unauth territory,
-         not a tenant-isolation breach - so no finding is raised here.
-      3. Cross-tenant read: as B, read TA; as A, read TB. A finding is confirmed
-         only when a principal successfully retrieves the OTHER tenant's task
-         content (history/context), proving task lookup is not bound to the
-         owning tenant.
-
-    Impact: in a multi-tenant A2A deployment a tenant can read another tenant's
-    conversation history, tool outputs, and embedded context using nothing but
-    its own valid credentials and a task ID.
+    Requires two distinct principals configured in batesian.yaml or with
+    repeated --principal flags. A confirmed finding demonstrates disclosure of
+    the observed probe content; it does not assume that all task history or
+    artifacts are accessible.
 
   references:
     - https://a2a-protocol.org/latest/specification/

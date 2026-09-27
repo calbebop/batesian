@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -31,6 +32,7 @@ func tenantOf(r *http.Request) string {
 func tenantServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	owner := map[string]string{} // taskID -> owning tenant
+	probeText := map[string]string{}
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -56,16 +58,18 @@ func tenantServer(mode string) *httptest.Server {
 			taskID := "task-" + tn + "-1"
 			mu.Lock()
 			owner[taskID] = tn
+			probeText[taskID] = rpcMessageText(req)
 			mu.Unlock()
 			taskResult(w, id, taskID, "ctx-"+tn)
 		case "GetTask", "tasks/get":
 			taskID, _ := params["id"].(string)
 			mu.Lock()
 			own := owner[taskID]
+			text := probeText[taskID]
 			mu.Unlock()
 			switch mode {
 			case "open":
-				taskWithHistory(w, id, taskID, "ctx-"+own) // no auth at all
+				taskWithHistory(w, id, taskID, "ctx-"+own, text)
 			case "secure":
 				if tenant == "" {
 					rpcErr(w, id, -32600, "authentication required")
@@ -75,13 +79,28 @@ func tenantServer(mode string) *httptest.Server {
 					rpcErr(w, id, -32001, "task not found") // tenant-bound
 					return
 				}
-				taskWithHistory(w, id, taskID, "ctx-"+own)
+				taskWithHistory(w, id, taskID, "ctx-"+own, text)
 			default: // vulnerable
 				if tenant == "" {
-					rpcErr(w, id, -32600, "authentication required") // auth enforced...
+					if mode == "anon-redacted" {
+						taskResult(w, id, taskID, "ctx-"+own)
+						return
+					}
+					if mode == "anon-a-only" && own == "A" {
+						taskWithHistory(w, id, taskID, "ctx-"+own, text)
+						return
+					}
+					rpcErr(w, id, -32600, "authentication required")
 					return
 				}
-				taskWithHistory(w, id, taskID, "ctx-"+own) // ...but ownership IS NOT checked
+				if mode == "redacted" || (mode == "hybrid" && method == "GetTask") {
+					taskResult(w, id, taskID, "ctx-"+own)
+					return
+				}
+				if mode == "unrelated" {
+					text = "other text"
+				}
+				taskWithHistory(w, id, taskID, "ctx-"+own, text)
 			}
 		default:
 			rpcErr(w, id, -32601, "Method not found")
@@ -125,6 +144,62 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 		if len(f.Chain) != 3 || f.Chain[2].Outcome == "" {
 			t.Errorf("expected a 3-hop provenance chain, got %+v", f.Chain)
 		}
+		if !strings.Contains(f.Evidence, "owner marker: batesian mt probe ") ||
+			!strings.Contains(f.Evidence, "response: ") {
+			t.Errorf("expected probe and response evidence, got %q", f.Evidence)
+		}
+	}
+}
+
+func TestMultiTenant_RedactedReadsAreInconclusive(t *testing.T) {
+	for _, mode := range []string{"redacted", "unrelated"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := tenantServer(mode)
+			defer ts.Close()
+			findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
+func TestMultiTenant_LegacyReadAfterRedactedV1(t *testing.T) {
+	ts := tenantServer("hybrid")
+	defer ts.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("want two legacy read findings, got %d findings, err=%v", len(findings), err)
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Evidence, "method: tasks/get") {
+			t.Errorf("expected legacy method in evidence: %s", finding.Evidence)
+		}
+	}
+}
+
+func TestMultiTenant_AnonymousStubDoesNotSuppressCrossTenantLeak(t *testing.T) {
+	ts := tenantServer("anon-redacted")
+	defer ts.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("want two cross-tenant findings, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+func TestMultiTenant_AnonymousDisclosureSuppressesOnlyThatTask(t *testing.T) {
+	ts := tenantServer("anon-a-only")
+	defer ts.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("want one cross-tenant finding, got %d findings, err=%v", len(findings), err)
+	}
+	if !strings.Contains(findings[0].Evidence, "task: task-B-1") {
+		t.Errorf("expected only B's task: %s", findings[0].Evidence)
 	}
 }
 
