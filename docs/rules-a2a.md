@@ -318,15 +318,16 @@ that upstream task-id; run standalone it falls back to creating its own delegato
 task. Needs two principals with valid, distinct credentials.
 
 It tests whether a delegated / multi-hop task is re-bound to its owning principal
-on each hop. Sequence: (1) obtain a task owned by delegator A (from the
-blackboard or by creating one); (2) confirm the server enforces auth - an
-unauthenticated continuation of A's task must be rejected (otherwise it's
-`a2a-task-idor-001` territory, not a delegation break, so no finding); (3)
-continue A's task as the WRONG principal B (a follow-up message carrying A's
-taskId/contextId presented with B's credentials). A **confirmed** finding is
-raised only when B successfully advances A's task, proving the delegated step is
-not re-bound to the owning principal. The finding's provenance records whether
-the task was consumed from an upstream rule or created locally.
+on each hop. It obtains A's task, sends an unauthenticated control message, then
+sends a unique follow-up as principal B. A **confirmed** finding requires that
+B's user-role message text appear in A's task history when read back as A,
+regardless of the send response. A response that
+only names A's task or shares its `contextId` is insufficient: it may be a
+no-op or a new task. If A's history cannot verify an accepted send, the result
+is inconclusive. If the unauthenticated message is stored, the rule leaves the
+case to the unauthenticated task-access checks. The finding proves stored
+cross-principal input, not downstream execution or absence of a valid delegation
+grant. Its provenance records whether A's task came from an upstream rule.
 
 ---
 

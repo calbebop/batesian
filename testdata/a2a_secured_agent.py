@@ -146,13 +146,11 @@ def _send(req_id, params, caller, v1):
     task_id = message.get("taskId") or ""
 
     if task_id:
-        # A continuation. The SDK returns the referenced task rather than appending,
-        # logging "Task already exists. Ignoring task replacement." Reproduced as
-        # observed: what the rules judge is whether the reply references that task.
         if task_id not in TASKS:
             return _error(req_id, -32001, "Task not found")
         if not _may_touch(TASKS[task_id], caller):
             return _error(req_id, -32600, "not authorized for this task")
+        TASKS[task_id]["history"].append(_normalized(message))
         return JSONResponse({"jsonrpc": "2.0", "id": req_id,
                              "result": _task_body(task_id, v1, nest=True)})
 

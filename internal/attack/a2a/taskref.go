@@ -5,42 +5,6 @@ import (
 	"strings"
 )
 
-// resultReferencesTask matches task or context identifiers in bare Task results
-// and nested v1.0 SendMessageResponse tasks. Message results cannot prove access.
-func resultReferencesTask(body []byte, taskID, contextID string) bool {
-	// task carries the identifiers wherever it appears in the envelope.
-	type task struct {
-		ID        string `json:"id"`
-		TaskID    string `json:"taskId"`
-		ContextID string `json:"contextId"`
-	}
-	var envelope struct {
-		Result *struct {
-			task
-			// v1.0 send-style responses: the oneof member's field name.
-			Task *task `json:"task"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
-		return false
-	}
-	candidates := []task{envelope.Result.task}
-	if envelope.Result.Task != nil {
-		candidates = append(candidates, *envelope.Result.Task)
-	}
-	for _, c := range candidates {
-		if taskID != "" && (c.ID == taskID || c.TaskID == taskID) {
-			return true
-		}
-		// contextId alone is enough: a continuation accepted into A's context is the
-		// boundary crossing, whatever task id the server chose to report.
-		if contextID != "" && c.ContextID == contextID {
-			return true
-		}
-	}
-	return false
-}
-
 // countListedTasks counts non-empty task objects in an envelope or bare array.
 // Empty collections, objects, and count-only responses do not prove disclosure.
 func countListedTasks(body []byte) int {

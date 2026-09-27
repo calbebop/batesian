@@ -24,18 +24,18 @@ info:
     Sequence:
       1. Obtain a task owned by delegator A - preferably an upstream task-id
          artifact owned by A; otherwise create one as A.
-      2. Confirm the server enforces auth on continuation: an UNAUTHENTICATED
-         follow-up referencing A's task must be rejected. If it succeeds, the
-         server has no auth at all (a2a-task-idor territory), not a delegation
-         break - no finding.
-      3. Continue A's task as the WRONG principal B (a follow-up message carrying
-         A's taskId/contextId, presented with B's credentials). A finding is
-         confirmed only when B successfully drives A's task forward, proving the
-         delegated step is not re-bound to the owning principal.
+      2. Send an unauthenticated follow-up and read A's task history. A stored
+         message indicates an open control plane, even if the send returned an
+         error. Otherwise proceed to B and recheck the anonymous marker before
+         reporting.
+      3. Continue A's task as principal B with a unique follow-up message. Read
+         A's task as A and confirm the user-role message text in its history,
+         regardless of the send response. An accepted send or response echoing
+         A's task/context ID is not sufficient evidence.
 
-    Impact: a caller can hijack or advance another principal's delegated task -
-    injecting steps, resolving auth-required hops, or escalating within a
-    workflow that should have stayed bound to the original delegator.
+    The rule confirms cross-principal input in the owner's task history, not
+    downstream execution. Review explicit delegation grants before treating B
+    as unauthorized.
 
   references:
     - https://a2a-protocol.org/latest/specification/

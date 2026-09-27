@@ -16,9 +16,6 @@ import (
 	"github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// continuationTaskID extracts message.taskId from a JSON-RPC SendMessage body.
-// A non-empty value marks the request as a delegated continuation rather than a
-// fresh task creation.
 func continuationTaskID(req map[string]interface{}) string {
 	params, _ := req["params"].(map[string]interface{})
 	msg, _ := params["message"].(map[string]interface{})
@@ -26,15 +23,20 @@ func continuationTaskID(req map[string]interface{}) string {
 	return id
 }
 
-// delegationServer builds an A2A server that supports task creation and delegated
-// continuation. mode selects the posture for continuation:
-//   - "vulnerable": any authenticated principal may continue any task (ignores owner)
-//   - "secure":     only the owning tenant may continue its task
-//   - "open":       no authentication at all (unauth continuation succeeds)
+func continuationMessage(req map[string]interface{}) map[string]interface{} {
+	params, _ := req["params"].(map[string]interface{})
+	msg, _ := params["message"].(map[string]interface{})
+	return msg
+}
+
+// delegationServer stores continuations so owner readback can verify them.
 func delegationServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	owner := map[string]string{}
+	history := map[string][]map[string]interface{}{}
+	lastMessageID := ""
 	counter := 0
+	readCount := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -46,8 +48,38 @@ func delegationServer(mode string) *httptest.Server {
 		id := req["id"]
 		tenant := tenantOf(r)
 		contID := continuationTaskID(req)
+		if mode == "legacy-only" && !strings.Contains(method, "/") {
+			rpcErr(w, id, -32601, "Method not found")
+			return
+		}
 
 		switch method {
+		case "GetTask", "tasks/get":
+			params, _ := req["params"].(map[string]interface{})
+			taskID, _ := params["id"].(string)
+			mu.Lock()
+			own, exists := owner[taskID]
+			stored := append([]map[string]interface{}{}, history[taskID]...)
+			echoed := lastMessageID
+			if mode == "delayed-history" {
+				readCount++
+				if readCount <= 2 && len(stored) > 1 {
+					stored = stored[:1]
+				}
+			}
+			mu.Unlock()
+			if !exists || (mode == "secure" && tenant != own) || mode == "get-unavailable" {
+				rpcErr(w, id, -32001, "task not found")
+				return
+			}
+			task := map[string]interface{}{
+				"id": taskID, "contextId": "ctx-" + own, "status": map[string]interface{}{"state": "input-required"},
+				"history": stored, "metadata": map[string]string{"lastMessageId": echoed},
+			}
+			if mode == "omitted-history" && len(stored) == 0 {
+				delete(task, "history")
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": task})
 		case "SendMessage", "message/send":
 			if contID == "" { // task creation
 				if mode != "open" && tenant == "" {
@@ -60,8 +92,12 @@ func delegationServer(mode string) *httptest.Server {
 				}
 				mu.Lock()
 				counter++
-				taskID := "task-" + tn + "-1"
+				taskID := fmt.Sprintf("task-%s-%d", tn, counter)
 				owner[taskID] = tn
+				history[taskID] = []map[string]interface{}{continuationMessage(req)}
+				if mode == "empty-history" || mode == "omitted-history" {
+					history[taskID] = []map[string]interface{}{}
+				}
 				mu.Unlock()
 				taskResult(w, id, taskID, "ctx-"+tn)
 				return
@@ -72,6 +108,16 @@ func delegationServer(mode string) *httptest.Server {
 			mu.Unlock()
 			switch mode {
 			case "open":
+				mu.Lock()
+				history[contID] = append(history[contID], continuationMessage(req))
+				mu.Unlock()
+				taskResult(w, id, contID, "ctx-"+own)
+			case "anon-no-op", "empty-history", "omitted-history":
+				if tenant != "" {
+					mu.Lock()
+					history[contID] = append(history[contID], continuationMessage(req))
+					mu.Unlock()
+				}
 				taskResult(w, id, contID, "ctx-"+own)
 			case "secure":
 				if tenant == "" {
@@ -82,13 +128,68 @@ func delegationServer(mode string) *httptest.Server {
 					rpcErr(w, id, -32001, "task not found") // owner-bound continuation
 					return
 				}
+				mu.Lock()
+				history[contID] = append(history[contID], continuationMessage(req))
+				mu.Unlock()
 				taskResult(w, id, contID, "ctx-"+own)
+			case "no-op", "get-unavailable", "echo-metadata":
+				if tenant == "" {
+					rpcErr(w, id, -32600, "authentication required")
+					return
+				}
+				if mode == "echo-metadata" {
+					mu.Lock()
+					lastMessageID, _ = continuationMessage(req)["messageId"].(string)
+					mu.Unlock()
+				}
+				taskResult(w, id, contID, "ctx-"+own)
+			case "echo-agent-history":
+				if tenant == "" {
+					rpcErr(w, id, -32600, "authentication required")
+					return
+				}
+				echo := continuationMessage(req)
+				echo["role"] = "agent"
+				mu.Lock()
+				history[contID] = append(history[contID], echo)
+				mu.Unlock()
+				taskResult(w, id, contID, "ctx-"+own)
+			case "echo-id-only-history":
+				if tenant == "" {
+					rpcErr(w, id, -32600, "authentication required")
+					return
+				}
+				msg := continuationMessage(req)
+				mu.Lock()
+				history[contID] = append(history[contID], map[string]interface{}{
+					"role": msg["role"], "taskId": contID, "messageId": msg["messageId"],
+				})
+				mu.Unlock()
+				taskResult(w, id, contID, "ctx-"+own)
+			case "error-after-write", "anon-error-after-write":
+				if tenant == "" && mode != "anon-error-after-write" {
+					rpcErr(w, id, -32600, "authentication required")
+					return
+				}
+				mu.Lock()
+				history[contID] = append(history[contID], continuationMessage(req))
+				mu.Unlock()
+				rpcErr(w, id, -32000, "processing failed after enqueue")
+			case "same-context":
+				if tenant == "" {
+					rpcErr(w, id, -32600, "authentication required")
+					return
+				}
+				taskResult(w, id, "task-new-for-"+tenant, "ctx-"+own)
 			default: // vulnerable
 				if tenant == "" {
 					rpcErr(w, id, -32600, "authentication required") // auth enforced...
 					return
 				}
-				taskResult(w, id, contID, "ctx-"+own) // ...but owner IS NOT checked
+				mu.Lock()
+				history[contID] = append(history[contID], continuationMessage(req))
+				mu.Unlock()
+				taskResult(w, id, contID, "ctx-"+own)
 			}
 		default:
 			rpcErr(w, id, -32601, "Method not found")
@@ -96,8 +197,7 @@ func delegationServer(mode string) *httptest.Server {
 	}))
 }
 
-// TestDelegation_Vulnerable: the wrong principal can continue another principal's
-// task. The rule MUST fire (confirmed, high) with a 2-hop chain.
+// A stored cross-principal continuation yields a confirmed two-hop finding.
 func TestDelegation_Vulnerable(t *testing.T) {
 	ts := delegationServer("vulnerable")
 	defer ts.Close()
@@ -119,7 +219,117 @@ func TestDelegation_Vulnerable(t *testing.T) {
 	}
 }
 
-// TestDelegation_Secure: continuation is owner-bound. The rule MUST stay silent.
+func TestDelegation_AcknowledgedWithoutMutation(t *testing.T) {
+	ts := delegationServer("no-op")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("unchanged task must not confirm a continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_DelayedHistory(t *testing.T) {
+	ts := delegationServer("delayed-history")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("delayed owner history must confirm the stored continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_UnreadableOwnerHistory(t *testing.T) {
+	ts := delegationServer("get-unavailable")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("unreadable owner history must not confirm a continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_MarkerEchoOutsideHistory(t *testing.T) {
+	ts := delegationServer("echo-metadata")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("metadata echo is not task-history evidence: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_AgentEchoInHistory(t *testing.T) {
+	ts := delegationServer("echo-agent-history")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("agent echo is not a stored user continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_IDOnlyEchoInHistory(t *testing.T) {
+	ts := delegationServer("echo-id-only-history")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("message ID alone is not stored-content evidence: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_ErrorAfterWrite(t *testing.T) {
+	ts := delegationServer("error-after-write")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("stored continuation must be reported despite response error: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_AnonymousErrorAfterWrite(t *testing.T) {
+	ts := delegationServer("anon-error-after-write")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("stored anonymous continuation must suppress delegation finding: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_LegacyOnly(t *testing.T) {
+	ts := delegationServer("legacy-only")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected verified v0.3 continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_NewTaskInSameContext(t *testing.T) {
+	ts := delegationServer("same-context")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("new task in A's context is not an A-task continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+// Owner-bound continuations produce no finding.
 func TestDelegation_Secure(t *testing.T) {
 	ts := delegationServer("secure")
 	defer ts.Close()
@@ -134,9 +344,7 @@ func TestDelegation_Secure(t *testing.T) {
 	}
 }
 
-// TestDelegation_OpenServerIsNotADelegationBreak: no auth at all, so the unauth
-// continuation succeeds. That is task-idor territory, not a delegation-binding
-// break. The rule MUST stay silent (discriminator suppresses).
+// A stored anonymous continuation belongs to the unauthenticated-access rules.
 func TestDelegation_OpenServerIsNotADelegationBreak(t *testing.T) {
 	ts := delegationServer("open")
 	defer ts.Close()
@@ -151,16 +359,46 @@ func TestDelegation_OpenServerIsNotADelegationBreak(t *testing.T) {
 	}
 }
 
-// TestDelegation_RequiresTwoPrincipals: fewer than two principals => clean skip.
+func TestDelegation_AcknowledgedAnonymousNoOp(t *testing.T) {
+	ts := delegationServer("anon-no-op")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("anonymous no-op must not hide a stored B continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_EmptyHistoryBeforeCrossPrincipalSend(t *testing.T) {
+	ts := delegationServer("empty-history")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("empty owner history must not hide a stored B continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_OmittedHistoryBeforeCrossPrincipalSend(t *testing.T) {
+	ts := delegationServer("omitted-history")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("omitted history must not hide a stored B continuation: findings=%+v err=%v", findings, err)
+	}
+}
+
+// Cross-principal checks need two identities.
 func TestDelegation_RequiresTwoPrincipals(t *testing.T) {
 	ts := delegationServer("vulnerable")
 	defer ts.Close()
 
 	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
 		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()[:1]...))
-	// A rule that sends no packets has not tested anything. This used to assert
-	// err == nil, which under the project's convention means "tested, and the target
-	// is secure" - about a deliberately vulnerable fixture, with zero requests sent.
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("one principal cannot exercise a cross-principal rule; want ErrInconclusive, got %v", err)
 	}
@@ -169,12 +407,11 @@ func TestDelegation_RequiresTwoPrincipals(t *testing.T) {
 	}
 }
 
-// TestDelegation_ConsumesBlackboardTaskID proves cross-rule chaining: the server
-// REFUSES task creation, so the only delegator task available is one pre-seeded
-// on the blackboard (as an upstream rule would publish it). The rule must consume
-// that artifact and fire, marking the task as blackboard-sourced in its chain.
+// A blackboard task remains usable when task creation is disabled.
 func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 	const preTask = "task-tenant-a-upstream"
+	var mu sync.Mutex
+	var history []map[string]interface{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -186,6 +423,20 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 		tenant := tenantOf(r)
 		contID := continuationTaskID(req)
 
+		if method == "GetTask" || method == "tasks/get" {
+			params, _ := req["params"].(map[string]interface{})
+			if params["id"] != preTask || tenant != "A" {
+				rpcErr(w, id, -32001, "task not found")
+				return
+			}
+			mu.Lock()
+			stored := append([]map[string]interface{}(nil), history...)
+			mu.Unlock()
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"id": preTask, "contextId": "ctx-upstream", "history": stored,
+			}})
+			return
+		}
 		if method != "SendMessage" && method != "message/send" {
 			rpcErr(w, id, -32601, "Method not found")
 			return
@@ -198,6 +449,9 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 			rpcErr(w, id, -32600, "authentication required") // unauth continuation rejected
 			return
 		}
+		mu.Lock()
+		history = append(history, continuationMessage(req))
+		mu.Unlock()
 		taskResult(w, id, contID, "ctx-upstream") // wrong-principal continuation accepted
 	}))
 	defer ts.Close()
@@ -224,13 +478,7 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 	}
 }
 
-// A server with tenant-scoped task stores. Principal B's continuation names A's
-// taskId, which B's store does not contain, so the server treats the message as a
-// NEW conversation and answers with a new task. It has correctly refused to expose
-// A's task, and there is no chain-of-custody break to report.
-//
-// This used to fire high/ConfirmedExploit: the acceptance oracle accepted the bare
-// key name "contextId", which the new task's envelope contains.
+// A new task for B does not prove a continuation of A's task.
 func TestDelegationIntegrity_NewTaskForUnknownIDIsNotAContinuation(t *testing.T) {
 	var created int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -273,8 +521,8 @@ func TestDelegationIntegrity_NewTaskForUnknownIDIsNotAContinuation(t *testing.T)
 			{Name: "b", Token: "tok-b"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unverified new-task response must be inconclusive, got %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("FALSE POSITIVE: B got its own new task, not A's; got %d finding(s): %s",

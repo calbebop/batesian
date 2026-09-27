@@ -1,17 +1,8 @@
-"""
-Deliberately vulnerable A2A test server for validating:
-  - a2a-delegation-integrity-001: a delegated/multi-hop task is NOT re-bound to
-    its owning principal, so any authenticated principal can continue another
-    principal's task (broken chain-of-custody).
+"""A2A fixture that accepts cross-principal task continuations.
 
 Two principals are distinguished by bearer token:
   Authorization: Bearer tok-a  -> tenant A
   Authorization: Bearer tok-b  -> tenant B
-
-Creation and continuation are authenticated (unauthenticated requests are
-rejected) - which is what separates this from a no-auth server. The bug is that
-a CONTINUATION (a SendMessage whose message carries an existing taskId) is
-accepted from any authenticated tenant, regardless of who owns the task.
 
 Validate against it (two principals required):
   python testdata/a2a_delegation_server.py
@@ -23,6 +14,7 @@ Validate against it (two principals required):
 Run: python testdata/a2a_delegation_server.py
 """
 import json
+import uuid
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
@@ -31,8 +23,8 @@ import uvicorn
 
 PORT = 3103
 
-# task_id -> owning tenant
 OWNER: dict = {}
+HISTORY: dict = {}
 TOKEN_TENANT = {"tok-a": "A", "tok-b": "B"}
 
 
@@ -62,25 +54,40 @@ async def rpc(request: Request) -> Response:
     cont_id = message.get("taskId", "")
     tenant = tenant_of(request)
 
+    if method in ("GetTask", "tasks/get"):
+        task_id = params.get("id", "")
+        if not tenant or OWNER.get(task_id) != tenant:
+            return rpc_error(req_id, -32001, "Task not found")
+        state = "TASK_STATE_INPUT_REQUIRED" if method == "GetTask" else "input-required"
+        return rpc_result(req_id, {"id": task_id, "contextId": f"ctx-{tenant}",
+                                   "status": {"state": state}, "history": HISTORY[task_id]})
+
     if method in ("SendMessage", "message/send"):
         if not cont_id:  # task creation
             if not tenant:
                 return rpc_error(req_id, -32600, "authentication required")
-            task_id = f"task-{tenant}-1"
+            task_id = f"task-{tenant}-{uuid.uuid4().hex[:8]}"
             OWNER[task_id] = tenant
-            return rpc_result(req_id, {"id": task_id, "contextId": f"ctx-{tenant}", "status": "working"})
+            HISTORY[task_id] = [message]
+            state = "TASK_STATE_INPUT_REQUIRED" if method == "SendMessage" else "input-required"
+            task = {"id": task_id, "contextId": f"ctx-{tenant}", "status": {"state": state}}
+            return rpc_result(req_id, {"task": task} if method == "SendMessage" else task)
 
         # delegated continuation: auth enforced, but ownership IS NOT checked
         if not tenant:
             return rpc_error(req_id, -32600, "authentication required")
         own = OWNER.get(cont_id, "")
-        # VULNERABLE: no check that own == tenant
-        return rpc_result(req_id, {
+        if not own:
+            return rpc_error(req_id, -32001, "Task not found")
+        HISTORY[cont_id].append(message)
+        state = "TASK_STATE_INPUT_REQUIRED" if method == "SendMessage" else "input-required"
+        task = {
             "id": cont_id,
             "contextId": f"ctx-{own}",
-            "status": "working",
-            "history": [{"role": "user", "parts": [{"text": "continued"}]}],
-        })
+            "status": {"state": state},
+            "history": HISTORY[cont_id],
+        }
+        return rpc_result(req_id, {"task": task} if method == "SendMessage" else task)
 
     return rpc_error(req_id, -32601, "Method not found")
 

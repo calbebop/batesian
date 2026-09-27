@@ -15,31 +15,9 @@ import (
 	a2aattack "github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// A negative control for the cross-principal A2A rules, in process.
-//
-// Three false negatives in this package were found by pointing the scanner at an
-// agent that ENFORCES authorization and has one specific bug, and none of them was
-// reachable from any fixture in testdata/, all of which enforce nothing. The
-// scratchpad agent that found them is not in CI, so the same class could return.
-//
-// This runs both directions on every rule that depends on task ownership:
-//
-//	secured  authorization AND ownership enforced  -> every rule must be silent
-//	idor     authorization enforced, ownership NOT -> the ownership rules must fire
-//
-// The silent half is what catches a false positive; the firing half is what catches
-// a false negative, which is the half no fixture had. Reverting the v1.0 envelope fix
-// in taskref.go fails the delegation case here, so this would have caught PR #176's
-// defect on its own.
-//
-// WIRE SHAPES ARE REPRODUCED FROM CAPTURED a2a-sdk RESPONSES, not written from the
-// specification and not from what these rules happen to send. The distinction
-// matters: a fixture built from the scanner's own assumptions vouches for the
-// scanner instead of testing it, which is how several of these defects survived.
-// Specifically, and this is the shape that mattered, v1.0 SendMessage answers with
-// the Task NESTED under result.task because SendMessageResponse is a protobuf oneof,
-// while v1.0 GetTask answers with a bare Task, flat. The v0.3 slash methods answer
-// flat with lowercase state strings.
+// Ownership matrix for cross-principal rules. Both postures require auth;
+// only the idor posture permits another principal to access a task.
+// v1 SendMessage replies nest the Task; GetTask and v0.3 replies are flat.
 
 type matrixTask struct {
 	id      string
@@ -144,9 +122,6 @@ func (a *matrixAgent) send(w http.ResponseWriter, id, params interface{}, caller
 	defer a.mu.Unlock()
 
 	if taskID != "" {
-		// A continuation. The SDK returns the referenced task rather than appending,
-		// logging "Task already exists. Ignoring task replacement." Reproduced as
-		// observed: what the rules judge is whether the reply references A's task.
 		t, ok := a.tasks[taskID]
 		if !ok {
 			rpcError(w, id, -32001, "Task not found")
@@ -156,6 +131,7 @@ func (a *matrixAgent) send(w http.ResponseWriter, id, params interface{}, caller
 			rpcError(w, id, -32600, "not authorized for this task")
 			return
 		}
+		t.history = append(t.history, msg)
 		a.writeTask(w, id, t, v1, true)
 		return
 	}

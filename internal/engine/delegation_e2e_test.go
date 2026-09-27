@@ -26,6 +26,7 @@ import (
 func twoTenantDelegationServer() *httptest.Server {
 	var mu sync.Mutex
 	owner := map[string]string{}
+	history := map[string][]map[string]interface{}{}
 
 	tenantOf := func(r *http.Request) string {
 		switch r.Header.Get("Authorization") {
@@ -42,10 +43,13 @@ func twoTenantDelegationServer() *httptest.Server {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	result := func(w http.ResponseWriter, id interface{}, taskID, ctxID string) {
+		mu.Lock()
+		stored := append([]map[string]interface{}(nil), history[taskID]...)
+		mu.Unlock()
 		write(w, map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
-			"result": map[string]interface{}{"id": taskID, "contextId": ctxID, "status": "working",
-				"history": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]string{"text": "x"}}}}},
+			"result": map[string]interface{}{"id": taskID, "contextId": ctxID,
+				"status": map[string]string{"state": "input-required"}, "history": stored},
 		})
 	}
 	rpcErr := func(w http.ResponseWriter, id interface{}, code int, msg string) {
@@ -73,6 +77,7 @@ func twoTenantDelegationServer() *httptest.Server {
 				mu.Lock()
 				taskID := "task-" + tenant
 				owner[taskID] = tenant
+				history[taskID] = []map[string]interface{}{msg}
 				mu.Unlock()
 				result(w, id, taskID, "ctx-"+tenant)
 				return
@@ -84,6 +89,7 @@ func twoTenantDelegationServer() *httptest.Server {
 			}
 			mu.Lock()
 			own := owner[contID]
+			history[contID] = append(history[contID], msg)
 			mu.Unlock()
 			result(w, id, contID, "ctx-"+own)
 		case "GetTask", "tasks/get":

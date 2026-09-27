@@ -238,12 +238,11 @@ what is still registered, which is a validation helper and no part of any OAuth 
 Measured across the two postures: `managed` ends with `{"count":0}`, `unmanaged` ends
 with three `batesian-*` clients and three findings that say so in their evidence.
 
-**`a2a_secured_agent.py` is the only fixture here that ENFORCES AUTHORIZATION**, and
-it is a negative control rather than a target. Every other A2A fixture enforces
-nothing, so the cross-principal rules were only ever exercised in the direction where
-they fire; three false negatives were found by pointing the scanner at an agent that
-enforces authorization and has one specific bug, and none of them was reachable from
-this directory.
+**`a2a_secured_agent.py` is the authorization negative control.** Its `secured`
+posture binds tasks to their owners; `idor` relaxes that boundary. The delegation
+fixture also requires authentication, but intentionally permits cross-principal
+continuations. The positive fixtures store follow-up messages so the delegation
+rule can verify them through owner-side task history.
 
 ```sh
 python testdata/a2a_secured_agent.py secured      # NO rule may fire: any finding is a false positive
@@ -265,14 +264,11 @@ makes a diff between them mean something. Both require a bearer token, so run it
 so. `a2a-peer-impersonation-001` reports not tested against both, because the fixture
 publishes no trusted issuer.
 
-Its wire shapes are reproduced from captured `a2a-sdk` responses rather than written
-from the specification, because a fixture built from the scanner's own assumptions
-vouches for the scanner instead of testing it. The shape that matters most is that
-v1.0 `SendMessage` nests the Task under `result.task` while v1.0 `GetTask` returns it
-flat; reading only the flat one is what hid a false negative in
-`a2a-delegation-integrity-001`. The equivalent check runs in CI as the Go posture
-matrix in `internal/attack/a2a/posture_matrix_test.go`, which covers the ownership
-axis in process; this fixture is the all-rules version, on a real socket.
+Its v1.0 response envelopes follow captured `a2a-sdk` shapes: `SendMessage` nests
+the Task under `result.task`, while `GetTask` returns it flat. The IDOR posture
+intentionally stores allowed continuations for owner readback; an unchanged-task
+SDK reply is covered separately as an inconclusive Go test. The equivalent live
+check runs in CI, alongside the in-process Go posture matrix.
 
 **`mcp_session_as_credential_server.py` takes a posture argument**, defaulting to
 `vulnerable`, and needs `--token tok-a`:
