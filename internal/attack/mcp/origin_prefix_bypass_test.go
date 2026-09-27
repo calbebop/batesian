@@ -23,17 +23,13 @@ func originPfxRC() attack.RuleContext {
 	}
 }
 
-// originPfxServer validates the Origin header with a chosen strategy:
-//
-//	prefix       strings.HasPrefix(origin, ownOrigin)        (vulnerable)
-//	none         no validation at all                        (suppressed)
-//	parsed-host  scheme+host equality after url.Parse        (patched)
 type originPfxStrategy string
 
 const (
-	opfxPrefix     originPfxStrategy = "prefix"
-	opfxNone       originPfxStrategy = "none"
-	opfxParsedHost originPfxStrategy = "parsed-host"
+	opfxPrefix           originPfxStrategy = "prefix"
+	opfxFullOriginPrefix originPfxStrategy = "full-origin-prefix"
+	opfxNone             originPfxStrategy = "none"
+	opfxParsedHost       originPfxStrategy = "parsed-host"
 )
 
 func originPfxHandler(strategy originPfxStrategy) http.HandlerFunc {
@@ -77,14 +73,15 @@ func originPfxHandler(strategy originPfxStrategy) http.HandlerFunc {
 // originAllowed implements each strategy against the server's own origin.
 func originAllowed(strategy originPfxStrategy, origin, own string) bool {
 	switch strategy {
-	case opfxPrefix:
-		// The published bug shape: literal prefix, no parse. An empty Origin
-		// (non-browser clients send none) passes; this is what makes the
-		// baseline handshake succeed for the scanner too.
+	case opfxPrefix, opfxFullOriginPrefix:
 		if origin == "" {
 			return true
 		}
-		return strings.HasPrefix(origin, own)
+		if strategy == opfxFullOriginPrefix {
+			return strings.HasPrefix(origin, own)
+		}
+		parsed, _ := url.Parse(own)
+		return strings.HasPrefix(origin, parsed.Scheme+"://"+parsed.Hostname())
 	case opfxNone:
 		return true
 	case opfxParsedHost:
@@ -109,8 +106,7 @@ func runOriginPfx(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 		Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
 
-// TestOriginPfx_PrefixMatchFires: control rejected, attacker-subdomain origin
-// accepted. MUST fire confirmed/high naming the craft in evidence.
+// A browser-shaped attacker hostname bypasses a host-prefix check.
 func TestOriginPfx_PrefixMatchFires(t *testing.T) {
 	ts := httptest.NewServer(originPfxHandler(opfxPrefix))
 	defer ts.Close()
@@ -128,6 +124,24 @@ func TestOriginPfx_PrefixMatchFires(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, "control") || !strings.Contains(f.Evidence, "ACCEPTED") {
 		t.Errorf("evidence should show the control-rejected / probe-accepted pair, got: %q", f.Evidence)
+	}
+	u, _ := url.Parse(ts.URL)
+	wantOrigin := "http://" + u.Hostname() + ".prefix-rebind.batesian-invalid.invalid:" + u.Port()
+	if !strings.Contains(f.Evidence, wantOrigin) {
+		t.Errorf("evidence should contain a browser-shaped foreign Origin %q, got: %q", wantOrigin, f.Evidence)
+	}
+}
+
+func TestOriginPfx_FullOriginPortPrefixDoesNotFire(t *testing.T) {
+	ts := httptest.NewServer(originPfxHandler(opfxFullOriginPrefix))
+	defer ts.Close()
+	if !originAllowed(opfxFullOriginPrefix, ts.URL+"@"+"prefix-rebind.batesian-invalid.invalid", ts.URL) {
+		t.Fatal("fixture must accept the non-browser userinfo form")
+	}
+
+	findings, err := runOriginPfx(t, ts)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("accepting only non-browser Origin forms must not confirm a bypass: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -162,10 +176,8 @@ func TestOriginPfx_ParsedHostClean(t *testing.T) {
 	}
 }
 
-// TestOriginPfx_UserinfoCraftFires: a hardened validator that special-cases
-// plain foreign origins but compares with Contains still accepts the userinfo
-// smuggle. Both crafts must be attempted before concluding clean.
-func TestOriginPfx_UserinfoCraftFires(t *testing.T) {
+// Browser-generated Origin headers never contain userinfo.
+func TestOriginPfx_UserinfoOnlyDoesNotFire(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -220,11 +232,8 @@ func TestOriginPfx_UserinfoCraftFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected exactly 1 finding via the userinfo craft, got %d: %+v", len(findings), findings)
-	}
-	if !strings.Contains(findings[0].Evidence, "@") {
-		t.Errorf("expected evidence to name the userinfo smuggle origin, got: %q", findings[0].Evidence)
+	if len(findings) != 0 {
+		t.Fatalf("userinfo-only acceptance cannot confirm a browser bypass, got %+v", findings)
 	}
 }
 
