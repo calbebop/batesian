@@ -2,34 +2,14 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TaskCancelIDORExecutor tests whether an A2A server scopes task cancellation to
-// the task's owner (rule a2a-task-cancel-idor-001).
-//
-// CancelTask (v1.0) / tasks/cancel (v0.3) terminates a task. The spec requires
-// servers to "implement appropriate authorization scoping to ensure clients can
-// only access authorized tasks", so cancellation must be bound to the owning
-// principal. This rule covers the cancel verb specifically: it is a separate
-// handler from reading (a2a-task-idor-001) or continuing (a2a-delegation-
-// integrity-001) a task and can be left unprotected independently.
-//
-// It reports two distinct, confirmed failures:
-//   - Unauthenticated cancellation: an anonymous cancel terminates the task
-//     (CWE-862, missing authentication on a state-changing operation).
-//   - Cross-principal cancellation: a non-owning authenticated principal cancels
-//     another principal's task (CWE-639, broken object-level authorization),
-//     reported only after an unauthenticated-cancel discriminator proves the
-//     server does enforce auth, and a read-back as the owner confirms the task
-//     is now canceled.
-//
-// SAFETY: the rule creates its own throwaway task and cancels that; it never
-// cancels a pre-existing task. It is deliberately standalone (it does not consume
-// shared blackboard tasks that other rules may still need).
+// TaskCancelIDORExecutor checks cancellation of a throwaway task by anonymous
+// and non-owning callers.
 type TaskCancelIDORExecutor struct {
 	rule attack.RuleContext
 }
@@ -44,21 +24,22 @@ func NewTaskCancelIDORExecutor(r attack.RuleContext) *TaskCancelIDORExecutor {
 	return &TaskCancelIDORExecutor{rule: r}
 }
 
-// cancelOutcome classifies a single cancellation attempt.
 type cancelOutcome int
 
 const (
-	cancelOther        cancelOutcome = iota // application error: not found / not cancelable / unknown method
-	cancelAuthRejected                      // rejected at the auth layer (HTTP 401/403 or an auth error)
-	cancelCanceled                          // accepted: the task is now canceled
-	cancelAbsent                            // every answered shape said method-not-found: no cancel surface exists
+	cancelOther cancelOutcome = iota
+	cancelDenied
+	cancelCanceled
+	cancelAbsent
 )
 
+type cancelProbe struct {
+	outcome cancelOutcome
+	method  string
+}
+
 func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	// Two distinct identities are this rule's premise; without them it cannot run.
-	// See twoPrincipals: all five cross-principal rules used to report clean here,
-	// so a scan with no --principal flags called 29 percent of the A2A set secure
-	// without sending a packet.
+	// The ownership boundary needs two distinct principals.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err
@@ -74,51 +55,38 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 
-	// Step 1: create a cancelable task owned by A.
+	// Create and read back a live task owned by A.
 	taskID, obs := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	if taskID == "" {
-		// No cancelable task, so the ownership boundary on cancel was never tested.
-		// The comment here used to read "or no task could be created" and returned a
-		// clean result for exactly that case.
 		return nil, obs.err()
 	}
+	baseline, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, vars.RandID)
+	if !seen || !activeTaskState(baseline) {
+		return nil, fmt.Errorf("%w: owner task %s was not confirmed in a cancelable state", attack.ErrInconclusive, taskID)
+	}
 
-	// Step 2: discriminator. Attempt to cancel A's task with no credentials.
-	switch e.cancelTask(ctx, unauthClient, endpoint, nil, taskID, vars.RandID) {
+	anon := e.cancelTask(ctx, unauthClient, clientA, endpoint, nil, a.Headers, taskID, vars.RandID)
+	switch anon.outcome {
 	case cancelCanceled:
-		// No authentication on the cancel handler at all.
-		return []attack.Finding{e.unauthFinding(endpoint, taskID)}, nil
-	case cancelAuthRejected:
-		// Auth is enforced; a successful cancel by a non-owner is now a true IDOR.
+		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline, anon.method)}, nil
 	case cancelAbsent:
-		// The agent implements no cancel method on either wire. Nothing to test,
-		// and nothing wrong - the same verdict classifyTaskSetup gives a surface
-		// the agent does not offer.
 		return nil, nil
-	default:
-		// The anonymous cancel drew an application error (task hidden from
-		// anonymous callers, task already terminal, ...) rather than an
-		// authorization rejection, so whether the cancel handler demands a
-		// credential was never established and the cross-principal step cannot
-		// be judged. This used to return clean, claiming the ownership boundary
-		// on cancellation was tested when it was not.
-		return nil, fmt.Errorf("%w: the unauthenticated cancel of task %s at %s was answered with an "+
-			"application error rather than an authorization rejection, so the ownership boundary on "+
-			"cancellation could not be tested",
-			attack.ErrInconclusive, taskID, endpoint)
+	case cancelOther:
+		return nil, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID)
+	}
+	preBState, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, vars.RandID)
+	if !seen || !activeTaskState(preBState) {
+		return nil, fmt.Errorf("%w: owner task %s was no longer live before the cross-principal cancel", attack.ErrInconclusive, taskID)
 	}
 
-	// Step 3: cancel A's task as the WRONG principal B.
-	if e.cancelTask(ctx, clientB, endpoint, b.Headers, taskID, vars.RandID) != cancelCanceled {
-		return nil, nil // cancellation is bound to the owner
+	wrongOwner := e.cancelTask(ctx, clientB, clientA, endpoint, b.Headers, a.Headers, taskID, vars.RandID)
+	switch wrongOwner.outcome {
+	case cancelCanceled:
+		return []attack.Finding{e.idorFinding(endpoint, a, b, taskID, preBState, wrongOwner.method)}, nil
+	case cancelDenied:
+		return nil, nil
 	}
-
-	// Step 4: read the task back as the owner A to confirm the cancel persisted.
-	if !e.taskIsCanceled(ctx, clientA, endpoint, a.Headers, taskID, vars.RandID) {
-		return nil, nil // could not confirm the task is actually canceled
-	}
-
-	return []attack.Finding{e.idorFinding(endpoint, a, b, taskID)}, nil
+	return nil, fmt.Errorf("%w: cancellation of task %s was not confirmed or denied on every available method", attack.ErrInconclusive, taskID)
 }
 
 // createTask creates a task as the given principal, trying the A2A v1.0 shape
@@ -176,11 +144,9 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 	return taskID, obs
 }
 
-// cancelTask attempts to cancel taskID over the given client and classifies the
-// result. It tries the v1.0 CancelTask shape then the v0.3 tasks/cancel shape, so
-// a server that does not implement one (answering method-not-found) is still
-// exercised via the other.
-func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID string) cancelOutcome {
+// cancelTask checks both wire names and confirms changes with an owner read.
+func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attack.HTTPClient, endpoint string,
+	extraHeaders, ownerHeaders map[string]string, taskID, randID string) cancelProbe {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
@@ -192,8 +158,10 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPC
 		{"CancelTask", v1Headers},
 		{"tasks/cancel", extraHeaders},
 	}
-	answered := false // at least one shape got a reply
-	appErr := false   // some shape answered with an application error
+	unsupported := 0
+	denied := 0
+	uncertain := false
+	priorUncertain := false
 	for _, s := range shapes {
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -201,67 +169,146 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c *attack.HTTPC
 			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID},
 		})
-		if err != nil {
+		state, seen := e.readTaskState(ctx, owner, endpoint, ownerHeaders, taskID, randID)
+		if seen && isCanceledState(state) {
+			method := s.method
+			if priorUncertain {
+				method = "CancelTask or tasks/cancel"
+			}
+			return cancelProbe{outcome: cancelCanceled, method: method}
+		}
+		if !seen {
+			uncertain = true
+		}
+		if err != nil || resp == nil {
+			uncertain = true
+			priorUncertain = true
 			continue
 		}
-		answered = true
 		if isA2AAuthRejection(resp) {
-			return cancelAuthRejected
+			denied++
+			continue
 		}
-		if resp.IsAccepted() && bodyShowsCanceled(resp.Body) {
-			return cancelCanceled
+		if resp.IsAccepted() {
+			uncertain = true
+			priorUncertain = true
+			continue
 		}
-		// Otherwise an application error (not cancelable / not found): try the
-		// next shape. Method-not-found on every shape that answered means the
-		// agent offers no cancel surface at all, which the caller treats as
-		// absent rather than refused.
-		if code, hasErr := jsonRPCErrorCode(resp.Body); !hasErr ||
-			(code != jsonRPCMethodNotFound && code != a2aUnsupportedOperation) {
-			appErr = true
+		if code, hasErr := jsonRPCErrorCode(resp.Body); hasErr {
+			switch code {
+			case jsonRPCMethodNotFound, a2aUnsupportedOperation:
+				unsupported++
+			case -32001: // TaskNotFound can conceal an unauthorized task.
+				denied++
+			default:
+				uncertain = true
+				priorUncertain = true
+			}
+		} else {
+			uncertain = true
+			priorUncertain = true
 		}
 	}
-	if answered && !appErr {
-		return cancelAbsent
+	if unsupported == len(shapes) {
+		return cancelProbe{outcome: cancelAbsent}
 	}
-	return cancelOther
+	if !uncertain && denied > 0 && denied+unsupported == len(shapes) {
+		return cancelProbe{outcome: cancelDenied}
+	}
+	return cancelProbe{outcome: cancelOther}
 }
 
-// taskIsCanceled reads the task back (GetTask v1.0, then tasks/get v0.3) and
-// reports whether its state is canceled.
-func (e *TaskCancelIDORExecutor) taskIsCanceled(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID string) bool {
+// readTaskState checks both read methods and prefers a canceled observation.
+func (e *TaskCancelIDORExecutor) readTaskState(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID string) (string, bool) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
-	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-cancel-get-" + randID,
-		"method":  "GetTask",
-		"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
-	})
-	if err != nil || !resp.IsAccepted() {
-		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
+	shapes := []struct {
+		method  string
+		headers map[string]string
+	}{
+		{"GetTask", v1Headers},
+		{"tasks/get", extraHeaders},
+	}
+	var state string
+	for _, s := range shapes {
+		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cancel-get-" + randID,
-			"method":  "tasks/get",
+			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 		})
+		if err != nil || resp == nil || !resp.IsAccepted() {
+			continue
+		}
+		current, matched := taskStateForID(resp.Body, taskID)
+		if !matched || current == "" {
+			continue
+		}
+		if isCanceledState(current) {
+			return current, true
+		}
+		if state == "" {
+			state = current
+		}
 	}
-	if err != nil || !resp.IsAccepted() {
-		return false
-	}
-	return bodyShowsCanceled(resp.Body)
+	return state, state != ""
 }
 
-// bodyShowsCanceled reports whether a task body's state is canceled, covering the
-// v0.3 string ("canceled") and the v1.0 proto enum ("TASK_STATE_CANCELED"). It
-// will not match "TaskNotCancelableError" (a different word, "cancelable").
-func bodyShowsCanceled(body []byte) bool {
-	s := string(body)
-	return strings.Contains(s, `"canceled"`) || strings.Contains(s, "CANCELED")
+func taskStateForID(body []byte, taskID string) (string, bool) {
+	type task struct {
+		ID     string `json:"id"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	var envelope struct {
+		Result *struct {
+			task
+			Task *task `json:"task"`
+		} `json:"result"`
+	}
+	if taskID == "" || json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+		return "", false
+	}
+	if envelope.Result.Task != nil {
+		candidate := envelope.Result.Task
+		if candidate.ID == taskID {
+			return candidate.Status.State, true
+		}
+		return "", false
+	}
+	candidate := envelope.Result.task
+	if candidate.ID == taskID {
+		return candidate.Status.State, true
+	}
+	return "", false
 }
 
-func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID string) attack.Finding {
+func bodyShowsCanceled(body []byte, taskID string) bool {
+	state, matched := taskStateForID(body, taskID)
+	return matched && isCanceledState(state)
+}
+
+func isCanceledState(state string) bool {
+	switch state {
+	case "canceled", "TASK_STATE_CANCELED", "TASK_STATE_CANCELLED":
+		return true
+	}
+	return false
+}
+
+func activeTaskState(state string) bool {
+	switch state {
+	case "submitted", "working", "input-required", "auth-required",
+		"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED":
+		return true
+	}
+	return false
+}
+
+func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID, baseline, method string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -269,17 +316,16 @@ func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID string) attack.F
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A task cancellation accepted without authentication",
 		Description: fmt.Sprintf(
-			"An unauthenticated cancel request terminated task %s at %s. Cancellation is a "+
-				"state-changing operation that must require authentication; an anonymous caller can "+
-				"cancel any task whose id they learn or guess, disrupting other principals' work.",
-			taskID, endpoint),
-		Evidence:    fmt.Sprintf("endpoint: %s\ntask: %s\nunauthenticated cancel: accepted (task canceled)", endpoint, taskID),
+			"An unauthenticated %s request canceled owner task %s at %s. The owner read-back changed from %s to canceled.",
+			method, taskID, endpoint, baseline),
+		Evidence: fmt.Sprintf("endpoint: %s\ntask: %s\nmethod: %s\nowner state: %s -> canceled\ncaller: anonymous",
+			endpoint, taskID, method, baseline),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker attack.Principal, taskID string) attack.Finding {
+func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker attack.Principal, taskID, baseline, method string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -287,22 +333,17 @@ func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker at
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A task canceled by a non-owning principal (IDOR)",
 		Description: fmt.Sprintf(
-			"Principal %q canceled task %s owned by principal %q. The server rejected an "+
-				"unauthenticated cancel of the same task (so authentication is enforced), yet allowed a "+
-				"different authenticated principal to cancel it, and a read-back as the owner confirms "+
-				"the task is now canceled. Cancellation is not bound to the owning principal, so any "+
-				"authenticated caller can terminate another principal's tasks.",
-			attacker.Name, taskID, owner.Name),
+			"Principal %q canceled task %s owned by principal %q through %s. The owner read-back changed from %s to canceled.",
+			attacker.Name, taskID, owner.Name, method, baseline),
 		Evidence: fmt.Sprintf(
-			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\ntask: %s\n"+
-				"unauthenticated cancel: rejected (auth enforced)\nwrong-principal cancel: accepted\n"+
-				"owner read-back: task state is canceled",
-			owner.Name, owner.Tenant, attacker.Name, attacker.Tenant, taskID),
+			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\ntask: %s\nmethod: %s\n"+
+				"owner state: %s -> canceled",
+			owner.Name, owner.Tenant, attacker.Name, attacker.Tenant, taskID, method, baseline),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task " + taskID, Outcome: "task owned by " + owner.Name},
-			{Hop: 2, Principal: attacker.Name, Action: "cancel task " + taskID + " as a different principal", Outcome: "GRANTED - task canceled by non-owner"},
+			{Hop: 2, Principal: attacker.Name, Action: method + " task " + taskID + " as a different principal", Outcome: "GRANTED - task canceled by non-owner"},
 		},
 	}
 }

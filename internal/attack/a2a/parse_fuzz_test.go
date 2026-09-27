@@ -57,7 +57,7 @@ func FuzzExtractTaskContext(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = extractTaskContext(data)
 		_ = isJSONRPCError(data)
-		_ = bodyShowsCanceled(data)
+		_ = bodyShowsCanceled(data, "task-id")
 
 		// snippet feeds Finding.Evidence, which is marshalled into JSON and SARIF.
 		const limit = 64

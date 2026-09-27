@@ -4,43 +4,16 @@ info:
   author: batesian
   severity: high
   description: |
-    Tests whether an A2A server binds task cancellation to the task's owner.
+    Creates a throwaway task as one principal and confirms its live state.
+    Probes CancelTask and tasks/cancel anonymously, then as a second principal
+    only if anonymous cancellation is conclusively denied.
+    Reports unauthenticated or cross-principal cancellation only when an owner
+    read-back confirms that the same task became canceled. A rejection on one
+    method does not mask a vulnerable second method.
 
-    CancelTask (v1.0) / tasks/cancel (v0.3) moves a task to the terminal
-    "canceled" state. The spec requires servers to implement authorization
-    scoping so clients can only access authorized tasks, so cancellation must be
-    owner-bound. Cancellation is a distinct handler from reading a task
-    (a2a-task-idor-001) or continuing it (a2a-delegation-integrity-001) and can
-    be left unprotected on its own, giving an attacker a targeted disruption
-    primitive over other principals' tasks.
-
-    The rule needs two authenticated principals (A and B) and reports two
-    distinct confirmed failures:
-
-      1. Unauthenticated cancellation (CWE-862): the rule creates a task as A,
-         then cancels it with NO credentials. If that cancel is accepted (the
-         task becomes canceled), authentication is missing on a state-changing
-         operation.
-      2. Cross-principal cancellation (CWE-639): if the unauthenticated cancel is
-         rejected (so auth IS enforced), the rule cancels A's task as the WRONG
-         principal B. A CONFIRMED finding is raised only when B's cancel succeeds
-         and a read-back as owner A shows the task is now canceled.
-
-    A server that rejects the wrong-principal cancel produces no finding: the
-    boundary was tested and held. Two outcomes are NOT clean results: an
-    anonymous cancel answered with an application error (task hidden from
-    anonymous callers, task already terminal) never established whether the
-    cancel handler demands a credential, so the rule reports not tested; and a
-    server that implements no cancel method on either wire is not applicable and
-    also reports nothing.
-
-    SAFETY: the rule creates and cancels its OWN throwaway task; it never cancels
-    a pre-existing task, and is standalone (it does not consume tasks other rules
-    created).
-
-    Note: against a server that completes tasks almost immediately the probe task
-    may reach a terminal state before it can be canceled, in which case the rule
-    cannot demonstrate the issue and reports not tested.
+    Ambiguous responses or an already-terminal task are inconclusive. If both
+    methods are unavailable, the rule does not apply. The rule never cancels a
+    pre-existing task.
 
   references:
     - https://a2a-protocol.org/latest/specification/

@@ -68,13 +68,23 @@ func cancelServer(mode string) *httptest.Server {
 			mu.Lock()
 			counter++
 			tid := fmt.Sprintf("task-%d", counter)
-			store[tid] = &task{state: "submitted", owner: tok}
+			state := "submitted"
+			if mode == "already-canceled" {
+				state = "canceled"
+			}
+			store[tid] = &task{state: state, owner: tok}
 			mu.Unlock()
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + tid,
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
-			if mode == "no-cancel-surface" {
+			if mode == "transport" && method == "CancelTask" {
+				conn, _, _ := w.(http.Hijacker).Hijack()
+				_ = conn.Close()
+				return
+			}
+			if mode == "no-cancel-surface" || (mode == "legacy-only" && method == "CancelTask") ||
+				(mode == "transport" && method == "tasks/cancel") {
 				// Neither wire implements cancellation.
 				rpcErr(-32601, "method not found")
 				return
@@ -83,8 +93,54 @@ func cancelServer(mode string) *httptest.Server {
 				rpcErr(-32002, "Task is not in a cancelable state")
 				return
 			}
-			if mode != "no-auth" && tok == "" {
+			if mode == "anon-ambiguous-b-vuln" && tok == "" {
+				result(map[string]interface{}{"id": taskID, "status": map[string]interface{}{"state": "working"}})
+				return
+			}
+			if method == "CancelTask" &&
+				((mode == "mutate-then-403" && tok == "") ||
+					(mode == "mutate-then-notfound" && tok == "") ||
+					(mode == "b-mutate-then-403" && tok == "tok-b")) {
+				mu.Lock()
+				if t := store[taskID]; t != nil {
+					t.state = "canceled"
+				}
+				mu.Unlock()
+				if mode == "mutate-then-notfound" {
+					rpcErr(-32001, "Task not found")
+				} else {
+					w.WriteHeader(http.StatusForbidden)
+				}
+				return
+			}
+			if mode == "v1-deny-legacy-open" && method == "CancelTask" && tok == "" {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if mode == "v1-deny-legacy-idor" && method == "CancelTask" && tok != "tok-a" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if mode == "v1-deny-legacy-idor" && method == "tasks/cancel" && tok == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if mode != "no-auth" && mode != "v1-deny-legacy-open" && mode != "empty-success" &&
+				mode != "misleading-response" && mode != "wrong-task-response" && mode != "unpersisted" && tok == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if mode == "misleading-response" {
+				result(map[string]interface{}{"id": taskID, "status": map[string]interface{}{"state": "working"},
+					"metadata": map[string]interface{}{"note": "TASK_STATE_CANCELED"}})
+				return
+			}
+			if mode == "wrong-task-response" {
+				result(map[string]interface{}{"id": "other-task", "status": map[string]interface{}{"state": "canceled"}})
+				return
+			}
+			if mode == "unpersisted" {
+				result(map[string]interface{}{"id": taskID, "status": map[string]interface{}{"state": "canceled"}})
 				return
 			}
 			mu.Lock()
@@ -98,6 +154,10 @@ func cancelServer(mode string) *httptest.Server {
 				t.state = "canceled"
 			}
 			mu.Unlock()
+			if mode == "empty-success" {
+				result(map[string]interface{}{})
+				return
+			}
 			result(map[string]interface{}{"id": taskID, "status": map[string]interface{}{"state": "canceled"}})
 
 		case "GetTask", "tasks/get":
@@ -106,6 +166,10 @@ func cancelServer(mode string) *httptest.Server {
 			mu.Unlock()
 			if t == nil {
 				rpcErr(-32001, "Task not found")
+				return
+			}
+			if mode == "stale-v1-get" && method == "GetTask" && t.state == "canceled" {
+				result(map[string]interface{}{"id": taskID, "status": map[string]interface{}{"state": "working"}})
 				return
 			}
 			result(map[string]interface{}{"id": taskID, "contextId": "ctx-" + taskID,
@@ -172,6 +236,51 @@ func TestTaskCancelIDOR_Unauthenticated(t *testing.T) {
 	}
 }
 
+func TestTaskCancelIDOR_ConfirmedWireVariants(t *testing.T) {
+	tests := []struct {
+		mode   string
+		title  string
+		method string
+	}{
+		{"v1-deny-legacy-open", "without authentication", "tasks/cancel"},
+		{"v1-deny-legacy-idor", "non-owning", "tasks/cancel"},
+		{"legacy-only", "non-owning", "tasks/cancel"},
+		{"stale-v1-get", "non-owning", "CancelTask"},
+		{"empty-success", "without authentication", "CancelTask"},
+		{"mutate-then-403", "without authentication", "CancelTask"},
+		{"mutate-then-notfound", "without authentication", "CancelTask"},
+		{"b-mutate-then-403", "non-owning", "CancelTask"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			srv := cancelServer(tt.mode)
+			defer srv.Close()
+			findings, err := runTaskCancel(t, srv)
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("want one finding, got %d, err=%v", len(findings), err)
+			}
+			if !strings.Contains(findings[0].Title, tt.title) ||
+				!strings.Contains(findings[0].Evidence, "method: "+tt.method) ||
+				!strings.Contains(findings[0].Evidence, "owner state: submitted -> canceled") {
+				t.Errorf("unexpected finding: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestTaskCancelIDOR_AmbiguousResponsesAreInconclusive(t *testing.T) {
+	for _, mode := range []string{"misleading-response", "wrong-task-response", "unpersisted", "transport", "already-canceled", "anon-ambiguous-b-vuln"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+			findings, err := runTaskCancel(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
 // TestTaskCancelIDOR_Secure: cancel bound to the owner => no finding.
 func TestTaskCancelIDOR_Secure(t *testing.T) {
 	srv := cancelServer("secure")
@@ -200,8 +309,8 @@ func TestTaskCancelIDOR_NotCancelable(t *testing.T) {
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "ownership boundary on cancellation could not be tested") {
-		t.Errorf("reason should name the untested boundary: %v", err)
+	if !strings.Contains(err.Error(), "cancellation of task") {
+		t.Errorf("reason should name the untested operation: %v", err)
 	}
 }
 
