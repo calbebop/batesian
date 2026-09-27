@@ -52,6 +52,12 @@ and the continuation check silently never matched. An open agent could not have
 surfaced it, because the rule's own discriminator suppresses on a server with no
 authorization at all.
 
+The continuation oracle now reads A's task back with `GetTask`/`tasks/get` and
+looks for B's unique message in its history. Some SDK-backed agents acknowledge
+a send by returning an unchanged task; that response alone is inconclusive,
+not proof that B advanced A's task. The positive IDOR fixture stores the message
+so the live gate exercises a verified continuation.
+
 The same exercise has also caught a false positive before it shipped.
 `mcp-session-as-credential-001` passed every posture in its own harness, then
 reported the official MCP C# SDK's stateful sample as vulnerable. That sample
