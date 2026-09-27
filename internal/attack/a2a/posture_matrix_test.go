@@ -47,6 +47,7 @@ type matrixTask struct {
 	owner   string
 	state   string
 	history []map[string]interface{}
+	push    map[string]string
 }
 
 // matrixAgent is an in-process A2A agent whose posture decides whether task
@@ -118,6 +119,8 @@ func (a *matrixAgent) serve(w http.ResponseWriter, r *http.Request) {
 		a.list(w, id, caller, method == "ListTasks")
 	case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 		a.setPush(w, id, params, caller)
+	case "GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get":
+		a.getPush(w, id, params, caller, method == "GetTaskPushNotificationConfig")
 	default:
 		rpcError(w, id, -32601, "method not found")
 	}
@@ -249,9 +252,45 @@ func (a *matrixAgent) setPush(w http.ResponseWriter, id, params interface{}, cal
 		rpcError(w, id, -32600, "not authorized for this task")
 		return
 	}
+	configID, _ := p["id"].(string)
+	url, _ := p["url"].(string)
+	if nested, ok := p["pushNotificationConfig"].(map[string]interface{}); ok {
+		configID, _ = nested["id"].(string)
+		url, _ = nested["url"].(string)
+	}
+	if t.push == nil {
+		t.push = map[string]string{}
+	}
+	t.push[configID] = url
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"jsonrpc": "2.0", "id": id,
-		"result": map[string]interface{}{"taskId": t.id, "url": "set", "token": "set"},
+		"result": map[string]interface{}{"taskId": t.id, "id": configID, "url": url},
+	})
+}
+
+func (a *matrixAgent) getPush(w http.ResponseWriter, id, params interface{}, caller string, v1 bool) {
+	p, _ := params.(map[string]interface{})
+	taskID, _ := p["id"].(string)
+	configID := ""
+	if v1 {
+		taskID, _ = p["taskId"].(string)
+		configID, _ = p["id"].(string)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.tasks[taskID]
+	if !ok || !a.mayTouch(t, caller) {
+		rpcError(w, id, -32001, "Task not found")
+		return
+	}
+	url, ok := t.push[configID]
+	if !ok {
+		rpcError(w, id, -32001, "Config not found")
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"jsonrpc": "2.0", "id": id,
+		"result": map[string]interface{}{"taskId": taskID, "id": configID, "url": url},
 	})
 }
 
