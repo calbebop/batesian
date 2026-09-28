@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -201,6 +202,66 @@ func TestOpenSessions_ModernOnly(t *testing.T) {
 	}
 	if !sessions[0].ServerSupports("tools") {
 		t.Error("capabilities from server/discover should read through ServerSupports unchanged")
+	}
+}
+
+func TestOpenSessions_AnonymousRejectionDoesNotHideAuthenticatedModernWire(t *testing.T) {
+	var modernProbes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("MCP-Protocol-Version") == modernEraVersion {
+			modernProbes.Add(1)
+			if r.Header.Get("Authorization") != "Bearer test-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"resultType": "complete", "supportedVersions": []string{modernEraVersion},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+			return
+		}
+		switch req["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18", "serverInfo": map[string]interface{}{"name": "dual", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	opts := attack.Options{TimeoutSeconds: 5, Token: "test-token", Discovery: attack.NewDiscoveryCache()}
+	vars := attack.NewVars(srv.URL, "")
+	anonymous := attack.NewUnauthHTTPClient(opts, vars)
+	sessions, err := openSessions(context.Background(), anonymous, srv.URL)
+	if err != nil || len(sessions) != 1 || sessions[0].Era != EraLegacy {
+		t.Fatalf("anonymous sessions = %+v, err = %v; want legacy only", sessions, err)
+	}
+
+	authenticated := attack.NewHTTPClient(opts, vars)
+	sessions, err = openSessions(context.Background(), authenticated, srv.URL)
+	if err != nil || len(sessions) != 2 || sessions[1].Era != EraModern {
+		t.Fatalf("authenticated sessions = %+v, err = %v; want both wires", sessions, err)
+	}
+	if got := modernProbes.Load(); got != 2 {
+		t.Fatalf("modern discovery requests = %d, want one per credential context", got)
 	}
 }
 
