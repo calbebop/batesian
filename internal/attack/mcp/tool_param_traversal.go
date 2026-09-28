@@ -4,37 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ToolParamTraversalExecutor probes whether read-only MCP tools validate
-// filesystem-style path arguments against escaping their intended root
-// (rule mcp-tool-param-traversal-001).
-//
-// The failure: a tool joins its caller-supplied path onto an internal root and
-// never checks where the result landed, so "../.." walks the caller out of the
-// root and onto any file the server process can read. It is the defect class
-// behind CVE-2025-53109 (Filesystem EscapeRoute) and CVE-2026-27825
-// (mcp-atlassian), and it lives in ordinary tool arguments rather than in the
-// transport or the authorization layer the other rules here cover.
-//
-// SAFETY. This rule invokes real tools by name, which only mcp-task-idor-001
-// also does, so it inherits that rule's gate and adds one of its own:
-//
-//   - Only tools whose annotations explicitly and consistently declare
-//     readOnlyHint true are dispatched. An unannotated tool, or a tool that only
-//     declares destructiveHint false, is never touched.
-//   - Every probe reads a file that does not exist. The canary name is unique
-//     per run, so there is nothing to find whatever the server resolves.
-//
-// The oracle is therefore the error text alone, which is enough. A server that
-// resolves the join before opening leaks where it looked - a Node ENOENT names
-// the resolved absolute path - and comparing that against a no-traversal
-// baseline separates "looked inside the sandbox" from "walked out of it". No
-// byte of file content is ever returned to prove the bug; the resolution is the
-// proof.
+// ToolParamTraversalExecutor checks path containment using approved tools
+// that declare themselves read-only. Error paths, not file contents, are the oracle.
 type ToolParamTraversalExecutor struct {
 	rule attack.RuleContext
 }
@@ -47,10 +24,7 @@ func NewToolParamTraversalExecutor(r attack.RuleContext) *ToolParamTraversalExec
 	return &ToolParamTraversalExecutor{rule: r}
 }
 
-// traversalCaps bounds how many tools one run will drive. Each candidate costs
-// three calls (baseline plus two traversals), so the cap keeps a scan's cost a
-// function of the rule rather than of the target's tool count. The number of
-// candidates seen against the cap is reported when nothing fired.
+// traversalCaps bounds the number of tools probed per scan.
 const traversalCaps = 8
 
 func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -60,15 +34,24 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 	// be testable rather than skipped.
 	client := attack.NewHTTPClient(opts, vars)
 
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
-		return e.probeSession(ctx, client, session, vars.RandID)
+	pending := map[string]bool{}
+	findings, err := runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
+		return e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
 	})
+	if len(findings) == 0 && len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for name := range pending {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("%w: approve exact tool names with --mcp-invoke-tool before traversal probes: %s",
+			attack.ErrInconclusive, strings.Join(names, ", "))
+	}
+	return findings, err
 }
 
-// probeSession runs the rule on one wire. determined follows the package
-// convention: a listing that produced no protocol-level verdict proves nothing,
-// while a listing that was read settles the session either way.
-func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string) ([]attack.Finding, bool) {
+// probeSession checks one wire and records tools awaiting approval.
+func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, approved []string, pending map[string]bool) ([]attack.Finding, bool) {
 	if !session.ServerSupports("tools") {
 		return nil, true
 	}
@@ -89,16 +72,23 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 
 	candidates := traversalCandidates(listBody.Result.Tools)
 	if len(candidates) == 0 {
-		// Nothing declared itself safe to invoke with a path argument. The same
-		// convention as mcp-task-idor-001 applies: the rule does not dispatch
-		// unannotated tools, and a server whose safe tools take no paths has no
-		// surface this rule can reach.
 		return nil, true
+	}
+	approvedCandidates := make([]traversalCandidate, 0, len(candidates))
+	for _, cand := range candidates {
+		if approvedToolName(cand.tool, approved) {
+			approvedCandidates = append(approvedCandidates, cand)
+		} else {
+			pending[cand.tool] = true
+		}
+	}
+	if len(approvedCandidates) == 0 {
+		return nil, false
 	}
 
 	var findings []attack.Finding
 	driven := 0
-	for _, cand := range candidates {
+	for _, cand := range approvedCandidates {
 		if driven >= traversalCaps {
 			break
 		}
@@ -147,8 +137,7 @@ func isPathParam(name string) bool {
 	return pathParamNames[lower]
 }
 
-// traversalCandidates selects tools this rule may drive: explicitly read-only
-// tools with at least one path-like string parameter in their schema.
+// traversalCandidates finds annotated tools with a path-like string parameter.
 func traversalCandidates(tools []traversalTool) []traversalCandidate {
 	var out []traversalCandidate
 	for _, t := range tools {

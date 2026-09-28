@@ -127,6 +127,8 @@ oauth_origins:
   - https://login.example.com
 mcp_scope_tools:
   - delete_item
+mcp_invoke_tools:
+  - read_note
 rule_ids:
   - mcp-oauth-audience-002
   - a2a-push-ssrf-001
@@ -171,6 +173,9 @@ severities:
 	}
 	if len(cfg.MCPScopeTools) != 1 || cfg.MCPScopeTools[0] != "delete_item" {
 		t.Errorf("mcp_scope_tools: got %v", cfg.MCPScopeTools)
+	}
+	if len(cfg.MCPInvokeTools) != 1 || cfg.MCPInvokeTools[0] != "read_note" {
+		t.Errorf("mcp_invoke_tools: got %v", cfg.MCPInvokeTools)
 	}
 	if len(cfg.RuleIDs) != 2 {
 		t.Errorf("rule_ids: expected 2, got %d", len(cfg.RuleIDs))

@@ -55,6 +55,9 @@ type Config struct {
 	// MCPScopeTools are exact tool names the scope-confusion rule may invoke.
 	MCPScopeTools []string `yaml:"mcp_scope_tools"`
 
+	// MCPInvokeTools are exact names the traversal and task rules may call.
+	MCPInvokeTools []string `yaml:"mcp_invoke_tools"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -253,6 +256,11 @@ func Example() string {
 # Tools the scope-confusion rule may invoke under all three test identities.
 # mcp_scope_tools:
 #   - delete_item
+
+# Exact tools the traversal and task rules may call. Review each tool before
+# approval; readOnlyHint is supplied by the server and is not a safety guarantee.
+# mcp_invoke_tools:
+#   - read_file
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

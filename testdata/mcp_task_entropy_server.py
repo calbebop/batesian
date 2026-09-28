@@ -20,7 +20,7 @@ Validate against it:
   python testdata/mcp_task_entropy_server.py clean   # silent
 
 Run: python testdata/mcp_task_entropy_server.py [posture]
-Scan: batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 -v
+Scan: batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 --mcp-invoke-tool wait_a_moment -v
 """
 import sys
 import uuid

@@ -65,20 +65,20 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_batch_bypass_server.py` | 7795 | `mcp-jsonrpc-batch-bypass-001` |
 | `mcp_completion_unauth_server.py` | 7796 | `mcp-completion-unauth-001` |
 | `mcp_logging_unauth_server.py` | 7797 | `mcp-logging-unauth-001` |
-| `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals; needs two `--principal`s; two postures, see below) |
+| `mcp_task_idor_server.py` | 7798 | `mcp-task-idor-001` (two principals and `--mcp-invoke-tool research`; two postures) |
 | `mcp_modern_era_server.py` | 7799 | none, by design: an era-detection target, see below |
 | `mcp_era_downgrade_server.py` | 7800 | `mcp-era-downgrade-001` (two postures, see below) |
 | `mcp_large_body_server.py` | 7801 | the unauth family at responses past the body read limit, see below |
 | `mcp_transient_failure_server.py` | 7802 | the unauth family when a probe fails without refusing, see below |
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
-| `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
+| `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` fires on `vulnerable` with `--mcp-invoke-tool read_note`; silent on `patched` |
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (needs two principals and `--mcp-scope-tool delete_item`) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` fires on `prefix`; stays silent on `port-prefix`, `hardened`, and `open` |
-| `mcp_task_entropy_server.py` | 7812 | `mcp-task-id-entropy-001` must fire on `weak`; stay silent on `clean` (two postures, see below) |
+| `mcp_task_entropy_server.py` | 7812 | `mcp-task-id-entropy-001` fires on `weak` with `--mcp-invoke-tool wait_a_moment`; silent on `clean` |
 | `mcp_token_replay_server.py` | 7813 | `mcp-token-replay-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
@@ -155,7 +155,8 @@ python testdata/mcp_task_idor_server.py              # creation and reads authen
 python testdata/mcp_task_idor_server.py create-open  # only reads authenticated
 ```
 
-Both postures must produce the same three findings. The rule suppresses itself when
+Approve the fixture tool with `--mcp-invoke-tool research` when scanning. Both
+postures must produce the same three findings. The rule suppresses itself when
 a server authenticates nothing, because that is `mcp-tools-unauth-001`'s failure
 rather than an IDOR, but it used to decide that from task creation alone. The
 `create-open` posture leaves a task-augmented `tools/call` open while `tasks/get`,
@@ -341,11 +342,12 @@ blackboard.
 ```sh
 python testdata/mcp_tool_param_traversal_server.py vulnerable  # rule must fire
 python testdata/mcp_tool_param_traversal_server.py patched     # rule must stay silent
+batesian scan --target http://127.0.0.1:7805 --rule-ids mcp-tool-param-traversal-001 --mcp-invoke-tool read_note
 ```
 
 Both postures serve two tools: `read_note`, annotated `readOnlyHint: true` with a
 `path` parameter, and `admin_read`, carrying the same bug with **no annotations**.
-The scanner may only dispatch annotated tools, so `admin_read` staying broken and
+The scanner dispatches only approved, annotated tools, so `admin_read` staying broken and
 untouched is part of the validation: if a finding ever names it, the safety gate
 is gone. The oracle reads resolution disclosures, not file content - every probe
 names a file that does not exist, in either posture.
@@ -524,7 +526,7 @@ foreign-hostname probe. `hardened` parses and compares the full origin;
 ```sh
 python testdata/mcp_task_entropy_server.py weak   # high sequential finding
 python testdata/mcp_task_entropy_server.py clean  # silent
-batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 -v
+batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 --mcp-invoke-tool wait_a_moment -v
 ```
 
 The `weak` posture mints handles from a plain counter with a visible stride -

@@ -262,7 +262,7 @@ def traversal():
     rid = "mcp-tool-param-traversal-001"
     p, l = start("mcp_tool_param_traversal_server.py", 7805, "vulnerable")
     try:
-        fired, _, _ = scan(7805)
+        fired, _, _ = scan(7805, "--mcp-invoke-tool", "read_note")
     finally:
         stop(p, l)
     ok_all &= check("traversal vulnerable (fires)", rid in fired,
@@ -270,7 +270,7 @@ def traversal():
 
     p, l = start("mcp_tool_param_traversal_server.py", 7805, "patched")
     try:
-        fired, _, _ = scan(7805)
+        fired, _, _ = scan(7805, "--mcp-invoke-tool", "read_note")
     finally:
         stop(p, l)
     ok_all &= check("traversal patched (silent)", rid not in fired,
@@ -395,14 +395,14 @@ def task_entropy():
 
     p, l = start("mcp_task_entropy_server.py", 7812, "weak")
     try:
-        fired, _, _ = scan(7812)
+        fired, _, _ = scan(7812, "--mcp-invoke-tool", "wait_a_moment")
     finally:
         stop(p, l)
     ok_all &= check("task-entropy weak (fires)", rid in fired, f"fired {sorted(fired)}")
 
     p, l = start("mcp_task_entropy_server.py", 7812, "clean")
     try:
-        fired, _, _ = scan(7812)
+        fired, _, _ = scan(7812, "--mcp-invoke-tool", "wait_a_moment")
     finally:
         stop(p, l)
     ok_all &= check("task-entropy clean (silent)", rid not in fired,

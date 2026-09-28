@@ -62,6 +62,7 @@ func init() {
 	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
 	scanCmd.Flags().StringSlice("oauth-origin", nil, "Allow target-advertised OAuth endpoints on this exact additional origin (comma-separated)")
 	scanCmd.Flags().StringSlice("mcp-scope-tool", nil, "Allow the scope-confusion rule to call this exact tool name (comma-separated)")
+	scanCmd.Flags().StringSlice("mcp-invoke-tool", nil, "Allow traversal and task rules to call this exact MCP tool name (comma-separated)")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")
 	// OAuth token acquisition.
@@ -113,6 +114,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	proxy, _ := cmd.Flags().GetString("proxy")
 	oauthOrigins, _ := cmd.Flags().GetStringSlice("oauth-origin")
 	mcpScopeTools, _ := cmd.Flags().GetStringSlice("mcp-scope-tool")
+	mcpInvokeTools, _ := cmd.Flags().GetStringSlice("mcp-invoke-tool")
 	oobURL, _ := cmd.Flags().GetString("oob-url")
 	audienceClaim, _ := cmd.Flags().GetString("audience-claim")
 	principalFlags, _ := cmd.Flags().GetStringArray("principal")
@@ -160,6 +162,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	mcpScopeTools = effectiveMCPScopeTools(cmd.Flags().Changed("mcp-scope-tool"), mcpScopeTools, cfg.MCPScopeTools)
+	mcpInvokeTools = effectiveMCPInvokeTools(cmd.Flags().Changed("mcp-invoke-tool"), mcpInvokeTools, cfg.MCPInvokeTools)
 	// Reject invalid proxies before running rules.
 	if _, err := httpx.ProxyFunc(proxy); err != nil {
 		return err
@@ -247,6 +250,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		Proxy:          proxy,
 		OAuthOrigins:   oauthOrigins,
 		MCPScopeTools:  mcpScopeTools,
+		MCPInvokeTools: mcpInvokeTools,
 		Verbose:        verbose,
 		AudienceClaim:  audienceClaim,
 		Principals:     principals,
@@ -561,6 +565,13 @@ func effectiveOAuthOrigins(flagChanged bool, flagVal, cfgVal []string) []string 
 }
 
 func effectiveMCPScopeTools(flagChanged bool, flagVal, cfgVal []string) []string {
+	if flagChanged {
+		return flagVal
+	}
+	return cfgVal
+}
+
+func effectiveMCPInvokeTools(flagChanged bool, flagVal, cfgVal []string) []string {
 	if flagChanged {
 		return flagVal
 	}

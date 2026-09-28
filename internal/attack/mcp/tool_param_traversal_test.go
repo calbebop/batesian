@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -123,7 +124,7 @@ func collapseDotDot(p string) string {
 func runTraversal(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 	t.Helper()
 	findings, err := mcp.NewToolParamTraversalExecutor(traversalRC()).Execute(
-		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"read_note", "echo_note_path"}})
 	return findings, err
 }
 
@@ -267,7 +268,8 @@ func TestTraversal_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
 	ts := httptest.NewServer(srv.handler())
 	defer ts.Close()
 
-	findings, err := runTraversal(t, ts)
+	findings, err := mcp.NewToolParamTraversalExecutor(traversalRC()).Execute(
+		t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"create_note"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,6 +278,34 @@ func TestTraversal_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("non-read-only tool was called %d times", calls.Load())
+	}
+}
+
+func TestTraversal_RequiresExactToolApproval(t *testing.T) {
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("delete_note")},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			calls.Add(1)
+			return "deleted", false, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+	exec := mcp.NewToolParamTraversalExecutor(traversalRC())
+	for _, approved := range [][]string{nil, {"other_tool"}} {
+		findings, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: approved})
+		if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "delete_note") {
+			t.Fatalf("approval %v: findings=%+v err=%v", approved, findings, err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("tool was called without exact approval: %d", calls.Load())
+		}
+	}
+	_, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"delete_note"}})
+	if err != nil || calls.Load() == 0 {
+		t.Fatalf("exact approval did not enable the probe: calls=%d err=%v", calls.Load(), err)
 	}
 }
 

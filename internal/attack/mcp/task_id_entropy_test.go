@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,9 +35,10 @@ const (
 // entropyServer advertises one task-capable read-only tool and mints handles
 // in the configured style on every task-augmented tools/call.
 type entropyServer struct {
-	style       entropyStyle
-	annotations map[string]interface{}
-	calls       *atomic.Int32
+	style        entropyStyle
+	annotations  map[string]interface{}
+	calls        *atomic.Int32
+	listRPCError bool
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -83,6 +85,13 @@ func (s *entropyServer) handler() http.HandlerFunc {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			if s.listRPCError {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": -32001, "message": "not authorized"},
+				})
+				return
+			}
 			annotations := s.annotations
 			if annotations == nil {
 				annotations = map[string]interface{}{"readOnlyHint": true}
@@ -132,7 +141,7 @@ func (s *entropyServer) handler() http.HandlerFunc {
 func runEntropy(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 	t.Helper()
 	return mcp.NewTaskIDEntropyExecutor(entropyRC()).
-		Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+		Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"wait_a_moment"}})
 }
 
 // TestEntropy_SequentialFiresHigh: counter-minted handles with a constant
@@ -267,6 +276,36 @@ func TestEntropy_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("non-read-only tool was called %d times", calls.Load())
+	}
+}
+
+func TestEntropy_RequiresExactToolApproval(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{style: styleSequential, calls: &calls}).handler())
+	defer ts.Close()
+	exec := mcp.NewTaskIDEntropyExecutor(entropyRC())
+	for _, approved := range [][]string{nil, {"other_tool"}} {
+		findings, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: approved})
+		if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "wait_a_moment") {
+			t.Fatalf("approval %v: findings=%+v err=%v", approved, findings, err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("tool was called without exact approval: %d", calls.Load())
+		}
+	}
+	_, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"wait_a_moment"}})
+	if err != nil || calls.Load() == 0 {
+		t.Fatalf("exact approval did not enable the probe: calls=%d err=%v", calls.Load(), err)
+	}
+}
+
+func TestEntropy_ToolListRPCErrorIsNotClean(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{listRPCError: true, calls: &calls}).handler())
+	defer ts.Close()
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 0 {
+		t.Fatalf("tools/list error must be inconclusive without calls: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }
 
