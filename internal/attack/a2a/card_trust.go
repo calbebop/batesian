@@ -2,12 +2,10 @@ package a2a
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -21,15 +19,11 @@ const (
 	staleCacheThreshold = 3600
 )
 
-// CardTrustExecutor inspects the durability and consistency of an A2A agent
-// card's trust properties (rule a2a-card-trust-001): canonicalization across
-// well-known paths, cache/TTL of the trust anchor, and signature freshness.
+// CardTrustExecutor checks card consistency across well-known paths and cache policy.
 //
 // It only reads what the server exposes (it does not forge or verify
-// signatures), so every finding is a RiskIndicator: it observes a weak or
-// inconsistent trust posture (a signed-vs-unsigned path split, an already-expired
-// signature still being served, long-lived caching) but cannot demonstrate that
-// a verifier is actually bypassed. Each finding recommends manual verification.
+// signatures), so every finding is a RiskIndicator rather than a demonstrated
+// verifier bypass.
 type CardTrustExecutor struct {
 	rule attack.RuleContext
 }
@@ -50,7 +44,7 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	legacyURL := endpoint.AppendPath(vars.BaseURL, cardPathLegacy)
 
 	primaryBody, primaryCacheControl, primaryOK := fetchCard(ctx, client, primaryURL)
-	legacyBody, _, legacyOK := fetchCard(ctx, client, legacyURL)
+	legacyBody, legacyCacheControl, legacyOK := fetchCard(ctx, client, legacyURL)
 	if !primaryOK && !legacyOK {
 		// This rule analyses the card, so no card means it was not exercised.
 		// It used to return clean here, which reads as "the card is fine" for a
@@ -59,18 +53,15 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 			"the card's transport and caching headers", attack.ErrInconclusive, primaryURL, legacyURL)
 	}
 
-	// Use whichever path actually served a card as the basis for the cache and
-	// signature checks.
-	cardURL, cardBody, cacheControl := primaryURL, primaryBody, primaryCacheControl
+	// Use whichever path served a card for the cache check.
+	cardURL, cacheControl := primaryURL, primaryCacheControl
 	if !primaryOK {
-		cardURL, cardBody = legacyURL, legacyBody
-		_, cacheControl, _ = fetchCard(ctx, client, legacyURL)
+		cardURL, cacheControl = legacyURL, legacyCacheControl
 	}
 
 	var findings []attack.Finding
 	findings = append(findings, e.checkCanonicalization(primaryURL, primaryBody, primaryOK, legacyURL, legacyBody, legacyOK)...)
 	findings = append(findings, e.checkCache(cardURL, cacheControl)...)
-	findings = append(findings, e.checkSignatureFreshness(cardURL, cardBody)...)
 	return findings, nil
 }
 
@@ -179,76 +170,6 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 	return nil
 }
 
-// checkSignatureFreshness decodes each JWS protected header and flags signatures
-// that never expire or whose expiry has already passed.
-func (e *CardTrustExecutor) checkSignatureFreshness(cardURL string, cardBody []byte) []attack.Finding {
-	card, ok := parseCard(cardBody)
-	if !ok {
-		return nil
-	}
-	sigs, _ := card["signatures"].([]interface{})
-	if len(sigs) == 0 {
-		return nil // signature presence/config is a2a-jws-algconf-001's domain
-	}
-
-	now := time.Now().Unix()
-	anyExpiry := false
-	for i, sigRaw := range sigs {
-		sig, ok := sigRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		protected, _ := sig["protected"].(string)
-		headerJSON, err := base64.RawURLEncoding.DecodeString(protected)
-		if err != nil {
-			continue
-		}
-		var header map[string]interface{}
-		if err := json.Unmarshal(headerJSON, &header); err != nil {
-			continue
-		}
-		exp, hasExp := numericClaim(header["exp"])
-		if !hasExp {
-			continue
-		}
-		anyExpiry = true
-		if exp < now {
-			return []attack.Finding{{
-				RuleID:     e.rule.ID,
-				RuleName:   e.rule.Name,
-				Severity:   "medium",
-				Confidence: attack.RiskIndicator,
-				Title:      fmt.Sprintf("A2A agent card signatures[%d] is expired but still served", i),
-				Description: fmt.Sprintf(
-					"The card signature's protected header declares exp=%d, which is in the past, yet the "+
-						"server still serves this signature as the live card. A compliant verifier rejects an "+
-						"expired signature; this is exploitable only against a verifier that ignores exp. "+
-						"Manually verify whether the target's clients enforce signature expiry.", exp),
-				Evidence:    fmt.Sprintf("signatures[%d].protected exp=%d (now=%d, expired %ds ago)", i, exp, now, now-exp),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
-			}}
-		}
-	}
-
-	if !anyExpiry {
-		return []attack.Finding{{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "medium",
-			Confidence: attack.RiskIndicator,
-			Title:      "A2A agent card signatures have no expiry (exp)",
-			Description: "The card's JWS signature protected header(s) declare no `exp`. A signature that " +
-				"never expires means a card captured once stays cryptographically valid forever, so " +
-				"rotating keys or revoking a card cannot bound the trust window.",
-			Evidence:    fmt.Sprintf("GET %s: %d signature(s), none declare exp", cardURL, len(sigs)),
-			Remediation: e.rule.Remediation,
-			TargetURL:   cardURL,
-		}}
-	}
-	return nil
-}
-
 // fetchCard GETs an agent card and returns its body, Cache-Control header, and
 // whether a JSON card was served.
 func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cacheControl string, ok bool) {
@@ -295,23 +216,6 @@ func cacheMaxAge(cc string) (int, bool) {
 			if n, err := strconv.Atoi(strings.TrimPrefix(part, "max-age=")); err == nil {
 				return n, true
 			}
-		}
-	}
-	return 0, false
-}
-
-// numericClaim coerces a JSON claim value (number or numeric string) to int64.
-func numericClaim(v interface{}) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case json.Number:
-		if i, err := n.Int64(); err == nil {
-			return i, true
-		}
-	case string:
-		if i, err := strconv.ParseInt(n, 10, 64); err == nil {
-			return i, true
 		}
 	}
 	return 0, false

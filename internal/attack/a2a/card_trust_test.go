@@ -15,7 +15,7 @@ import (
 )
 
 func protectedHeader(alg string, exp *int64) string {
-	m := map[string]interface{}{"alg": alg}
+	m := map[string]interface{}{"alg": alg, "typ": "JOSE", "kid": "key-1", "jku": "https://agent.example/jwks.json"}
 	if exp != nil {
 		m["exp"] = *exp
 	}
@@ -133,35 +133,29 @@ func TestCardTrust_MissingCache(t *testing.T) {
 	}
 }
 
-// TestCardTrust_NoExpirySignature: consistent signed card whose signature has no
-// exp. MUST fire a single medium freshness indicator.
-func TestCardTrust_NoExpirySignature(t *testing.T) {
+// The documented A2A protected header has no exp claim.
+func TestCardTrust_StandardSignatureNoExpiry(t *testing.T) {
 	card := signedCard("https://agent.example/", nil)
 	ts := cardServer(card, card, "no-cache")
 	defer ts.Close()
 
-	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
-		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected no expiry finding for a standard protected header, got %+v", findings)
 	}
 }
 
-// TestCardTrust_ExpiredSignature: consistent signed card whose signature exp is
-// in the past. MUST fire indicator/medium (a compliant verifier rejects it; the
-// scanner cannot prove the target's verifier ignores exp).
-func TestCardTrust_ExpiredSignature(t *testing.T) {
+// A custom exp field does not establish how consuming clients treat the card.
+func TestCardTrust_CustomExpiredHeader(t *testing.T) {
 	card := signedCard("https://agent.example/", past())
 	ts := cardServer(card, card, "no-store")
 	defer ts.Close()
 
-	f := onlyFinding(t, runCardTrust(t, ts))
-	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
-		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected no expiry finding for a custom header, got %+v", findings)
 	}
 }
 
-// TestCardTrust_Clean: identical signed (future-exp) card on both paths with a
-// revalidating cache policy. MUST stay silent.
+// Consistent cards with a revalidating cache policy stay silent.
 func TestCardTrust_Clean(t *testing.T) {
 	card := signedCard("https://agent.example/", future())
 	ts := cardServer(card, card, "no-cache")
