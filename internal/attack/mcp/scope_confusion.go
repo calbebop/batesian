@@ -225,7 +225,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			"level was never established", princB.name, scopeVerdictName(verdict)), false
 	}
 
-	// Open dispatch belongs to mcp-tools-unauth-001.
+	// Anonymous dispatch rules out a scope-specific bypass.
 	anonymousText := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
 	if scopeShowsDispatch(anonymousText) {
 		return nil, "", true

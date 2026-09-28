@@ -36,10 +36,9 @@ info:
       produced crosses the authorization boundary.
 
     A finding is raised only after an anonymous task creation is rejected, which
-    proves the server does enforce authentication. A server with no
-    authentication at all is a different and more obvious failure, owned by
-    mcp-tools-unauth-001, and is suppressed here rather than mislabelled as a
-    broken object-level authorization check.
+    proves the server enforces authentication for task creation. Anonymous task
+    access is suppressed here rather than mislabelled as a broken object-level
+    authorization check.
 
     Safety: creating a task invokes a real tool. Approve its exact name with
     --mcp-invoke-tool or mcp_invoke_tools after reviewing it. The rule also

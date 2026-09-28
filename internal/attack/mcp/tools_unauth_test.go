@@ -5,21 +5,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// toolsUnauthServer builds a mock MCP server. callBehavior controls how
-// tools/call answers an unknown tool name:
-//   - "unknown": JSON-RPC -32602 "Unknown tool" (dispatch reached, no auth)
-//   - "internal": JSON-RPC -32603 internal error (dispatch reached, no auth)
-//   - "authgate": JSON-RPC -32001 "Unauthorized" (call gated behind auth)
-//
-// When advertiseTools is false the server omits the tools capability. When
-// listAuth is true tools/list itself returns an auth error.
-func toolsUnauthServer(advertiseTools, listAuth bool, callBehavior string) *httptest.Server {
+// toolsUnauthServer records any invocation, including unknown tool names.
+func toolsUnauthServer(advertiseTools bool, listErrorCode int, listTools []interface{}, calls *atomic.Int32) *httptest.Server {
+	if listTools == nil {
+		listTools = []interface{}{
+			map[string]interface{}{"name": "echo", "description": "Echo input"},
+			map[string]interface{}{"name": "run_query", "description": "Run a database query"},
+		}
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -44,45 +44,31 @@ func toolsUnauthServer(advertiseTools, listAuth bool, callBehavior string) *http
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
-			if listAuth {
+			if listErrorCode != 0 {
+				message := "Internal error"
+				if listErrorCode == -32001 {
+					message = "Unauthorized"
+				}
 				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-					"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"}})
+					"error": map[string]interface{}{"code": listErrorCode, "message": message}})
 				return
 			}
 			enc(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
-					"tools": []interface{}{
-						map[string]interface{}{"name": "echo", "description": "Echo input"},
-						map[string]interface{}{"name": "run_query", "description": "Run a database query"},
-					},
+					"tools": listTools,
 				},
 			})
 		case "tools/call":
-			if callBehavior == "authgate" {
-				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-					"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"}})
-				return
+			if calls != nil {
+				calls.Add(1)
 			}
-			if callBehavior == "internal" {
-				// A non-(-32602) validation path: still proves dispatch without auth.
-				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-					"error": map[string]interface{}{"code": -32603, "message": "internal error: unknown tool " + paramName(req)}})
-				return
-			}
-			// "unknown": the scanner only ever calls a non-existent tool name.
 			enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"error": map[string]interface{}{"code": -32602, "message": "Unknown tool: " + paramName(req)}})
+				"result": map[string]interface{}{"content": []interface{}{}}})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-}
-
-func paramName(req map[string]interface{}) string {
-	params, _ := req["params"].(map[string]interface{})
-	name, _ := params["name"].(string)
-	return name
 }
 
 func runToolsUnauth(t *testing.T, srv *httptest.Server) []attack.Finding {
@@ -95,54 +81,27 @@ func runToolsUnauth(t *testing.T, srv *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestToolsUnauth_ToolsExposed: tools/list leaks tools and tools/call dispatch
-// is reachable unauthenticated => medium list finding + high call finding.
+// A server that dispatches any tool name must not receive tools/call.
 func TestToolsUnauth_ToolsExposed(t *testing.T) {
-	srv := toolsUnauthServer(true, false, "unknown")
-	defer srv.Close()
-
-	findings := runToolsUnauth(t, srv)
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings (list + call), got %d: %+v", len(findings), findings)
-	}
-	hasMedium, hasHigh := false, false
-	for _, f := range findings {
-		if f.Confidence != attack.ConfirmedExploit {
-			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
-		}
-		switch f.Severity {
-		case "medium":
-			hasMedium = true
-		case "high":
-			hasHigh = true
-		}
-	}
-	if !hasMedium {
-		t.Error("expected medium finding for tools/list")
-	}
-	if !hasHigh {
-		t.Error("expected high finding for tools/call reachability")
-	}
-}
-
-// TestToolsUnauth_ListExposedCallEnforced: tools/list leaks but tools/call is
-// auth-gated => only the medium list finding fires.
-func TestToolsUnauth_ListExposedCallEnforced(t *testing.T) {
-	srv := toolsUnauthServer(true, false, "authgate")
+	var calls atomic.Int32
+	srv := toolsUnauthServer(true, 0, nil, &calls)
 	defer srv.Close()
 
 	findings := runToolsUnauth(t, srv)
 	if len(findings) != 1 {
-		t.Fatalf("expected exactly 1 finding (list only), got %d: %+v", len(findings), findings)
+		t.Fatalf("expected one list finding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" {
-		t.Errorf("expected medium list finding, got %q", findings[0].Severity)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("expected a confirmed medium list finding, got %+v", findings[0])
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("scanner sent %d tools/call request(s)", calls.Load())
 	}
 }
 
 // TestToolsUnauth_AuthEnforced: tools/list itself requires auth => no findings.
 func TestToolsUnauth_AuthEnforced(t *testing.T) {
-	srv := toolsUnauthServer(true, true, "authgate")
+	srv := toolsUnauthServer(true, -32001, nil, nil)
 	defer srv.Close()
 
 	if findings := runToolsUnauth(t, srv); len(findings) != 0 {
@@ -152,7 +111,7 @@ func TestToolsUnauth_AuthEnforced(t *testing.T) {
 
 // TestToolsUnauth_NoToolsCapability: server does not advertise tools => skip.
 func TestToolsUnauth_NoToolsCapability(t *testing.T) {
-	srv := toolsUnauthServer(false, false, "unknown")
+	srv := toolsUnauthServer(false, 0, nil, nil)
 	defer srv.Close()
 
 	if findings := runToolsUnauth(t, srv); len(findings) != 0 {
@@ -160,27 +119,18 @@ func TestToolsUnauth_NoToolsCapability(t *testing.T) {
 	}
 }
 
-// TestToolsUnauth_CallReachableViaInternalError: tools/call surfacing a -32603
-// for the non-existent tool still proves the invocation path was reached without
-// auth. The old dispatch helper accepted only -32602 and reported just the list
-// finding here (false negative).
-func TestToolsUnauth_CallReachableViaInternalError(t *testing.T) {
-	srv := toolsUnauthServer(true, false, "internal")
+func TestToolsUnauth_ListInternalError(t *testing.T) {
+	srv := toolsUnauthServer(true, -32603, nil, nil)
 	defer srv.Close()
 
-	findings := runToolsUnauth(t, srv)
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings (list + call via -32603), got %d: %+v", len(findings), findings)
-	}
-	hasHigh := false
-	for _, f := range findings {
-		if f.Severity == "high" {
-			hasHigh = true
-		}
-	}
-	if !hasHigh {
-		t.Error("expected a high tools/call reachability finding for the -32603 response")
-	}
+	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), srv.URL, testOpts())
+}
+
+func TestToolsUnauth_MalformedList(t *testing.T) {
+	srv := toolsUnauthServer(true, 0, []interface{}{nil, map[string]interface{}{"name": ""}}, nil)
+	defer srv.Close()
+
+	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), srv.URL, testOpts())
 }
 
 // TestToolsUnauth_NotMCP: a non-MCP server (no reachable endpoint) must report

@@ -21,8 +21,8 @@ info:
     - one wire REFUSED and the other ANSWERED => confirmed bypass
       (critical / ConfirmedExploit). Direction does not matter: whichever wire is
       open is the one an attacker uses.
-    - both answered => the server gates nothing; that is reported by
-      mcp-resources-unauth-001 and mcp-tools-unauth-001, not here.
+    - both answered => neither listing is gated; that is reported by the
+      corresponding unauthenticated-listing rule, not here.
     - both refused => the gate is applied uniformly (secure).
     - only one era served => nothing to compare (not applicable).
 

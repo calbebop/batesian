@@ -16,7 +16,7 @@ Postures:
   open                 - no authentication anywhere. The anonymous control
                          dispatches, so scope enforcement is not the boundary
                          this rule can speak about, and it MUST stay silent
-                         (the surface belongs to mcp-tools-unauth-001).
+                         (there is no scope-specific boundary to test).
 
 Tokens: tok-a is the full principal and tok-b is limited. The scan also needs
 --mcp-scope-tool delete_item.

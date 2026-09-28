@@ -94,7 +94,6 @@ func FuzzDispatchClassifiers(f *testing.F) {
 		for _, fn := range []func(map[string]interface{}) (bool, string){
 			completionDispatchReachable,
 			setLevelDispatchReachable,
-			callDispatchReachable,
 		} {
 			reachable, reason := fn(body)
 			// A positive verdict must always carry evidence for the report.

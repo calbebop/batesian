@@ -75,12 +75,10 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
 	}
 
-	// A handful of further calls, including a malformed one to elicit verbose
-	// errors that naive servers fill with request/auth context.
+	// Listing requests can expose token reflection without invoking a tool.
 	probes := []map[string]interface{}{
 		{"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]interface{}{}},
 		{"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": map[string]interface{}{}},
-		{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": map[string]interface{}{"name": ""}},
 	}
 	for _, p := range probes {
 		resp, perr := client.POST(ctx, ep, session.header(), p)

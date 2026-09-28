@@ -197,7 +197,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			_ = anonTask
 			switch _, anonRead := e.getTask(ctx, client, anonSess, anonymousPrincipal, taskID); anonRead {
 			case probeAnswered:
-				return nil, nil // no credential is required anywhere: mcp-tools-unauth-001's surface
+				return nil, nil // anonymous task access is not a cross-context bypass
 			case probeInconclusive:
 				return nil, fmt.Errorf("%w: an anonymous caller could create a task at %s but the "+
 					"anonymous read of principal %s's task returned no verdict, so whether reads are "+
