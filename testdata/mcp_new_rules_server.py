@@ -4,7 +4,7 @@ argument.
 
 `open` (the default) enforces nothing, and validates:
   - mcp-prompt-unauth-001: exposes prompt templates without auth
-  - mcp-tools-unauth-001: exposes tools/list and tools/call dispatch without auth
+  - mcp-tools-unauth-001: exposes tools/list without auth
 
 `downgrade` validates mcp-init-downgrade-001, and needs its own posture because
 accepting an old protocol version is NOT the bug. Version negotiation permits a
@@ -132,9 +132,7 @@ async def mcp_endpoint(request: Request) -> Response:
     if method == "tools/list":
         result = {"tools": TOOLS}
     elif method == "tools/call":
-        # No auth check (vulnerable): the dispatch path is reachable anonymously.
-        # An unknown tool name returns a -32602 protocol error per the MCP spec
-        # (the scanner only ever calls a non-existent tool, so nothing executes).
+        # This fixture allows anonymous calls; the tools-list rule does not test them.
         name = params.get("name", "")
         tool_names = {t["name"] for t in TOOLS}
         if name not in tool_names:

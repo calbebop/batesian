@@ -107,6 +107,9 @@ Scan Results (10 finding(s))    critical 0 · high 6 · medium 4
 | `mcp-completion-unauth-001` | high / medium | Suggestion values disclosed; endpoint reachable |
 | `mcp-logging-unauth-001` | medium | `logging/setLevel` reachable |
 
+The `mcp-tools-unauth-001` high-severity call result is historical. Current scans
+do not send an unapproved `tools/call`; they report only observed list exposure.
+
 The summary is byte-identical to the capture recorded when the shipped set was
 half this size - same six rules, same severities - which is itself a finding:
 nine rules added since then, aimed at classes this reference server does not

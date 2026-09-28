@@ -118,9 +118,9 @@ need not be gated alike: a server can enforce authorization on one and not the
 other.
 
 Three of those four read the advertised capability per wire, so a surface the server
-exposes on only one era is probed only there: they follow the listing with a
-state-touching call (`tools/call`, `prompts/get`, `completion/complete`) and gating
-avoids calling a surface the server does not implement.
+exposes on only one era is probed only there. The tools rule only lists tools;
+the prompt and completion rules also probe `prompts/get` and
+`completion/complete`.
 `mcp-resources-unauth-001` deliberately does not gate, on either wire. A non-empty
 `resources/list` answered without a credential is direct evidence of the disclosure,
 and what a server advertised is not evidence about what it serves, so gating would
@@ -161,7 +161,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High / Critical | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | High / Medium | confirmed | CWE-862 |
-| `mcp-tools-unauth-001` | [Tools Accessible Without Authentication](#mcp-tools-unauth-001) | High / Medium | confirmed | CWE-862 |
+| `mcp-tools-unauth-001` | [Tools Listed Without Authentication](#mcp-tools-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
@@ -328,20 +328,16 @@ the prompts capability, produces no finding.
 
 ### mcp-tools-unauth-001
 
-**Tools Accessible Without Authentication** | Severity: High / Medium | CWE-862
+**Tools Listed Without Authentication** | Severity: Medium | CWE-862
 
 Tools are the primary MCP attack surface: a tool is a server-side function a
 caller can invoke, not just data or a template. The tools capability is confirmed
 structurally from the captured `initialize` result (`ServerSupports`). The rule
-confirms two failures: an unauthenticated `tools/list` discloses the executable
-surface and each tool's input schema (**medium**); and the `tools/call` dispatch
-path being reachable without auth (**high**) - both **confirmed**. To prove
-call-path reachability **without executing anything**, the rule calls a guaranteed
-non-existent tool name, which the spec answers with a `-32602` "Unknown tool"
-protocol error; reaching that error (or any result envelope) shows the call was
-dispatched without credentials. It **never invokes a real or advertised tool** -
-destructive tool-argument fuzzing is out of scope. A server that requires auth, or
-does not advertise the tools capability, produces no finding.
+confirms an unauthenticated `tools/list` disclosure of tool names and metadata
+(**medium**). It sends no `tools/call`, so invocation
+authorization remains untested. An unknown name is not guaranteed harmless on a
+server under test, and a generic error does not prove a listed tool was callable.
+A server that requires auth or does not advertise tools produces no finding.
 
 ---
 
@@ -433,8 +429,7 @@ another, reporting three failures, all **confirmed**:
   `tasks/get` and still leak the list.
 
 A finding is raised only after anonymous task creation is *rejected*, proving the
-server does enforce authentication. A server with no authentication at all is a
-different and more obvious failure owned by `mcp-tools-unauth-001`, and is
+server does enforce authentication. A server with no authentication at all is
 suppressed here rather than mislabelled as broken object-level authorization. A
 server that scopes tasks to their creating context answers the cross-context read
 with `-32602` and produces no finding.
@@ -500,8 +495,8 @@ credentials:
 
 - one wire **refused**, the other **answered** => **confirmed** bypass. Direction
   is irrelevant: whichever wire is open is the one that gets used.
-- both answered => the server gates nothing, which is `mcp-resources-unauth-001`
-  and `mcp-tools-unauth-001` territory, so this is suppressed rather than
+- both answered => neither listing is gated, which is `mcp-resources-unauth-001`
+  or `mcp-tools-unauth-001` territory, so this is suppressed rather than
   double-counted.
 - both refused => the gate is applied uniformly (secure).
 - only one era served => nothing to compare (not applicable).
@@ -651,9 +646,8 @@ reported as an **indicator** for the operator to confirm via their collaborator.
 
 **Credential Canary Reflected in Responses** | Severity: Medium | CWE-522
 
-Presents a unique, high-entropy canary bearer token across a handful of standard
-calls (`initialize`, `tools/list`, `resources/list`, and a malformed call to
-elicit a verbose error) and checks whether the canary value appears verbatim in
+Presents a unique, high-entropy canary bearer token across `initialize`,
+`tools/list`, and `resources/list`, then checks whether it appears verbatim in
 any response body. If it does, the server copies the caller's credential into its
 protocol output - a channel that flows into server logs, distributed traces, error
 trackers, shared SSE streams, and client consoles, exposing the secret to anyone
@@ -772,9 +766,9 @@ credential to compare against. Without one it reports **inconclusive**, not clea
    session is not usable and there is nothing to strip.
 3. Control: attempt an **anonymous** handshake, and if it yields a session, call
    `tools/list` with that session and no credential. A server that answers it has
-   served a caller who never presented a credential, so it implements no
-   authorization, the requirement above does not bind on it, and the surface
-   belongs to `mcp-tools-unauth-001`. An open handshake alone proves nothing: many
+   served the tool list to a caller who never presented a credential. This does
+   not prove a session-as-credential flaw; list exposure is reported by
+   `mcp-tools-unauth-001`. An open handshake alone proves nothing: many
    servers leave `initialize` ungated and authorize what follows. If the anonymous
    handshake is accepted but issues no session, the rule stops, since a refusal
    below could then be about the missing session rather than the missing credential.

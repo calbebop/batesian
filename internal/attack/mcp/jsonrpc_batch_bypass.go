@@ -130,7 +130,7 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 			continue
 		}
 		// Only a gated method is a bypass target: if the single request already
-		// succeeds, there is no auth to bypass (that is mcp-tools-unauth territory).
+		// succeeds, there is no auth boundary to bypass.
 		if !isAuthRejection(ctrl) {
 			continue
 		}

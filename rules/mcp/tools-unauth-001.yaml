@@ -1,28 +1,20 @@
 id: mcp-tools-unauth-001
 info:
-  name: MCP Tools Accessible Without Authentication
+  name: MCP Tools Listed Without Authentication
   author: batesian
-  severity: high
+  severity: medium
   description: |
-    Tests whether an MCP server exposes its tools without authentication, via
-    tools/list (enumeration) and tools/call (invocation dispatch).
+    Tests whether tools/list exposes tool definitions without authentication.
 
     Tools are the primary MCP attack surface: unlike resources (data) or prompts
     (templates), a tool is a server-side function a caller can invoke - querying
     databases, calling APIs, reading files, or running commands. The MCP spec
     requires servers to implement proper access controls on tools.
 
-    The rule confirms two distinct failures:
-      1. tools/list returns the tool set (names plus input schemas) to an
-         unauthenticated caller - the executable surface is disclosed
-         (reported MEDIUM).
-      2. tools/call dispatch is reachable without authentication (reported HIGH).
-
-    SAFETY: the rule never invokes a real or advertised tool. It confirms the
-    invocation path is open by calling a guaranteed non-existent tool name, which
-    the spec answers with a -32602 "Unknown tool" protocol error and zero
-    execution. A server that requires authentication rejects with 401/403 or an
-    auth error before reaching tool dispatch, and produces no finding.
+    A non-empty tools/list response discloses tool names and metadata to an
+    unauthenticated caller (MEDIUM). The rule sends no tools/call, so it does not
+    claim that any listed tool is callable without authentication. Fabricated
+    names cannot guarantee zero execution on a nonconforming server.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-06-18/server/tools

@@ -19,9 +19,8 @@ import (
 // Note the condition on the first sentence. The requirement binds on servers that
 // implement authorization, so the rule has to establish that the server enforces
 // authorization at all before it can accuse it of authenticating by session. That
-// is what the unauthenticated control does; without it, a server with no
-// authorization anywhere would be reported here instead of by
-// mcp-tools-unauth-001, which owns that failure.
+// is what the unauthenticated control does; without it, an open tool list could
+// be misreported as session-based authentication.
 //
 // The oracle is a pair of requests that differ in one detail. Both carry no
 // credential. One presents a session id the server issued, the other a random id
@@ -131,9 +130,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			}
 			switch e.toolsList(ctx, client, ep, anonSession, nil) {
 			case accessGranted:
-				// A caller who presented no credential at any point reads the tool list.
-				// The server implements no authorization, the MUST NOT above does not
-				// bind on it, and mcp-tools-unauth-001 owns that surface.
+				// Anonymous list access does not prove session-based authentication.
 				return nil, true
 			case accessUndetermined:
 				observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(

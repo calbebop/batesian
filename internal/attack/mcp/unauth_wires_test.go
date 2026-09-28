@@ -156,7 +156,7 @@ var unauthRules = []struct {
 	exec func() attack.Executor
 }{
 	{"tools", "tools", func() attack.Executor {
-		return mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001", Severity: "high"})
+		return mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001", Severity: "medium"})
 	}},
 	{"resources", "resources", func() attack.Executor {
 		return mcpattack.NewResourcesUnauthExecutor(attack.RuleContext{ID: "mcp-resources-unauth-001", Severity: "high"})
@@ -312,9 +312,8 @@ func TestUnauthWires_CapabilityIsPerWire(t *testing.T) {
 // A non-empty resources/list answered without a credential is direct evidence of the
 // disclosure. What the server advertised is not evidence about what it serves, so
 // gating on the advertisement would drop exactly the case below: a wire that lists
-// resources it never declared. The other three probe a second, state-touching method
-// (tools/call, prompts/get, completion/complete) and gate to avoid calling a surface
-// the server does not implement, which is a different trade.
+// resources it never declared. The tool rule now lists only; prompt and completion
+// rules still probe their read paths after capability checks.
 //
 // Written after this test caught the discrepancy: the docs claimed all four gate per
 // wire, which was never true of this one.

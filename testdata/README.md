@@ -157,8 +157,8 @@ python testdata/mcp_task_idor_server.py create-open  # only reads authenticated
 
 Approve the fixture tool with `--mcp-invoke-tool research` when scanning. Both
 postures must produce the same three findings. The rule suppresses itself when
-a server authenticates nothing, because that is `mcp-tools-unauth-001`'s failure
-rather than an IDOR, but it used to decide that from task creation alone. The
+a server authenticates nothing, because anonymous task access is not an IDOR,
+but it used to decide that from task creation alone. The
 `create-open` posture leaves a task-augmented `tools/call` open while `tasks/get`,
 `tasks/result` and `tasks/list` all require a Bearer token and none of them are
 scoped to the creator. That is a real authorization boundary on the exact surface
@@ -373,8 +373,8 @@ so `delete_item` dispatches for either while an anonymous call is refused -
 the confirmed failure. In `patched` the limited token draws
 `insufficient_scope` before argument validation and the boundary held. In
 `open` nothing authenticates at all, the anonymous control dispatches, and the
-rule suppresses itself because identity gates nothing here (that surface is
-`mcp-tools-unauth-001`'s). The fixture has no stored items, so its approved
+rule suppresses itself because identity gates nothing here. The fixture has no
+stored items, so its approved
 `delete_item` probes cannot remove data.
 
 **`mcp_shadow_surface_server.py` binds two ports** and takes a posture argument,

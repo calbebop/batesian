@@ -173,7 +173,7 @@ func TestBatchBypass_SecureNoFinding(t *testing.T) {
 }
 
 // TestBatchBypass_FullyOpenNoFinding: nothing is gated, so there is no auth to
-// bypass (that posture belongs to mcp-tools-unauth-001) => no finding.
+// bypass, so there is no finding.
 func TestBatchBypass_FullyOpenNoFinding(t *testing.T) {
 	srv := batchServer("open")
 	defer srv.Close()

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -22,6 +23,10 @@ func canaryRuleCtx() attack.RuleContext {
 //   - "clean":   never echoes the token; returns normal JSON-RPC replies
 //   - "nonmcp":  not a JSON-RPC server
 func canaryServer(mode string) *httptest.Server {
+	return canaryServerWithCalls(mode, nil)
+}
+
+func canaryServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "nonmcp" {
 			w.WriteHeader(http.StatusOK)
@@ -30,6 +35,10 @@ func canaryServer(mode string) *httptest.Server {
 		}
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		if method == "tools/call" && calls != nil {
+			calls.Add(1)
+		}
 		id := req["id"]
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		w.Header().Set("Content-Type", "application/json")
@@ -43,7 +52,6 @@ func canaryServer(mode string) *httptest.Server {
 			return
 		}
 		// clean: behave like a normal server, never echoing the token.
-		method, _ := req["method"].(string)
 		switch method {
 		case "initialize":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -73,7 +81,8 @@ func runCanary(t *testing.T, ts *httptest.Server) []attack.Finding {
 
 // TestCanary_Reflect: server echoes the presented token => confirmed.
 func TestCanary_Reflect(t *testing.T) {
-	ts := canaryServer("reflect")
+	var calls atomic.Int32
+	ts := canaryServerWithCalls("reflect", &calls)
 	defer ts.Close()
 
 	findings := runCanary(t, ts)
@@ -82,6 +91,9 @@ func TestCanary_Reflect(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "medium" {
 		t.Errorf("want medium/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("canary scan sent %d tools/call request(s)", calls.Load())
 	}
 }
 
