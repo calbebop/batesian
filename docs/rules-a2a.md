@@ -113,7 +113,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
-| `a2a-card-trust-001` | [Agent Card Trust Durability](#a2a-card-trust-001) | High / Medium | indicator | CWE-345 |
+| `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
@@ -357,14 +357,14 @@ identifier itself.
 
 ### a2a-card-trust-001
 
-**Agent Card Trust Durability (Canonicalization, Cache, Signature Freshness)** | Severity: High / Medium | CWE-345
+**Agent Card Trust Consistency and Cache Policy** | Severity: High / Medium / Low | CWE-345
 
 Covers the agent-card trust gaps the other card rules do not: where
 `a2a-jws-algconf-001` inspects the signature *algorithm*,
 `a2a-wellknown-hostinject-001` inspects Host reflection, and
 `a2a-extcard-unauth-001` inspects unauthenticated access, this rule inspects how
 *durable and consistent* the card's trust is. Because Batesian scans the server
-(not a consuming verifier), it judges only what the server exposes - three
+(not a consuming verifier), it judges only what the server exposes - two
 checks:
 
 - **Canonicalization / multi-path consistency.** The card is fetched from both
@@ -374,14 +374,15 @@ checks:
   reported **indicator (high)**. If both are signed but their `url` differs,
   reported as an **indicator (medium)** (routing ambiguity).
 - **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
-  `max-age` (>= 1h) or `immutable` without `no-cache`/`must-revalidate` keeps the
+  `max-age` (>= 1h) or `immutable` without `no-store`/`no-cache` can keep the
   trust anchor cached after key rotation or compromise (**indicator, medium**); a
   missing `Cache-Control` is a weaker heuristic-caching **indicator (low)**.
-  `no-store`/`no-cache`/`must-revalidate`/`max-age=0` produce no finding.
-- **Signature freshness.** When the card carries signatures, each protected
-  header is decoded: no `exp` means the signature never expires (**indicator,
-  medium**); an `exp` already in the past that is still served is an **indicator**
-  (a compliant verifier rejects an expired signature).
+  `no-store`/`no-cache`/`max-age=0` produce no finding. `must-revalidate` applies
+  only after a cached response becomes stale, so it does not cancel a long
+  `max-age`.
+
+The A2A JWS protected header does not require `exp`. Card signatures without it
+are not reported; key expiry and revocation depend on the verifier's key source.
 
 ---
 
