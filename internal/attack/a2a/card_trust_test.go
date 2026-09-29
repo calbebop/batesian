@@ -40,13 +40,20 @@ func unsignedCard() map[string]interface{} {
 // cardServer serves the given cards at the two well-known paths (nil => 404) and
 // sets the given Cache-Control header (empty => none).
 func cardServer(primary, legacy interface{}, cacheControl string) *httptest.Server {
+	return cardServerWithCachePolicies(primary, legacy, cacheControl, cacheControl)
+}
+
+func cardServerWithCachePolicies(primary, legacy interface{}, primaryCache, legacyCache string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var card interface{}
+		var cacheControl string
 		switch r.URL.Path {
 		case "/.well-known/agent-card.json":
 			card = primary
+			cacheControl = primaryCache
 		case "/.well-known/agent.json":
 			card = legacy
+			cacheControl = legacyCache
 		default:
 			http.NotFound(w, r)
 			return
@@ -158,6 +165,52 @@ func TestCardTrust_MissingCache(t *testing.T) {
 	f := onlyFinding(t, runCardTrust(t, ts))
 	if f.Severity != "low" || f.Confidence != attack.RiskIndicator {
 		t.Errorf("want low/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func TestCardTrust_CachePoliciesAcrossPaths(t *testing.T) {
+	card := unsignedCard()
+	for _, tc := range []struct {
+		name         string
+		primaryCard  interface{}
+		legacyCard   interface{}
+		primaryCache string
+		legacyCache  string
+		severity     string
+		path         string
+	}{
+		{"stale legacy", card, card, "no-cache", "public, max-age=86400", "medium", "/.well-known/agent.json"},
+		{"stale primary", card, card, "public, max-age=86400", "no-cache", "medium", "/.well-known/agent-card.json"},
+		{"stale over missing", card, card, "", "public, max-age=86400", "medium", "/.well-known/agent.json"},
+		{"stale primary over missing legacy", card, card, "public, max-age=86400", "", "medium", "/.well-known/agent-card.json"},
+		{"same risk on both paths", card, card, "public, max-age=86400", "public, max-age=86400", "medium", "/.well-known/agent-card.json"},
+		{"primary on severity tie", card, card, "max-age=3600", "max-age=31536000", "medium", "/.well-known/agent-card.json"},
+		{"missing legacy", card, card, "no-cache", "", "low", "/.well-known/agent.json"},
+		{"legacy only", nil, card, "", "public, max-age=86400", "medium", "/.well-known/agent.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServerWithCachePolicies(tc.primaryCard, tc.legacyCard, tc.primaryCache, tc.legacyCache)
+			defer ts.Close()
+
+			f := onlyFinding(t, runCardTrust(t, ts))
+			if f.Severity != tc.severity || f.TargetURL != ts.URL+tc.path {
+				t.Errorf("want %s finding for %s, got %s for %s", tc.severity, tc.path, f.Severity, f.TargetURL)
+			}
+		})
+	}
+}
+
+func TestCardTrust_CacheFindingWithSignatureMismatch(t *testing.T) {
+	ts := cardServerWithCachePolicies(signedCard("https://agent.example/", nil), unsignedCard(), "no-cache", "max-age=86400")
+	defer ts.Close()
+
+	findings := runCardTrust(t, ts)
+	if len(findings) != 2 {
+		t.Fatalf("want signature and cache findings, got %+v", findings)
+	}
+	if findings[0].Severity != "high" || findings[1].Severity != "medium" ||
+		findings[1].TargetURL != ts.URL+"/.well-known/agent.json" {
+		t.Errorf("unexpected findings: %+v", findings)
 	}
 }
 

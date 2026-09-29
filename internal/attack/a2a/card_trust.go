@@ -53,15 +53,22 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 			"the card's transport and caching headers", attack.ErrInconclusive, primaryURL, legacyURL)
 	}
 
-	// Use whichever path served a card for the cache check.
-	cardURL, cacheControl := primaryURL, primaryCacheControl
-	if !primaryOK {
-		cardURL, cacheControl = legacyURL, legacyCacheControl
+	var cacheFindings []attack.Finding
+	if primaryOK {
+		cacheFindings = e.checkCache(primaryURL, primaryCacheControl)
+	}
+	if legacyOK {
+		legacyFindings := e.checkCache(legacyURL, legacyCacheControl)
+		// Report the highest severity; prefer the primary path on ties.
+		if len(legacyFindings) > 0 && (len(cacheFindings) == 0 ||
+			cacheFindings[0].Severity == "low" && legacyFindings[0].Severity == "medium") {
+			cacheFindings = legacyFindings
+		}
 	}
 
 	var findings []attack.Finding
 	findings = append(findings, e.checkCanonicalization(primaryURL, primaryBody, primaryOK, legacyURL, legacyBody, legacyOK)...)
-	findings = append(findings, e.checkCache(cardURL, cacheControl)...)
+	findings = append(findings, cacheFindings...)
 	return findings, nil
 }
 
