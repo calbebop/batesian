@@ -377,6 +377,8 @@ checks:
   `max-age` (>= 1h) or `immutable` without `no-store`/`no-cache` can keep the
   trust anchor cached after key rotation or compromise (**indicator, medium**); a
   missing `Cache-Control` is a weaker heuristic-caching **indicator (low)**.
+  Both well-known paths are checked when served; the highest-severity cache
+  finding is reported, preferring the primary path on ties.
   `no-store`/`no-cache`/`max-age=0` produce no finding. `must-revalidate` applies
   only after a cached response becomes stale, so it does not cancel a long
   `max-age`.

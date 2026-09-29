@@ -27,8 +27,11 @@ info:
          instructs clients/intermediaries to keep caching the trust anchor, so a
          rotated or compromised card stays trusted until the cache expires
          (INDICATOR). A missing Cache-Control on the trust anchor is a weaker
-         INDICATOR (heuristic caching). `no-store`/`no-cache`/`max-age=0`
-         produce no finding. `must-revalidate` applies only after a response
+         INDICATOR (heuristic caching). Both well-known paths are checked when
+         served; the highest-severity cache finding is reported, preferring the
+         primary path on ties.
+         `no-store`/`no-cache`/`max-age=0` produce no finding.
+         `must-revalidate` applies only after a response
          becomes stale, so it does not shorten a long freshness lifetime.
 
   references:
