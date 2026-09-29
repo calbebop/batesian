@@ -138,8 +138,8 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 			TargetURL:   cardURL,
 		}}
 	}
-	// Explicit revalidation / no-store policies are safe.
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") || strings.Contains(cc, "must-revalidate") {
+	// These directives prevent unvalidated reuse.
+	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
 		return nil
 	}
 	maxAge, hasMaxAge := cacheMaxAge(cc)
@@ -156,13 +156,12 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 			RuleName:   e.rule.Name,
 			Severity:   "medium",
 			Confidence: attack.RiskIndicator,
-			Title:      "A2A agent card cached long-term without revalidation (stale-trust risk)",
+			Title:      "A2A agent card cache policy may delay trust updates",
 			Description: fmt.Sprintf(
-				"The agent card is served with Cache-Control %q, instructing clients and intermediaries "+
-					"to keep the trust anchor cached without revalidation. After key rotation or a "+
-					"compromise, a stale card (old keys, routing, or security schemes) remains trusted "+
-					"until the cache expires.", cacheControl),
-			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s (%s, no revalidation)", cardURL, cacheControl, detail),
+				"The agent card is served with Cache-Control %q. Caches can reuse it without "+
+					"contacting the origin while it is fresh, so old keys, routing, or security "+
+					"schemes may remain in use after a change.", cacheControl),
+			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s (%s)", cardURL, cacheControl, detail),
 			Remediation: e.rule.Remediation,
 			TargetURL:   cardURL,
 		}}

@@ -120,6 +120,34 @@ func TestCardTrust_StaleCache(t *testing.T) {
 	}
 }
 
+func TestCardTrust_MustRevalidateDoesNotShortenFreshness(t *testing.T) {
+	card := unsignedCard()
+	for _, policy := range []string{
+		"public, max-age=86400, must-revalidate",
+		"public, max-age=86400, immutable, must-revalidate",
+	} {
+		t.Run(policy, func(t *testing.T) {
+			ts := cardServer(card, card, policy)
+			defer ts.Close()
+
+			f := onlyFinding(t, runCardTrust(t, ts))
+			if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
+				t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+			}
+		})
+	}
+}
+
+func TestCardTrust_ShortFreshnessWithMustRevalidate(t *testing.T) {
+	card := unsignedCard()
+	ts := cardServer(card, card, "public, max-age=300, must-revalidate")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected no long-cache finding, got %+v", findings)
+	}
+}
+
 // TestCardTrust_MissingCache: consistent unsigned card, no Cache-Control header.
 // MUST fire a single low cache indicator.
 func TestCardTrust_MissingCache(t *testing.T) {
