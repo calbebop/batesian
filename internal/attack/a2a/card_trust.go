@@ -108,18 +108,41 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 		}}
 	}
 
-	if primaryURLField(primaryCard) != primaryURLField(legacyCard) {
+	primaryEndpoint, primaryHasEndpoint := preferredCardEndpoint(primaryCard)
+	legacyEndpoint, legacyHasEndpoint := preferredCardEndpoint(legacyCard)
+	if !primaryHasEndpoint || !legacyHasEndpoint {
+		missingURL := primaryURL
+		if primaryHasEndpoint {
+			missingURL = legacyURL
+		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
 			Severity:   "medium",
 			Confidence: attack.RiskIndicator,
-			Title:      "A2A agent card advertises a different url across well-known paths (canonicalization ambiguity)",
+			Title:      "A2A agent card has incomplete preferred endpoint fields",
+			Description: "One or both well-known agent cards omit a preferred endpoint URL or required v1 interface fields. " +
+				"Clients may fail to route requests, and the two cards' preferred endpoints cannot be compared.",
+			Evidence: fmt.Sprintf("%s preferred interface: url=%q binding=%q version=%q\n"+
+				"%s preferred interface: url=%q binding=%q version=%q",
+				primaryURL, primaryEndpoint.url, primaryEndpoint.binding, primaryEndpoint.version,
+				legacyURL, legacyEndpoint.url, legacyEndpoint.binding, legacyEndpoint.version),
+			Remediation: e.rule.Remediation,
+			TargetURL:   missingURL,
+		}}
+	}
+	if primaryEndpoint.comparableTo(legacyEndpoint) && primaryEndpoint.url != legacyEndpoint.url {
+		return []attack.Finding{{
+			RuleID:     e.rule.ID,
+			RuleName:   e.rule.Name,
+			Severity:   "medium",
+			Confidence: attack.RiskIndicator,
+			Title:      "A2A agent cards prefer different endpoints across well-known paths (canonicalization ambiguity)",
 			Description: fmt.Sprintf(
-				"The cards at %s and %s declare different `url` values. A client that canonicalizes to "+
+				"The cards at %s and %s declare different preferred endpoint URLs. A client that selects "+
 					"one path may route or verify against an endpoint the other path does not point to; "+
 					"verify which card is authoritative and make them consistent.", primaryURL, legacyURL),
-			Evidence:    fmt.Sprintf("%s url: %q\n%s url: %q", primaryURL, primaryURLField(primaryCard), legacyURL, primaryURLField(legacyCard)),
+			Evidence:    fmt.Sprintf("%s preferred endpoint: %q\n%s preferred endpoint: %q", primaryURL, primaryEndpoint.url, legacyURL, legacyEndpoint.url),
 			Remediation: e.rule.Remediation,
 			TargetURL:   primaryURL,
 		}}
@@ -208,9 +231,44 @@ func cardHasSignatures(card map[string]interface{}) bool {
 	return len(sigs) > 0
 }
 
-func primaryURLField(card map[string]interface{}) string {
-	u, _ := card["url"].(string)
-	return u
+type cardEndpoint struct {
+	url       string
+	binding   string
+	version   string
+	tenant    string
+	cardShape string
+}
+
+func (e cardEndpoint) comparableTo(other cardEndpoint) bool {
+	return e.cardShape == other.cardShape && e.binding == other.binding &&
+		e.version == other.version && e.tenant == other.tenant
+}
+
+func preferredCardEndpoint(card map[string]interface{}) (cardEndpoint, bool) {
+	if raw, present := card["supportedInterfaces"]; present {
+		endpoint := cardEndpoint{cardShape: "v1"}
+		interfaces, ok := raw.([]interface{})
+		if !ok || len(interfaces) == 0 {
+			return endpoint, false
+		}
+		preferred, ok := interfaces[0].(map[string]interface{})
+		if !ok {
+			return endpoint, false
+		}
+		endpoint.url, _ = preferred["url"].(string)
+		endpoint.binding, _ = preferred["protocolBinding"].(string)
+		endpoint.version, _ = preferred["protocolVersion"].(string)
+		endpoint.tenant, _ = preferred["tenant"].(string)
+		return endpoint, endpoint.url != "" && endpoint.binding != "" && endpoint.version != ""
+	}
+	// The v0.3 card field definition defaults an omitted transport to JSONRPC.
+	endpoint := cardEndpoint{cardShape: "legacy", binding: "JSONRPC"}
+	endpoint.url, _ = card["url"].(string)
+	if binding, ok := card["preferredTransport"].(string); ok && binding != "" {
+		endpoint.binding = binding
+	}
+	endpoint.version, _ = card["protocolVersion"].(string)
+	return endpoint, endpoint.url != ""
 }
 
 // cacheMaxAge extracts the max-age directive (seconds) from a lowercased

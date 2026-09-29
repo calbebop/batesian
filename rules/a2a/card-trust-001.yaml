@@ -18,9 +18,13 @@ info:
          /.well-known/agent-card.json and the legacy /.well-known/agent.json. If
          one path serves a SIGNED card and the other serves an UNSIGNED card, an
          attacker (or MITM) can steer verification to the unsigned path to strip
-         the signature requirement - reported as an indicator. If both are signed but
-         their routing-critical `url` differs, reported as an INDICATOR (routing
-         ambiguity).
+         the signature requirement - reported as an indicator. If their
+         signature status matches and comparable preferred interfaces point to
+         different URLs (`supportedInterfaces[0].url` in v1, top-level `url` in
+         v0.3), reported as an INDICATOR (routing ambiguity). Different card
+         shapes or preferred interface bindings, versions, or tenants are not
+         compared. Missing preferred endpoint fields on either served card are
+         also an INDICATOR.
 
       2. Stale-cache trust. The card response's Cache-Control is parsed. A long
          max-age (>= 1h) or `immutable` without `no-store`/`no-cache`
@@ -36,6 +40,7 @@ info:
 
   references:
     - https://a2a-protocol.org/latest/specification/
+    - https://a2a-protocol.org/v0.3.0/specification/
     - https://www.rfc-editor.org/rfc/rfc9111.html
     - https://cwe.mitre.org/data/definitions/345.html
     - https://cwe.mitre.org/data/definitions/347.html

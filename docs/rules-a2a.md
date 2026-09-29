@@ -371,8 +371,13 @@ checks:
   `/.well-known/agent-card.json` and the legacy `/.well-known/agent.json`. If one
   path serves a **signed** card and the other an **unsigned** one, an attacker can
   steer verification to the unsigned path to strip the signature requirement -
-  reported **indicator (high)**. If both are signed but their `url` differs,
-  reported as an **indicator (medium)** (routing ambiguity).
+  reported **indicator (high)**. Otherwise, comparable preferred interfaces
+  with different endpoint URLs (`supportedInterfaces[0].url` in v1, top-level
+  `url` in v0.3)
+  produce a **medium indicator** (routing ambiguity). Different card shapes or
+  preferred interface bindings, versions, or tenants are not compared. Missing
+  preferred endpoint fields on either served card also produce a **medium
+  indicator**.
 - **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
   `max-age` (>= 1h) or `immutable` without `no-store`/`no-cache` can keep the
   trust anchor cached after key rotation or compromise (**indicator, medium**); a
