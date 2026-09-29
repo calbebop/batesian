@@ -374,10 +374,12 @@ checks:
   reported **indicator (high)**. If both are signed but their `url` differs,
   reported as an **indicator (medium)** (routing ambiguity).
 - **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
-  `max-age` (>= 1h) or `immutable` without `no-cache`/`must-revalidate` keeps the
+  `max-age` (>= 1h) or `immutable` without `no-store`/`no-cache` can keep the
   trust anchor cached after key rotation or compromise (**indicator, medium**); a
   missing `Cache-Control` is a weaker heuristic-caching **indicator (low)**.
-  `no-store`/`no-cache`/`must-revalidate`/`max-age=0` produce no finding.
+  `no-store`/`no-cache`/`max-age=0` produce no finding. `must-revalidate` applies
+  only after a cached response becomes stale, so it does not cancel a long
+  `max-age`.
 
 The A2A JWS protected header does not require `exp`. Card signatures without it
 are not reported; key expiry and revocation depend on the verifier's key source.
