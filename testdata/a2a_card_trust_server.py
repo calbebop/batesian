@@ -3,7 +3,7 @@ Deliberately vulnerable A2A test server for validating:
   - a2a-card-trust-001: agent-card TRUST DURABILITY gaps not covered by the
     signature-algorithm rule (a2a-jws-algconf-001):
 
-      * Canonicalization / signature stripping (CONFIRMED, high): the card is
+      * Canonicalization / signature stripping (INDICATOR, high): the card is
         SIGNED at /.well-known/agent-card.json but UNSIGNED at the legacy path
         /.well-known/agent.json, so a client steered to the legacy path skips
         signature verification entirely.
@@ -11,8 +11,6 @@ Deliberately vulnerable A2A test server for validating:
         Cache-Control: public, max-age=86400, immutable - the trust anchor is
         cached for a day with no revalidation, so a rotated/compromised card
         keeps being trusted.
-      * Signature freshness (INDICATOR, medium): the signature's protected
-        header declares no `exp`, so it never expires.
 
 This is a static card server (no JSON-RPC); no authentication is involved.
 
@@ -36,8 +34,7 @@ AGENT_URL = "https://agent.example/a2a"
 
 
 def protected_header() -> str:
-    # alg present, but NO exp -> signature never expires (freshness indicator).
-    header = json.dumps({"alg": "RS256"}).encode()
+    header = json.dumps({"alg": "RS256", "typ": "JOSE", "kid": "fixture-key"}).encode()
     return base64.urlsafe_b64encode(header).rstrip(b"=").decode()
 
 
