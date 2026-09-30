@@ -379,14 +379,18 @@ checks:
   preferred endpoint fields on either served card also produce a **medium
   indicator**.
 - **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
-  `max-age` (>= 1h) or `immutable` without `no-store`/`no-cache` can keep the
-  trust anchor cached after key rotation or compromise (**indicator, medium**); a
-  missing `Cache-Control` is a weaker heuristic-caching **indicator (low)**.
+  `max-age` or an applicable `s-maxage` (>= 1h) without `no-store`/`no-cache`
+  can keep the trust anchor cached after key rotation or compromise
+  (**indicator, medium**).
+  `immutable` with no `max-age` and no applicable long `s-maxage`, or missing
+  `Cache-Control`, is a weaker freshness-uncertainty **indicator (low)**.
+  `immutable` does not extend a short freshness lifetime.
   Both well-known paths are checked when served; the highest-severity cache
   finding is reported, preferring the primary path on ties.
-  `no-store`/`no-cache`/`max-age=0` produce no finding. `must-revalidate` applies
-  only after a cached response becomes stale, so it does not cancel a long
-  `max-age`.
+  `no-store`/`no-cache` produce no finding; `max-age=0` is clean unless a long
+  `s-maxage` keeps shared caches fresh. Unqualified `private` disables shared
+  caching. `must-revalidate` applies only after a cached response becomes stale,
+  so it does not cancel a long freshness lifetime.
 
 The A2A JWS protected header does not require `exp`. Card signatures without it
 are not reported; key expiry and revocation depend on the verifier's key source.

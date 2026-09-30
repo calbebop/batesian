@@ -172,15 +172,16 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
 		return nil
 	}
-	maxAge, hasMaxAge := cacheMaxAge(cc)
-	if hasMaxAge && maxAge == 0 {
-		return nil
+	maxAge, hasMaxAge := cacheAgeDirective(cc, "max-age")
+	sharedMaxAge, hasSharedMaxAge := cacheAgeDirective(cc, "s-maxage")
+	if hasUnqualifiedDirective(cc, "private") {
+		hasSharedMaxAge = false
 	}
-	if strings.Contains(cc, "immutable") || (hasMaxAge && maxAge >= staleCacheThreshold) {
-		detail := "marked immutable"
-		if hasMaxAge {
-			detail = fmt.Sprintf("max-age=%d (%.1fh)", maxAge, float64(maxAge)/3600)
-		}
+	freshness, directive := maxAge, "max-age"
+	if hasSharedMaxAge && (!hasMaxAge || sharedMaxAge > maxAge) {
+		freshness, directive = sharedMaxAge, "s-maxage"
+	}
+	if freshness >= staleCacheThreshold && (hasMaxAge || hasSharedMaxAge) {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -191,7 +192,23 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 				"The agent card is served with Cache-Control %q. Caches can reuse it without "+
 					"contacting the origin while it is fresh, so old keys, routing, or security "+
 					"schemes may remain in use after a change.", cacheControl),
-			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s (%s)", cardURL, cacheControl, detail),
+			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s (%s=%d, %.1fh)", cardURL, cacheControl, directive, freshness, float64(freshness)/3600),
+			Remediation: e.rule.Remediation,
+			TargetURL:   cardURL,
+		}}
+	}
+	if !hasMaxAge && strings.Contains(cc, "immutable") {
+		return []attack.Finding{{
+			RuleID:     e.rule.ID,
+			RuleName:   e.rule.Name,
+			Severity:   "low",
+			Confidence: attack.RiskIndicator,
+			Title:      "A2A agent card marked immutable without max-age",
+			Description: "The card is marked immutable but Cache-Control gives no max-age. " +
+				"Immutable does not set a freshness lifetime; caches without an applicable explicit " +
+				"lifetime may derive one from Expires or heuristics. " +
+				"Verify how long clients can reuse the card before checking for updates.",
+			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s", cardURL, cacheControl),
 			Remediation: e.rule.Remediation,
 			TargetURL:   cardURL,
 		}}
@@ -271,16 +288,24 @@ func preferredCardEndpoint(card map[string]interface{}) (cardEndpoint, bool) {
 	return endpoint, endpoint.url != ""
 }
 
-// cacheMaxAge extracts the max-age directive (seconds) from a lowercased
-// Cache-Control value.
-func cacheMaxAge(cc string) (int, bool) {
+// cacheAgeDirective extracts a delta-seconds value from lowercased Cache-Control.
+func cacheAgeDirective(cc, directive string) (int, bool) {
 	for _, part := range strings.Split(cc, ",") {
 		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "max-age=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(part, "max-age=")); err == nil {
+		if strings.HasPrefix(part, directive+"=") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(part, directive+"=")); err == nil {
 				return n, true
 			}
 		}
 	}
 	return 0, false
+}
+
+func hasUnqualifiedDirective(cc, directive string) bool {
+	for _, part := range strings.Split(cc, ",") {
+		if strings.TrimSpace(part) == directive {
+			return true
+		}
+	}
+	return false
 }
