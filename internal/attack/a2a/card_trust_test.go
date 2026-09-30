@@ -37,6 +37,21 @@ func unsignedCard() map[string]interface{} {
 	return map[string]interface{}{"name": "Test Agent", "url": "https://agent.example/"}
 }
 
+func v1Card(url string) map[string]interface{} {
+	return map[string]interface{}{
+		"name": "Test Agent",
+		"supportedInterfaces": []interface{}{
+			map[string]interface{}{"url": url, "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+		},
+	}
+}
+
+func signedV1Card(url string) map[string]interface{} {
+	card := v1Card(url)
+	card["signatures"] = signedCard(url, nil)["signatures"]
+	return card
+}
+
 // cardServer serves the given cards at the two well-known paths (nil => 404) and
 // sets the given Cache-Control header (empty => none).
 func cardServer(primary, legacy interface{}, cacheControl string) *httptest.Server {
@@ -111,6 +126,131 @@ func TestCardTrust_UrlMismatch(t *testing.T) {
 	f := onlyFinding(t, runCardTrust(t, ts))
 	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
 		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func TestCardTrust_V1PreferredEndpointMismatch(t *testing.T) {
+	ts := cardServer(signedV1Card("https://agent.example/a2a"), signedV1Card("https://other.example/a2a"), "no-store")
+	defer ts.Close()
+
+	f := onlyFinding(t, runCardTrust(t, ts))
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func TestCardTrust_MixedVersionEndpointsAreNotCompared(t *testing.T) {
+	ts := cardServer(signedV1Card("https://agent.example/a2a"), signedCard("https://other.example/a2a", nil), "no-store")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected no cross-version endpoint finding, got %+v", findings)
+	}
+}
+
+func TestCardTrust_DifferentPreferredInterfacesAreNotCompared(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		value string
+	}{
+		{"version", "protocolVersion", "0.3"},
+		{"binding", "protocolBinding", "HTTP+JSON"},
+		{"tenant", "tenant", "tenant-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := signedV1Card("https://agent.example/v1")
+			legacy := signedV1Card("https://agent.example/other")
+			legacy["supportedInterfaces"].([]interface{})[0].(map[string]interface{})[tc.field] = tc.value
+			ts := cardServer(primary, legacy, "no-store")
+			defer ts.Close()
+
+			if findings := runCardTrust(t, ts); len(findings) != 0 {
+				t.Errorf("expected no finding for different %s, got %+v", tc.field, findings)
+			}
+		})
+	}
+}
+
+func TestCardTrust_EquivalentPreferredEndpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		primary map[string]interface{}
+		legacy  map[string]interface{}
+	}{
+		{"v1", v1Card("https://agent.example/a2a"), v1Card("https://agent.example/a2a")},
+		{"mixed versions", signedV1Card("https://agent.example/a2a"), signedCard("https://agent.example/a2a", nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(tc.primary, tc.legacy, "no-store")
+			defer ts.Close()
+
+			if findings := runCardTrust(t, ts); len(findings) != 0 {
+				t.Errorf("expected matching preferred endpoints, got %+v", findings)
+			}
+		})
+	}
+}
+
+func TestCardTrust_V1PreferredEndpointOverridesLegacyURL(t *testing.T) {
+	primary := v1Card("https://agent.example/a2a")
+	primary["url"] = "https://old.example/a2a"
+	ts := cardServer(primary, v1Card("https://agent.example/a2a"), "no-store")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected v1 interface to take precedence, got %+v", findings)
+	}
+}
+
+func TestCardTrust_MissingPreferredEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		primary map[string]interface{}
+		legacy  map[string]interface{}
+		path    string
+	}{
+		{"empty v1 interfaces", v1Card("https://agent.example/a2a"), map[string]interface{}{"name": "Test Agent", "supportedInterfaces": []interface{}{}}, "/.well-known/agent.json"},
+		{"missing legacy url", v1Card("https://agent.example/a2a"), map[string]interface{}{"name": "Test Agent"}, "/.well-known/agent.json"},
+		{"both missing", map[string]interface{}{"name": "Test Agent"}, map[string]interface{}{"name": "Test Agent"}, "/.well-known/agent-card.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(tc.primary, tc.legacy, "no-store")
+			defer ts.Close()
+
+			f := onlyFinding(t, runCardTrust(t, ts))
+			if f.Severity != "medium" || f.TargetURL != ts.URL+tc.path {
+				t.Errorf("want medium finding for %s, got %s for %s", tc.path, f.Severity, f.TargetURL)
+			}
+		})
+	}
+}
+
+func TestCardTrust_IncompleteV1PreferredInterface(t *testing.T) {
+	for _, field := range []string{"url", "protocolBinding", "protocolVersion"} {
+		t.Run(field, func(t *testing.T) {
+			legacy := v1Card("https://agent.example/a2a")
+			delete(legacy["supportedInterfaces"].([]interface{})[0].(map[string]interface{}), field)
+			ts := cardServer(v1Card("https://agent.example/a2a"), legacy, "no-store")
+			defer ts.Close()
+
+			f := onlyFinding(t, runCardTrust(t, ts))
+			if f.Severity != "medium" || f.TargetURL != ts.URL+"/.well-known/agent.json" {
+				t.Errorf("want medium finding for incomplete legacy path, got %+v", f)
+			}
+		})
+	}
+}
+
+func TestCardTrust_LegacyDefaultTransport(t *testing.T) {
+	primary := signedCard("https://agent.example/a2a", nil)
+	legacy := signedCard("https://agent.example/a2a", nil)
+	legacy["preferredTransport"] = "JSONRPC"
+	ts := cardServer(primary, legacy, "no-store")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected omitted legacy transport to default to JSONRPC, got %+v", findings)
 	}
 }
 
