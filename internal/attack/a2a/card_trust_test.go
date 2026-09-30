@@ -295,6 +295,71 @@ func TestCardTrust_ShortFreshnessWithMustRevalidate(t *testing.T) {
 	}
 }
 
+func TestCardTrust_ImmutableFreshness(t *testing.T) {
+	card := unsignedCard()
+	for _, tc := range []struct {
+		name     string
+		policy   string
+		severity string
+	}{
+		{"no max-age", "public, immutable", "low"},
+		{"short max-age", "public, immutable, max-age=300", ""},
+		{"long max-age", "public, immutable, max-age=86400", "medium"},
+		{"zero max-age", "public, immutable, max-age=0", ""},
+		{"long shared max-age", "public, immutable, s-maxage=86400", "medium"},
+		{"shared max-age overrides zero", "public, immutable, max-age=0, s-maxage=86400", "medium"},
+		{"short shared max-age", "public, immutable, s-maxage=300", "low"},
+		{"private shared max-age", "private, immutable, s-maxage=86400", "low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(card, card, tc.policy)
+			defer ts.Close()
+
+			findings := runCardTrust(t, ts)
+			if tc.severity == "" {
+				if len(findings) != 0 {
+					t.Errorf("expected no cache finding, got %+v", findings)
+				}
+				return
+			}
+			f := onlyFinding(t, findings)
+			if f.Severity != tc.severity || f.Confidence != attack.RiskIndicator {
+				t.Errorf("want %s/RiskIndicator, got %q/%q", tc.severity, f.Severity, f.Confidence)
+			}
+		})
+	}
+}
+
+func TestCardTrust_SharedCacheFreshness(t *testing.T) {
+	card := unsignedCard()
+	for _, policy := range []string{
+		"public, s-maxage=86400",
+		"public, max-age=86400, s-maxage=0",
+		"private, max-age=86400, s-maxage=0",
+		`private="Set-Cookie", s-maxage=86400`,
+	} {
+		t.Run(policy, func(t *testing.T) {
+			ts := cardServer(card, card, policy)
+			defer ts.Close()
+
+			f := onlyFinding(t, runCardTrust(t, ts))
+			if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+				t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+			}
+		})
+	}
+}
+
+func TestCardTrust_PrivateDoesNotUseSharedFreshness(t *testing.T) {
+	card := unsignedCard()
+	ts := cardServer(card, card, "private, s-maxage=86400")
+	defer ts.Close()
+
+	if findings := runCardTrust(t, ts); len(findings) != 0 {
+		t.Errorf("expected no shared-cache finding for private card, got %+v", findings)
+	}
+}
+
 // TestCardTrust_MissingCache: consistent unsigned card, no Cache-Control header.
 // MUST fire a single low cache indicator.
 func TestCardTrust_MissingCache(t *testing.T) {

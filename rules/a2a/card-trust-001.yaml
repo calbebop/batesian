@@ -27,20 +27,24 @@ info:
          also an INDICATOR.
 
       2. Stale-cache trust. The card response's Cache-Control is parsed. A long
-         max-age (>= 1h) or `immutable` without `no-store`/`no-cache`
-         instructs clients/intermediaries to keep caching the trust anchor, so a
-         rotated or compromised card stays trusted until the cache expires
-         (INDICATOR). A missing Cache-Control on the trust anchor is a weaker
-         INDICATOR (heuristic caching). Both well-known paths are checked when
-         served; the highest-severity cache finding is reported, preferring the
-         primary path on ties.
-         `no-store`/`no-cache`/`max-age=0` produce no finding.
-         `must-revalidate` applies only after a response
-         becomes stale, so it does not shorten a long freshness lifetime.
+         max-age or an applicable s-maxage (>= 1h) without
+         `no-store`/`no-cache` can keep the trust anchor cached after key
+         rotation or compromise (INDICATOR).
+         `immutable` with no max-age and no applicable long s-maxage, or missing
+         Cache-Control, is a weaker INDICATOR because freshness may be
+         determined by Expires or heuristics.
+         `immutable` does not extend a short freshness lifetime. Both paths are
+         checked when served; the highest-severity cache finding is reported,
+         preferring the primary path on ties. `no-store`/`no-cache` produce no
+         finding; `max-age=0` is clean unless a long `s-maxage` keeps shared
+         caches fresh. Unqualified `private` disables shared caching.
+         `must-revalidate` applies only after a response becomes stale, so it
+         does not shorten a long freshness lifetime.
 
   references:
     - https://a2a-protocol.org/latest/specification/
     - https://a2a-protocol.org/v0.3.0/specification/
+    - https://www.rfc-editor.org/rfc/rfc8246.html
     - https://www.rfc-editor.org/rfc/rfc9111.html
     - https://cwe.mitre.org/data/definitions/345.html
     - https://cwe.mitre.org/data/definitions/347.html
@@ -62,7 +66,7 @@ remediation: |
      path; never expose an unsigned variant alongside a signed one.
   2. Set Cache-Control on the agent card to require revalidation
      (e.g. `no-cache` or a short `max-age` with `must-revalidate`) so clients
-     re-fetch after key rotation or card changes; avoid `immutable` / long TTLs
-     on a security-critical trust anchor.
+     re-fetch after key rotation or card changes; avoid long TTLs and do not
+     rely on `immutable` to define the freshness lifetime.
   3. Require clients to verify signatures before trusting any
      routing, capability, or security-scheme field from a card.
