@@ -330,6 +330,84 @@ func TestCardTrust_ImmutableFreshness(t *testing.T) {
 	}
 }
 
+func TestCardTrust_CacheDirectiveBoundaries(t *testing.T) {
+	card := unsignedCard()
+	for _, tc := range []struct {
+		name     string
+		policy   string
+		severity string
+	}{
+		{"unqualified no-cache", "public, max-age=86400, No-Cache", ""},
+		{"unqualified no-store", "public, max-age=86400, no-store", ""},
+		{"qualified no-cache", `public, max-age=86400, no-cache="Set-Cookie"`, "medium"},
+		{"qualified no-cache list", `public, no-cache="Set-Cookie, Authorization", max-age=86400`, "medium"},
+		{"extension no-cache", "public, max-age=86400, x-no-cache", "medium"},
+		{"extension no-store", "public, max-age=86400, x-no-store", "medium"},
+		{"extension immutable", "public, x-immutable", ""},
+		{"quoted immutable", `public, x-note="immutable"`, ""},
+		{"quoted no-store", `public, max-age=86400, x-note="a, no-store"`, "medium"},
+		{"escaped quote", `public, max-age=86400, x-note="a\", no-store"`, "medium"},
+		{"quoted extension max-age", `public, x-note="a, max-age=86400"`, ""},
+		{"quoted private", `private="Set-Cookie, private", s-maxage=86400`, "medium"},
+		{"quoted max-age", `public, max-age="86400"`, "medium"},
+		{"quoted s-maxage", `public, s-maxage="86400"`, "medium"},
+		{"signed max-age", "public, max-age=+86400", ""},
+		{"immutable", "public, immutable", "low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(card, card, tc.policy)
+			defer ts.Close()
+
+			findings := runCardTrust(t, ts)
+			if tc.severity == "" {
+				if len(findings) != 0 {
+					t.Errorf("expected no cache finding, got %+v", findings)
+				}
+				return
+			}
+			f := onlyFinding(t, findings)
+			if f.Severity != tc.severity || f.Confidence != attack.RiskIndicator {
+				t.Errorf("want %s/RiskIndicator, got %q/%q", tc.severity, f.Severity, f.Confidence)
+			}
+		})
+	}
+}
+
+func TestCardTrust_RepeatedCacheControlFields(t *testing.T) {
+	card := unsignedCard()
+	for _, tc := range []struct {
+		name     string
+		policies []string
+		severity string
+	}{
+		{"no-cache second", []string{"max-age=86400", "no-cache"}, ""},
+		{"long freshness second", []string{"public", "max-age=86400"}, "medium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for _, policy := range tc.policies {
+					w.Header().Add("Cache-Control", policy)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(card)
+			}))
+			defer ts.Close()
+
+			findings := runCardTrust(t, ts)
+			if tc.severity == "" {
+				if len(findings) != 0 {
+					t.Errorf("expected no cache finding, got %+v", findings)
+				}
+				return
+			}
+			f := onlyFinding(t, findings)
+			if f.Severity != tc.severity || f.Confidence != attack.RiskIndicator {
+				t.Errorf("want %s/RiskIndicator, got %q/%q", tc.severity, f.Severity, f.Confidence)
+			}
+		})
+	}
+}
+
 func TestCardTrust_SharedCacheFreshness(t *testing.T) {
 	card := unsignedCard()
 	for _, policy := range []string{
