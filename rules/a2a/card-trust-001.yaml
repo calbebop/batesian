@@ -26,13 +26,15 @@ info:
          compared. Missing preferred endpoint fields on either served card are
          also an INDICATOR.
 
-      2. Stale-cache trust. The card response's Cache-Control is parsed. A long
-         max-age or an applicable s-maxage (>= 1h) without unqualified
+      2. Stale-cache trust. A long max-age, applicable s-maxage, or Expires
+         lifetime (>= 1h) without unqualified
          `no-store`/`no-cache` can keep the trust anchor cached after key
          rotation or compromise (INDICATOR).
-         `immutable` with no max-age and no applicable long s-maxage, or missing
-         Cache-Control, is a weaker INDICATOR because freshness may be
-         determined by Expires or heuristics.
+         Expires uses the response Date (or receipt time when absent) and is
+         ignored where max-age applies. A short s-maxage does not override
+         Expires for private caches. `immutable` without explicit freshness, or
+         a response with neither Cache-Control nor Expires, is a weaker
+         INDICATOR because heuristic freshness may apply.
          `immutable` does not extend a short freshness lifetime. Both paths are
          checked when served; the highest-severity cache finding is reported,
          preferring the primary path on ties. Unqualified `no-store`/`no-cache`
@@ -68,7 +70,8 @@ remediation: |
      path; never expose an unsigned variant alongside a signed one.
   2. Set Cache-Control on the agent card to require revalidation
      (e.g. `no-cache` or a short `max-age` with `must-revalidate`) so clients
-     re-fetch after key rotation or card changes; avoid long TTLs and do not
-     rely on `immutable` to define the freshness lifetime.
+     re-fetch after key rotation or card changes; avoid long TTLs in both
+     Cache-Control and Expires, and do not rely on `immutable` to define the
+     freshness lifetime.
   3. Require clients to verify signatures before trusting any
      routing, capability, or security-scheme field from a card.

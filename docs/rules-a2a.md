@@ -378,13 +378,14 @@ checks:
   preferred interface bindings, versions, or tenants are not compared. Missing
   preferred endpoint fields on either served card also produce a **medium
   indicator**.
-- **Stale-cache trust.** The card response's `Cache-Control` is parsed. A long
-  `max-age` or an applicable `s-maxage` (>= 1h) without unqualified
-  `no-store`/`no-cache`
-  can keep the trust anchor cached after key rotation or compromise
-  (**indicator, medium**).
-  `immutable` with no `max-age` and no applicable long `s-maxage`, or missing
-  `Cache-Control`, is a weaker freshness-uncertainty **indicator (low)**.
+- **Stale-cache trust.** A long `max-age`, applicable `s-maxage`, or `Expires`
+  lifetime (>= 1h) without unqualified `no-store`/`no-cache` can keep the trust
+  anchor cached after key rotation or compromise (**indicator, medium**).
+  `Expires` uses the response `Date` (or receipt time when absent) and is ignored
+  where `max-age` applies. A short `s-maxage` does not override `Expires` for
+  private caches. `immutable` without explicit freshness, or a response with
+  neither `Cache-Control` nor `Expires`, is a weaker freshness-uncertainty
+  **indicator (low)**.
   `immutable` does not extend a short freshness lifetime.
   Both well-known paths are checked when served; the highest-severity cache
   finding is reported, preferring the primary path on ties.
