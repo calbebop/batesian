@@ -23,7 +23,7 @@ type a2aDiscoveryCard struct {
 	SupportedInterfaces []a2aDiscoveryInterface `json:"supportedInterfaces"`
 	// v0.3: each entry carries a transport with the same vocabulary.
 	AdditionalInterfaces []a2aDiscoveryInterface `json:"additionalInterfaces"`
-	// v0.3 top-level service URL, usable only when preferredTransport is JSONRPC.
+	// v0.3 top-level URL; an omitted transport defaults to JSONRPC.
 	PreferredTransport string `json:"preferredTransport"`
 	URL                string `json:"url"`
 }
@@ -160,7 +160,7 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 
 // selectJSONRPCURL picks the JSON-RPC service URL from a card. It checks the v1.0
 // supportedInterfaces, then the v0.3 additionalInterfaces, then the v0.3
-// top-level url (only when preferredTransport is JSONRPC). Scheme-less entries
+// top-level url (including its legacy JSONRPC default). Scheme-less entries
 // (e.g. a gRPC "host:port") are skipped, since the JSON-RPC probe needs http(s).
 func selectJSONRPCURL(card a2aDiscoveryCard) string {
 	for _, iface := range card.SupportedInterfaces {
@@ -173,7 +173,8 @@ func selectJSONRPCURL(card a2aDiscoveryCard) string {
 			return iface.URL
 		}
 	}
-	if strings.EqualFold(card.PreferredTransport, "JSONRPC") && hasHTTPScheme(card.URL) {
+	legacyJSONRPC := card.PreferredTransport == "" || strings.EqualFold(card.PreferredTransport, "JSONRPC")
+	if card.SupportedInterfaces == nil && legacyJSONRPC && hasHTTPScheme(card.URL) {
 		return card.URL
 	}
 	return ""
