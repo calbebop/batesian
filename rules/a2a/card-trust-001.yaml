@@ -27,7 +27,7 @@ info:
          also an INDICATOR.
 
       2. Stale-cache trust. The card response's Cache-Control is parsed. A long
-         max-age or an applicable s-maxage (>= 1h) without
+         max-age or an applicable s-maxage (>= 1h) without unqualified
          `no-store`/`no-cache` can keep the trust anchor cached after key
          rotation or compromise (INDICATOR).
          `immutable` with no max-age and no applicable long s-maxage, or missing
@@ -35,9 +35,11 @@ info:
          determined by Expires or heuristics.
          `immutable` does not extend a short freshness lifetime. Both paths are
          checked when served; the highest-severity cache finding is reported,
-         preferring the primary path on ties. `no-store`/`no-cache` produce no
-         finding; `max-age=0` is clean unless a long `s-maxage` keeps shared
-         caches fresh. Unqualified `private` disables shared caching.
+         preferring the primary path on ties. Unqualified `no-store`/`no-cache`
+         produce no finding; qualified `no-cache` only restricts listed header
+         fields, not reuse of the card body. `max-age=0` is clean unless a long
+         `s-maxage` keeps shared caches fresh. Unqualified `private` disables
+         shared caching.
          `must-revalidate` applies only after a response becomes stale, so it
          does not shorten a long freshness lifetime.
 

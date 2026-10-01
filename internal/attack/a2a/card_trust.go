@@ -168,8 +168,8 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 			TargetURL:   cardURL,
 		}}
 	}
-	// These directives prevent unvalidated reuse.
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
+	// These directives prevent unvalidated reuse of the card.
+	if hasUnqualifiedDirective(cc, "no-store") || hasUnqualifiedDirective(cc, "no-cache") {
 		return nil
 	}
 	maxAge, hasMaxAge := cacheAgeDirective(cc, "max-age")
@@ -197,7 +197,7 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 			TargetURL:   cardURL,
 		}}
 	}
-	if !hasMaxAge && strings.Contains(cc, "immutable") {
+	if !hasMaxAge && hasUnqualifiedDirective(cc, "immutable") {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -226,7 +226,7 @@ func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body
 	if _, parsed := parseCard(resp.Body); !parsed {
 		return nil, "", false
 	}
-	return resp.Body, resp.Headers.Get("Cache-Control"), true
+	return resp.Body, strings.Join(resp.Headers.Values("Cache-Control"), ","), true
 }
 
 func parseCard(body []byte) (map[string]interface{}, bool) {
@@ -290,10 +290,26 @@ func preferredCardEndpoint(card map[string]interface{}) (cardEndpoint, bool) {
 
 // cacheAgeDirective extracts a delta-seconds value from lowercased Cache-Control.
 func cacheAgeDirective(cc, directive string) (int, bool) {
-	for _, part := range strings.Split(cc, ",") {
-		part = strings.TrimSpace(part)
+	for _, part := range splitCacheDirectives(cc) {
 		if strings.HasPrefix(part, directive+"=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(part, directive+"=")); err == nil {
+			value := strings.TrimPrefix(part, directive+"=")
+			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+				value = value[1 : len(value)-1]
+			}
+			if value == "" {
+				continue
+			}
+			valid := true
+			for i := 0; i < len(value); i++ {
+				if value[i] < '0' || value[i] > '9' {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
+			}
+			if n, err := strconv.Atoi(value); err == nil {
 				return n, true
 			}
 		}
@@ -302,10 +318,30 @@ func cacheAgeDirective(cc, directive string) (int, bool) {
 }
 
 func hasUnqualifiedDirective(cc, directive string) bool {
-	for _, part := range strings.Split(cc, ",") {
-		if strings.TrimSpace(part) == directive {
+	for _, part := range splitCacheDirectives(cc) {
+		if part == directive {
 			return true
 		}
 	}
 	return false
+}
+
+func splitCacheDirectives(cc string) []string {
+	var parts []string
+	start := 0
+	quoted, escaped := false, false
+	for i := 0; i < len(cc); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case quoted && cc[i] == '\\':
+			escaped = true
+		case cc[i] == '"':
+			quoted = !quoted
+		case cc[i] == ',' && !quoted:
+			parts = append(parts, strings.TrimSpace(cc[start:i]))
+			start = i + 1
+		}
+	}
+	return append(parts, strings.TrimSpace(cc[start:]))
 }
