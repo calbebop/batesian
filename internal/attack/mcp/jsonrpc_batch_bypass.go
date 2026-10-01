@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -83,7 +82,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 		if err != nil {
 			return nil, true
 		}
-		if test.IsSuccess() && batchHasResult(test.Body) && bodyLooksMCP(test.Body) {
+		if test.IsSuccess() && batchInitializeSucceeded(test.Body, 1) {
 			detail := fmt.Sprintf(
 				"single initialize: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [initialize]: HTTP %d (processed, returned an MCP initialize result)",
@@ -138,7 +137,7 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 		if err != nil {
 			continue
 		}
-		if test.IsSuccess() && batchHasResult(test.Body) {
+		if test.IsSuccess() && batchListSucceeded(test.Body, 2, c.capability) {
 			detail := fmt.Sprintf(
 				"single %s: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [%s]: HTTP %d (processed, returned a result)",
@@ -202,28 +201,62 @@ func isMCPInitialize(resp *attack.Response) bool {
 	return resp.IsSuccess() && initializeSucceeded(resp.Body)
 }
 
-// batchHasResult reports whether body is a JSON-RPC batch response (a JSON array)
-// in which at least one element carries a result (and no error). A non-array body
-// means the server did not process the input as a batch, so it is not a bypass.
-func batchHasResult(body []byte) bool {
-	var arr []map[string]json.RawMessage
+// batchResult returns the result correlated to the probe request.
+func batchResult(body []byte, expectedID int) (json.RawMessage, bool) {
+	var arr []struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
 	if err := json.Unmarshal(body, &arr); err != nil {
-		return false
+		return nil, false
 	}
 	for _, el := range arr {
-		_, hasErr := el["error"]
-		_, hasRes := el["result"]
-		if hasRes && !hasErr {
-			return true
+		var responseID int
+		if el.JSONRPC != "2.0" || json.Unmarshal(el.ID, &responseID) != nil || responseID != expectedID {
+			continue
+		}
+		if len(el.Result) != 0 && string(el.Result) != "null" && len(el.Error) == 0 {
+			return el.Result, true
 		}
 	}
-	return false
+	return nil, false
 }
 
-// bodyLooksMCP reports whether body resembles an MCP initialize result, used to
-// confirm the bypassed initialize batch reached a real MCP server rather than an
-// unrelated endpoint that happens to return 401 then 200.
-func bodyLooksMCP(body []byte) bool {
-	s := string(body)
-	return strings.Contains(s, `"protocolVersion"`) || strings.Contains(s, `"serverInfo"`)
+func batchInitializeSucceeded(body []byte, expectedID int) bool {
+	result, ok := batchResult(body, expectedID)
+	if !ok {
+		return false
+	}
+	var init struct {
+		ProtocolVersion string          `json:"protocolVersion"`
+		Capabilities    json.RawMessage `json:"capabilities"`
+		ServerInfo      struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"serverInfo"`
+	}
+	if json.Unmarshal(result, &init) != nil || init.ProtocolVersion == "" || init.ServerInfo.Name == "" || init.ServerInfo.Version == "" {
+		return false
+	}
+	var capabilities map[string]json.RawMessage
+	return json.Unmarshal(init.Capabilities, &capabilities) == nil && capabilities != nil
+}
+
+func batchListSucceeded(body []byte, expectedID int, field string) bool {
+	result, ok := batchResult(body, expectedID)
+	if !ok {
+		return false
+	}
+	var lists map[string]json.RawMessage
+	if json.Unmarshal(result, &lists) != nil {
+		return false
+	}
+	rawItems := lists[field]
+	if len(rawItems) == 0 || string(rawItems) == "null" {
+		return false
+	}
+	var items []json.RawMessage
+	return json.Unmarshal(rawItems, &items) == nil
 }

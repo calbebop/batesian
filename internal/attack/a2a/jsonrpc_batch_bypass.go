@@ -100,7 +100,8 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 		if err != nil {
 			continue
 		}
-		if test.IsSuccess() && a2aBatchDispatched(test.Body) {
+		requestID, _ := s.obj["id"].(string)
+		if test.IsSuccess() && a2aBatchDispatched(test.Body, requestID) {
 			return e.finding(endpoint, s.label, ctrl, test), nil
 		}
 	}
@@ -142,20 +143,35 @@ func isA2AAuthRejection(resp *attack.Response) bool {
 	return errMessageIsAuth(resp.Body)
 }
 
-// a2aBatchDispatched reports whether body is a JSON-RPC batch response (a JSON
-// array) whose elements show the dispatcher ran: a result, or a non-auth
-// application error. An array element that is itself an auth rejection does not
-// count (the gate held for the batch too).
-func a2aBatchDispatched(body []byte) bool {
-	var arr []map[string]json.RawMessage
+// a2aBatchDispatched requires a response correlated to the task probe.
+func a2aBatchDispatched(body []byte, expectedID string) bool {
+	var arr []struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
 	if err := json.Unmarshal(body, &arr); err != nil {
 		return false
 	}
 	for _, el := range arr {
-		if _, ok := el["result"]; ok {
-			return true
+		var responseID string
+		if el.JSONRPC != "2.0" || json.Unmarshal(el.ID, &responseID) != nil || responseID != expectedID {
+			continue
 		}
-		if rawErr, ok := el["error"]; ok && !errMessageIsAuthRaw(rawErr) {
+		if len(el.Result) != 0 && string(el.Result) != "null" && len(el.Error) == 0 {
+			var task struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(el.Result, &task) == nil && task.ID != "" {
+				return true
+			}
+		}
+		var responseError struct {
+			Code int `json:"code"`
+		}
+		if len(el.Result) == 0 && json.Unmarshal(el.Error, &responseError) == nil &&
+			responseError.Code == -32001 && !errMessageIsAuthRaw(el.Error) {
 			return true
 		}
 	}

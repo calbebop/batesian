@@ -13,18 +13,7 @@ import (
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// batchServer builds a mock MCP server whose auth behavior depends on mode:
-//   - "bypass-init":   single initialize is gated (401) but a batch [initialize]
-//     is processed (the auth gate bypass at the handshake).
-//   - "bypass-method": initialize is open, but single tools/list is gated (401)
-//     while a batch [tools/list] is processed (the per-method gate bypass).
-//   - "secure":        the auth gate applies to single AND batch requests alike.
-//   - "open":          nothing is gated (no auth to bypass).
-//   - "not-mcp":       every request 404s.
-//
-// The vulnerability is modeled by enforcing the gate only on non-batch requests
-// in the two "bypass" modes, exactly the real-world bug where a gate inspects the
-// top-level method and an array has none.
+// batchServer models an auth gate that may mishandle batch requests.
 func batchServer(mode string) *httptest.Server {
 	initResult := func(id interface{}) map[string]interface{} {
 		return map[string]interface{}{
@@ -62,7 +51,6 @@ func batchServer(mode string) *httptest.Server {
 			objs = []map[string]interface{}{one}
 		}
 
-		// enforce: is the auth gate active for this request shape?
 		enforce := !isBatch
 		if mode == "secure" {
 			enforce = true
@@ -71,21 +59,38 @@ func batchServer(mode string) *httptest.Server {
 			enforce = false
 		}
 
-		// respond returns the response object and HTTP status for one request.
 		respond := func(req map[string]interface{}) (map[string]interface{}, int) {
 			method, _ := req["method"].(string)
 			id := req["id"]
 			switch method {
 			case "initialize":
-				if (mode == "bypass-init" || mode == "secure") && enforce && !authed {
+				if (mode == "bypass-init" || mode == "unrelated-init" || mode == "malformed-init" || mode == "secure") && enforce && !authed {
 					return nil, http.StatusUnauthorized
+				}
+				if isBatch && mode == "unrelated-init" {
+					return initResult(999), http.StatusOK
+				}
+				if isBatch && mode == "malformed-init" {
+					return map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"protocolVersion": "2025-03-26"},
+					}, http.StatusOK
 				}
 				return initResult(id), http.StatusOK
 			case "notifications/initialized":
 				return nil, http.StatusAccepted
 			case "tools/list":
-				if (mode == "bypass-method" || mode == "secure") && enforce && !authed {
+				if (mode == "bypass-method" || mode == "unrelated-method" || mode == "null-method" || mode == "malformed-method" || mode == "secure") && enforce && !authed {
 					return nil, http.StatusUnauthorized
+				}
+				if isBatch && mode == "unrelated-method" {
+					return toolsResult(999), http.StatusOK
+				}
+				if isBatch && mode == "null-method" {
+					return toolsResult(nil), http.StatusOK
+				}
+				if isBatch && mode == "malformed-method" {
+					return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{}}, http.StatusOK
 				}
 				return toolsResult(id), http.StatusOK
 			default:
@@ -132,8 +137,6 @@ func runBatchBypass(t *testing.T, srv *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestBatchBypass_InitializeGate: initialize is gated for a single request but a
-// batch [initialize] is processed => confirmed high finding.
 func TestBatchBypass_InitializeGate(t *testing.T) {
 	srv := batchServer("bypass-init")
 	defer srv.Close()
@@ -151,8 +154,6 @@ func TestBatchBypass_InitializeGate(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_MethodGate: initialize is open but tools/list is gated for a
-// single request while a batch [tools/list] is processed => confirmed finding.
 func TestBatchBypass_MethodGate(t *testing.T) {
 	srv := batchServer("bypass-method")
 	defer srv.Close()
@@ -162,7 +163,6 @@ func TestBatchBypass_MethodGate(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_SecureNoFinding: the gate applies to batches too => no finding.
 func TestBatchBypass_SecureNoFinding(t *testing.T) {
 	srv := batchServer("secure")
 	defer srv.Close()
@@ -172,8 +172,6 @@ func TestBatchBypass_SecureNoFinding(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_FullyOpenNoFinding: nothing is gated, so there is no auth to
-// bypass, so there is no finding.
 func TestBatchBypass_FullyOpenNoFinding(t *testing.T) {
 	srv := batchServer("open")
 	defer srv.Close()
@@ -183,11 +181,35 @@ func TestBatchBypass_FullyOpenNoFinding(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_NotMCP: a non-MCP endpoint that 401s then is probed must not
-// produce a finding (the bypassed batch must return a real MCP result).
 func TestBatchBypass_NotMCP(t *testing.T) {
 	srv := batchServer("not-mcp")
 	defer srv.Close()
 
 	assertInconclusive(t, mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"}), srv.URL, testOpts())
+}
+
+func TestBatchBypass_RequiresCorrelatedResult(t *testing.T) {
+	for _, mode := range []string{"unrelated-init", "unrelated-method", "null-method"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := batchServer(mode)
+			defer srv.Close()
+
+			if findings := runBatchBypass(t, srv); len(findings) != 0 {
+				t.Fatalf("expected no finding for an unrelated response, got %+v", findings)
+			}
+		})
+	}
+}
+
+func TestBatchBypass_RequiresExpectedResultShape(t *testing.T) {
+	for _, mode := range []string{"malformed-init", "malformed-method"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := batchServer(mode)
+			defer srv.Close()
+
+			if findings := runBatchBypass(t, srv); len(findings) != 0 {
+				t.Fatalf("expected no finding for a malformed result, got %+v", findings)
+			}
+		})
+	}
 }
