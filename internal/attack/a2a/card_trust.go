@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -43,8 +45,8 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	primaryURL := endpoint.AppendPath(vars.BaseURL, cardPathPrimary)
 	legacyURL := endpoint.AppendPath(vars.BaseURL, cardPathLegacy)
 
-	primaryBody, primaryCacheControl, primaryOK := fetchCard(ctx, client, primaryURL)
-	legacyBody, legacyCacheControl, legacyOK := fetchCard(ctx, client, legacyURL)
+	primaryBody, primaryCache, primaryOK := fetchCard(ctx, client, primaryURL)
+	legacyBody, legacyCache, legacyOK := fetchCard(ctx, client, legacyURL)
 	if !primaryOK && !legacyOK {
 		// This rule analyses the card, so no card means it was not exercised.
 		// It used to return clean here, which reads as "the card is fine" for a
@@ -55,10 +57,10 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 
 	var cacheFindings []attack.Finding
 	if primaryOK {
-		cacheFindings = e.checkCache(primaryURL, primaryCacheControl)
+		cacheFindings = e.checkCache(primaryURL, primaryCache)
 	}
 	if legacyOK {
-		legacyFindings := e.checkCache(legacyURL, legacyCacheControl)
+		legacyFindings := e.checkCache(legacyURL, legacyCache)
 		// Report the highest severity; prefer the primary path on ties.
 		if len(legacyFindings) > 0 && (len(cacheFindings) == 0 ||
 			cacheFindings[0].Severity == "low" && legacyFindings[0].Severity == "medium") {
@@ -150,10 +152,17 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 	return nil
 }
 
-// checkCache evaluates the Cache-Control on the trust anchor.
-func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Finding {
-	cc := strings.ToLower(strings.TrimSpace(cacheControl))
-	if cc == "" {
+type cardCacheHeaders struct {
+	control    string
+	expires    string
+	date       string
+	receivedAt time.Time
+}
+
+// checkCache evaluates the freshness policy on the trust anchor.
+func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) []attack.Finding {
+	cc := strings.ToLower(strings.TrimSpace(cache.control))
+	if cc == "" && cache.expires == "" {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -181,7 +190,26 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 	if hasSharedMaxAge && (!hasMaxAge || sharedMaxAge > maxAge) {
 		freshness, directive = sharedMaxAge, "s-maxage"
 	}
-	if freshness >= staleCacheThreshold && (hasMaxAge || hasSharedMaxAge) {
+	dateSource := "Date: " + cache.date
+	if cache.expires != "" && !hasCacheDirective(cc, "max-age") {
+		if expires, err := http.ParseTime(cache.expires); err == nil {
+			date, err := http.ParseTime(cache.date)
+			if err != nil {
+				date = cache.receivedAt
+				dateSource = "Received: " + date.UTC().Format(http.TimeFormat)
+			}
+			if lifetime := int(expires.Sub(date).Seconds()); lifetime > freshness {
+				freshness, directive = lifetime, "Expires"
+			}
+		}
+	}
+	if freshness >= staleCacheThreshold {
+		policy := fmt.Sprintf("Cache-Control %q", cache.control)
+		evidence := fmt.Sprintf("GET %s\nCache-Control: %s (%s=%d, %.1fh)", cardURL, cache.control, directive, freshness, float64(freshness)/3600)
+		if directive == "Expires" {
+			policy = fmt.Sprintf("Expires %q", cache.expires)
+			evidence = fmt.Sprintf("GET %s\n%s\nExpires: %s (%.1fh)", cardURL, dateSource, cache.expires, float64(freshness)/3600)
+		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -189,15 +217,15 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 			Confidence: attack.RiskIndicator,
 			Title:      "A2A agent card cache policy may delay trust updates",
 			Description: fmt.Sprintf(
-				"The agent card is served with Cache-Control %q. Caches can reuse it without "+
+				"The agent card is served with %s. Caches can reuse it without "+
 					"contacting the origin while it is fresh, so old keys, routing, or security "+
-					"schemes may remain in use after a change.", cacheControl),
-			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s (%s=%d, %.1fh)", cardURL, cacheControl, directive, freshness, float64(freshness)/3600),
+					"schemes may remain in use after a change.", policy),
+			Evidence:    evidence,
 			Remediation: e.rule.Remediation,
 			TargetURL:   cardURL,
 		}}
 	}
-	if !hasMaxAge && hasUnqualifiedDirective(cc, "immutable") {
+	if !hasMaxAge && cache.expires == "" && hasUnqualifiedDirective(cc, "immutable") {
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -208,7 +236,7 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 				"Immutable does not set a freshness lifetime; caches without an applicable explicit " +
 				"lifetime may derive one from Expires or heuristics. " +
 				"Verify how long clients can reuse the card before checking for updates.",
-			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s", cardURL, cacheControl),
+			Evidence:    fmt.Sprintf("GET %s\nCache-Control: %s", cardURL, cache.control),
 			Remediation: e.rule.Remediation,
 			TargetURL:   cardURL,
 		}}
@@ -216,17 +244,21 @@ func (e *CardTrustExecutor) checkCache(cardURL, cacheControl string) []attack.Fi
 	return nil
 }
 
-// fetchCard GETs an agent card and returns its body, Cache-Control header, and
-// whether a JSON card was served.
-func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cacheControl string, ok bool) {
+// fetchCard GETs an agent card and returns its body and freshness headers.
+func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool) {
 	resp, err := client.GET(ctx, url, nil)
 	if err != nil || !resp.IsSuccess() {
-		return nil, "", false
+		return nil, cardCacheHeaders{}, false
 	}
 	if _, parsed := parseCard(resp.Body); !parsed {
-		return nil, "", false
+		return nil, cardCacheHeaders{}, false
 	}
-	return resp.Body, strings.Join(resp.Headers.Values("Cache-Control"), ","), true
+	return resp.Body, cardCacheHeaders{
+		control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
+		expires:    resp.Headers.Get("Expires"),
+		date:       resp.Headers.Get("Date"),
+		receivedAt: time.Now(),
+	}, true
 }
 
 func parseCard(body []byte) (map[string]interface{}, bool) {
@@ -320,6 +352,16 @@ func cacheAgeDirective(cc, directive string) (int, bool) {
 func hasUnqualifiedDirective(cc, directive string) bool {
 	for _, part := range splitCacheDirectives(cc) {
 		if part == directive {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCacheDirective(cc, directive string) bool {
+	for _, part := range splitCacheDirectives(cc) {
+		name, _, _ := strings.Cut(part, "=")
+		if name == directive {
 			return true
 		}
 	}

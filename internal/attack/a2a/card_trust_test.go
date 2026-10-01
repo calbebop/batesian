@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -405,6 +406,88 @@ func TestCardTrust_RepeatedCacheControlFields(t *testing.T) {
 				t.Errorf("want %s/RiskIndicator, got %q/%q", tc.severity, f.Severity, f.Confidence)
 			}
 		})
+	}
+}
+
+func TestCardTrust_ExpiresFreshness(t *testing.T) {
+	card := unsignedCard()
+	now := time.Now().UTC().Truncate(time.Second)
+	date := now.Format(http.TimeFormat)
+	longExpiry := now.Add(24 * time.Hour).Format(http.TimeFormat)
+	shortExpiry := now.Add(5 * time.Minute).Format(http.TimeFormat)
+	pastExpiry := now.Add(-time.Hour).Format(http.TimeFormat)
+	for _, tc := range []struct {
+		name     string
+		control  string
+		date     string
+		expires  string
+		severity string
+		source   string
+	}{
+		{"long without Cache-Control", "", date, longExpiry, "medium", "Expires"},
+		{"long with public", "public", date, longExpiry, "medium", "Expires"},
+		{"short without Cache-Control", "", date, shortExpiry, "", ""},
+		{"past without Cache-Control", "", date, pastExpiry, "", ""},
+		{"invalid without Cache-Control", "", date, "0", "", ""},
+		{"absent Date fallback", "public", "", longExpiry, "medium", "Received"},
+		{"invalid Date fallback", "public", "invalid", longExpiry, "medium", "Received"},
+		{"max-age overrides Expires", "max-age=0", date, longExpiry, "", ""},
+		{"invalid max-age overrides Expires", "max-age=bogus", date, longExpiry, "", ""},
+		{"invalid quoted max-age overrides Expires", `max-age="bad"`, date, longExpiry, "", ""},
+		{"no-cache overrides Expires", "no-cache", date, longExpiry, "", ""},
+		{"short immutable Expires", "immutable", date, shortExpiry, "", ""},
+		{"long immutable Expires", "immutable", date, longExpiry, "medium", "Expires"},
+		{"shared age leaves private Expires", "s-maxage=0", date, longExpiry, "medium", "Expires"},
+		{"long max-age overrides short Expires", "max-age=86400", date, shortExpiry, "medium", "max-age"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.control != "" {
+					w.Header().Set("Cache-Control", tc.control)
+				}
+				if tc.date == "" {
+					w.Header()["Date"] = nil
+				} else {
+					w.Header().Set("Date", tc.date)
+				}
+				w.Header().Set("Expires", tc.expires)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(card)
+			}))
+			defer ts.Close()
+
+			findings := runCardTrust(t, ts)
+			if tc.severity == "" {
+				if len(findings) != 0 {
+					t.Errorf("expected no cache finding, got %+v", findings)
+				}
+				return
+			}
+			f := onlyFinding(t, findings)
+			if f.Severity != tc.severity || f.Confidence != attack.RiskIndicator || !strings.Contains(f.Evidence, tc.source) {
+				t.Errorf("want %s/RiskIndicator from %s, got %+v", tc.severity, tc.source, f)
+			}
+		})
+	}
+}
+
+func TestCardTrust_ExpiresAcrossPaths(t *testing.T) {
+	card := unsignedCard()
+	expires := time.Now().Add(24 * time.Hour).UTC().Format(http.TimeFormat)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent.json" {
+			w.Header().Set("Expires", expires)
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(card)
+	}))
+	defer ts.Close()
+
+	f := onlyFinding(t, runCardTrust(t, ts))
+	if f.Severity != "medium" || f.TargetURL != ts.URL+"/.well-known/agent.json" {
+		t.Errorf("want medium finding on legacy path, got %+v", f)
 	}
 }
 
