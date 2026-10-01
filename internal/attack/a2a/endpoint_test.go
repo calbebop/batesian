@@ -53,9 +53,25 @@ func TestSelectJSONRPCURL_V03AdditionalInterfaces(t *testing.T) {
 }
 
 func TestSelectJSONRPCURL_V03TopLevel(t *testing.T) {
-	card := parseDiscoveryCard(t, `{"preferredTransport":"JSONRPC","url":"http://h/agent"}`)
-	if got := selectJSONRPCURL(card); got != "http://h/agent" {
-		t.Errorf("selectJSONRPCURL = %q, want http://h/agent", got)
+	for _, tc := range []struct {
+		name string
+		card string
+		want string
+	}{
+		{"explicit JSONRPC", `{"preferredTransport":"JSONRPC","url":"http://h/agent"}`, "http://h/agent"},
+		{"omitted transport", `{"url":"http://h/agent"}`, "http://h/agent"},
+		{"empty transport", `{"preferredTransport":"","url":"http://h/agent"}`, "http://h/agent"},
+		{"explicit GRPC", `{"preferredTransport":"GRPC","url":"http://h/agent"}`, ""},
+		{"explicit HTTP+JSON", `{"preferredTransport":"HTTP+JSON","url":"http://h/agent"}`, ""},
+		{"v1 empty interfaces", `{"supportedInterfaces":[],"url":"http://h/agent"}`, ""},
+		{"v1 non-JSONRPC interfaces", `{"supportedInterfaces":[{"protocolBinding":"GRPC","url":"http://h/grpc"}],"url":"http://h/agent"}`, ""},
+		{"v1 ignores top-level transport", `{"supportedInterfaces":[{"protocolBinding":"GRPC","url":"http://h/grpc"}],"preferredTransport":"JSONRPC","url":"http://h/agent"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := selectJSONRPCURL(parseDiscoveryCard(t, tc.card)); got != tc.want {
+				t.Errorf("selectJSONRPCURL = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -132,6 +148,31 @@ func TestResolveA2AEndpoint_FromCard(t *testing.T) {
 	}
 	if ep != srv.URL+"/a2a/jsonrpc" {
 		t.Errorf("endpoint = %q, want %s/a2a/jsonrpc", ep, srv.URL)
+	}
+}
+
+func TestResolveA2AEndpoint_LegacyDefaultTransport(t *testing.T) {
+	var host string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"name":"legacy","url":"http://%s/custom/jsonrpc"}`, host)
+	})
+	mux.HandleFunc("/custom/jsonrpc", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host = strings.TrimPrefix(srv.URL, "http://")
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok || ep != srv.URL+"/custom/jsonrpc" {
+		t.Errorf("endpoint = %q ok = %v, want %s/custom/jsonrpc true", ep, ok, srv.URL)
 	}
 }
 

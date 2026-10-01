@@ -38,8 +38,9 @@ changes touch this rule set:
 
 The JSON-RPC transport is not required to live at the target root, so discovery
 prefers the URL the agent card declares for the JSON-RPC interface, pinned to the
-target's own scheme and host. Only when no card names one does it probe the
-conventional paths.
+target's own scheme and host. Legacy cards default an omitted
+`preferredTransport` to `JSONRPC`. If the declared endpoint does not answer,
+discovery probes conventional paths.
 
 A probed path is judged by a read-only task lookup for a non-existent id, in both
 the v0.3 (`tasks/get`) and v1.0 (`GetTask`) spellings. **"Method not found" is
