@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,5 +251,144 @@ func TestProbeMCP_ContextCancellationInterruptsInitialize(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("probe returned after %s; cancellation must interrupt initialize, not wait out the 30s request timeout", elapsed)
+	}
+}
+
+func TestProbeA2A_TokenDoesNotTurnExtendedCardCheckIntoAuthenticatedRequest(t *testing.T) {
+	var mu sync.Mutex
+	var cardAuth string
+	var extAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case a2a.WellKnownPath:
+			mu.Lock()
+			cardAuth = r.Header.Get("Authorization")
+			mu.Unlock()
+			if r.Header.Get("Authorization") != "Bearer valid" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+		case a2a.ExtendedCardPath:
+			mu.Lock()
+			extAuth = append(extAuth, r.Header.Get("Authorization"))
+			mu.Unlock()
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	if err := probeA2A(context.Background(), srv.URL, "valid", time.Second, false, "", report.FormatTable, report.New(&out, false)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "a2a-extcard-unauth-001") {
+		t.Fatalf("authenticated card access was reported as an anonymous disclosure:\n%s", out.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if cardAuth != "Bearer valid" {
+		t.Errorf("card fetch Authorization = %q", cardAuth)
+	}
+	if len(extAuth) != 2 || extAuth[0] != "" || extAuth[1] != "Bearer batesian-invalid-probe-token" {
+		t.Errorf("extended card Authorization headers = %q", extAuth)
+	}
+}
+
+func TestProbeA2A_TokenStillFlagsAnonymousExtendedCard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case a2a.WellKnownPath:
+			if r.Header.Get("Authorization") != "Bearer valid" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+		case a2a.ExtendedCardPath:
+			if r.Header.Get("Authorization") != "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(w, `{"name":"Extended Agent"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	if err := probeA2A(context.Background(), srv.URL, "valid", time.Second, false, "", report.FormatTable, report.New(&out, false)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "a2a-extcard-unauth-001") {
+		t.Fatalf("anonymous extended card was not flagged:\n%s", out.String())
+	}
+}
+
+func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		token         string
+		anonInit      bool
+		anonResources bool
+		wantFlag      bool
+	}{
+		{"auth-gated", "valid", false, false, false},
+		{"session-gated", "valid", true, false, false},
+		{"open-with-token", "valid", true, true, true},
+		{"open-without-token", "", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var call struct {
+					Method string `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				authed := r.Header.Get("Authorization") == "Bearer valid"
+				switch call.Method {
+				case "initialize":
+					if !authed && !tc.anonInit {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					sessionID := "anonymous"
+					if authed {
+						sessionID = "authenticated"
+					}
+					w.Header().Set("Mcp-Session-Id", sessionID)
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"server","version":"1"},"capabilities":{"resources":{}}}}`)
+				case "resources/list":
+					id := r.Header.Get("Mcp-Session-Id")
+					if id == "authenticated" || (id == "anonymous" && tc.anonResources) {
+						_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":11,"result":{"resources":[{"uri":"file:///private"}]}}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":11,"result":{"resources":[]}}`)
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			var out bytes.Buffer
+			if err := probeMCP(context.Background(), srv.URL+"/mcp", tc.token, time.Second, false, "", report.FormatTable, report.New(&out, false)); err != nil {
+				t.Fatal(err)
+			}
+			gotFlag := strings.Contains(out.String(), "mcp-resources-unauth-001")
+			if gotFlag != tc.wantFlag {
+				t.Errorf("unauthenticated resource flag = %v, want %v:\n%s", gotFlag, tc.wantFlag, out.String())
+			}
+			if !strings.Contains(out.String(), "Resources (1)") {
+				t.Errorf("resource surface was not enumerated:\n%s", out.String())
+			}
+		})
 	}
 }
