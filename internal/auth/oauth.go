@@ -232,7 +232,7 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 		return nil, fmt.Errorf("parsing auth code token response: %w", err)
 	}
 	if tok.AccessToken == "" {
-		return nil, fmt.Errorf("token endpoint returned empty access_token: %s", string(body))
+		return nil, fmt.Errorf("token endpoint returned HTTP 200 but no access_token in response")
 	}
 
 	return &tok, nil
