@@ -168,7 +168,7 @@ func TestPushSSRF_MessageReplyIsNotARegistration(t *testing.T) {
 			})
 			return
 		}
-		writeJSON(w, jsonRPCError(-32601, "Method not found"))
+		rpcErr(w, req["id"], -32601, "Method not found")
 	}))
 	defer ts.Close()
 
@@ -300,7 +300,7 @@ func TestPushSSRF_AcceptedNoCallback(t *testing.T) {
 func TestPushSSRFExecutor_MethodNotFound(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			writeJSON(w, jsonRPCError(-32601, "Method not found"))
+			rpcErr(w, readBody(r)["id"], -32601, "Method not found")
 			return
 		}
 		http.NotFound(w, r)

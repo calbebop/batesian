@@ -43,26 +43,28 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		}
 		// Model a v1.0 server: activation is read from the A2A-Extensions header.
 		activated := strings.Contains(r.Header.Get("A2A-Extensions"), reqExtURI)
-		reqID := func() interface{} {
-			var b map[string]interface{}
-			_ = json.NewDecoder(r.Body).Decode(&b)
-			return b["id"]
-		}()
+		var request map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		reqID := request["id"]
 		writeRPC := func(result interface{}) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID, "result": result})
 		}
-		writeErr := func(msg string) {
+		writeErr := func(code int, msg string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID,
-				"error": map[string]interface{}{"code": -32600, "message": msg}})
+				"error": map[string]interface{}{"code": code, "message": msg}})
+		}
+		if request["method"] == "GetTask" || request["method"] == "tasks/get" {
+			writeErr(-32001, "Task not found")
+			return
 		}
 		switch mode {
 		case "noauth-msg":
-			writeErr("authentication required")
+			writeErr(-32600, "authentication required")
 		case "failclosed":
 			if !activated {
-				writeErr("required extension not activated")
+				writeErr(-32600, "required extension not activated")
 				return
 			}
 			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
@@ -175,6 +177,10 @@ func TestExtDowngrade_SendsModernHeader(t *testing.T) {
 		}
 		var b map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&b)
+		if b["method"] == "GetTask" || b["method"] == "tasks/get" {
+			rpcErr(w, b["id"], -32001, "Task not found")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": b["id"], "result": map[string]interface{}{"id": "task-1"},

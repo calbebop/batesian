@@ -236,6 +236,7 @@ const (
 const (
 	a2aErrorCodeMax = -32001
 	a2aErrorCodeMin = -32006
+	discoveryTaskID = "batesian-discovery-nonexistent"
 )
 
 // probeA2AEvidence tries both A2A task-get method names. A result or A2A-reserved
@@ -251,11 +252,12 @@ func probeA2AEvidence(ctx context.Context, client *attack.HTTPClient, endpoint s
 
 	best := a2aEvidenceNone
 	for _, p := range probes {
+		requestID := "batesian-a2a-discovery-" + attack.NewVars(endpoint, "").RandID
 		resp, err := client.POST(ctx, endpoint, p.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-a2a-discovery",
+			"id":      requestID,
 			"method":  p.method,
-			"params":  map[string]interface{}{"id": "batesian-discovery-nonexistent", "historyLength": 1},
+			"params":  map[string]interface{}{"id": discoveryTaskID, "historyLength": 1},
 		})
 		if err != nil || resp.StatusCode == 404 {
 			continue
@@ -267,10 +269,14 @@ func probeA2AEvidence(ctx context.Context, client *attack.HTTPClient, endpoint s
 			}
 			continue
 		}
-		if resp.IsAccepted() {
+		result, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			continue
+		}
+		if resp.IsSuccess() && !hasError && discoveryTaskResult(result) {
 			return a2aEvidenceStrong
 		}
-		if code, ok := jsonRPCErrorCode(resp.Body); ok {
+		if hasError {
 			if code >= a2aErrorCodeMin && code <= a2aErrorCodeMax {
 				return a2aEvidenceStrong
 			}
@@ -280,6 +286,47 @@ func probeA2AEvidence(ctx context.Context, client *attack.HTTPClient, endpoint s
 		}
 	}
 	return best
+}
+
+// discoveryResponse accepts only a JSON-RPC reply to the discovery probe.
+func discoveryResponse(body []byte, expectedID string) (result json.RawMessage, code int, hasError, valid bool) {
+	var reply struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &reply) != nil || reply.JSONRPC != "2.0" {
+		return nil, 0, false, false
+	}
+	var id string
+	if json.Unmarshal(reply.ID, &id) != nil || id != expectedID {
+		return nil, 0, false, false
+	}
+	if len(reply.Result) != 0 && len(reply.Error) == 0 {
+		return reply.Result, 0, false, true
+	}
+	if len(reply.Error) != 0 && len(reply.Result) == 0 {
+		var rpcError struct {
+			Code    *int    `json:"code"`
+			Message *string `json:"message"`
+		}
+		if json.Unmarshal(reply.Error, &rpcError) == nil && rpcError.Code != nil && rpcError.Message != nil {
+			return nil, *rpcError.Code, true, true
+		}
+	}
+	return nil, 0, false, false
+}
+
+func discoveryTaskResult(result json.RawMessage) bool {
+	var task struct {
+		ID        string `json:"id"`
+		ContextID string `json:"contextId"`
+		Status    struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	return json.Unmarshal(result, &task) == nil && task.ID == discoveryTaskID && task.ContextID != "" && task.Status.State != ""
 }
 
 // answersMCPInitialize reports whether the endpoint identifies itself as an MCP

@@ -63,9 +63,15 @@ func unauthAllowedServer(t *testing.T) *httptest.Server {
 			})
 			return
 		}
+		req := readBody(r)
+		id := req["id"]
+		if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+			rpcErr(w, id, -32001, "Task not found")
+			return
+		}
 		writeJSON(w, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      1,
+			"id":      id,
 			"result": map[string]interface{}{
 				"id":     "task-002",
 				"status": map[string]interface{}{"state": "completed"},
@@ -227,18 +233,19 @@ func jwtAcceptingRPCErrorServer(t *testing.T) *httptest.Server {
 			writeJSON(w, map[string]interface{}{"name": "rpc-agent", "version": "1.0"})
 			return
 		}
+		id := readBody(r)["id"]
 		if r.Header.Get("Authorization") == "" {
 			// HTTP 200 but a JSON-RPC error => rejection at the protocol layer.
 			writeJSON(w, map[string]interface{}{
 				"jsonrpc": "2.0",
-				"id":      1,
+				"id":      id,
 				"error":   map[string]interface{}{"code": -32001, "message": "unauthorized"},
 			})
 			return
 		}
 		writeJSON(w, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      1,
+			"id":      id,
 			"result":  map[string]interface{}{"id": "task-003", "status": map[string]interface{}{"state": "completed"}},
 		})
 	}))
@@ -363,13 +370,14 @@ func v03IssuerAllowlistServer(t *testing.T) *httptest.Server {
 			return
 		}
 		var req struct {
-			Method string `json:"method"`
+			Method string      `json:"method"`
+			ID     interface{} `json:"id"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &req)
 		if req.Method != "message/send" {
 			// This revision does not define that name.
-			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req.ID,
 				"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
 			return
 		}
