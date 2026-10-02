@@ -102,6 +102,18 @@ func newClient(target string) *attack.HTTPClient {
 	return attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(target, ""))
 }
 
+func writeTaskNotFound(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"jsonrpc": "2.0", "id": req.ID,
+		"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+	})
+}
+
 // a2aMock answers JSON-RPC at rpcPath (a TaskNotFound error) and 404s
 // elsewhere. It deliberately serves no agent card: these are the cardless cases,
 // where discovery has to fall back to probing paths. Card-driven discovery
@@ -114,8 +126,7 @@ func a2aMock(rpcPath string) *httptest.Server {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+			writeTaskNotFound(w, r)
 		})
 	}
 	return httptest.NewServer(mux)
@@ -135,8 +146,7 @@ func TestResolveA2AEndpoint_FromCard(t *testing.T) {
 	// assert the defect it was written before: discovery returned the card's path
 	// as reachable without ever contacting it.
 	mux.HandleFunc("/a2a/jsonrpc", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+		writeTaskNotFound(w, r)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -163,8 +173,7 @@ func TestResolveA2AEndpoint_LegacyDefaultTransport(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+		writeTaskNotFound(w, r)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -228,17 +237,19 @@ func TestResolveA2AEndpoint_TargetNamesTheEndpointPath(t *testing.T) {
 
 // jsonRPCServer answers every POST with the given body, whatever the path. It
 // stands in for a JSON-RPC service that is not an A2A agent.
-func jsonRPCServer(reply func(method string) string) *httptest.Server {
+func jsonRPCServer(reply func(method string, id json.RawMessage) string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		var req map[string]interface{}
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		method, _ := req["method"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(reply(method)))
+		_, _ = w.Write([]byte(reply(req.Method, req.ID)))
 	}))
 }
 
@@ -248,12 +259,12 @@ func jsonRPCServer(reply func(method string) string) *httptest.Server {
 // skipping, which is the difference between "tested, nothing found" and "could
 // not test".
 func TestResolveA2AEndpoint_MCPServerIsNotAnA2AEndpoint(t *testing.T) {
-	srv := jsonRPCServer(func(method string) string {
+	srv := jsonRPCServer(func(method string, id json.RawMessage) string {
 		if method == "initialize" {
-			return `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18",` +
-				`"serverInfo":{"name":"mcp","version":"1.0"},"capabilities":{}}}`
+			return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18",`+
+				`"serverInfo":{"name":"mcp","version":"1.0"},"capabilities":{}}}`, id)
 		}
-		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}`, id)
 	})
 	defer srv.Close()
 
@@ -267,8 +278,8 @@ func TestResolveA2AEndpoint_MCPServerIsNotAnA2AEndpoint(t *testing.T) {
 // for both, including this repository's own delegation and push-binding
 // fixtures. They must still be discovered.
 func TestResolveA2AEndpoint_AgentWithoutTaskMethodsStillFound(t *testing.T) {
-	srv := jsonRPCServer(func(string) string {
-		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`
+	srv := jsonRPCServer(func(_ string, id json.RawMessage) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}`, id)
 	})
 	defer srv.Close()
 
@@ -294,7 +305,10 @@ func TestResolveA2AEndpoint_TaskNotFoundNeedsNoDisambiguation(t *testing.T) {
 			mcpProbes++
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req["id"],
+			"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+		})
 	}))
 	defer srv.Close()
 
@@ -342,8 +356,7 @@ func TestResolveA2AEndpoint_CardPathThatDoesNotAnswerFallsBack(t *testing.T) {
 		}
 		hits = append(hits, r.Method+" "+r.URL.Path)
 		// The real handler, answering a task-shaped probe.
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+		writeTaskNotFound(w, r)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -457,12 +470,60 @@ func TestResolveA2AEndpoint_AuthGatedNonMCPIsStillACandidate(t *testing.T) {
 // only an A2A implementation emits them.
 func TestResolveA2AEndpoint_A2AErrorCodeIsStrongEvidence(t *testing.T) {
 	for _, code := range []int{-32001, -32004, -32006} {
-		srv := jsonRPCServer(func(string) string {
-			return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":%d,"message":"A2A error"}}`, code)
+		srv := jsonRPCServer(func(_ string, id json.RawMessage) string {
+			return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":"A2A error"}}`, id, code)
 		})
 		if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); !ok {
 			t.Errorf("error code %d is A2A-specific and must be accepted", code)
 		}
 		srv.Close()
+	}
+}
+
+func TestProbeA2AEvidence_RequiresMatchingResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want a2aEvidence
+	}{
+		{"matching task error", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceStrong},
+		{"matching task result", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","result":{"id":"batesian-discovery-nonexistent","contextId":"ctx-1","status":{"state":"submitted"}}}`, a2aEvidenceStrong},
+		{"wrong task id", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","result":{"id":"task-1","contextId":"ctx-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
+		{"id only result", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","result":{"id":"batesian-discovery-nonexistent"}}`, a2aEvidenceNone},
+		{"wrong result id", `{"jsonrpc":"2.0","id":"other","result":{"id":"task-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
+		{"null result id", `{"jsonrpc":"2.0","id":null,"result":{"id":"task-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
+		{"missing result id", `{"jsonrpc":"2.0","result":{"id":"task-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
+		{"wrong error id", `{"jsonrpc":"2.0","id":"other","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
+		{"null error id", `{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
+		{"missing error id", `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
+		{"missing version", `{"id":"batesian-a2a-discovery","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
+		{"bare result", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","result":{}}`, a2aEvidenceNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID string `json:"id"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, strings.ReplaceAll(tt.body, "batesian-a2a-discovery", request.ID))
+			}))
+			defer srv.Close()
+			if got := probeA2AEvidence(context.Background(), newClient(srv.URL), srv.URL); got != tt.want {
+				t.Errorf("probeA2AEvidence = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveA2AEndpoint_UnrelatedTaskResponse(t *testing.T) {
+	srv := jsonRPCServer(func(_ string, _ json.RawMessage) string {
+		return `{"jsonrpc":"2.0","id":"other","error":{"code":-32001,"message":"Task not found"}}`
+	})
+	defer srv.Close()
+
+	if ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
+		t.Errorf("resolved %q from a response to another request", ep)
 	}
 }

@@ -264,6 +264,10 @@ func TestSessionSmuggle_PatchedRejects(t *testing.T) {
 		}
 		body := readBody(r)
 		id := body["id"]
+		if method, _ := body["method"].(string); method == "GetTask" || method == "tasks/get" {
+			rpcErr(w, id, -32001, "Task not found")
+			return
+		}
 		if isAgentRoleVal(roleOf(body)) {
 			rpcErr(w, id, -32602, "Invalid params: role must be USER")
 			return

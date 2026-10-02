@@ -29,12 +29,11 @@ func cardlessAgentServer() *httptest.Server {
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
-		w.Header().Set("Content-Type", "application/json")
 		switch method {
 		case "tasks/get", "GetTask":
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`))
+			rpcErr(w, req["id"], -32001, "Task not found")
 		default:
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`))
+			rpcErr(w, req["id"], -32601, "Method not found")
 		}
 	}))
 }

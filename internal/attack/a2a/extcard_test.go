@@ -103,7 +103,9 @@ func TestExtCardExecutor_JSONRPCErrorNotFinding(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, jsonRPCError(-32600, "authentication required for extended card"))
+		response := jsonRPCError(-32600, "authentication required for extended card")
+		response["id"] = readBody(r)["id"]
+		writeJSON(w, response)
 	}))
 	defer ts.Close()
 

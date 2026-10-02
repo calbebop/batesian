@@ -95,6 +95,10 @@ func contextServer(mode string) *httptest.Server {
 				hist = append(hist, m)
 			}
 			mu.Unlock()
+			if ctxID == "" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
 			writeHistory(w, id, taskID, ctxID, hist)
 		default:
 			rpcErr(w, id, -32601, "Method not found")

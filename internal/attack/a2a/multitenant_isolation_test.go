@@ -67,6 +67,10 @@ func tenantServer(mode string) *httptest.Server {
 			own := owner[taskID]
 			text := probeText[taskID]
 			mu.Unlock()
+			if own == "" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
 			switch mode {
 			case "open":
 				taskWithHistory(w, id, taskID, "ctx-"+own, text)
