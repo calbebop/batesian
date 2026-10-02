@@ -15,17 +15,7 @@ import (
 	a2aattack "github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// batchServer builds a mock A2A JSON-RPC server whose auth behavior depends on
-// mode:
-//   - "bypass": a single request is rejected at the HTTP layer (401) when
-//     unauthenticated, but a batch array is dispatched without auth (the bug).
-//   - "secure": the 401 gate applies to single AND batch requests alike.
-//   - "open":   nothing is gated (every request reaches the handler).
-//   - "not-a2a": every request 404s.
-//
-// A dispatched GetTask/tasks/get for the probe's non-existent id returns a
-// TaskNotFound (-32001) application error, which is exactly what proves the
-// dispatcher ran past the auth gate.
+// batchServer models an HTTP auth gate that may mishandle batch requests.
 func batchServer(mode string) *httptest.Server {
 	taskNotFound := func(id interface{}) map[string]interface{} {
 		return map[string]interface{}{
@@ -44,13 +34,10 @@ func batchServer(mode string) *httptest.Server {
 		authed := r.Header.Get("Authorization") != ""
 		w.Header().Set("Content-Type", "application/json")
 
-		// gate: is the HTTP auth gate active for this request shape?
 		gate := !authed
 		if mode == "open" {
 			gate = false
 		}
-		// In "bypass" mode the gate is skipped for batches (the vulnerability); in
-		// "secure" mode it applies to batches too.
 		if isBatch && mode == "bypass" {
 			gate = false
 		}
@@ -89,7 +76,6 @@ func runBatchBypass(t *testing.T, srv *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestBatchBypass_Bypassed: single request gated (401), batch dispatched => confirmed.
 func TestBatchBypass_Bypassed(t *testing.T) {
 	srv := batchServer("bypass")
 	defer srv.Close()
@@ -107,7 +93,6 @@ func TestBatchBypass_Bypassed(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_SecureNoFinding: the gate applies to batches too => no finding.
 func TestBatchBypass_SecureNoFinding(t *testing.T) {
 	srv := batchServer("secure")
 	defer srv.Close()
@@ -117,7 +102,6 @@ func TestBatchBypass_SecureNoFinding(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_OpenNoFinding: nothing is gated, so there is no auth to bypass.
 func TestBatchBypass_OpenNoFinding(t *testing.T) {
 	srv := batchServer("open")
 	defer srv.Close()
@@ -127,8 +111,6 @@ func TestBatchBypass_OpenNoFinding(t *testing.T) {
 	}
 }
 
-// TestBatchBypass_NotA2A: a non-A2A endpoint that 404s everything has no reachable
-// JSON-RPC endpoint, so the rule reports inconclusive (not a finding, not clean).
 func TestBatchBypass_NotA2A(t *testing.T) {
 	srv := batchServer("not-a2a")
 	defer srv.Close()
@@ -143,15 +125,6 @@ func TestBatchBypass_NotA2A(t *testing.T) {
 	}
 }
 
-// A correctly secured agent: the single request is refused at the HTTP layer, and
-// every element of a batch is refused with a JSON-RPC error reading "Not
-// authorized". Nothing is bypassed.
-//
-// The A2A copy of the auth-keyword list omitted "authoriz", so that message was
-// not recognized as a refusal. a2aBatchDispatched's predicate is inverted, so an
-// unrecognized element error counted as proof the dispatcher had run, and the rule
-// emitted high/confirmed "A2A authentication bypassed by JSON-RPC batch wrapping"
-// with evidence reading "batch [request]: HTTP 200 (processed)".
 func TestBatchBypass_AuthRefusalWordingIsRecognized(t *testing.T) {
 	for _, msg := range []string{"Not authorized", "Access denied", "Login required", "Invalid token"} {
 		t.Run(msg, func(t *testing.T) {
@@ -163,8 +136,12 @@ func TestBatchBypass_AuthRefusalWordingIsRecognized(t *testing.T) {
 				body, _ := io.ReadAll(r.Body)
 				w.Header().Set("Content-Type", "application/json")
 				if strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
-					// Batch: every element refused for auth.
-					_, _ = w.Write([]byte(`[{"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"` + msg + `"}}]`))
+					var requests []map[string]interface{}
+					_ = json.Unmarshal(body, &requests)
+					_ = json.NewEncoder(w).Encode([]interface{}{map[string]interface{}{
+						"jsonrpc": "2.0", "id": requests[0]["id"],
+						"error": map[string]interface{}{"code": -32001, "message": msg},
+					}})
 					return
 				}
 				w.WriteHeader(http.StatusUnauthorized)
@@ -177,6 +154,66 @@ func TestBatchBypass_AuthRefusalWordingIsRecognized(t *testing.T) {
 			if len(findings) != 0 {
 				t.Errorf("FALSE POSITIVE for %q: the batch was refused for auth, got %q",
 					msg, findings[0].Title)
+			}
+		})
+	}
+}
+
+func TestBatchBypass_RequiresCorrelatedTaskResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		response func(interface{}) map[string]interface{}
+	}{
+		{
+			name: "null id invalid batch",
+			response: func(interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": nil,
+					"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+				}
+			},
+		},
+		{
+			name: "unrelated task response",
+			response: func(interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": "unrelated",
+					"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+				}
+			},
+		},
+		{
+			name: "correlated protocol error",
+			response: func(id interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				var requests []map[string]interface{}
+				_ = json.Unmarshal(body, &requests)
+				_ = json.NewEncoder(w).Encode([]interface{}{tt.response(requests[0]["id"])})
+			}))
+			defer srv.Close()
+
+			if findings := runBatchBypass(t, srv); len(findings) != 0 {
+				t.Fatalf("expected no finding for an unproven dispatch, got %+v", findings)
 			}
 		})
 	}
