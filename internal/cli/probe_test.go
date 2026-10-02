@@ -311,7 +311,7 @@ func TestProbeA2A_TokenStillFlagsAnonymousExtendedCard(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `{"name":"Extended Agent"}`)
+			_, _ = io.WriteString(w, `{"name":"Extended Agent","description":"Private capabilities","version":"1","supportedInterfaces":[{"url":"https://agent.example.com","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -324,6 +324,32 @@ func TestProbeA2A_TokenStillFlagsAnonymousExtendedCard(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "a2a-extcard-unauth-001") {
 		t.Fatalf("anonymous extended card was not flagged:\n%s", out.String())
+	}
+}
+
+func TestProbeA2A_GenericExtendedCardResponseNotFlagged(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"name":"Agent"}`, `<html>login</html>`} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case a2a.WellKnownPath:
+					_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+				case a2a.ExtendedCardPath:
+					_, _ = io.WriteString(w, body)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			var out bytes.Buffer
+			if err := probeA2A(t.Context(), srv.URL, "", time.Second, false, "", report.FormatTable, report.New(&out, false)); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out.String(), "a2a-extcard-unauth-001") {
+				t.Fatalf("generic response was reported as an extended card:\n%s", out.String())
+			}
+		})
 	}
 }
 

@@ -66,6 +66,58 @@ type AgentCard struct {
 	Signatures []AgentCardSignature `json:"signatures,omitempty"`
 }
 
+// IsCompleteAgentCard checks the required v1.0 fields, accepting the v0.3 URL
+// in place of supportedInterfaces for older agents.
+func IsCompleteAgentCard(body []byte) bool {
+	var card struct {
+		Name                string          `json:"name"`
+		Description         *string         `json:"description"`
+		Version             string          `json:"version"`
+		Capabilities        json.RawMessage `json:"capabilities"`
+		Skills              json.RawMessage `json:"skills"`
+		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
+		URL                 string          `json:"url"`
+		DefaultInputModes   json.RawMessage `json:"defaultInputModes"`
+		DefaultOutputModes  json.RawMessage `json:"defaultOutputModes"`
+	}
+	if json.Unmarshal(body, &card) != nil || strings.TrimSpace(card.Name) == "" ||
+		card.Description == nil || strings.TrimSpace(card.Version) == "" {
+		return false
+	}
+	var capabilities map[string]json.RawMessage
+	if json.Unmarshal(card.Capabilities, &capabilities) != nil || capabilities == nil {
+		return false
+	}
+	var skills []AgentSkill
+	if json.Unmarshal(card.Skills, &skills) != nil || skills == nil {
+		return false
+	}
+	for _, skill := range skills {
+		if strings.TrimSpace(skill.ID) == "" || strings.TrimSpace(skill.Name) == "" || skill.Tags == nil {
+			return false
+		}
+	}
+	for _, raw := range []json.RawMessage{card.DefaultInputModes, card.DefaultOutputModes} {
+		var modes []string
+		if json.Unmarshal(raw, &modes) != nil || modes == nil {
+			return false
+		}
+	}
+	if len(card.SupportedInterfaces) != 0 {
+		var interfaces []AgentInterface
+		if json.Unmarshal(card.SupportedInterfaces, &interfaces) != nil || len(interfaces) == 0 {
+			return false
+		}
+		for _, iface := range interfaces {
+			if iface.URL == "" || iface.ProtocolBinding == "" || iface.ProtocolVersion == "" {
+				return false
+			}
+		}
+		return true
+	}
+	return hasHTTPScheme(card.URL)
+}
+
 // GetServiceURL returns the agent's JSON-RPC service URL, the transport batesian
 // speaks. It selects by binding rather than by position, because the first
 // supportedInterfaces entry is frequently gRPC (whose URL is often scheme-less).

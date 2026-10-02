@@ -36,6 +36,26 @@ const minimalV1CardJSON = `{
 	]
 }`
 
+func TestIsCompleteAgentCard(t *testing.T) {
+	if !IsCompleteAgentCard([]byte(minimalV1CardJSON)) {
+		t.Fatal("complete v1 card rejected")
+	}
+	legacy := `{"name":"Legacy Agent","description":"Older agent","version":"0.3.0","url":"https://legacy.example.com","capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	if !IsCompleteAgentCard([]byte(legacy)) {
+		t.Fatal("complete v0.3 card rejected")
+	}
+	for _, body := range []string{
+		`null`, `{}`, `{"name":"Agent"}`,
+		`{"name":"Agent","description":"","version":"1","supportedInterfaces":[],"capabilities":{},"defaultInputModes":[],"defaultOutputModes":[],"skills":[]}`,
+		`{"name":"Agent","description":"","version":"1","url":"https://agent.example.com","capabilities":{},"defaultInputModes":[1],"defaultOutputModes":[],"skills":[]}`,
+		`{"name":"Agent","description":"","version":"1","url":"https://agent.example.com","capabilities":{},"defaultInputModes":[],"defaultOutputModes":[],"skills":[{}]}`,
+	} {
+		if IsCompleteAgentCard([]byte(body)) {
+			t.Errorf("invalid card accepted: %s", body)
+		}
+	}
+}
+
 // legacyV03CardJSON exercises the v0.3 top-level url field.
 const legacyV03CardJSON = `{
 	"name": "Legacy Agent",
