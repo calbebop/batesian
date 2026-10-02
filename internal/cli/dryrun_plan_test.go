@@ -76,6 +76,29 @@ func TestPrintDryRunPlan_StatesBothDivergences(t *testing.T) {
 	}
 }
 
+func TestPrintDryRunPlan_RedactsTargetCredentials(t *testing.T) {
+	var buf bytes.Buffer
+	printDryRunPlan(&buf, "https://user:pass@example.com/mcp?token=secret#fragment", &attackpkg.Recorder{})
+	for _, secret := range []string{"user", "pass", "secret", "fragment"} {
+		if strings.Contains(buf.String(), secret) {
+			t.Errorf("plan contains %q: %s", secret, buf.String())
+		}
+	}
+	if !strings.Contains(buf.String(), "example.com/mcp?REDACTED") {
+		t.Errorf("plan lost target endpoint: %s", buf.String())
+	}
+}
+
+func TestEndpointCandidateProbes_UsesOriginalBodyDigest(t *testing.T) {
+	reqs := []attackpkg.RecordedRequest{
+		{RuleID: "r", Method: "POST", URL: "http://t/a", Body: `{"method":"<redacted>"}`, BodyDigest: "one"},
+		{RuleID: "r", Method: "POST", URL: "http://t/b", Body: `{"method":"<redacted>"}`, BodyDigest: "two"},
+	}
+	if len(endpointCandidateProbes(reqs)) != 0 {
+		t.Fatal("different request bodies must not be grouped as endpoint fallbacks")
+	}
+}
+
 // The method is part of the grouping key, so a GET walk and a POST walk over the
 // same URLs are separate walks and each keeps its own first attempt. The plan
 // contains both: well-known card fetches are GETs, JSON-RPC probes are POSTs.

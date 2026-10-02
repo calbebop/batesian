@@ -2,21 +2,20 @@ package attack
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
-
+	"net/url"
 	"strings"
 	"sync"
 
 	"github.com/calbebop/batesian/internal/httpx"
 )
 
-// DryRunOOBPlaceholderURL is the base callback URL substituted for a real OOB
-// listener during a dry run. SSRF executors normally bind a local listener to
-// catch callbacks; a dry run must bind no socket, so they use this non-resolving
-// placeholder instead. The .invalid TLD (RFC 6761) never resolves, and the
-// recorded plan still shows a representative callback URL.
+// DryRunOOBPlaceholderURL replaces live callback URLs during a dry run.
 const DryRunOOBPlaceholderURL = "http://oob.batesian.invalid"
 
 // RecordedRequest is one outbound HTTP request captured during a dry run.
@@ -24,8 +23,10 @@ type RecordedRequest struct {
 	RuleID  string
 	Method  string
 	URL     string
-	Headers map[string]string // Authorization value is redacted
+	Headers map[string]string
 	Body    string
+	// BodyDigest distinguishes requests whose redacted bodies look alike.
+	BodyDigest string
 }
 
 // Recorder collects the requests a dry run would have sent instead of sending
@@ -58,26 +59,108 @@ func (r *Recorder) record(method, rawURL string, header http.Header, body []byte
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reqs = append(r.reqs, RecordedRequest{
-		RuleID:  r.current,
-		Method:  method,
-		URL:     rawURL,
-		Headers: redactHeaders(header),
-		Body:    string(body),
+		RuleID:     r.current,
+		Method:     method,
+		URL:        RedactURL(rawURL),
+		Headers:    redactHeaders(header),
+		Body:       redactBody(body),
+		BodyDigest: digestBody(body),
 	})
 }
 
-// redactHeaders flattens headers to a single-valued map and masks credentials so
-// a shared dry-run plan never leaks bearer tokens.
+// RedactURL removes userinfo, queries, and fragments from a displayed URL.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<redacted URL>"
+	}
+	u.User = nil
+	u.Fragment = ""
+	u.RawFragment = ""
+	if u.RawQuery != "" {
+		u.RawQuery = "REDACTED"
+	}
+	return u.String()
+}
+
+// Header values are hidden by default; only fixed protocol values are shown.
 func redactHeaders(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		if strings.EqualFold(k, "Authorization") {
+		value := strings.Join(v, ", ")
+		switch {
+		case strings.EqualFold(k, "Content-Type") && value == "application/json":
+			out[k] = value
+		case strings.EqualFold(k, "Accept") && value == "application/json, text/event-stream":
+			out[k] = value
+		default:
 			out[k] = "<redacted>"
-			continue
 		}
-		out[k] = strings.Join(v, ", ")
 	}
 	return out
+}
+
+func digestBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func redactBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return "<redacted>"
+	}
+	redacted, err := json.Marshal(redactJSON(value, ""))
+	if err != nil {
+		return "<redacted>"
+	}
+	return string(redacted)
+}
+
+func redactJSON(value interface{}, key string) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, child := range v {
+			v[k] = redactJSON(child, k)
+		}
+		return v
+	case []interface{}:
+		for i, child := range v {
+			v[i] = redactJSON(child, key)
+		}
+		return v
+	case string:
+		if key == "method" && safeDryRunMethod(v) {
+			return v
+		}
+		if strings.HasPrefix(v, DryRunOOBPlaceholderURL) {
+			return DryRunOOBPlaceholderURL + "/<callback>"
+		}
+		return "<redacted>"
+	case float64, bool:
+		return "<redacted>"
+	default:
+		return v
+	}
+}
+
+func safeDryRunMethod(method string) bool {
+	switch method {
+	case "initialize", "ping", "server/discover", "tools/list", "tools/call",
+		"resources/list", "resources/read", "prompts/list", "prompts/get",
+		"completion/complete", "logging/setLevel", "tasks/get", "tasks/list",
+		"tasks/cancel", "tasks/result", "message/send", "message/stream",
+		"SendMessage", "GetTask", "ListTasks", "CancelTask", "GetAgentCard":
+		return true
+	default:
+		return false
+	}
 }
 
 // dryRunRoundTripper records each request and returns a benign synthetic response

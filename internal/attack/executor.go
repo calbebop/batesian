@@ -84,9 +84,7 @@ type Options struct {
 	// Token is the only identity.
 	Principals []Principal
 
-	// DryRun, when true, records every outbound request instead of sending it, so
-	// an operator can review the exact traffic a scan would generate before
-	// authorizing it. Every scan-path HTTP client honors this via Transport.
+	// DryRun records a redacted request plan without sending traffic.
 	DryRun bool
 
 	// Recorder collects the requests captured during a dry run. It must be non-nil
