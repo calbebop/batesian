@@ -294,20 +294,29 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 	if result.HasResources {
 		printer.Verbose("resources/list")
 		resources, err := client.ListResources(ctx, session)
-		if err == nil && len(resources) > 0 {
+		if err == nil {
 			for _, r := range resources {
 				result.Resources = append(result.Resources, report.MCPResourceSummary{
 					URI:      r.URI,
 					MimeType: r.MimeType,
 				})
 			}
+		} else {
+			printer.Warn(fmt.Sprintf("resources/list failed: %v (resource surface not enumerated)", err))
+		}
+
+		anonResources := resources
+		anonErr := err
+		if token != "" {
+			printer.Verbose("Checking resources/list without authentication...")
+			anonResources, anonErr = listUnauthMCPResources(ctx, session.Endpoint, timeout, skipTLS, proxy)
+		}
+		if anonErr == nil && len(anonResources) > 0 {
 			result.Flags = append(result.Flags, report.AttackFlag{
 				Severity: "high",
 				RuleID:   "mcp-resources-unauth-001",
-				Message:  fmt.Sprintf("%d resource(s) listed without authentication. Run scan to read content.", len(resources)),
+				Message:  fmt.Sprintf("%d resource(s) listed without authentication. Run scan to read content.", len(anonResources)),
 			})
-		} else if err != nil {
-			printer.Warn(fmt.Sprintf("resources/list failed: %v (resource surface not enumerated)", err))
 		}
 	}
 
@@ -349,6 +358,28 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		printer.PrintMCPProbeTable(result)
 	}
 	return nil
+}
+
+func listUnauthMCPResources(ctx context.Context, endpoint string, timeout time.Duration, skipTLS bool, proxy string) ([]mcp.Resource, error) {
+	opts := []mcp.ClientOption{mcp.WithTimeout(timeout)}
+	if skipTLS {
+		opts = append(opts, mcp.WithSkipTLSVerify())
+	}
+	if proxy != "" {
+		opts = append(opts, mcp.WithProxy(proxy))
+	}
+	client, err := mcp.NewClient(endpoint, opts...)
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.Initialize(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if session.Endpoint != endpoint {
+		return nil, fmt.Errorf("anonymous MCP session resolved to a different endpoint")
+	}
+	return client.ListResources(ctx, session)
 }
 
 // buildJSONOutput creates the JSON representation of a probe result.

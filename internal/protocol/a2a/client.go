@@ -173,8 +173,12 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 // Returns the HTTP status code and whether the card was disclosed.
 func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
 	target := endpoint.AppendPath(c.baseURL, ExtendedCardPath)
-	result, _, err := c.get(ctx, target)
-	return result, err
+	req, err := c.newRequest(ctx, http.MethodGet, target)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Del("Authorization")
+	return c.do(req)
 }
 
 // ProbeExtendedCardWithInvalidToken attempts to fetch /extendedAgentCard with
