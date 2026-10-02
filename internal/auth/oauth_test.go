@@ -174,6 +174,37 @@ func TestExchangeAuthCode_RefusesRedirect(t *testing.T) {
 	}
 }
 
+func TestExchangeAuthCode_MissingAccessTokenDoesNotExposeResponse(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"missing", `{"refresh_token":"refresh-secret","id_token":"identity-secret"}`},
+		{"empty", `{"access_token":"","refresh_token":"refresh-secret","id_token":"identity-secret"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := auth.ExchangeAuthCodeWithClient(context.Background(), auth.AuthCodeConfig{
+				TokenURL:     srv.URL,
+				ClientID:     "client",
+				Code:         "code",
+				RedirectURI:  "http://127.0.0.1/callback",
+				PKCEVerifier: "verifier",
+			}, srv.Client())
+			if err == nil || !strings.Contains(err.Error(), "no access_token") {
+				t.Fatalf("expected missing access token error, got %v", err)
+			}
+			for _, secret := range []string{"refresh-secret", "identity-secret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error exposed %q: %v", secret, err)
+				}
+			}
+		})
+	}
+}
+
 func TestGeneratePKCE(t *testing.T) {
 	p, err := auth.GeneratePKCE()
 	if err != nil {
