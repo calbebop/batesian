@@ -142,7 +142,7 @@ batesian scan --target https://agent.example.com \
 
 ## Safe operation
 
-- `--dry-run` records the planned requests and sends no network traffic. Requests that depend on live responses, acquired tokens, or callbacks cannot be expanded fully until a real scan.
+- `--dry-run` records a redacted request plan and sends no network traffic. Header values, URL userinfo and queries, and request body values are hidden; hosts and paths remain visible. Requests that depend on live responses, acquired tokens, or callbacks cannot be expanded fully until a real scan.
 - `--proxy 127.0.0.1:8080` routes scan and OAuth traffic through an intercepting proxy. Environment proxy variables are honored when the flag is absent; Go excludes loopback targets from environment proxies.
 - `--skip-tls` disables certificate validation and should be limited to controlled labs or intercepting proxies.
 - Target-advertised OAuth endpoints are restricted to the target origin. Use `--oauth-origin https://login.example.com` to approve an additional exact origin.

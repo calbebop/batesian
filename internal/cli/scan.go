@@ -231,11 +231,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if format == report.FormatJSON || format == report.FormatSARIF {
 		statusOut = os.Stderr
 	}
+	displayTarget := target
+	if dryRun {
+		displayTarget = attackpkg.RedactURL(target)
+	}
 	printer := report.New(statusOut, verbose)
 	printer.Banner()
-	printer.ProbeHeader(target, coalesceProtocol(protocol))
+	printer.ProbeHeader(displayTarget, coalesceProtocol(protocol))
 
-	printer.Info(fmt.Sprintf("Running %d rule(s) against %s", len(filtered), target))
+	printer.Info(fmt.Sprintf("Running %d rule(s) against %s", len(filtered), displayTarget))
 	if verbose {
 		for _, r := range filtered {
 			printer.Verbose(fmt.Sprintf("  [%s] %s", r.Info.Severity, r.ID))
@@ -625,7 +629,7 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 	reqs := rec.Requests()
 	fmt.Fprintf(out, "\nDry run: nothing was sent. Planned requests against %s (%d recorded, see the notes below):\n\n",
-		target, len(reqs))
+		attackpkg.RedactURL(target), len(reqs))
 
 	candidates := endpointCandidateProbes(reqs)
 
@@ -672,7 +676,11 @@ func endpointCandidateProbes(reqs []attackpkg.RecordedRequest) map[int]bool {
 	type probeKey struct{ rule, method, body string }
 	urlsFor := map[probeKey]map[string]bool{}
 	for _, r := range reqs {
-		k := probeKey{r.RuleID, r.Method, r.Body}
+		body := r.BodyDigest
+		if body == "" {
+			body = r.Body
+		}
+		k := probeKey{r.RuleID, r.Method, body}
 		if urlsFor[k] == nil {
 			urlsFor[k] = map[string]bool{}
 		}
