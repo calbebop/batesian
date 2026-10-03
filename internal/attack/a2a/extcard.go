@@ -9,27 +9,15 @@ import (
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
+	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
 const (
 	extCardHTTPPath = "/extendedAgentCard"
 )
 
-// ExtCardExecutor tests whether the A2A extended agent card is accessible
-// without authentication (rule a2a-extcard-unauth-001).
-//
-// The A2A spec evolved: in older SDK versions the extended card was served via
-// HTTP GET /extendedAgentCard. In the current SDK (a2a-sdk >=1.0.0) it is only
-// accessible via the JSON-RPC method agent/authenticatedExtendedCard at POST /.
-// This executor probes BOTH paths for maximum real-world coverage.
-//
-// For each transport (JSON-RPC method + legacy HTTP GET) the executor reports at
-// most one finding, preferring the stronger signal: if a fabricated INVALID
-// bearer token is accepted, the server claims authentication but does not
-// validate it (critical bypass); otherwise if the card is returned with NO
-// credentials at all, the endpoint is simply public (high disclosure). The
-// invalid-token result strictly implies the no-token result, so they are not
-// reported as two separate findings.
+// ExtCardExecutor checks whether an extended A2A card is disclosed without a
+// valid credential over JSON-RPC or HTTP GET.
 type ExtCardExecutor struct {
 	rule attack.RuleContext
 }
@@ -77,7 +65,7 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 		}
 	}
 
-	// HTTP GET transport - legacy path (a2a-sdk < 1.0.0, a2a-samples reference impl).
+	// HTTP+JSON transport uses GET /extendedAgentCard.
 	extURL := endpoint.AppendPath(vars.BaseURL, extCardHTTPPath)
 	respA, errA := unauthClient.GET(ctx, extURL, map[string]string{"Authorization": "Bearer " + invalidToken})
 	if errA == nil && respA.StatusCode != 404 {
@@ -140,29 +128,27 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 	}
 }
 
-// probeJSONRPC sends GetExtendedAgentCard (a2a-sdk v1.0 PascalCase method) via
-// JSON-RPC and reports whether the server returned a non-error result. If token
-// is empty, no Authorization header is sent. The a2a-sdk v1.0.x uses gRPC-style
-// PascalCase methods and requires the A2A-Version: 1.0 header for the dispatcher
-// to accept the call.
+// probeJSONRPC accepts only a matching reply containing a complete Agent Card.
 func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPClient, endpoint, token, randID string) (*attack.Response, bool) {
+	requestID := "batesian-" + randID
 	headers := map[string]string{"A2A-Version": "1.0"}
 	if token != "" {
 		headers["Authorization"] = "Bearer " + token
 	}
 	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-" + randID,
+		"id":      requestID,
 		"method":  "GetExtendedAgentCard",
 		"params":  map[string]interface{}{},
 	})
 	if err != nil {
 		return nil, false
 	}
-	if !resp.IsAccepted() {
-		return resp, false // reached the endpoint, but no result envelope = not a disclosure
+	if !resp.IsSuccess() {
+		return resp, false
 	}
-	return resp, true
+	result, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return resp, valid && !hasError && protocola2a.IsCompleteAgentCard(result)
 }
 
 // isJSONRPCError returns true if the body contains a JSON-RPC error object.
@@ -175,17 +161,9 @@ func isJSONRPCError(body []byte) bool {
 	return hasError
 }
 
-// extCardDisclosed reports whether resp is a 2xx whose body parses as an agent
-// card. The extended card is served as a raw JSON object over HTTP GET, so a
-// disclosure is confirmed by validating the card shape (parseCard requires a
-// name or url) rather than treating any 2xx non-error body - including an HTML
-// login page or "{}" - as a card.
+// extCardDisclosed accepts a successful HTTP response with a complete card.
 func extCardDisclosed(resp *attack.Response) bool {
-	if !resp.IsSuccess() {
-		return false
-	}
-	_, ok := parseCard(resp.Body)
-	return ok
+	return resp != nil && resp.IsSuccess() && protocola2a.IsCompleteAgentCard(resp.Body)
 }
 
 // snippet returns at most the first n bytes of body as a string, appending an

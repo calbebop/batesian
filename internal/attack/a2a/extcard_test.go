@@ -43,18 +43,32 @@ func jsonRPCError(code int, message string) map[string]interface{} {
 	}
 }
 
-// TestExtCardExecutor_Vulnerable verifies that a server which returns HTTP 200
-// for all requests (including GetExtendedAgentCard without auth and with an
-// invalid Bearer token) produces at least one high or critical severity finding.
+func extendedCard() map[string]interface{} {
+	return map[string]interface{}{
+		"name":        "Extended Agent",
+		"description": "Private capabilities",
+		"version":     "1.0.0",
+		"supportedInterfaces": []map[string]string{{
+			"url": "https://agent.example.com", "protocolBinding": "JSONRPC", "protocolVersion": "1.0",
+		}},
+		"capabilities":       map[string]interface{}{"extendedAgentCard": true},
+		"defaultInputModes":  []string{"text/plain"},
+		"defaultOutputModes": []string{"text/plain"},
+		"skills":             []interface{}{},
+	}
+}
+
+// TestExtCardExecutor_Vulnerable checks a card returned to an invalid token.
 func TestExtCardExecutor_Vulnerable(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
 		writeJSON(w, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "test",
-			"result": map[string]interface{}{
-				"name":        "Extended Agent Card",
-				"description": "Private extended capabilities",
-			},
+			"id":      readBody(r)["id"],
+			"result":  extendedCard(),
 		})
 	}))
 	defer ts.Close()
@@ -90,6 +104,78 @@ func TestExtCardExecutor_Vulnerable(t *testing.T) {
 	}
 	if !hasCritical {
 		t.Errorf("expected a critical finding for fabricated-token acceptance, got: %+v", findings)
+	}
+}
+
+func TestExtCardExecutor_AnonymousCard(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		request := readBody(r)
+		if request["method"] != "GetExtendedAgentCard" {
+			response := jsonRPCError(-32601, "method not found")
+			response["id"] = request["id"]
+			writeJSON(w, response)
+			return
+		}
+		if r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": request["id"], "result": extendedCard(),
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
+		t.Fatalf("want one high disclosure, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestExtCardExecutor_JSONRPCNonCardNotFinding(t *testing.T) {
+	tests := []struct {
+		name  string
+		reply func(string) map[string]interface{}
+	}{
+		{"empty result", func(id string) map[string]interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{}}
+		}},
+		{"null result", func(id string) map[string]interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": nil}
+		}},
+		{"partial card", func(id string) map[string]interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]string{"name": "Agent"}}
+		}},
+		{"wrong id", func(string) map[string]interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": "other", "result": extendedCard()}
+		}},
+		{"missing jsonrpc version", func(id string) map[string]interface{} {
+			return map[string]interface{}{"id": id, "result": extendedCard()}
+		}},
+		{"error and result", func(id string) map[string]interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": extendedCard(), "error": map[string]interface{}{"code": -1, "message": "error"}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				writeJSON(w, tt.reply(readBody(r)["id"].(string)))
+			}))
+			defer ts.Close()
+
+			findings, _ := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+			if len(findings) != 0 {
+				t.Fatalf("non-card response raised a finding: %+v", findings)
+			}
+		})
 	}
 }
 
@@ -169,11 +255,7 @@ func TestExtCardExecutor_HTMLLoginNotFinding(t *testing.T) {
 func TestExtCardExecutor_HTTPGetRawCard(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/extendedAgentCard" {
-			writeJSON(w, map[string]interface{}{
-				"name":        "Raw Card Agent",
-				"url":         "https://agent.example.com",
-				"description": "extended capabilities",
-			})
+			writeJSON(w, extendedCard())
 			return
 		}
 		http.NotFound(w, r)
