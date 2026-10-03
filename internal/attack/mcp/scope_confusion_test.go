@@ -151,7 +151,7 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			reply(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]interface{}{
-					"resultType":       "complete",
+					"resultType":        "complete",
 					"supportedVersions": []string{"2026-07-28"},
 					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
 					"serverInfo":        map[string]interface{}{"name": "scope-fixture", "version": "1"},
