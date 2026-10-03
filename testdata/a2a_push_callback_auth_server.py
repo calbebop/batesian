@@ -1,33 +1,4 @@
-"""
-Deliberately vulnerable A2A test server for validating:
-
-  a2a-push-callback-auth-001: an agent that accepts the caller's integrity
-  token at push-config registration and then drops it on the way out, so its
-  notifications carry nothing receivers can authenticate.
-
-Postures:
-  unsigned (default) - the outbound callback POSTs the status JSON with NO
-                       X-A2A-Notification-Token header and no token in the
-                       body. The rule MUST fire confirmed/high.
-  signed             - the callback presents the configured token in the
-                       documented header. The rule MUST stay silent: the
-                       transport is verifiable.
-  nocallback         - registration accepted, no outbound call ever made.
-                       The rule MUST report NOT TESTED.
-
-Only the v1.0 two-step wire is served (SendMessage +
-CreateTaskPushNotificationConfig). Nothing beyond a status update is ever
-sent to the registered URL, and only URLs the scan itself supplied receive
-traffic.
-
-Validate against it (batesian starts its local OOB listener automatically):
-  python testdata/a2a_push_callback_auth_server.py unsigned    # fires
-  python testdata/a2a_push_callback_auth_server.py signed      # silent
-  python testdata/a2a_push_callback_auth_server.py nocallback  # not tested
-
-Run: python testdata/a2a_push_callback_auth_server.py [posture]
-Scan: batesian scan --target http://127.0.0.1:7810 --rule-ids a2a-push-callback-auth-001 -v
-"""
+"""A2A push-auth fixture: unsigned, signed, or nocallback."""
 import sys
 import threading
 import time
@@ -58,27 +29,31 @@ async def jsonrpc(request: Request) -> JSONResponse:
         })
 
     if method == "CreateTaskPushNotificationConfig":
-        url = body.get("params", {}).get("url", "")
-        token = body.get("params", {}).get("token", "")
+        config = body.get("params", {})
+        url = config.get("url", "")
+        auth = config.get("authentication", {})
+        if auth.get("scheme") != "Bearer" or not auth.get("credentials"):
+            return JSONResponse({"error": "missing Bearer authentication"}, status_code=400)
         posture = request.app.state.posture
         if posture != "nocallback" and url:
             def fire():
                 time.sleep(0.5)
                 headers = {}
                 if posture == "signed":
-                    headers["X-A2A-Notification-Token"] = token
+                    headers["Authorization"] = f"Bearer {auth['credentials']}"
                 try:
                     httpx.post(url, json={
-                        "kind": "status-update",
-                        "taskId": "task-cbauth-live",
-                        "status": {"state": "TASK_STATE_COMPLETED"},
+                        "statusUpdate": {
+                            "taskId": "task-cbauth-live",
+                            "status": {"state": "TASK_STATE_COMPLETED"},
+                        },
                     }, headers=headers, timeout=5)
                 except Exception:
                     pass
             threading.Thread(target=fire, daemon=True).start()
         return JSONResponse({
             "jsonrpc": "2.0", "id": rid,
-            "result": {"taskId": "task-cbauth-live", "url": url, "token": token},
+            "result": {"taskId": "task-cbauth-live", "url": url, "authentication": auth},
         })
 
     return JSONResponse({"jsonrpc": "2.0", "id": rid,

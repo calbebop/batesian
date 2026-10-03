@@ -2,7 +2,11 @@ package a2a
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -11,32 +15,8 @@ import (
 	"github.com/calbebop/batesian/internal/oob"
 )
 
-// PushCallbackAuthExecutor tests whether an A2A agent's outgoing push
-// notifications carry anything a receiver can use to verify where they came
-// from (rule a2a-push-callback-auth-001).
-//
-// The push flow hands the agent a webhook plus, optionally, a secret token
-// the agent is supposed to present when it calls. A receiver that knows the
-// token can tell genuine completion events from forged ones; without it,
-// anyone who learns the webhook URL can spoof task completions, failures or
-// injected results - the notification-side half of the task-hijack class.
-//
-// The probe registers a callback toward the Batesian listener carrying a
-// unique secret, waits for the agent's outbound call, and reads what
-// arrived:
-//
-//   - callback carries the secret (X-A2A-Notification-Token, another header,
-//     or the body) -> the transport is verifiable, no finding
-//   - callback arrives WITHOUT the secret -> confirmed: the agent ignored the
-//     integrity material it accepted at registration, so its notifications
-//     are indistinguishable from forgeries
-//   - no callback within the window -> the oracle never ran; reported as not
-//     tested rather than clean
-//
-// Registration mechanics are shared with a2a-push-ssrf-001; the marker in the
-// URL path and the integrity token are deliberately different values here,
-// because conflating them made "the callback arrived" and "the callback was
-// authenticated" the same observation.
+// PushCallbackAuthExecutor checks whether task notifications carry the
+// configured webhook authentication credentials.
 type PushCallbackAuthExecutor struct {
 	rule attack.RuleContext
 }
@@ -77,19 +57,23 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	endpoint, endpointOK := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	reached := false
 
-	// Marker and token are separate on purpose: the marker routes the callback
-	// to this run, the token is what the agent is expected to present back.
+	// Keep the callback marker, optional token, and Bearer credential distinct.
 	callbackURL := listenerURL + "/batesian-oob-" + vars.RandID
 	token := "batesian-token-" + vars.RandID
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("push-callback-auth: generating webhook credential: %w", err)
+	}
+	credential := hex.EncodeToString(secret)
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
 	var obs setupObservation
 	credentialed := client.PresentsCredential(endpoint)
 	taskAccepted := false
 	acceptedBinding := ""
+	acceptedTaskID := ""
 
-	// Attempt 1: v1.0 two-step - SendMessage, then CreateTaskPushNotificationConfig
-	// whose params ARE a TaskPushNotificationConfig (flat url + token).
+	// v1.0: create a task, then register its push configuration.
 	sendResp, err := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "batesian-sm-" + vars.RandID,
@@ -118,11 +102,15 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					"taskId": taskID,
 					"url":    callbackURL,
 					"token":  token,
+					"authentication": map[string]string{
+						"scheme": "Bearer", "credentials": credential,
+					},
 				},
 			})
 			if pushErr == nil && pushResp.IsAccepted() {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
+				acceptedTaskID = taskID
 			}
 		}
 	}
@@ -130,7 +118,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	// Attempt 2: v0.3 wire - inline configuration on message/send, plus the
 	// explicit set call for servers that ignore the inline form.
 	if !taskAccepted {
-		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03SendRequest(callbackURL, token, vars.RandID))
+		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03AuthSendRequest(callbackURL, token, credential, vars.RandID))
 		if err2 == nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
@@ -141,15 +129,19 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v0.3-message-send"
+				acceptedTaskID = taskID
 				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      "batesian-set-" + vars.RandID,
 					"method":  "tasks/pushNotificationConfig/set",
 					"params": map[string]interface{}{
 						"taskId": taskID,
-						"pushNotificationConfig": map[string]string{
+						"pushNotificationConfig": map[string]interface{}{
 							"url":   callbackURL,
 							"token": token,
+							"authentication": map[string]interface{}{
+								"schemes": []string{"Bearer"}, "credentials": credential,
+							},
 						},
 					},
 				})
@@ -171,10 +163,14 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			if taskID := restTaskID(sendResp3.Body); taskID != "" {
 				cfgResp, cfgErr := client.POST(ctx, endpointpkg.AppendPath(restBase, "/tasks/"+taskID+"/pushNotificationConfigs"),
 					map[string]string{"A2A-Version": "1.0"},
-					map[string]interface{}{"url": callbackURL, "token": token})
+					map[string]interface{}{
+						"url": callbackURL, "token": token,
+						"authentication": map[string]string{"scheme": "Bearer", "credentials": credential},
+					})
 				if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
 					taskAccepted = true
 					acceptedBinding = "HTTP+JSON/pushNotificationConfigs"
+					acceptedTaskID = taskID
 				}
 			}
 		}
@@ -203,57 +199,109 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			RuleName:   e.rule.Name,
 			Severity:   "info",
 			Confidence: attack.RiskIndicator,
-			Title:      "A2A push config accepted with integrity token; manual verification required",
+			Title:      "A2A push config accepted with webhook authentication; manual verification required",
 			Description: fmt.Sprintf(
-				"The agent accepted a push config whose callback (%s) carries a unique integrity "+
-					"token via %s. Check your OOB collector for the inbound call and confirm it presents "+
-					"the token %q (typically as X-A2A-Notification-Token, sometimes in the body). A call "+
-					"without it means notifications cannot be authenticated by receivers and forged "+
-					"completions are indistinguishable from real ones.",
-				callbackURL, acceptedBinding, token),
-			Evidence:    fmt.Sprintf("registration binding: %s\ncallback url: %s\nexpected token: %s", acceptedBinding, callbackURL, token),
+				"The agent accepted a push config via %s. Check your OOB collector for a task %s "+
+					"notification to %s with Authorization: Bearer %s.",
+				acceptedBinding, acceptedTaskID, callbackURL, credential),
+			Evidence:    fmt.Sprintf("registration binding: %s\ncallback url: %s\ntask id: %s\nexpected bearer credential: %s", acceptedBinding, callbackURL, acceptedTaskID, credential),
 			Remediation: e.rule.Remediation,
 			TargetURL:   target,
 		}}, nil
 	}
 
-	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "/batesian-oob-"+vars.RandID)
-	if !received {
-		return nil, fmt.Errorf("%w: the push config was accepted via %s but no callback reached the "+
-			"listener within 10s, so the transport's provenance material could not be observed",
-			attack.ErrInconclusive, acceptedBinding)
+	deadline := time.Now().Add(10 * time.Second)
+	var cb *oob.Callback
+	for time.Until(deadline) > 0 {
+		candidate, received := listener.WaitForMarker(ctx, time.Until(deadline), "/batesian-oob-"+vars.RandID)
+		if !received {
+			break
+		}
+		if isTaskNotification(candidate, acceptedTaskID) {
+			cb = candidate
+			break
+		}
+	}
+	if cb == nil {
+		return nil, fmt.Errorf("%w: no task notification for %s reached the listener within 10s", attack.ErrInconclusive, acceptedTaskID)
 	}
 
 	authz := callbackHeader(cb, "Authorization")
-	tokenEchoed := containsToken(cb, token)
-	if tokenEchoed {
-		// The receiver side can authenticate the call: the boundary held, and a
-		// held boundary is exactly the pass sought. Silent.
+	if bearerCredentialPresent(authz, credential) {
 		return nil, nil
 	}
 
 	evidence := fmt.Sprintf(
-		"registration binding: %s\nconfigured token: %s\ncallback received: %s %s\n"+
-			"token echoed: no\nAuthorization header present: %s\nbody snippet: %.200s",
-		acceptedBinding, token, cb.Method, cb.URL, yesNo(authz != ""), string(cb.Body))
+		"registration binding: %s\ntask id: %s\ncallback received: %s %s\n"+
+			"Authorization header present: %s\nconfigured Bearer credential matched: no",
+		acceptedBinding, acceptedTaskID, cb.Method, cb.URL, yesNo(authz != ""))
 
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
 		Confidence: attack.ConfirmedExploit,
-		Title:      "A2A push notification sent without the configured integrity token",
+		Title:      "A2A push notification sent without configured webhook authentication",
 		Description: fmt.Sprintf(
-			"The agent at %s accepted a push config carrying a unique integrity token, then called the "+
-				"webhook WITHOUT presenting it (binding: %s). Receivers have nothing to verify, so any "+
-				"party who learns or guesses the webhook URL can forge task completions, failures or "+
-				"injected results and they will be indistinguishable from genuine agent output. This is "+
-				"the notification-side enabler of task hijacking.",
+			"The agent at %s accepted a push config with Bearer authentication, then sent a task "+
+				"notification without the configured credential (binding: %s). A receiver expecting "+
+				"that credential cannot authenticate the notification.",
 			target, acceptedBinding),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   target,
 	}}, nil
+}
+
+func buildV03AuthSendRequest(callbackURL, token, credential, randID string) map[string]interface{} {
+	request := buildV03SendRequest(callbackURL, token, randID)
+	params := request["params"].(map[string]interface{})
+	config := params["configuration"].(map[string]interface{})
+	config["pushNotificationConfig"] = map[string]interface{}{
+		"url": callbackURL, "token": token,
+		"authentication": map[string]interface{}{
+			"schemes": []string{"Bearer"}, "credentials": credential,
+		},
+	}
+	return request
+}
+
+func isTaskNotification(cb *oob.Callback, taskID string) bool {
+	if cb == nil || cb.Method != http.MethodPost || taskID == "" {
+		return false
+	}
+	var body struct {
+		Kind   string `json:"kind"`
+		ID     string `json:"id"`
+		TaskID string `json:"taskId"`
+		Task   struct {
+			ID string `json:"id"`
+		} `json:"task"`
+		StatusUpdate struct {
+			TaskID string `json:"taskId"`
+		} `json:"statusUpdate"`
+		ArtifactUpdate struct {
+			TaskID string `json:"taskId"`
+		} `json:"artifactUpdate"`
+		Message struct {
+			TaskID string `json:"taskId"`
+		} `json:"message"`
+		Status json.RawMessage `json:"status"`
+	}
+	if json.Unmarshal(cb.Body, &body) != nil {
+		return false
+	}
+	if body.Task.ID == taskID || body.StatusUpdate.TaskID == taskID ||
+		body.ArtifactUpdate.TaskID == taskID || body.Message.TaskID == taskID {
+		return true
+	}
+	return body.TaskID == taskID && (body.Kind == "status-update" || body.Kind == "artifact-update") ||
+		body.ID == taskID && (body.Kind == "task" || len(body.Status) > 0)
+}
+
+func bearerCredentialPresent(header, credential string) bool {
+	parts := strings.Fields(header)
+	return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && parts[1] == credential
 }
 
 // callbackHeader reads a single header value case-insensitively off a
