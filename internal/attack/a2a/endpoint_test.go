@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,21 +39,21 @@ func parseDiscoveryCard(t *testing.T, s string) a2aDiscoveryCard {
 	return c
 }
 
-func TestSelectJSONRPCURL_PrefersJSONRPCOverPreferredGRPC(t *testing.T) {
-	got := selectJSONRPCURL(parseDiscoveryCard(t, strings.ReplaceAll(referenceCard, "HOST", "h")))
-	if got != "http://h/a2a/jsonrpc" {
-		t.Errorf("selectJSONRPCURL = %q, want the JSONRPC interface url (not the gRPC top-level url)", got)
+func TestJSONRPCURLs_PrefersJSONRPCOverPreferredGRPC(t *testing.T) {
+	got := jsonRPCURLs(parseDiscoveryCard(t, strings.ReplaceAll(referenceCard, "HOST", "h")))
+	if !slices.Equal(got, []string{"http://h/a2a/jsonrpc"}) {
+		t.Errorf("jsonRPCURLs = %q, want only the JSON-RPC interface", got)
 	}
 }
 
-func TestSelectJSONRPCURL_V03AdditionalInterfaces(t *testing.T) {
+func TestJSONRPCURLs_V03AdditionalInterfaces(t *testing.T) {
 	card := parseDiscoveryCard(t, `{"additionalInterfaces":[{"transport":"HTTP+JSON","url":"http://h/rest"},{"transport":"JSONRPC","url":"http://h/jr"}]}`)
-	if got := selectJSONRPCURL(card); got != "http://h/jr" {
-		t.Errorf("selectJSONRPCURL = %q, want http://h/jr", got)
+	if got := jsonRPCURLs(card); !slices.Equal(got, []string{"http://h/jr"}) {
+		t.Errorf("jsonRPCURLs = %q, want http://h/jr", got)
 	}
 }
 
-func TestSelectJSONRPCURL_V03TopLevel(t *testing.T) {
+func TestJSONRPCURLs_V03TopLevel(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		card string
@@ -68,18 +69,36 @@ func TestSelectJSONRPCURL_V03TopLevel(t *testing.T) {
 		{"v1 ignores top-level transport", `{"supportedInterfaces":[{"protocolBinding":"GRPC","url":"http://h/grpc"}],"preferredTransport":"JSONRPC","url":"http://h/agent"}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := selectJSONRPCURL(parseDiscoveryCard(t, tc.card)); got != tc.want {
-				t.Errorf("selectJSONRPCURL = %q, want %q", got, tc.want)
+			got := jsonRPCURLs(parseDiscoveryCard(t, tc.card))
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Errorf("jsonRPCURLs = %q, want none", got)
+				}
+				return
+			}
+			if !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("jsonRPCURLs = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestSelectJSONRPCURL_NoUsableInterface(t *testing.T) {
+func TestJSONRPCURLs_NoUsableInterface(t *testing.T) {
 	// Only a scheme-less gRPC interface and a gRPC top-level url: nothing usable.
 	card := parseDiscoveryCard(t, `{"supportedInterfaces":[{"url":"127.0.0.1:50051","protocolBinding":"GRPC"}],"preferredTransport":"GRPC","url":"127.0.0.1:50052"}`)
-	if got := selectJSONRPCURL(card); got != "" {
-		t.Errorf("selectJSONRPCURL = %q, want empty (no http JSON-RPC interface)", got)
+	if got := jsonRPCURLs(card); len(got) != 0 {
+		t.Errorf("jsonRPCURLs = %q, want empty (no http JSON-RPC interface)", got)
+	}
+}
+
+func TestJSONRPCURLs_PreservesOrder(t *testing.T) {
+	card := parseDiscoveryCard(t, `{"supportedInterfaces":[`+
+		`{"url":"http://h/first","protocolBinding":"JSONRPC"},`+
+		`{"url":"http://h/rest","protocolBinding":"HTTP+JSON"},`+
+		`{"url":"http://h/second","protocolBinding":"JSONRPC"}],`+
+		`"additionalInterfaces":[{"url":"http://h/second","transport":"JSONRPC"}]}`)
+	if got := jsonRPCURLs(card); !slices.Equal(got, []string{"http://h/first", "http://h/second"}) {
+		t.Errorf("jsonRPCURLs = %q, want both JSON-RPC interfaces in order", got)
 	}
 }
 
@@ -158,6 +177,76 @@ func TestResolveA2AEndpoint_FromCard(t *testing.T) {
 	}
 	if ep != srv.URL+"/a2a/jsonrpc" {
 		t.Errorf("endpoint = %q, want %s/a2a/jsonrpc", ep, srv.URL)
+	}
+}
+
+func TestResolveA2AEndpoint_SecondAdvertisedInterface(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		card string
+	}{
+		{
+			name: "v1 supported interfaces",
+			card: `{"supportedInterfaces":[` +
+				`{"url":"BASE/old","protocolBinding":"JSONRPC","protocolVersion":"1.0"},` +
+				`{"url":"BASE/custom/live","protocolBinding":"JSONRPC","protocolVersion":"1.0"}]}`,
+		},
+		{
+			name: "legacy additional interfaces",
+			card: `{"additionalInterfaces":[` +
+				`{"url":"BASE/old","transport":"JSONRPC"},` +
+				`{"url":"BASE/custom/live","transport":"JSONRPC"}]}`,
+		},
+		{
+			name: "legacy top-level fallback",
+			card: `{"additionalInterfaces":[{"url":"BASE/old","transport":"JSONRPC"}],` +
+				`"url":"BASE/custom/live","preferredTransport":"JSONRPC"}`,
+		},
+		{
+			name: "cross-origin alternate stays on target",
+			card: `{"supportedInterfaces":[` +
+				`{"url":"BASE/old","protocolBinding":"JSONRPC"},` +
+				`{"url":"https://other.example.test/custom/live","protocolBinding":"JSONRPC"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var card string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, card)
+			})
+			mux.HandleFunc("/custom/live", writeTaskNotFound)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			card = strings.ReplaceAll(tc.card, "BASE", srv.URL)
+
+			ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+			if !ok || ep != srv.URL+"/custom/live" {
+				t.Errorf("endpoint = %q ok = %v, want %s/custom/live true", ep, ok, srv.URL)
+			}
+		})
+	}
+}
+
+func TestResolveA2AEndpoint_PrefersFirstReachableInterface(t *testing.T) {
+	var card string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, card)
+	})
+	mux.HandleFunc("/secured", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/open", writeTaskNotFound)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	card = `{"supportedInterfaces":[` +
+		`{"url":"` + srv.URL + `/secured","protocolBinding":"JSONRPC"},` +
+		`{"url":"` + srv.URL + `/open","protocolBinding":"JSONRPC"}]}`
+
+	ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL)
+	if !ok || ep != srv.URL+"/secured" {
+		t.Errorf("endpoint = %q ok = %v, want preferred auth-gated interface", ep, ok)
 	}
 }
 
