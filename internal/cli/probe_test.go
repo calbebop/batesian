@@ -418,3 +418,94 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 		})
 	}
 }
+
+func TestProbeMCP_ModernOnlyProtectedServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		method, _ := body["method"].(string)
+		id := body["id"]
+		reply := func(result map[string]interface{}) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id, "result": result,
+			})
+		}
+		if method == "initialize" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+			return
+		}
+		params, _ := body["params"].(map[string]interface{})
+		meta, _ := params["_meta"].(map[string]interface{})
+		if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" ||
+			r.Header.Get("Mcp-Method") != method ||
+			meta["io.modelcontextprotocol/protocolVersion"] != "2026-07-28" {
+			t.Errorf("invalid modern request for %s: headers=%v params=%v", method, r.Header, params)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer valid" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch method {
+		case "server/discover":
+			reply(map[string]interface{}{
+				"resultType":        "complete",
+				"supportedVersions": []string{"2026-07-28"},
+				"capabilities": map[string]interface{}{
+					"tools": map[string]interface{}{}, "resources": map[string]interface{}{},
+					"prompts": map[string]interface{}{},
+				},
+				"_meta": map[string]interface{}{
+					"io.modelcontextprotocol/serverInfo": map[string]interface{}{
+						"name": "modern-server", "version": "2.0",
+					},
+				},
+			})
+		case "tools/list":
+			if params["cursor"] == "next" {
+				reply(map[string]interface{}{"resultType": "complete", "tools": []interface{}{
+					map[string]interface{}{"name": "second_tool"},
+				}})
+			} else {
+				reply(map[string]interface{}{"resultType": "complete", "nextCursor": "next",
+					"tools": []interface{}{map[string]interface{}{"name": "first_tool"}}})
+			}
+		case "resources/list":
+			reply(map[string]interface{}{"resultType": "complete", "resources": []interface{}{
+				map[string]interface{}{"uri": "file:///private"},
+			}})
+		case "prompts/list":
+			reply(map[string]interface{}{"resultType": "complete", "prompts": []interface{}{
+				map[string]interface{}{"name": "welcome"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	err := probeMCP(t.Context(), srv.URL+"/mcp", "valid", time.Second, false, "",
+		report.FormatTable, report.New(&out, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"modern-server", "2.0", "2026-07-28", "first_tool",
+		"second_tool", "file:///private", "welcome"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("probe output missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "mcp-resources-unauth-001") {
+		t.Errorf("protected resources flagged as unauthenticated:\n%s", out.String())
+	}
+}

@@ -25,7 +25,7 @@ For A2A targets, probe fetches the Agent Card, validates its structure,
 discovers capabilities and authentication requirements, and flags
 attack surface areas for follow-up with the scan command.
 
-For MCP targets, probe runs the initialize handshake then enumerates
+For MCP targets, probe connects using the available protocol wire and enumerates
 all tools, resources, and prompt templates exposed by the server.
 
 Inline checks performed during probe:
@@ -249,12 +249,12 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 
 	printer.ProbeHeader(target, "mcp")
 
-	printer.Verbose("POST " + target + "/mcp (initialize)")
+	printer.Verbose("Connecting to MCP endpoint...")
 	start := time.Now()
-	session, err := client.Initialize(ctx)
+	session, err := client.Connect(ctx)
 	elapsed := time.Since(start)
 	if err != nil {
-		printer.Error("MCP initialize failed: " + err.Error())
+		printer.Error("MCP connection failed: " + err.Error())
 		return fmt.Errorf("could not connect to MCP server: %w", err)
 	}
 	printer.Success(fmt.Sprintf("MCP server connected (%s)", elapsed.Round(time.Millisecond)))
@@ -372,7 +372,7 @@ func listUnauthMCPResources(ctx context.Context, endpoint string, timeout time.D
 	if err != nil {
 		return nil, err
 	}
-	session, err := client.Initialize(ctx)
+	session, err := client.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}

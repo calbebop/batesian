@@ -128,7 +128,9 @@ async def jsonrpc(request: Request) -> JSONResponse:
             "resultType": "complete",
             "supportedVersions": ["2026-07-28"],
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "scope-confusion-fixture", "version": "1.0"},
+            "_meta": {"io.modelcontextprotocol/serverInfo": {
+                "name": "scope-confusion-fixture", "version": "1.0",
+            }},
         }})
     if method == "tools/list":
         result = {"tools": TOOLS}
