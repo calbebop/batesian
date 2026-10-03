@@ -116,7 +116,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
-| `a2a-push-binding-001` | [Push/Webhook Control-Plane Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
+| `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [ListTasks Enumerates Another Principal's Tasks](#a2a-task-enumeration-001) | High | confirmed | CWE-639 / CWE-200 |
@@ -425,27 +425,18 @@ sending the header. A server that rejects the un-activated request fails closed
 
 ### a2a-push-binding-001
 
-**Push/Webhook Control-Plane Not Bound to Task Owner** | Severity: High | CWE-639
+**Push Config Not Bound to Task Owner** | Severity: High | CWE-639
 
-Extends `a2a-push-ssrf-001` (callback SSRF, a data-plane test) to the push
-**control plane**: who may attach or read a webhook on whose task. This is a
-stateful, multi-principal chained rule (it consumes an upstream task-id when
-present, else creates its own) and needs two valid, distinct principals.
-Sequence: (1) as owner A, obtain a task and set a push-notification config with a
-unique marker URL (control - must succeed or the feature is absent); (2)
-discriminator - an unauthenticated set on A's task must be rejected, else the
-control plane has no auth at all (no finding); (3) as a different principal B,
-**read** A's push config (a **confirmed** callback-secret leak if B's response
-echoes A's marker URL) and **set** a push config on A's task (a **confirmed**
-webhook hijack if accepted). Distinct from `a2a-multitenant-isolation-001`
-(reading another tenant's task) and `a2a-delegation-integrity-001` (continuing
-another principal's task): here the vector is the push-config API itself, which
-can redirect a victim task's results to an attacker URL.
+The rule creates or reuses an authenticated principal's task, stores a marker
+push config, and verifies it through the owner's readback. It then checks whether
+an anonymous caller can store a different callback on that task. A persisted
+anonymous write is reported with one configured principal. If that write does
+not persist, two distinct principals enable cross-principal read and write
+checks; those findings require the owner's marker URL or an owner-confirmed
+write, respectively.
 
-The config is written in whichever shape the deployment takes: on **v1.0** the
-params to `CreateTaskPushNotificationConfig` are themselves a
-`TaskPushNotificationConfig`, so the callback is a flat `url`, while **v0.3**
-nests it under `pushNotificationConfig` on `tasks/pushNotificationConfig/set`.
+The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
+`pushNotificationConfig`. It does not test notification delivery.
 
 ---
 
