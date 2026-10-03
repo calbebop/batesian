@@ -58,8 +58,17 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			rpcErr("method not found")
 			return
 		}
-		if mode == "legacy-only" && !strings.Contains(method, "/") {
+		if (mode == "legacy-only" || mode == "legacy-version-strict") && !strings.Contains(method, "/") {
 			rpcErr("method not found")
+			return
+		}
+		if mode == "legacy-version-strict" && strings.Contains(method, "/") && r.Header.Get("A2A-Version") != "" {
+			rpcErr("version not supported")
+			return
+		}
+		if v1Only && (method == "CreateTaskPushNotificationConfig" || method == "GetTaskPushNotificationConfig") &&
+			r.Header.Get("A2A-Version") != "1.0" {
+			rpcErr("version not supported")
 			return
 		}
 
@@ -249,6 +258,29 @@ func TestPushBinding_LegacyOnly(t *testing.T) {
 
 	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 2 {
 		t.Fatalf("expected read and write findings on v0.3, got %+v", findings)
+	}
+}
+
+func TestPushBinding_LegacyVersionStrict(t *testing.T) {
+	for _, conflictingHeader := range []bool{false, true} {
+		name := "default"
+		if conflictingHeader {
+			name = "principal version header"
+		}
+		t.Run(name, func(t *testing.T) {
+			ts := pushServer("legacy-version-strict")
+			defer ts.Close()
+
+			principals := pushPrincipals()
+			if conflictingHeader {
+				for i := range principals {
+					principals[i].Headers = map[string]string{"a2a-version": "1.0"}
+				}
+			}
+			if findings := runPushBinding(t, ts, principals); len(findings) != 2 {
+				t.Fatalf("expected read and write findings on a version-strict v0.3 server, got %+v", findings)
+			}
+		})
 	}
 }
 
