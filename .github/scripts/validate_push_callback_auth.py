@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""CI validation harness for the A2A push-callback-auth fixture.
-
-Companion to validate_secured_agent.py. a2a-push-callback-auth-001 grades what
-an agent's outgoing push notification carried, which needs a live OOB listener:
-batesian starts its own during the scan, so the harness only has to start the
-fixture and read the verdict.
-
-  unsigned    -> the agent accepted the integrity token at registration and
-                 dropped it on the outbound call: the rule MUST fire.
-                 Receivers get nothing to authenticate, so completions can be
-                 forged (#231).
-  signed      -> the callback presents the configured token in the documented
-                 header: the boundary held, the rule MUST stay silent.
-  nocallback  -> registration accepted but no outbound call ever made: the
-                 oracle never ran, so the rule MUST report NOT TESTED (skipped),
-                 never clean - silence there is could-not-tell, not secure.
-
-Only the v1.0 two-step wire is served, so --rule-ids isolates the rule under
-test from unrelated A2A discovery noise.
-
-Run by .github/workflows/validation.yml.
-"""
+"""Check push-auth findings against unsigned, signed, and silent agents."""
 import json
 import os
 import subprocess
