@@ -35,11 +35,10 @@ func (e *PushBindingExecutor) Execute(ctx context.Context, target string, opts a
 }
 
 func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
-	// Cross-principal checks require two identities.
-	a, b, err := twoPrincipals(opts)
-	if err != nil {
-		return nil, err
+	if len(opts.Principals) == 0 || opts.Principals[0].Token == "" {
+		return nil, fmt.Errorf("%w: an authenticated task owner is required", attack.ErrInconclusive)
 	}
+	a := opts.Principals[0]
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
@@ -47,7 +46,6 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		return nil, attack.ErrInconclusive
 	}
 	clientA := principalClient(opts, vars, a)
-	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 
 	// Establish a task owned by A.
@@ -73,16 +71,24 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		return nil, attack.ErrInconclusive
 	}
 
-	// An accepted anonymous write only rules out a binding bug if it persists.
+	// Confirm an anonymous write through the owner's readback.
 	openURL := "https://batesian-open-" + vars.RandID + ".example/cb"
 	openSet := e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
 		taskID, openURL, "x", "open-"+vars.RandID, vars.RandID)
 	if openSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open") {
-		return nil, nil
+		return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed)}, nil
 	}
 	if !e.getPush(ctx, clientA, endpoint, a.Headers, taskID, ownerSet, markerURL, vars.RandID+"-baseline") {
 		return nil, attack.ErrInconclusive
 	}
+	if len(opts.Principals) < 2 {
+		return nil, fmt.Errorf("%w: a second principal is required to test cross-principal access", attack.ErrInconclusive)
+	}
+	_, b, err := twoPrincipals(opts)
+	if err != nil {
+		return nil, err
+	}
+	clientB := principalClient(opts, vars, b)
 
 	// Read before writing so B can observe A's original config.
 	var findings []attack.Finding
@@ -263,6 +269,28 @@ func pushBindingHeaders(extra map[string]string, v1 bool) map[string]string {
 		headers["A2A-Version"] = "1.0"
 	}
 	return headers
+}
+
+func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attack.Principal, taskID, callbackURL string, consumed bool) attack.Finding {
+	return attack.Finding{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "high",
+		Confidence: attack.ConfirmedExploit,
+		Title:      "A2A push-notification config writable without authentication",
+		Description: fmt.Sprintf(
+			"An unauthenticated request attached a push-notification callback (%s) to task %s, owned by %q. "+
+				"The owner read back the stored config. Notification delivery was not tested.",
+			callbackURL, taskID, owner.Name),
+		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s",
+			owner.Name, taskID, callbackURL, taskOrigin(consumed)),
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+		Chain: []attack.ChainStep{
+			{Hop: 1, Principal: owner.Name, Action: "own task " + taskID + " with a configured webhook", Outcome: "task owned by " + owner.Name},
+			{Hop: 2, Principal: "anonymous", Action: "set push config on " + taskID, Outcome: "GRANTED - anonymous callback stored"},
+		},
+	}
 }
 
 func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, taskID, attackerURL string, consumed bool) attack.Finding {

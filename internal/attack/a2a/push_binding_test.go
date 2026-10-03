@@ -366,13 +366,46 @@ func TestPushBinding_Bound(t *testing.T) {
 	}
 }
 
-// TestPushBinding_Open is outside this rule's scope.
 func TestPushBinding_Open(t *testing.T) {
 	ts := pushServer("open")
 	defer ts.Close()
 
-	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 0 {
-		t.Errorf("expected zero findings against an open control plane, got %d: %+v", len(findings), findings)
+	findings := runPushBinding(t, ts, pushPrincipals())
+	if len(findings) != 1 || !strings.Contains(findings[0].Title, "without authentication") {
+		t.Fatalf("expected one anonymous-write finding, got %+v", findings)
+	}
+	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+func TestPushBinding_OpenWithOnePrincipal(t *testing.T) {
+	ts := pushServer("open")
+	defer ts.Close()
+
+	findings := runPushBinding(t, ts, pushPrincipals()[:1])
+	if len(findings) != 1 || !strings.Contains(findings[0].Title, "without authentication") {
+		t.Fatalf("expected anonymous-write finding with one principal, got %+v", findings)
+	}
+}
+
+func TestPushBinding_OpenWithDuplicateSecondPrincipal(t *testing.T) {
+	ts := pushServer("open")
+	defer ts.Close()
+
+	principals := pushPrincipals()
+	principals[1].Token = principals[0].Token
+	findings := runPushBinding(t, ts, principals)
+	if len(findings) != 1 || !strings.Contains(findings[0].Title, "without authentication") {
+		t.Fatalf("expected anonymous-write finding despite duplicate second credential, got %+v", findings)
+	}
+}
+
+func TestPushBinding_EmptyOwnerToken(t *testing.T) {
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), "http://target.invalid",
+		attack.Options{TimeoutSeconds: 5, Principals: []attack.Principal{{Name: "owner"}}})
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+		t.Fatalf("unauthenticated owner cannot establish a protected task, got findings=%+v err=%v", findings, err)
 	}
 }
 
