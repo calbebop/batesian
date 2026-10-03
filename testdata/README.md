@@ -78,7 +78,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` fires on `prefix`; stays silent on `port-prefix`, `hardened`, and `open` |
-| `mcp_task_entropy_server.py` | 7812 | `mcp-task-id-entropy-001` fires on `weak` with `--mcp-invoke-tool wait_a_moment`; silent on `clean` |
+| `mcp_task_entropy_server.py` | 7812 | Modern Tasks extension; `mcp-task-id-entropy-001` flags `weak` with `--mcp-invoke-tool wait_a_moment`, silent on `clean` |
 | `mcp_token_replay_server.py` | 7813 | `mcp-token-replay-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
@@ -529,9 +529,9 @@ python testdata/mcp_task_entropy_server.py clean  # silent
 batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entropy-001 --mcp-invoke-tool wait_a_moment -v
 ```
 
-The `weak` posture mints handles from a plain counter with a visible stride -
-the exact shape the extension's unguessability MUST forbids, since ids double
-as bearer tokens for stored state there. `clean` mints uuid-shaped handles.
+The `weak` posture mints handles from a plain counter with a visible stride,
+contrary to the extension's unguessability requirement. Task requests still
+require authorization. `clean` mints uuid-shaped handles.
 The only tool served is annotated read-only and never acts on its arguments,
 so validation mints handles and executes nothing.
 
