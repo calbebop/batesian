@@ -104,20 +104,46 @@ func scopePrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 }
 
 func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) ([]mcpSession, error) {
-	sess, err := scopeHandshake(ctx, client, baseURL, p)
-	if err != nil {
-		return nil, err
+	legacy, legacyErr := scopeHandshake(ctx, client, baseURL, p)
+	var out []mcpSession
+	endpoints := endpointCandidates(baseURL)
+	if legacyErr == nil {
+		legacy.Era = EraLegacy
+		out = append(out, legacy)
+		endpoints = []string{legacy.Endpoint}
 	}
-	sess.Era = EraLegacy
-	out := []mcpSession{sess}
 
-	for _, ep := range []string{sess.Endpoint} {
-		if modern, ok := discoverModern(ctx, client, ep); ok {
+	for _, ep := range endpoints {
+		if modern, ok := scopeDiscoverModern(ctx, client, ep, p); ok {
 			out = append(out, modern)
 			break
 		}
 	}
+	if len(out) == 0 {
+		return nil, inconclusive(legacyErr)
+	}
 	return out, nil
+}
+
+func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoint string, p taskPrincipal) (mcpSession, bool) {
+	const requestID = "batesian-scope-discover"
+	probe := mcpSession{Endpoint: endpoint, Era: EraModern}
+	resp, err := probe.postShaping(ctx, client, requestID, "server/discover", nil,
+		func(h map[string]string) { attachPrincipal(h, p) })
+	if err != nil || !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
+		return mcpSession{}, false
+	}
+	var envelope map[string]interface{}
+	if json.Unmarshal(resp.Body, &envelope) != nil ||
+		envelope["jsonrpc"] != "2.0" || envelope["id"] != requestID {
+		return mcpSession{}, false
+	}
+	return mcpSession{
+		Endpoint:        endpoint,
+		Era:             EraModern,
+		ProtocolVersion: modernEraVersion,
+		RawInit:         resp.Body,
+	}, true
 }
 
 func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) (mcpSession, error) {
