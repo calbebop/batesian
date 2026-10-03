@@ -559,8 +559,9 @@ is not what decided the outcome:
 
 Identifiers are compared, never key names, and history is deliberately not requested
 (`historyLength` 0): the failure is that the identifiers came back, and pulling another
-tenant's conversation content to prove it would be gratuitous. `pageSize` is set high
-so a scoped server has no pagination excuse for omitting a task.
+tenant's conversation content to prove it would be gratuitous. The rule follows
+`nextPageToken` for up to ten pages per caller. A repeated token, failed page, or
+page limit makes the result not tested rather than clean.
 
 Currency: `ListTasks` is a v1.0 JSON-RPC method. v0.3 defines `tasks/get`,
 `tasks/cancel`, `tasks/resubscribe` and the push-notification-config methods, and no

@@ -160,6 +160,12 @@ def main():
     check("idor (the five ownership rules must fire)", ok,
           f"missing {sorted(missing)}; fired {sorted(rules)}")
 
+    rules, _ = scan_posture("idor-paged")
+    ok = "a2a-task-enumeration-001" in rules
+    all_ok &= ok
+    check("idor-paged (task enumeration must fire)", ok,
+          f"a2a-task-enumeration-001 {'present' if ok else 'ABSENT'}; fired {sorted(rules)}")
+
     rules, _ = scan_posture("unauth-read")
     ok = "a2a-task-idor-001" in rules
     all_ok &= ok
