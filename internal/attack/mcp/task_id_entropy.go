@@ -13,10 +13,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TaskIDEntropyExecutor checks 2026-07-28 task-extension handles for sequential
-// values or less than 64 bits of estimated upper-bound alphabet search space. The
-// extension permits task IDs as bearer capabilities but requires them to resist
-// guessing. Only approved, annotated task-capable tools receive probe inputs.
+// TaskIDEntropyExecutor checks modern Tasks extension handles for weak IDs.
+// Only approved, annotated read-only tools receive probe inputs.
 type TaskIDEntropyExecutor struct {
 	rule attack.RuleContext
 }
@@ -38,7 +36,7 @@ const (
 
 func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	client := attack.NewUnauthHTTPClient(opts, vars)
+	client := attack.NewHTTPClient(opts, vars)
 
 	sessions, sessErr := openSessions(ctx, client, vars.BaseURL)
 	if sessErr != nil {
@@ -46,15 +44,20 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 	}
 
 	var findings []attack.Finding
-	capabilityKnown := false
+	modernSeen := false
+	taskSurface := false
 	lastReason := ""
 	pending := map[string]bool{}
 
 	for _, session := range sessions {
-		if !session.ServerSupports("tools") {
-			continue // no tool surface on this wire: nothing mints handles here
+		if session.Era != EraModern {
+			continue
 		}
-		capabilityKnown = true
+		modernSeen = true
+		if !session.ServerSupports("tools") || !teSupportsTasks(session) {
+			continue
+		}
+		taskSurface = true
 
 		fs, reason, determined, unapproved := e.probeSession(ctx, client, session, opts.MCPInvokeTools)
 		findings = append(findings, labelEra(session, fs)...)
@@ -68,8 +71,12 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 		}
 	}
 
-	if !capabilityKnown {
-		return nil, fmt.Errorf("%w: no served wire advertises the tools capability at %s",
+	if !modernSeen {
+		return nil, fmt.Errorf("%w: no MCP %s wire was found at %s",
+			attack.ErrInconclusive, modernEraVersion, vars.BaseURL)
+	}
+	if !taskSurface {
+		return nil, fmt.Errorf("%w: no modern wire advertises both tools and the Tasks extension at %s",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
 	if len(findings) == 0 && len(pending) > 0 {
@@ -87,21 +94,39 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 	return findings, nil
 }
 
+func teSupportsTasks(s mcpSession) bool {
+	var body struct {
+		Result struct {
+			Capabilities struct {
+				Extensions map[string]json.RawMessage `json:"extensions"`
+			} `json:"capabilities"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(s.RawInit, &body) != nil {
+		return false
+	}
+	var settings map[string]interface{}
+	return json.Unmarshal(body.Result.Capabilities.Extensions["io.modelcontextprotocol/tasks"], &settings) == nil && settings != nil
+}
+
 func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, approved []string) (findings []attack.Finding, stopReason string, determined bool, unapproved []string) {
 	safeTool, ok, pending, listed := teFindSafeTool(ctx, client, session, approved)
 	if !listed {
 		return nil, "tools/list returned no usable answer on this wire", false, nil
 	}
 	if !ok {
-		return nil, "", len(pending) == 0, pending
+		if len(pending) > 0 {
+			return nil, "", false, pending
+		}
+		return nil, "no annotated read-only tool was available for Tasks extension probes", false, nil
 	}
 
 	var ids []string
 	for i := 0; i < entropySampleTarget; i++ {
-		resp, err := session.post(ctx, client, entropyCallBase+i, "tools/call", map[string]interface{}{
+		requestID := entropyCallBase + i
+		resp, err := teCallTaskTool(ctx, client, session, requestID, map[string]interface{}{
 			"name":      safeTool.name,
 			"arguments": synthesizeArgs(safeTool.schema, "batesian-"+fmt.Sprint(i)),
-			"task":      map[string]interface{}{"ttl": 60000},
 		})
 		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
 			if len(ids) == 0 {
@@ -110,28 +135,49 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 			}
 			break // mid-collection refusal: judge what was collected
 		}
-		var body struct {
-			Result struct {
-				Task struct {
-					TaskID string `json:"taskId"`
-				} `json:"task"`
-			} `json:"result"`
-			Error map[string]interface{} `json:"error"`
-		}
-		if json.Unmarshal(resp.Body, &body) != nil || body.Error != nil || body.Result.Task.TaskID == "" {
+		id := teTaskID(resp.Body, requestID)
+		if id == "" {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("tools/call against %q answered but carried no task handle, so "+
 					"the handles-per-call premise was never established", safeTool.name), false, nil
 			}
 			break
 		}
-		ids = append(ids, body.Result.Task.TaskID)
+		ids = append(ids, id)
 	}
 	if len(ids) < 2 {
 		return nil, fmt.Sprintf("only %d task handle(s) were minted by %q on this wire, so no pattern "+
 			"could be distinguished from coincidence", len(ids), safeTool.name), false, nil
 	}
 	return e.teGradeHandles(session.Endpoint, safeTool.name, ids), "", true, nil
+}
+
+func teCallTaskTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int,
+	params map[string]interface{}) (*attack.Response, error) {
+	headers, body := session.request(id, "tools/call", params)
+	meta := body["params"].(map[string]interface{})["_meta"].(map[string]interface{})
+	caps := meta[metaClientCapabilities].(map[string]interface{})
+	caps["extensions"] = map[string]interface{}{"io.modelcontextprotocol/tasks": map[string]interface{}{}}
+	return client.POST(ctx, session.Endpoint, headers, body)
+}
+
+func teTaskID(raw []byte, requestID int) string {
+	var body struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      int    `json:"id"`
+		Result  *struct {
+			ResultType string `json:"resultType"`
+			TaskID     string `json:"taskId"`
+			Status     string `json:"status"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) != nil || body.JSONRPC != "2.0" || body.ID != requestID ||
+		body.Result == nil || len(body.Error) > 0 || body.Result.ResultType != "task" ||
+		body.Result.TaskID == "" || body.Result.Status == "" {
+		return ""
+	}
+	return body.Result.TaskID
 }
 
 // teSafeTool is the invoke-capable candidate the rule settles on.
@@ -151,25 +197,23 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 			Tools []struct {
 				Name        string                 `json:"name"`
 				InputSchema map[string]interface{} `json:"inputSchema"`
-				Execution   struct {
-					TaskSupport string `json:"taskSupport"`
-				} `json:"execution"`
 				Annotations *struct {
 					ReadOnlyHint    *bool `json:"readOnlyHint"`
 					DestructiveHint *bool `json:"destructiveHint"`
 				} `json:"annotations"`
 			} `json:"tools"`
+			ResultType string `json:"resultType"`
 		} `json:"result"`
-		Error map[string]interface{} `json:"error"`
+		JSONRPC string                 `json:"jsonrpc"`
+		ID      int                    `json:"id"`
+		Error   map[string]interface{} `json:"error"`
 	}
-	if json.Unmarshal(resp.Body, &body) != nil || body.Error != nil {
+	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" || body.ID != 20 ||
+		body.Result.ResultType != "complete" || body.Error != nil {
 		return teSafeTool{}, false, nil, false
 	}
 	var pending []string
 	for _, t := range body.Result.Tools {
-		if t.Execution.TaskSupport != "optional" && t.Execution.TaskSupport != "required" {
-			continue
-		}
 		if t.Annotations == nil {
 			continue
 		}
@@ -236,8 +280,7 @@ func teConstantStep(ids []string) (int64, bool) {
 	return step, true
 }
 
-// teAlphabetBits uses the longest ID and full observed alphabet for a generous
-// upper bound on per-ID entropy.
+// teAlphabetBits estimates search space from the sampled characters.
 func teAlphabetBits(ids []string) (bits float64, alphabet string, maxLen int) {
 	set := map[rune]bool{}
 	maxLen = 0
@@ -268,16 +311,14 @@ func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []str
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
+		Confidence: attack.RiskIndicator,
 		Title:      fmt.Sprintf("MCP task handles minted by %q are sequential integers", tool),
 		Description: fmt.Sprintf(
-			"%d handles requested back to back from %q at %s came back as integers with a constant "+
-				"stride (%s). Every subsequent handle is predictable before it is issued. The tasks "+
-				"extension permits servers to treat these ids as bearer tokens for stored state, which "+
-				"makes a predictable handle an authentication bypass of that scheme: anyone who sees one "+
-				"id can read, poll or cancel another caller's work.",
+			"%d handles requested back to back from %q at %s were integers with a constant "+
+				"stride (%s). This suggests a predictable generator; other callers' requests may "+
+				"interleave, and task access still requires authorization.",
 			len(ids), tool, endpoint, teJoinSteps(ids)),
-		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles: %s\nconstant stride: %d\npredicted next handle: %s",
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles: %s\nconstant stride: %d\npredicted next handle if uninterrupted: %s",
 			endpoint, tool, strings.Join(ids, ", "), step, predicted),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
@@ -289,19 +330,17 @@ func (e *TaskIDEntropyExecutor) entropyFinding(endpoint, tool string, ids []stri
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "medium",
-		Confidence: attack.ConfirmedExploit,
-		Title: fmt.Sprintf("MCP task handles carry ~%.0f bits of alphabet entropy (below the %d-bit bar)",
+		Confidence: attack.RiskIndicator,
+		Title: fmt.Sprintf("MCP task handles have a ~%.0f-bit observed-alphabet estimate (below %d bits)",
 			bits, entropyThresholdBits),
 		Description: fmt.Sprintf(
-			"%d handles minted by %q at %s use only %d distinct characters over %d positions, giving "+
-				"~%.0f bits of search space per handle. The tasks extension lets servers treat these ids "+
-				"as bearer tokens for stored state and requires generation with sufficient entropy that a "+
-				"third party cannot guess them; this estimate counts only characters the samples reveal, so "+
-				"it is generous to the server - and it still falls under the bar. IDs readable once out of a "+
-				"log or trace should not also be enumerable offline.",
+			"%d handles minted by %q at %s contain %d distinct observed characters over at most %d "+
+				"positions, yielding a ~%.0f-bit search-space estimate. Unseen characters and the "+
+				"generator's actual entropy cannot be determined from these samples. Review the "+
+				"generator before treating task IDs as unguessable.",
 			len(ids), tool, endpoint, len(alphabet), maxLen, bits),
 		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles: %s\ndistinct characters: %q\n"+
-			"longest handle: %d positions\nestimated entropy: %.1f bits (threshold %d)",
+			"longest handle: %d positions\nobserved-alphabet estimate: %.1f bits (threshold %d)",
 			endpoint, tool, strings.Join(ids, ", "), alphabet, maxLen, bits, entropyThresholdBits),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,

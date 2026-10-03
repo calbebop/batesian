@@ -18,7 +18,7 @@ import (
 func entropyRC() attack.RuleContext {
 	return attack.RuleContext{
 		ID:          "mcp-task-id-entropy-001",
-		Name:        "MCP Task Handle Entropy",
+		Name:        "MCP Tasks Extension Handle Entropy",
 		Severity:    "high",
 		Remediation: "Generate handles from a CSPRNG; never serialize counters.",
 	}
@@ -32,13 +32,18 @@ const (
 	styleUUID       entropyStyle = "uuid"
 )
 
-// entropyServer advertises one task-capable read-only tool and mints handles
-// in the configured style on every task-augmented tools/call.
+// entropyServer mints modern task handles for one read-only tool.
 type entropyServer struct {
 	style        entropyStyle
 	annotations  map[string]interface{}
 	calls        *atomic.Int32
 	listRPCError bool
+	noSafeTool   bool
+	refuseCalls  bool
+	badCallID    bool
+	legacyResult bool
+	legacyOnly   bool
+	noExtension  bool
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -61,11 +66,9 @@ func (s *entropyServer) handler() http.HandlerFunc {
 	callCount := 0
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Method string      `json:"method"`
-			ID     json.Number `json:"id"`
-			Params struct {
-				Task map[string]interface{} `json:"task"`
-			} `json:"params"`
+			Method string                 `json:"method"`
+			ID     json.RawMessage        `json:"id"`
+			Params map[string]interface{} `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -73,17 +76,39 @@ func (s *entropyServer) handler() http.HandlerFunc {
 		}
 		switch req.Method {
 		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "sess-te")
+			if s.legacyOnly {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{
+						"protocolVersion": "2025-11-25",
+						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+						"serverInfo":      map[string]interface{}{"name": "entropy-fixture", "version": "1"},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+		case "server/discover":
+			versions := []string{"2026-07-28"}
+			if s.legacyOnly {
+				versions = []string{"2025-11-25"}
+			}
+			capabilities := map[string]interface{}{"tools": map[string]interface{}{}}
+			if !s.noExtension && !s.legacyOnly {
+				capabilities["extensions"] = map[string]interface{}{"io.modelcontextprotocol/tasks": map[string]interface{}{}}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]interface{}{
-					"protocolVersion": "2025-06-18",
-					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-					"serverInfo":      map[string]interface{}{"name": "entropy-fixture", "version": "1"},
+					"resultType":        "complete",
+					"supportedVersions": versions,
+					"capabilities":      capabilities,
+					"serverInfo":        map[string]interface{}{"name": "entropy-fixture", "version": "1"},
 				},
 			})
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
 			if s.listRPCError {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -96,12 +121,14 @@ func (s *entropyServer) handler() http.HandlerFunc {
 			if annotations == nil {
 				annotations = map[string]interface{}{"readOnlyHint": true}
 			}
+			if s.noSafeTool {
+				annotations = map[string]interface{}{}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{"tools": []map[string]interface{}{{
+				"result": map[string]interface{}{"resultType": "complete", "tools": []map[string]interface{}{{
 					"name":        "wait_a_moment",
 					"annotations": annotations,
-					"execution":   map[string]interface{}{"taskSupport": "optional"},
 					"inputSchema": map[string]interface{}{
 						"type":       "object",
 						"properties": map[string]interface{}{},
@@ -113,21 +140,43 @@ func (s *entropyServer) handler() http.HandlerFunc {
 			if s.calls != nil {
 				s.calls.Add(1)
 			}
-			if req.Params.Task == nil {
+			meta, _ := req.Params["_meta"].(map[string]interface{})
+			caps, _ := meta["io.modelcontextprotocol/clientCapabilities"].(map[string]interface{})
+			extensions, _ := caps["extensions"].(map[string]interface{})
+			_, taskCapable := extensions["io.modelcontextprotocol/tasks"]
+			if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" ||
+				r.Header.Get("Mcp-Method") != "tools/call" ||
+				r.Header.Get("Mcp-Name") != "wait_a_moment" ||
+				meta["io.modelcontextprotocol/protocolVersion"] != "2026-07-28" ||
+				!taskCapable || req.Params["task"] != nil {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": req.ID,
-					"error": map[string]interface{}{"code": -32602, "message": "task augmentation required"},
+					"error": map[string]interface{}{"code": -32602, "message": "modern task capability required"},
+				})
+				return
+			}
+			if s.refuseCalls {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": -32000, "message": "task queue disabled"},
 				})
 				return
 			}
 			handle := s.nextHandle(callCount)
 			callCount++
+			result := map[string]interface{}{
+				"resultType": "task", "taskId": handle, "status": "working",
+				"createdAt": "2026-01-01T00:00:00Z", "lastUpdatedAt": "2026-01-01T00:00:00Z", "ttlMs": 60000,
+			}
+			if s.legacyResult {
+				result = map[string]interface{}{"task": map[string]interface{}{"taskId": handle}}
+			}
+			responseID := interface{}(req.ID)
+			if s.badCallID {
+				responseID = 999
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{
-					"task":    map[string]interface{}{"taskId": handle, "status": "working"},
-					"isError": false,
-				},
+				"jsonrpc": "2.0", "id": responseID, "result": result,
 			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -144,11 +193,6 @@ func runEntropy(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 		Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"wait_a_moment"}})
 }
 
-// TestEntropy_SequentialFiresHigh: counter-minted handles with a constant
-// stride. The next id is demonstrated; the high sequential finding MUST fire.
-// The thin numeric alphabet will additionally trip the entropy check - both
-// readings are true and independent, so exact-count assertions would only
-// couple two detectors that are meant to be judged separately.
 func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	ts := httptest.NewServer((&entropyServer{style: styleSequential}).handler())
 	defer ts.Close()
@@ -166,16 +210,14 @@ func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	if seq == nil {
 		t.Fatalf("expected a sequential-handles finding among %d: %+v", len(findings), findings)
 	}
-	if seq.Severity != "high" || seq.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit for sequential handles, got %q/%q", seq.Severity, seq.Confidence)
+	if seq.Severity != "high" || seq.Confidence != attack.RiskIndicator {
+		t.Errorf("want high/indicator for sequential handles, got %q/%q", seq.Severity, seq.Confidence)
 	}
 	if !strings.Contains(seq.Evidence, "predicted next handle") {
 		t.Errorf("evidence should include the prediction, got: %q", seq.Evidence)
 	}
 }
 
-// TestEntropy_LowAlphabetFiresMedium: short ids over a thin hex alphabet land
-// far under the bar without being sequential. MUST fire confirmed/medium.
 func TestEntropy_LowAlphabetFiresMedium(t *testing.T) {
 	ts := httptest.NewServer((&entropyServer{style: styleLowAlpha}).handler())
 	defer ts.Close()
@@ -188,16 +230,14 @@ func TestEntropy_LowAlphabetFiresMedium(t *testing.T) {
 		t.Fatalf("expected exactly 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Severity != "medium" || f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want medium/ConfirmedExploit for low alphabet entropy, got %q/%q", f.Severity, f.Confidence)
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator for low alphabet entropy, got %q/%q", f.Severity, f.Confidence)
 	}
 	if !strings.Contains(f.Evidence, "bits") {
 		t.Errorf("evidence should report the bit estimate, got: %q", f.Evidence)
 	}
 }
 
-// TestEntropy_UUIDCleanSilent: full-width hex ids clear the bar and carry no
-// constant stride. MUST stay silent.
 func TestEntropy_UUIDCleanSilent(t *testing.T) {
 	ts := httptest.NewServer((&entropyServer{style: styleUUID}).handler())
 	defer ts.Close()
@@ -211,49 +251,14 @@ func TestEntropy_UUIDCleanSilent(t *testing.T) {
 	}
 }
 
-// TestEntropy_NoSafeToolSilent: the only tool carries no annotations and no
-// taskSupport declaration, so the safety gate refuses to mint anything.
-func TestEntropy_NoSafeToolSilent(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string      `json:"method"`
-			ID     json.Number `json:"id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		switch req.Method {
-		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "sess-te2")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{
-					"protocolVersion": "2025-06-18",
-					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-					"serverInfo":      map[string]interface{}{"name": "bare", "version": "1"},
-				},
-			})
-		case "tools/list":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{"tools": []map[string]interface{}{{
-					"name":        "counter_tool",
-					"inputSchema": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []interface{}{}},
-				}}},
-			})
-		default:
-			w.WriteHeader(http.StatusAccepted)
-		}
-	}))
+func TestEntropy_NoSafeToolIsNotTested(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{noSafeTool: true, calls: &calls}).handler())
 	defer ts.Close()
 
 	findings, err := runEntropy(t, ts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings when no safe tool exists, got %d: %+v", len(findings), findings)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 0 {
+		t.Fatalf("no safe tool must be not tested without calls: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }
 
@@ -268,11 +273,8 @@ func TestEntropy_NonDestructiveWriteToolIsNotCalled(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := runEntropy(t, ts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Fatalf("expected no findings when no explicitly read-only tool exists, got %d", len(findings))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("non-read-only tool must be not tested: findings=%+v err=%v", findings, err)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("non-read-only tool was called %d times", calls.Load())
@@ -309,54 +311,8 @@ func TestEntropy_ToolListRPCErrorIsNotClean(t *testing.T) {
 	}
 }
 
-// TestEntropy_RefusalNotTested: every handle mint is refused after the gate
-// passes, so the sample premise collapses into not-tested rather than clean.
 func TestEntropy_RefusalNotTested(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string      `json:"method"`
-			ID     json.Number `json:"id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		switch req.Method {
-		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "sess-te3")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{
-					"protocolVersion": "2025-06-18",
-					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-					"serverInfo":      map[string]interface{}{"name": "refusing", "version": "1"},
-				},
-			})
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{"tools": []map[string]interface{}{{
-					"name":        "wait_a_moment",
-					"annotations": map[string]interface{}{"readOnlyHint": true},
-					"execution":   map[string]interface{}{"taskSupport": "optional"},
-					"inputSchema": map[string]interface{}{
-						"type":       "object",
-						"properties": map[string]interface{}{},
-						"required":   []interface{}{},
-					},
-				}}},
-			})
-		case "tools/call":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"error": map[string]interface{}{"code": -32000, "message": "task queue disabled"},
-			})
-		default:
-			w.WriteHeader(http.StatusAccepted)
-		}
-	}))
+	ts := httptest.NewServer((&entropyServer{refuseCalls: true}).handler())
 	defer ts.Close()
 
 	findings, err := runEntropy(t, ts)
@@ -368,5 +324,47 @@ func TestEntropy_RefusalNotTested(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings alongside the inconclusive result, got %d", len(findings))
+	}
+}
+
+func TestEntropy_LegacyHandleShapeIsNotTested(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{legacyResult: true}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("legacy handle shape must be not tested: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEntropy_UnrelatedCallResponseIsNotTested(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{badCallID: true}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unrelated result must be not tested: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEntropy_LegacyWireIsNotTested(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{legacyOnly: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 0 {
+		t.Fatalf("legacy-only wire must be not tested: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestEntropy_MissingExtensionIsNotTested(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{noExtension: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 0 {
+		t.Fatalf("missing Tasks extension must be not tested: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }

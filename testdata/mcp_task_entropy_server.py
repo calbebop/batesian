@@ -11,9 +11,8 @@ Postures:
                    The rule MUST fire the high sequential finding.
   clean          - handles are uuid-shaped hex. The rule MUST stay silent.
 
-Only initialize and a read-only annotated wait tool that returns one handle
-per task-augmented call are served. The arguments it receives are never used;
-nothing executes.
+Only the modern wire and a read-only annotated wait tool are served. The
+arguments it receives are never used; nothing executes.
 
 Validate against it:
   python testdata/mcp_task_entropy_server.py weak    # high finding
@@ -24,6 +23,7 @@ Scan: batesian scan --target http://127.0.0.1:7812 --rule-ids mcp-task-id-entrop
 """
 import sys
 import uuid
+from datetime import datetime, timezone
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -42,36 +42,56 @@ async def jsonrpc(request: Request) -> JSONResponse:
     rid = body.get("id", 1)
 
     if method == "initialize":
+        return JSONResponse({"jsonrpc": "2.0", "id": rid,
+                             "error": {"code": -32601, "message": "Method not found"}})
+    if (request.headers.get("mcp-protocol-version") != "2026-07-28"
+            or request.headers.get("mcp-method") != method):
+        return JSONResponse({"jsonrpc": "2.0", "id": rid,
+                             "error": {"code": -32020, "message": "Header mismatch"}})
+    if method == "server/discover":
         return JSONResponse({
             "jsonrpc": "2.0", "id": rid,
             "result": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {"tools": {}},
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {
+                    "tools": {},
+                    "extensions": {"io.modelcontextprotocol/tasks": {}},
+                },
                 "serverInfo": {"name": "entropy-fixture", "version": "1.0"},
             },
         })
-    if method == "notifications/initialized":
-        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {}})
     if method == "tools/list":
-        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {"tools": [{
-            "name": "wait_a_moment",
-            "description": "Waits briefly; safe to run.",
-            "annotations": {"readOnlyHint": True},
-            "execution": {"taskSupport": "optional"},
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
-        }]}})
+        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {
+            "resultType": "complete", "ttlMs": 1000, "cacheScope": "public",
+            "tools": [{
+                "name": "wait_a_moment",
+                "description": "Waits briefly; safe to run.",
+                "annotations": {"readOnlyHint": True},
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            }]}})
     if method == "tools/call":
+        params = body.get("params") or {}
+        meta = params.get("_meta") or {}
+        capabilities = meta.get("io.modelcontextprotocol/clientCapabilities") or {}
+        extensions = capabilities.get("extensions") or {}
+        if (request.headers.get("mcp-name") != "wait_a_moment"
+                or meta.get("io.modelcontextprotocol/protocolVersion") != "2026-07-28"
+                or "io.modelcontextprotocol/tasks" not in extensions
+                or "task" in params):
+            return JSONResponse({"jsonrpc": "2.0", "id": rid,
+                                 "error": {"code": -32602, "message": "Modern Tasks opt-in required"}})
         if request.app.state.posture == "weak":
             COUNTER["n"] += 7
             handle = str(COUNTER["n"])
         else:
             handle = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
         return JSONResponse({
             "jsonrpc": "2.0", "id": rid,
             "result": {
-                "task": {"taskId": handle,
-                         "status": {"state": "TASK_STATE_WORKING"}},
-                "isError": False,
+                "resultType": "task", "taskId": handle, "status": "working",
+                "createdAt": now, "lastUpdatedAt": now, "ttlMs": 60000,
             },
         })
 
