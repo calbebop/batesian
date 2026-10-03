@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,19 +14,11 @@ import (
 	"github.com/calbebop/batesian/internal/oob"
 )
 
-// PushSSRFExecutor tests whether an A2A server makes outbound HTTP requests to
-// attacker-controlled push notification callback URLs (rule a2a-push-ssrf-001).
-//
-// Attack sequence:
-//  1. Start or use an OOB listener.
-//  2. Send a task with pushNotificationConfig.url pointing at the OOB listener.
-//  3. Wait for an inbound HTTP callback.
-//  4. If a callback arrives, SSRF is confirmed.
+// PushSSRFExecutor checks delivery to private push callback destinations.
 type PushSSRFExecutor struct {
 	rule attack.RuleContext
 }
 
-// NewPushSSRFExecutor creates an executor for the push-notification-ssrf attack type.
 func init() {
 	attack.Register("push-notification-ssrf", func(rc attack.RuleContext) attack.Executor { return NewPushSSRFExecutor(rc) })
 }
@@ -230,32 +224,27 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	var findings []attack.Finding
 	if listener != nil {
 		cb, received := listener.WaitForMarker(ctx, 10*time.Second, token)
-		if received {
+		if received && privatePushCallbackURL(callbackURL) {
 			evidence := fmt.Sprintf(
 				"Target accepted task with pushNotificationConfig.url=%q (binding: %s)\n"+
-					"OOB callback received: %s %s\n"+
-					"Callback token echoed: %v",
+					"OOB callback received: %s %s",
 				callbackURL, acceptedBinding, cb.Method, cb.URL,
-				containsToken(cb, token),
 			)
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "high",
 				Confidence: attack.ConfirmedExploit,
-				Title:      "A2A server made outbound request to attacker-controlled push notification URL",
-				Description: fmt.Sprintf("The A2A server at %s accepted a task registration with an attacker-controlled "+
-					"pushNotificationConfig.url and subsequently sent an outbound HTTP request to %s. "+
-					"This enables SSRF into internal networks, cloud metadata services, or private endpoints.",
+				Title:      "A2A agent reached a local or private push callback address",
+				Description: fmt.Sprintf("The A2A server at %s made an HTTP request to the local or private callback address %s. "+
+					"The probe demonstrates reachability to this address; access to other internal services was not tested.",
 					target, callbackURL),
 				Evidence:    evidence,
 				Remediation: e.rule.Remediation,
 				TargetURL:   target,
 			})
 		}
-		// No callback on our own listener => SSRF was not demonstrated. Accepting
-		// a push-notification config is a normal A2A feature, so we deliberately
-		// emit NO finding here rather than flag by-design behaviour.
+		// Public webhook delivery and registration without delivery are expected.
 	} else {
 		// Using external OOB - report task accepted, user must check their OOB server.
 		findings = append(findings, attack.Finding{
@@ -263,9 +252,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			RuleName:   e.rule.Name,
 			Severity:   "info",
 			Confidence: attack.RiskIndicator,
-			Title:      "A2A push notification task accepted with attacker-controlled callback URL",
+			Title:      "A2A push callback registered; delivery unverified",
 			Description: fmt.Sprintf("Task submitted with pushNotificationConfig.url=%q (binding: %s). "+
-				"Check your OOB server at %s for inbound callbacks to confirm SSRF.",
+				"Check your OOB server at %s for delivery. A public webhook callback alone does not establish SSRF.",
 				callbackURL, acceptedBinding, opts.OOBListenerURL),
 			Evidence:    fmt.Sprintf("Task accepted via %s. Callback URL: %s", acceptedBinding, callbackURL),
 			Remediation: e.rule.Remediation,
@@ -273,6 +262,23 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 	return findings, nil
+}
+
+func privatePushCallbackURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 // buildV03SendRequest creates a v0.3 message/send carrying the push callback in
@@ -335,22 +341,4 @@ func buildRESTSendRequest(randID string) map[string]interface{} {
 			},
 		},
 	}
-}
-
-// containsToken checks if the callback headers or body contain the push token.
-func containsToken(cb *oob.Callback, token string) bool {
-	for _, vals := range cb.Headers {
-		for _, v := range vals {
-			if v == token {
-				return true
-			}
-		}
-	}
-	// Check body
-	var m map[string]interface{}
-	if err := json.Unmarshal(cb.Body, &m); err == nil {
-		b, _ := json.Marshal(m)
-		return strings.Contains(string(b), token)
-	}
-	return strings.Contains(string(cb.Body), token)
 }

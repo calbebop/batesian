@@ -14,16 +14,7 @@ import (
 	"github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// pushSSRFServer builds a mock A2A server. When callBack is true, the
-// CreateTaskPushNotificationConfig handler actually performs an outbound POST to
-// the attacker-supplied callback - simulating the SSRF. When false, it accepts
-// the config but never calls back (the normal, non-vulnerable case).
-//
-// It reads the callback from `url`, which is the field a2a-sdk v1 actually
-// defines on TaskPushNotificationConfig. The harness used to read
-// pushNotificationUrl, matching what the rule sent rather than what the protocol
-// says, so it went on passing while the rule could not register a callback with
-// any real agent. Reading only the real field is what keeps that from recurring.
+// pushSSRFServer optionally sends a callback to the registered URL.
 func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +35,6 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 			if callBack {
 				params, _ := req["params"].(map[string]interface{})
 				if url, _ := params["url"].(string); url != "" {
-					// Outbound request to the attacker-controlled callback = SSRF.
 					token, _ := params["token"].(string)
 					hc := &http.Client{Timeout: 3 * time.Second}
 					if cbReq, err := http.NewRequest(http.MethodPost, url, nil); err == nil {
@@ -62,10 +52,7 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 	}))
 }
 
-// TestPushSSRF_VulnerableCallbackConfirmed: the server makes a real outbound
-// request to the attacker-supplied callback URL. The executor's own OOB listener
-// receives it, so a confirmed high-severity SSRF finding MUST be produced.
-func TestPushSSRF_VulnerableCallbackConfirmed(t *testing.T) {
+func TestPushSSRF_PrivateCallbackConfirmed(t *testing.T) {
 	ts := pushSSRFServer(t, true)
 	defer ts.Close()
 
@@ -77,7 +64,7 @@ func TestPushSSRF_VulnerableCallbackConfirmed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(findings) != 1 {
-		t.Fatalf("expected one confirmed SSRF finding, got %d: %+v", len(findings), findings)
+		t.Fatalf("expected one private callback finding, got %d: %+v", len(findings), findings)
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
@@ -139,7 +126,7 @@ func TestPushSSRF_V03BindingConfirmed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(findings) != 1 {
-		t.Fatalf("expected one confirmed SSRF finding over the v0.3 binding, got %d: %+v", len(findings), findings)
+		t.Fatalf("expected one private callback finding over the v0.3 binding, got %d: %+v", len(findings), findings)
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
@@ -241,7 +228,7 @@ func TestPushSSRF_RESTBindingFromCard(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(findings) != 1 {
-		t.Fatalf("expected one confirmed SSRF finding over the REST binding, got %d: %+v", len(findings), findings)
+		t.Fatalf("expected one private callback finding over the REST binding, got %d: %+v", len(findings), findings)
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
