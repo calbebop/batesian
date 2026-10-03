@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -113,10 +114,7 @@ func (e *PushBindingExecutor) ownedTask(bb *attack.Blackboard, a attack.Principa
 func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (string, setupObservation) {
 	var obs setupObservation
-	headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range p.Headers {
-		headers[k] = v
-	}
+	headers := pushBindingHeaders(p.Headers, true)
 	resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "batesian-pb-create-" + p.Name + "-" + randID,
@@ -132,7 +130,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			c.PresentsCredential(endpoint), resp))
-		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
+		resp, err = c.POST(ctx, endpoint, pushBindingHeaders(p.Headers, false), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-pb-create-" + p.Name + "-" + randID,
 			"method":  "message/send",
@@ -178,10 +176,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 	var obs setupObservation
 	for _, at := range attempts {
 		requestID := "batesian-pb-set-" + randID
-		headers := map[string]string{"A2A-Version": "1.0"}
-		for k, v := range extra {
-			headers[k] = v
-		}
+		headers := pushBindingHeaders(extra, at.method == "CreateTaskPushNotificationConfig")
 		resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -225,10 +220,7 @@ func (e *PushBindingExecutor) getPush(ctx context.Context, c *attack.HTTPClient,
 		method = "GetTaskPushNotificationConfig"
 		params = map[string]interface{}{"taskId": taskID, "id": set.id}
 	}
-	headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extra {
-		headers[k] = v
-	}
+	headers := pushBindingHeaders(extra, set.v1)
 	requestID := "batesian-pb-get-" + randID
 	resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0", "id": requestID,
@@ -258,6 +250,19 @@ func (e *PushBindingExecutor) getPush(ctx context.Context, c *attack.HTTPClient,
 		return false
 	}
 	return config["url"] == expectedURL
+}
+
+func pushBindingHeaders(extra map[string]string, v1 bool) map[string]string {
+	headers := make(map[string]string, len(extra)+1)
+	for k, v := range extra {
+		if !strings.EqualFold(k, "A2A-Version") {
+			headers[k] = v
+		}
+	}
+	if v1 {
+		headers["A2A-Version"] = "1.0"
+	}
+	return headers
 }
 
 func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, taskID, attackerURL string, consumed bool) attack.Finding {
