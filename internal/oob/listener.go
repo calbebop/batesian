@@ -1,8 +1,4 @@
-// Package oob provides a local out-of-band HTTP listener for detecting SSRF callbacks.
-//
-// When testing push-notification SSRF, Batesian registers a callback URL pointing
-// at this listener and waits for the target A2A server to call back. If the
-// server makes an outbound request to the registered URL, the SSRF is confirmed.
+// Package oob captures out-of-band HTTP callbacks for attack probes.
 //
 // Limitations: the local listener only works when the target A2A server can reach
 // the Batesian host (e.g., same network, or target is on the public internet with a

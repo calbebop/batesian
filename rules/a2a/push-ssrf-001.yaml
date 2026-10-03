@@ -4,18 +4,13 @@ info:
   author: batesian
   severity: high
   description: |
-    Tests whether an A2A server makes outbound HTTP requests to attacker-controlled
-    URLs registered as push notification callbacks. A vulnerable server will call back
-    to the registered URL upon task completion, enabling SSRF into internal networks,
-    cloud metadata services (AWS IMDS, GCP metadata), or private endpoints.
-
-    This is a confirmed unfixed issue in the reference a2a-python SDK as of April 2026.
-    Any deployment built on the official SDK or following the official A2A tutorial is
-    likely affected.
+    Registers the scanner's push callback URL and checks for delivery. A finding
+    requires an observed callback to a local or private address. A callback to
+    a public webhook is normal A2A behavior, not SSRF evidence. This probe does
+    not test reachability to other internal services.
 
   references:
-    - https://github.com/google-a2a/a2a-python/issues/786
-    - https://a2aprotocol.ai/docs/specification#push-notifications
+    - https://a2a-protocol.org/latest/specification/#132-push-notification-security
     - https://owasp.org/www-community/attacks/Server_Side_Request_Forgery
     - https://cwe.mitre.org/data/definitions/918.html
 
@@ -32,8 +27,7 @@ attack:
   type: push-notification-ssrf
 
 remediation: |
-  Validate pushNotificationConfig.url against an allowlist of permitted callback
-  domains before registering the task. Reject private IP ranges (RFC 1918), loopback
-  addresses, link-local ranges, and cloud metadata service IPs (169.254.169.254,
-  fd00:ec2::254, etc.). Require HTTPS and verify the callback URL resolves to a
-  public address before accepting task registration.
+  Validate callback URLs before registration and again before delivery. Reject
+  private, loopback, link-local, and metadata service destinations after DNS
+  resolution; prevent redirect or DNS rebinding bypasses. Require HTTPS for
+  production webhooks and use an allowlist where appropriate.
