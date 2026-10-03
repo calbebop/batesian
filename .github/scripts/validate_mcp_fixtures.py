@@ -141,6 +141,17 @@ def scan(port, *extra):
     return fired, skipped, doc
 
 
+def probe(port, *extra):
+    out = subprocess.run(
+        [BINARY, "probe", "--target", f"http://127.0.0.1:{port}",
+         "--protocol", "mcp", "--output", "json", "--timeout", SCAN_TIMEOUT, *extra],
+        capture_output=True, text=True, timeout=180,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"batesian probe exited {out.returncode}:\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}")
+    return json.loads(out.stdout)
+
+
 def check(name, ok, detail):
     print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     return ok
@@ -299,12 +310,21 @@ def scope_confusion():
         p, l = start("mcp_scope_confusion_server.py", 7806, posture)
         try:
             fired, skipped, _ = scan(7806, *principals)
+            if posture == "modern-vulnerable":
+                mapped = probe(7806, "--token", "tok-a")
         finally:
             stop(p, l)
         fires = rid in fired
         ok_all &= check(f"scope-confusion {posture}",
                         fires == expect_fire and rid not in skipped,
                         f"{rid} {'fired' if fires else 'silent'}; skipped {rid in skipped}")
+        if posture == "modern-vulnerable":
+            tool_names = {tool["Name"] for tool in mapped.get("Tools", [])}
+            ok_all &= check("probe modern-only MCP",
+                            mapped.get("ProtocolVersion") == "2026-07-28"
+                            and mapped.get("ServerName") == "scope-confusion-fixture"
+                            and tool_names == {"list_items", "delete_item"},
+                            f"version={mapped.get('ProtocolVersion')}; tools={sorted(tool_names)}")
     return ok_all
 
 

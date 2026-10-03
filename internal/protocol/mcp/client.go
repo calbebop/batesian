@@ -1,6 +1,4 @@
 // Package mcp provides a lightweight MCP protocol client for reconnaissance.
-// It handles the initialize handshake, SSE response parsing, and session ID
-// threading required by the MCP specification.
 package mcp
 
 import (
@@ -117,16 +115,17 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-// Session represents an active MCP connection after the initialize handshake.
+// Session identifies the MCP wire used for probe requests.
 type Session struct {
 	Endpoint        string
 	SessionID       string
 	ProtocolVersion string
 	ServerInfo      ServerInfo
 	Capabilities    map[string]interface{}
+	Modern          bool
 }
 
-// ServerInfo holds the identifying fields from the server's initialize response.
+// ServerInfo holds the server's advertised identity.
 type ServerInfo struct {
 	Name    string
 	Version string
@@ -174,6 +173,23 @@ func (c *Client) Initialize(ctx context.Context) (*Session, error) {
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
+// Connect uses the legacy handshake when available, then tries modern discovery.
+func (c *Client) Connect(ctx context.Context) (*Session, error) {
+	candidates := endpoint.Candidates(c.baseURL, candidatePaths)
+	for _, ep := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if session, err := c.tryInitialize(ctx, ep); err == nil {
+			return session, nil
+		}
+		if session, err := c.tryDiscover(ctx, ep); err == nil {
+			return session, nil
+		}
+	}
+	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
+}
+
 // ListTools calls tools/list and returns all available tools, following
 // nextCursor pagination up to maxListPages.
 func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
@@ -184,18 +200,15 @@ func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		resp, err := c.post(ctx, s, map[string]interface{}{
-			"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": params,
-		})
+		resp, err := c.post(ctx, s, 10, "tools/list", params)
 		if err != nil {
 			return nil, err
 		}
 
-		var body map[string]interface{}
-		if err := json.Unmarshal(resp, &body); err != nil {
+		result, err := listResult(resp, 10, s.Modern)
+		if err != nil {
 			return nil, err
 		}
-		result, _ := body["result"].(map[string]interface{})
 		rawTools, _ := result["tools"].([]interface{})
 
 		for _, t := range rawTools {
@@ -230,25 +243,15 @@ func (c *Client) ListResources(ctx context.Context, s *Session) ([]Resource, err
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		resp, err := c.post(ctx, s, map[string]interface{}{
-			"jsonrpc": "2.0", "id": 11, "method": "resources/list", "params": params,
-		})
+		resp, err := c.post(ctx, s, 11, "resources/list", params)
 		if err != nil {
 			return nil, err
 		}
 
-		var body map[string]interface{}
-		if err := json.Unmarshal(resp, &body); err != nil {
+		result, err := listResult(resp, 11, s.Modern)
+		if err != nil {
 			return nil, err
 		}
-		// JSON-RPC error means resources are not supported or access was denied.
-		if _, hasErr := body["error"]; hasErr {
-			if page == 0 {
-				return nil, nil
-			}
-			break
-		}
-		result, _ := body["result"].(map[string]interface{})
 		rawResources, _ := result["resources"].([]interface{})
 
 		for _, r := range rawResources {
@@ -281,24 +284,15 @@ func (c *Client) ListPrompts(ctx context.Context, s *Session) ([]Prompt, error) 
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		resp, err := c.post(ctx, s, map[string]interface{}{
-			"jsonrpc": "2.0", "id": 12, "method": "prompts/list", "params": params,
-		})
+		resp, err := c.post(ctx, s, 12, "prompts/list", params)
 		if err != nil {
 			return nil, err
 		}
 
-		var body map[string]interface{}
-		if err := json.Unmarshal(resp, &body); err != nil {
+		result, err := listResult(resp, 12, s.Modern)
+		if err != nil {
 			return nil, err
 		}
-		if _, hasErr := body["error"]; hasErr {
-			if page == 0 {
-				return nil, nil
-			}
-			break
-		}
-		result, _ := body["result"].(map[string]interface{})
 		rawPrompts, _ := result["prompts"].([]interface{})
 
 		for _, p := range rawPrompts {
@@ -416,13 +410,9 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 	return session, nil
 }
 
-// post sends a JSON-RPC POST to the session endpoint with the session ID header.
-func (c *Client) post(ctx context.Context, s *Session, payload interface{}) ([]byte, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	req, err := c.newRequest(ctx, s.Endpoint, body)
+// post sends one request on the session's wire.
+func (c *Client) post(ctx context.Context, s *Session, id int, method string, params map[string]interface{}) ([]byte, error) {
+	req, err := c.newRPCRequest(ctx, s.Endpoint, id, method, params, s.Modern)
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +424,9 @@ func (c *Client) post(ctx context.Context, s *Session, payload interface{}) ([]b
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, s.Endpoint)
+	}
 	b, err := readBody(resp)
 	if err != nil {
 		return nil, err
@@ -506,4 +499,26 @@ func (s *Session) HasCapability(key string) bool {
 func strField(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
+}
+
+func listResult(raw []byte, id int, modern bool) (map[string]interface{}, error) {
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope["jsonrpc"] != "2.0" || envelope["id"] != float64(id) {
+		return nil, fmt.Errorf("invalid MCP list response")
+	}
+	if rpcErr, ok := envelope["error"]; ok {
+		detail, _ := rpcErr.(map[string]interface{})
+		return nil, fmt.Errorf("MCP list failed: %s", strField(detail, "message"))
+	}
+	result, ok := envelope["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("missing MCP list result")
+	}
+	if modern && result["resultType"] != "complete" {
+		return nil, fmt.Errorf("incomplete modern MCP list result")
+	}
+	return result, nil
 }
