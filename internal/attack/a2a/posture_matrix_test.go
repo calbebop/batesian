@@ -209,7 +209,7 @@ func (a *matrixAgent) list(w http.ResponseWriter, id interface{}, caller string,
 	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"jsonrpc": "2.0", "id": id,
-		"result": map[string]interface{}{"tasks": visible, "totalSize": len(visible)},
+		"result": map[string]interface{}{"tasks": visible, "totalSize": len(visible), "nextPageToken": ""},
 	})
 }
 

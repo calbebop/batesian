@@ -2,41 +2,14 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// TaskEnumerationExecutor tests whether one authenticated principal can enumerate
-// another's tasks through ListTasks (rule a2a-task-enumeration-001).
-//
-// The specification is explicit twice over. Section 3.1.4, on ListTasks itself:
-// "Implementations MUST implement appropriate authorization scoping to ensure clients
-// can only access authorized tasks." Section 13.1: "Servers MUST return only tasks
-// visible to the authenticated client."
-//
-// This is a different surface from the rules that already exist, not a second look at
-// the same one:
-//
-//   - a2a-multitenant-isolation-001 reads a task BY ID, so it only proves a caller
-//     who already knows an identifier can fetch it. Enumeration needs no prior
-//     knowledge, which is what makes it worse: an attacker with one valid credential
-//     learns every task id on the server and then has everything the read rules need.
-//   - a2a-task-idor-001 probes the REST list paths ANONYMOUSLY. A server that
-//     correctly requires a credential passes that and can still hand every tenant's
-//     tasks to any authenticated caller.
-//   - The listing endpoint is separate code from the per-task fetch, so a server can
-//     scope one and not the other, and commonly does: the fetch has an obvious owner
-//     to compare against while the list has to be filtered.
-//
-// Currency: ListTasks is a v1.0 JSON-RPC method. The v0.3 revision defines
-// tasks/get, tasks/cancel, tasks/resubscribe and the push-notification-config
-// methods, and no list method at all, so a v0.3-only agent answers -32601 and the
-// rule reports itself not applicable. The v0.3 REST binding's list path is covered
-// anonymously by a2a-task-idor-001; the authenticated cross-principal case on that
-// binding is not probed here, deliberately, because the prefix belongs to the
-// deployment and guessing it is how earlier rules came to POST at paths that never
-// existed.
+// TaskEnumerationExecutor checks whether ListTasks exposes one principal's task to
+// another. This covers authenticated enumeration, unlike the anonymous REST probe.
 type TaskEnumerationExecutor struct {
 	rule attack.RuleContext
 }
@@ -79,7 +52,7 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 	// Step 2: is the listing implemented at all? Asked as A, who owns a task and so
 	// should see at least one, which also confirms the surface works before any
 	// conclusion is drawn about B.
-	ownList, ownOutcome := e.listTasks(ctx, clientA, endpoint, a.Headers, vars.RandID)
+	ownList, ownOutcome := e.listTasks(ctx, clientA, endpoint, a.Headers, vars.RandID, taskID)
 	switch ownOutcome {
 	case listAbsent:
 		// No list method here. Nothing to scope, and nothing wrong: the same call the
@@ -89,6 +62,9 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 		return nil, fmt.Errorf("%w: ListTasks at %s was refused for the task's own owner (%s), "+
 			"so whether the listing is scoped to the caller could not be established",
 			attack.ErrInconclusive, endpoint, a.Name)
+	case listIncomplete:
+		return nil, fmt.Errorf("%w: ListTasks at %s could not complete the owner's listing",
+			attack.ErrInconclusive, endpoint)
 	}
 	if !containsTaskID(ownList, taskID) {
 		// The owner cannot see their own task, so this listing does not enumerate what
@@ -102,14 +78,22 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 	// the server enforces no authorization on this surface at all. That is a2a-task-
 	// idor-001's finding, not a scoping failure between two valid principals, and
 	// reporting it here would double-count one defect as two.
-	if anonList, anonOutcome := e.listTasks(ctx, unauthClient, endpoint, nil, vars.RandID); anonOutcome == listOK &&
-		containsTaskID(anonList, taskID) {
+	anonList, anonOutcome := e.listTasks(ctx, unauthClient, endpoint, nil, vars.RandID, taskID)
+	if anonOutcome == listIncomplete {
+		return nil, fmt.Errorf("%w: anonymous ListTasks at %s could not complete its listing",
+			attack.ErrInconclusive, endpoint)
+	}
+	if anonOutcome == listOK && containsTaskID(anonList, taskID) {
 		return nil, nil
 	}
 
 	// Step 4: B lists. A's task appearing in it is the finding: B is authenticated,
 	// holds no claim to A's task, and was handed its identifier anyway.
-	otherList, otherOutcome := e.listTasks(ctx, clientB, endpoint, b.Headers, vars.RandID)
+	otherList, otherOutcome := e.listTasks(ctx, clientB, endpoint, b.Headers, vars.RandID, taskID)
+	if otherOutcome == listIncomplete {
+		return nil, fmt.Errorf("%w: ListTasks at %s could not complete principal %s's listing",
+			attack.ErrInconclusive, endpoint, b.Name)
+	}
 	if otherOutcome != listOK {
 		// B cannot list at all, which is one legitimate way to scope the surface.
 		return nil, nil
@@ -121,27 +105,24 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 	return []attack.Finding{e.finding(endpoint, a, b, taskID, otherList)}, nil
 }
 
-// listOutcome distinguishes the three answers a listing attempt can give, because
-// they mean different things: absent is not applicable, refused is untested, and only
-// an answered list can be judged.
+// listOutcome distinguishes complete, absent, refused, and incomplete listings.
 type listOutcome int
 
 const (
 	listOK listOutcome = iota
 	// listAbsent is -32601 on every spelling tried: the method is not implemented.
 	listAbsent
-	// listRefused is any other failure, including an authorization refusal.
+	// listRefused is an explicit authorization refusal.
 	listRefused
+	// listIncomplete means a listing started but could not be exhausted.
+	listIncomplete
 )
 
-// listTasks asks for the caller's tasks and returns the identifiers it received.
-//
-// pageSize is set high enough that a scoped server has no pagination excuse for
-// omitting a task, and historyLength is zero because this rule needs identifiers
-// rather than conversation content: enumerating ids is the failure, and pulling
-// another tenant's message history to prove it would be gratuitous.
+const maxTaskListPages = 10
+
+// listTasks walks bounded pages until the task is found or the list ends.
 func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	extraHeaders map[string]string, randID string) ([]string, listOutcome) {
+	extraHeaders map[string]string, randID, wantedID string) ([]string, listOutcome) {
 	attempts := []struct {
 		method  string
 		headers map[string]string
@@ -154,30 +135,92 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 	}
 
 	absentEverywhere := true
+	incompleteFirstPage := false
 	for _, at := range attempts {
-		resp, err := c.POST(ctx, endpoint, at.headers, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "batesian-enum-" + randID,
-			"method":  at.method,
-			"params":  map[string]interface{}{"pageSize": 100, "historyLength": 0},
-		})
-		if err != nil {
-			absentEverywhere = false
-			continue
+		next := ""
+		seen := map[string]bool{}
+		var ids []string
+		for page := 0; page < maxTaskListPages; page++ {
+			params := map[string]interface{}{"pageSize": 100, "historyLength": 0}
+			if next != "" {
+				params["pageToken"] = next
+			}
+			requestID := fmt.Sprintf("batesian-enum-%s-%d", randID, page)
+			resp, err := c.POST(ctx, endpoint, at.headers, map[string]interface{}{
+				"jsonrpc": "2.0", "id": requestID, "method": at.method, "params": params,
+			})
+			if err != nil {
+				if page > 0 {
+					return nil, listIncomplete
+				}
+				absentEverywhere = false
+				incompleteFirstPage = true
+				break
+			}
+			result, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+			if !resp.IsSuccess() || !valid || hasError {
+				if page > 0 {
+					return nil, listIncomplete
+				}
+				if valid && hasError && code == jsonRPCMethodNotFound {
+					break
+				}
+				absentEverywhere = false
+				if !isA2AAuthRejection(resp) {
+					incompleteFirstPage = true
+				}
+				break
+			}
+			pageIDs, token, ok := parseTaskListPage(result)
+			if !ok {
+				return nil, listIncomplete
+			}
+			ids = append(ids, pageIDs...)
+			if containsTaskID(pageIDs, wantedID) || token == "" {
+				return ids, listOK
+			}
+			if seen[token] {
+				return nil, listIncomplete
+			}
+			seen[token] = true
+			next = token
 		}
-		if resp.IsAccepted() {
-			return listedTaskIDs(resp.Body), listOK
+		if next != "" {
+			return nil, listIncomplete
 		}
-		if code, hasErr := jsonRPCErrorCode(resp.Body); !hasErr || code != jsonRPCMethodNotFound {
-			// Something other than "no such method": a refusal that says nothing about
-			// scoping.
-			absentEverywhere = false
-		}
+	}
+	if incompleteFirstPage {
+		return nil, listIncomplete
 	}
 	if absentEverywhere {
 		return nil, listAbsent
 	}
 	return nil, listRefused
+}
+
+func parseTaskListPage(raw json.RawMessage) ([]string, string, bool) {
+	var page struct {
+		Tasks []struct {
+			ID     string `json:"id"`
+			TaskID string `json:"taskId"`
+		} `json:"tasks"`
+		NextPageToken *string `json:"nextPageToken"`
+	}
+	if json.Unmarshal(raw, &page) != nil || page.Tasks == nil || page.NextPageToken == nil {
+		return nil, "", false
+	}
+	ids := make([]string, 0, len(page.Tasks))
+	for _, task := range page.Tasks {
+		id := task.ID
+		if id == "" {
+			id = task.TaskID
+		}
+		if id == "" {
+			return nil, "", false
+		}
+		ids = append(ids, id)
+	}
+	return ids, *page.NextPageToken, true
 }
 
 // withV1Version adds the v1.0 revision header to a principal's own headers without

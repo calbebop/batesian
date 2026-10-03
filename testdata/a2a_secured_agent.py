@@ -1,5 +1,5 @@
 """
-A2A agent that ENFORCES AUTHORIZATION. Two postures, one codebase.
+A2A authorization fixture with scoped, unscoped, and paginated postures.
 
 Every other A2A fixture here enforces nothing, so for the cross-principal rules
 only the positive direction was ever exercised: they fire when a surface is wide
@@ -27,9 +27,10 @@ Postures, selected by the first argument:
             a2a-delegation-integrity-001, a2a-task-cancel-idor-001,
             a2a-push-binding-001 and a2a-task-enumeration-001 MUST fire. Silence here
             is a false negative.
+  idor-paged  reads enforce ownership, but ListTasks leaks another principal's task
+              on page two.
 
-Ownership is the only difference between the two, which is what makes a diff
-between them mean something.
+Between `secured` and `idor`, ownership is the only difference.
 
 WIRE SHAPES ARE REPRODUCED FROM CAPTURED a2a-sdk RESPONSES, not written from the
 specification and not from what the rules happen to send. A fixture built from the
@@ -61,7 +62,7 @@ import uvicorn
 
 PORT = 3111
 
-POSTURES = ("secured", "idor", "unauth-read")
+POSTURES = ("secured", "idor", "idor-paged", "unauth-read")
 POSTURE = sys.argv[1] if len(sys.argv) > 1 else "secured"
 
 # The multi-principal fixtures in this directory all expect these two tokens
@@ -71,6 +72,13 @@ TOKENS = {"tok-a": "tenant-a", "tok-b": "tenant-b"}
 # task id -> {"ctx", "owner", "state", "history"}
 TASKS: dict = {}
 PUSH_CFG: dict = {}
+
+if POSTURE == "idor-paged":
+    for owner in TOKENS.values():
+        TASKS[f"older-{owner}"] = {
+            "ctx": f"context-{owner}", "owner": owner,
+            "state": "completed", "history": [],
+        }
 
 
 def _principal(request: Request) -> str:
@@ -202,12 +210,28 @@ def _list(req_id, params, caller, v1):
             "status": {"state": f"TASK_STATE_{t['state'].upper()}" if v1 else t["state"]},
         }
         for task_id, t in TASKS.items()
-        if POSTURE == "idor" or t["owner"] == caller
+        if POSTURE in ("idor", "idor-paged") or t["owner"] == caller
     ]
+    total_size = len(visible)
+    page_size = (params or {}).get("pageSize", len(visible))
+    if POSTURE == "idor-paged":
+        token = (params or {}).get("pageToken", "")
+        if token == "":
+            visible = [task for task in visible if task["id"] == f"older-{caller}"]
+            next_token = "next"
+            page_size = 1
+        elif token == "next":
+            visible = [task for task in visible if not task["id"].startswith("older-")]
+            next_token = ""
+        else:
+            return _error(req_id, -32602, "Invalid page token")
+    else:
+        next_token = ""
     return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
         "tasks": visible,
-        "totalSize": len(visible),
-        "pageSize": (params or {}).get("pageSize", len(visible)),
+        "totalSize": total_size,
+        "pageSize": page_size,
+        "nextPageToken": next_token,
     }})
 
 

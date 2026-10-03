@@ -50,7 +50,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
-| `a2a_secured_agent.py` | 3111 | negative control, three postures: NO rule may fire on `secured`; `a2a-multitenant-isolation-001`, `a2a-delegation-integrity-001`, `a2a-task-cancel-idor-001`, `a2a-push-binding-001` and `a2a-task-enumeration-001` must all fire on `idor` (needs `--token tok-a` and two principals, see below); `a2a-task-idor-001` must fire on `unauth-read` |
+| `a2a_secured_agent.py` | 3111 | authorization control: no findings on `secured`; five ownership findings on `idor`; task enumeration on page two under `idor-paged`; anonymous task read on `unauth-read` (needs `--token tok-a` and two principals) |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` (two postures, see below; tracks registrations at `/__clients`) |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |

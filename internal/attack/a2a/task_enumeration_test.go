@@ -33,6 +33,12 @@ const (
 	enumOwnerBlind
 	// enumWideOpen returns every task to ANYONE, including an anonymous caller.
 	enumWideOpen
+	enumPagedUnscoped
+	enumPagedScoped
+	enumPagedOpen
+	enumPagedLoop
+	enumPagedCap
+	enumPagedWrongID
 )
 
 // enumAgent is an A2A agent whose ListTasks behaviour is configurable. Task creation
@@ -97,8 +103,42 @@ func enumAgent(t *testing.T, behaviour enumBehaviour) *httptest.Server {
 				rpcErr(-32600, "not authorized to list tasks")
 				return
 			}
-			if caller == "" && behaviour != enumWideOpen {
+			if caller == "" && behaviour != enumWideOpen && behaviour != enumPagedOpen {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if behaviour >= enumPagedUnscoped {
+				params, _ := req["params"].(map[string]interface{})
+				token, _ := params["pageToken"].(string)
+				out := []interface{}{map[string]interface{}{"id": "older-task"}}
+				next := "next"
+				if behaviour == enumPagedCap && caller == "b" {
+					next = token + "x"
+				} else if token == "next" {
+					out = []interface{}{}
+					next = ""
+					for _, tk := range tasks {
+						if behaviour == enumPagedScoped && caller != tk.owner {
+							out = append(out, map[string]interface{}{"id": "task-b-own"})
+							continue
+						}
+						if behaviour == enumPagedLoop && caller == "b" {
+							out = append(out, map[string]interface{}{"id": "older-task"})
+							next = "next"
+							continue
+						}
+						out = append(out, map[string]interface{}{"id": tk.id, "contextId": tk.ctxID})
+					}
+				}
+				responseID := id
+				if behaviour == enumPagedWrongID && caller == "b" && token == "next" {
+					responseID = "unrelated"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": responseID,
+					"result": map[string]interface{}{"tasks": out, "nextPageToken": next,
+						"pageSize": 1, "totalSize": 2},
+				})
 				return
 			}
 			out := []interface{}{}
@@ -110,7 +150,7 @@ func enumAgent(t *testing.T, behaviour enumBehaviour) *httptest.Server {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"tasks": out, "totalSize": len(out)},
+				"result": map[string]interface{}{"tasks": out, "totalSize": len(out), "nextPageToken": ""},
 			})
 		default:
 			rpcErr(-32601, "Method not found")
@@ -233,6 +273,75 @@ func TestTaskEnumeration_WideOpenBelongsToTaskIDOR(t *testing.T) {
 	}
 }
 
+func TestTaskEnumeration_PaginatedUnscopedFires(t *testing.T) {
+	srv := enumAgent(t, enumPagedUnscoped)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "task-1") {
+		t.Fatalf("expected the second-page task in a finding, got %+v", findings)
+	}
+}
+
+func TestTaskEnumeration_PaginatedScopedStaysSilent(t *testing.T) {
+	srv := enumAgent(t, enumPagedScoped)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected a scoped listing to stay silent, got %+v", findings)
+	}
+}
+
+func TestTaskEnumeration_PaginatedOpenBelongsToTaskIDOR(t *testing.T) {
+	srv := enumAgent(t, enumPagedOpen)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected an open listing to be suppressed, got %+v", findings)
+	}
+}
+
+func TestTaskEnumeration_RepeatedCursorIsNotClean(t *testing.T) {
+	srv := enumAgent(t, enumPagedLoop)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected an incomplete-list result, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskEnumeration_PageCapIsNotClean(t *testing.T) {
+	srv := enumAgent(t, enumPagedCap)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected a bounded incomplete-list result, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskEnumeration_UncorrelatedPageIsNotClean(t *testing.T) {
+	srv := enumAgent(t, enumPagedWrongID)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected an incomplete-list result, got findings=%+v err=%v", findings, err)
+	}
+}
+
 // Two identities are the premise: the question is whether B sees A's task. With one
 // principal, or none, there is no comparison to make and the rule must say so rather
 // than call the target clean.
@@ -311,7 +420,7 @@ func TestTaskEnumeration_ScopedListingWithOwnTasksIsClean(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"tasks": out, "totalSize": len(out)},
+				"result": map[string]interface{}{"tasks": out, "totalSize": len(out), "nextPageToken": ""},
 			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
