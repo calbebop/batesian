@@ -6,7 +6,7 @@ Deliberately vulnerable MCP test server for validating:
   valid; in the vulnerable posture the limited one reaches every tool the
   full one can.
 
-Postures:
+Postures (prefix with modern- for a 2026-07-28-only server):
   vulnerable (default) - any accepted bearer authorizes everything. The rule
                          MUST fire confirmed/high on delete_item.
   patched              - tokens carry scopes (tok-a -> items:write+read,
@@ -78,8 +78,16 @@ async def jsonrpc(request: Request) -> JSONResponse:
     rid = body.get("id", 1)
     auth = request.headers.get("authorization", "")
     token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+    configured_posture = request.app.state.posture
+    modern = configured_posture.startswith("modern-")
+    posture = configured_posture.removeprefix("modern-")
 
     if method == "initialize":
+        if modern:
+            return JSONResponse({
+                "jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32601, "message": "Method not found"},
+            })
         return JSONResponse({
             "jsonrpc": "2.0", "id": rid,
             "result": {
@@ -88,10 +96,22 @@ async def jsonrpc(request: Request) -> JSONResponse:
                 "serverInfo": {"name": "scope-confusion-fixture", "version": "1.0"},
             },
         })
-    if method == "notifications/initialized":
+    if method == "notifications/initialized" and not modern:
         return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {}})
 
-    posture = request.app.state.posture
+    if modern:
+        params = body.get("params", {})
+        meta = params.get("_meta", {})
+        if (request.headers.get("mcp-protocol-version") != "2026-07-28"
+                or request.headers.get("mcp-method") != method
+                or meta.get("io.modelcontextprotocol/protocolVersion") != "2026-07-28"
+                or (method == "tools/call"
+                    and request.headers.get("mcp-name") != params.get("name"))):
+            return JSONResponse({
+                "jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32020, "message": "modern wire required"},
+            }, status_code=400)
+
     if posture == "open":
         scopes = FULL_SCOPES  # no gate at all: everyone reads as full
     else:
@@ -103,8 +123,18 @@ async def jsonrpc(request: Request) -> JSONResponse:
                 status_code=401,
             )
 
+    if method == "server/discover" and modern:
+        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28"],
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "scope-confusion-fixture", "version": "1.0"},
+        }})
     if method == "tools/list":
-        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
+        result = {"tools": TOOLS}
+        if modern:
+            result["resultType"] = "complete"
+        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": result})
     if method == "tools/call":
         params = body.get("params", {})
         name = params.get("name")

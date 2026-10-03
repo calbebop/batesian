@@ -38,6 +38,7 @@ type scopeServer struct {
 	auth              bool
 	enforceWriteScope bool
 	extraTool         bool
+	modernOnly        bool
 	toolCalls         atomic.Int32
 }
 
@@ -81,11 +82,12 @@ func (s *scopeServer) tools() []map[string]interface{} {
 func (s *scopeServer) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Method string      `json:"method"`
-			ID     json.Number `json:"id"`
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
 			Params struct {
 				Name      string                 `json:"name"`
 				Arguments map[string]interface{} `json:"arguments"`
+				Meta      map[string]interface{} `json:"_meta"`
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -103,21 +105,35 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			}, status)
 		}
 
-		switch req.Method {
-		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "sess-scope")
-			reply(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{
-					"protocolVersion": "2025-06-18",
-					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-					"serverInfo":      map[string]interface{}{"name": "scope-fixture", "version": "1"},
-				},
-			}, http.StatusOK)
-			return
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-			return
+		if s.modernOnly {
+			if req.Method == "initialize" {
+				rpcErr(-32601, "Method not found", http.StatusOK)
+				return
+			}
+			if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" ||
+				r.Header.Get("Mcp-Method") != req.Method ||
+				req.Params.Meta["io.modelcontextprotocol/protocolVersion"] != "2026-07-28" ||
+				(req.Method == "tools/call" && r.Header.Get("Mcp-Name") != req.Params.Name) {
+				rpcErr(-32020, "modern wire required", http.StatusBadRequest)
+				return
+			}
+		} else {
+			switch req.Method {
+			case "initialize":
+				w.Header().Set("Mcp-Session-Id", "sess-scope")
+				reply(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{
+						"protocolVersion": "2025-06-18",
+						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+						"serverInfo":      map[string]interface{}{"name": "scope-fixture", "version": "1"},
+					},
+				}, http.StatusOK)
+				return
+			case "notifications/initialized":
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
 		}
 
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -127,10 +143,28 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		}
 
 		switch req.Method {
-		case "tools/list":
+		case "server/discover":
+			if !s.modernOnly {
+				rpcErr(-32601, "Method not found", http.StatusOK)
+				return
+			}
 			reply(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{"tools": s.tools()},
+				"result": map[string]interface{}{
+					"resultType":       "complete",
+					"supportedVersions": []string{"2026-07-28"},
+					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+					"serverInfo":        map[string]interface{}{"name": "scope-fixture", "version": "1"},
+				},
+			}, http.StatusOK)
+		case "tools/list":
+			result := map[string]interface{}{"tools": s.tools()}
+			if s.modernOnly {
+				result["resultType"] = "complete"
+			}
+			reply(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": result,
 			}, http.StatusOK)
 
 		case "tools/call":
@@ -212,6 +246,52 @@ func TestScope_OpenSuppressed(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against an open server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestScope_ModernOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		auth              bool
+		enforceWriteScope bool
+		findings          int
+	}{
+		{name: "vulnerable", auth: true, findings: 1},
+		{name: "patched", auth: true, enforceWriteScope: true},
+		{name: "open"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &scopeServer{modernOnly: true, auth: tc.auth, enforceWriteScope: tc.enforceWriteScope}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.findings {
+				t.Fatalf("expected %d findings, got %d: %+v", tc.findings, len(findings), findings)
+			}
+			if tc.findings > 0 && !strings.Contains(findings[0].Evidence, "wire: MCP 2026-07-28") {
+				t.Errorf("expected modern wire evidence, got: %q", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestScope_ModernOnlyRequiresToolApproval(t *testing.T) {
+	srv := &scopeServer{modernOnly: true, auth: true}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	opts := scopeOpts()
+	opts.MCPScopeTools = nil
+	_, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+	if err == nil || !strings.Contains(err.Error(), "--mcp-scope-tool") {
+		t.Fatalf("expected an approval error, got %v", err)
+	}
+	if srv.toolCalls.Load() != 0 {
+		t.Fatalf("unapproved tool received %d call(s)", srv.toolCalls.Load())
 	}
 }
 

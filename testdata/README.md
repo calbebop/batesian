@@ -73,7 +73,7 @@ fixtures for live-validation / manual smoke testing.
 | `mcp_session_as_credential_server.py` | 7803 | `mcp-session-as-credential-001` (needs `--token tok-a`; four postures, see below) |
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
 | `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` fires on `vulnerable` with `--mcp-invoke-tool read_note`; silent on `patched` |
-| `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open` (needs two principals and `--mcp-scope-tool delete_item`) |
+| `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open`, on both legacy and `modern-` postures (needs two principals and `--mcp-scope-tool delete_item`) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
@@ -359,6 +359,9 @@ names a file that does not exist, in either posture.
 python testdata/mcp_scope_confusion_server.py vulnerable  # rule must fire
 python testdata/mcp_scope_confusion_server.py patched     # rule must stay silent
 python testdata/mcp_scope_confusion_server.py open        # rule must stay silent
+python testdata/mcp_scope_confusion_server.py modern-vulnerable  # rule must fire
+python testdata/mcp_scope_confusion_server.py modern-patched     # rule must stay silent
+python testdata/mcp_scope_confusion_server.py modern-open        # rule must stay silent
 ```
 
 ```sh

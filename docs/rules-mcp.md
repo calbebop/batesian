@@ -905,6 +905,8 @@ than hiding it behind a clean-looking result.
 Tests whether `tools/call` enforces the scopes of the credential presented, or
 merely that a valid credential exists. It compares the same tool call under a
 full principal, a limited principal, and an anonymous control.
+It probes both legacy MCP sessions and the stateless 2026-07-28 wire, using
+the full principal for protected `server/discover` requests.
 
 The rule discovers likely mutating tools but invokes none by default. Approve
 each candidate by exact, case-sensitive name with `--mcp-scope-tool` or

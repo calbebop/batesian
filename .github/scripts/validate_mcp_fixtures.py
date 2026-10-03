@@ -292,14 +292,18 @@ def scope_confusion():
                   "--principal", "name=full,token=tok-a",
                   "--principal", "name=limited,token=tok-b",
                   "--mcp-scope-tool", "delete_item"]
-    for posture, expect_fire in [("vulnerable", True), ("patched", False), ("open", False)]:
+    for posture, expect_fire in [
+        ("vulnerable", True), ("patched", False), ("open", False),
+        ("modern-vulnerable", True), ("modern-patched", False), ("modern-open", False),
+    ]:
         p, l = start("mcp_scope_confusion_server.py", 7806, posture)
         try:
             fired, skipped, _ = scan(7806, *principals)
         finally:
             stop(p, l)
         fires = rid in fired
-        ok_all &= check(f"scope-confusion {posture}", fires == expect_fire,
+        ok_all &= check(f"scope-confusion {posture}",
+                        fires == expect_fire and rid not in skipped,
                         f"{rid} {'fired' if fires else 'silent'}; skipped {rid in skipped}")
     return ok_all
 
