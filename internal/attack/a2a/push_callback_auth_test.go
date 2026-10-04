@@ -279,14 +279,22 @@ func TestCbAuth_V03AuthenticationShape(t *testing.T) {
 	}
 }
 
-func TestCbAuth_RESTAuthenticationShape(t *testing.T) {
+func runCbAuthREST(t *testing.T, staleFirst bool) {
+	t.Helper()
 	var origin string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, _ *http.Request) {
+		interfaces := []map[string]string{}
+		if staleFirst {
+			interfaces = append(interfaces, map[string]string{
+				"url": origin + "/old", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
+			})
+		}
+		interfaces = append(interfaces, map[string]string{
+			"url": origin + "/v1", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
+		})
 		writeJSON(w, map[string]interface{}{
-			"name": "REST Agent", "supportedInterfaces": []map[string]string{{
-				"url": origin + "/v1", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
-			}},
+			"name": "REST Agent", "supportedInterfaces": interfaces,
 		})
 	})
 	mux.HandleFunc("/v1/message:send", func(w http.ResponseWriter, _ *http.Request) {
@@ -311,6 +319,14 @@ func TestCbAuth_RESTAuthenticationShape(t *testing.T) {
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("configured REST callback was not accepted: findings=%+v err=%v", findings, err)
 	}
+}
+
+func TestCbAuth_RESTAuthenticationShape(t *testing.T) {
+	runCbAuthREST(t, false)
+}
+
+func TestCbAuth_SecondRESTBindingFromCard(t *testing.T) {
+	runCbAuthREST(t, true)
 }
 
 // TestCbAuth_NoCallbackNotTested: registration accepted, webhook never hit.

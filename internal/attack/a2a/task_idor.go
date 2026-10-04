@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -239,12 +240,9 @@ type taskListProbe struct {
 // probeTaskList compares an anonymous REST listing with the owner task ID.
 func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, cardClient *attack.HTTPClient,
 	vars attack.Vars, ownerTaskID, anonTaskID string, ownerProtected bool) taskListProbe {
-	// Resolve the advertised REST base with owner credentials; list anonymously.
-	bases := []string{}
-	if restBase := resolveHTTPJSONBase(ctx, cardClient, vars.BaseURL); restBase != "" {
-		bases = append(bases, restBase)
-	}
-	if len(bases) == 0 || bases[0] != vars.BaseURL {
+	// Resolve advertised REST bases with owner credentials; list anonymously.
+	bases := resolveHTTPJSONBases(ctx, cardClient, vars.BaseURL)
+	if !slices.Contains(bases, vars.BaseURL) {
 		bases = append(bases, vars.BaseURL)
 	}
 	var listEndpoints []string

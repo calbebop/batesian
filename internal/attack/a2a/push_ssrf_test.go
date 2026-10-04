@@ -180,7 +180,7 @@ func TestPushSSRF_MessageReplyIsNotARegistration(t *testing.T) {
 // The REST attempt used to POST a fixed /tasks/send. No binding defines that
 // path, and the prefix cannot be guessed either: a2a-sdk takes it as a parameter
 // and lets the deployment choose which protocol version sits under it.
-func restPushServer(t *testing.T, prefix string) *httptest.Server {
+func restPushServer(t *testing.T, prefix string, staleFirst bool) *httptest.Server {
 	t.Helper()
 	var host string
 	mux := http.NewServeMux()
@@ -188,8 +188,16 @@ func restPushServer(t *testing.T, prefix string) *httptest.Server {
 
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"REST Agent","supportedInterfaces":[` +
-			`{"url":"` + host + prefix + `","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}]}`))
+		interfaces := []map[string]string{}
+		if staleFirst {
+			interfaces = append(interfaces, map[string]string{
+				"url": host + "/old", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
+			})
+		}
+		interfaces = append(interfaces, map[string]string{
+			"url": host + prefix, "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
+		})
+		writeJSON(w, map[string]interface{}{"name": "REST Agent", "supportedInterfaces": interfaces})
 	})
 	mux.HandleFunc(prefix+"/message:send", func(w http.ResponseWriter, r *http.Request) {
 		// The shape a2a-sdk actually returns from REST message:send.
@@ -218,7 +226,7 @@ func restPushServer(t *testing.T, prefix string) *httptest.Server {
 }
 
 func TestPushSSRF_RESTBindingFromCard(t *testing.T) {
-	ts := restPushServer(t, "/v1")
+	ts := restPushServer(t, "/v1", false)
 	defer ts.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -232,6 +240,18 @@ func TestPushSSRF_RESTBindingFromCard(t *testing.T) {
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+func TestPushSSRF_SecondRESTBindingFromCard(t *testing.T) {
+	ts := restPushServer(t, "/v1", true)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, testOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected a finding through the later REST binding: findings=%+v err=%v", findings, err)
 	}
 }
 

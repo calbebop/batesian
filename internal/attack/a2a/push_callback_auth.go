@@ -153,25 +153,30 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	}
 
 	// Attempt 3: HTTP+JSON binding, driven only where the card advertises one.
-	if restBase := resolveHTTPJSONBase(ctx, client, vars.BaseURL); !taskAccepted && restBase != "" {
-		sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, "/message:send"), map[string]string{"A2A-Version": "1.0"},
-			buildRESTSendRequest(vars.RandID))
-		if err3 == nil && sendResp3.StatusCode != 404 {
-			reached = true
-		}
-		if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
-			if taskID := restTaskID(sendResp3.Body); taskID != "" {
-				cfgResp, cfgErr := client.POST(ctx, endpointpkg.AppendPath(restBase, "/tasks/"+taskID+"/pushNotificationConfigs"),
-					map[string]string{"A2A-Version": "1.0"},
-					map[string]interface{}{
-						"url": callbackURL, "token": token,
-						"authentication": map[string]string{"scheme": "Bearer", "credentials": credential},
-					})
-				if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
-					taskAccepted = true
-					acceptedBinding = "HTTP+JSON/pushNotificationConfigs"
-					acceptedTaskID = taskID
+	if !taskAccepted {
+		for _, restBase := range resolveHTTPJSONBases(ctx, client, vars.BaseURL) {
+			sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, "/message:send"), map[string]string{"A2A-Version": "1.0"},
+				buildRESTSendRequest(vars.RandID))
+			if err3 == nil && sendResp3.StatusCode != 404 {
+				reached = true
+			}
+			if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
+				if taskID := restTaskID(sendResp3.Body); taskID != "" {
+					cfgResp, cfgErr := client.POST(ctx, endpointpkg.AppendPath(restBase, "/tasks/"+taskID+"/pushNotificationConfigs"),
+						map[string]string{"A2A-Version": "1.0"},
+						map[string]interface{}{
+							"url": callbackURL, "token": token,
+							"authentication": map[string]string{"scheme": "Bearer", "credentials": credential},
+						})
+					if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+						taskAccepted = true
+						acceptedBinding = "HTTP+JSON/pushNotificationConfigs"
+						acceptedTaskID = taskID
+					}
 				}
+			}
+			if taskAccepted {
+				break
 			}
 		}
 	}
