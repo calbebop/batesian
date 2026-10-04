@@ -71,28 +71,24 @@ func taskPrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 			"and %d principal(s) were configured; pass two --principal flags (or a config with two "+
 			"principals) to run it", attack.ErrInconclusive, len(opts.Principals))
 	}
-	a = taskPrincipal{name: opts.Principals[0].Name, token: opts.Principals[0].Token,
-		headers: opts.Principals[0].Headers}
-	b = taskPrincipal{name: opts.Principals[1].Name, token: opts.Principals[1].Token,
-		headers: opts.Principals[1].Headers}
-	if a.token == b.token && sameHeaders(a.headers, b.headers) {
+	a, err = configuredTaskPrincipal(opts.Principals[0])
+	if err != nil {
+		return a, b, err
+	}
+	b, err = configuredTaskPrincipal(opts.Principals[1])
+	if err != nil {
+		return a, b, err
+	}
+	if len(principalIdentityHeaders(a)) == 0 || len(principalIdentityHeaders(b)) == 0 {
+		return a, b, fmt.Errorf("%w: principals %q and %q each need a credential or identity header",
+			attack.ErrInconclusive, a.name, b.name)
+	}
+	if samePrincipalIdentity(a, b) {
 		return a, b, fmt.Errorf("%w: principals %q and %q present the same credential, so there is "+
 			"no second authorization context for this rule to cross",
 			attack.ErrInconclusive, a.name, b.name)
 	}
 	return a, b, nil
-}
-
-func sameHeaders(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 // taskPremise distinguishes success, an explicit negative response, and no verdict.
@@ -275,12 +271,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 	var observed initObservation
 	for _, ep := range endpointCandidates(baseURL) {
 		headers := map[string]string{}
-		if p.token != "" {
-			headers["Authorization"] = "Bearer " + p.token
-		}
-		for k, v := range p.headers {
-			headers[k] = v
-		}
+		attachPrincipal(headers, p)
 		resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
@@ -299,9 +290,8 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			continue // transport failure: nothing answered, so nothing to explain
 		}
 		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-			// This rule presents a token explicitly, so the client's ambient
-			// credential is not what decides whether the request carried one.
-			observed.observe(classifyInitFailure(ep, p.token != "", resp))
+			// Principal credentials are attached per request, not through the client.
+			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(p)) != 0, resp))
 			continue
 		}
 		session := mcpSession{
@@ -331,14 +321,7 @@ func (e *TaskIDORExecutor) headers(s mcpSession, p taskPrincipal) map[string]str
 	if s.SessionID != "" {
 		h["Mcp-Session-Id"] = s.SessionID
 	}
-	if p.token != "" {
-		h["Authorization"] = "Bearer " + p.token
-	}
-	// A principal's own headers last: a tenant resolved at a gateway is part of the
-	// credential this identity presents, and omitting it made two identities one.
-	for k, v := range p.headers {
-		h[k] = v
-	}
+	attachPrincipal(h, p)
 	return h
 }
 

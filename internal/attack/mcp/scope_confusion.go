@@ -91,11 +91,19 @@ func scopePrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 			"limited identity as two --principal flags (or a config with two principals)",
 			attack.ErrInconclusive, len(opts.Principals))
 	}
-	a = taskPrincipal{name: opts.Principals[0].Name, token: opts.Principals[0].Token,
-		headers: opts.Principals[0].Headers}
-	b = taskPrincipal{name: opts.Principals[1].Name, token: opts.Principals[1].Token,
-		headers: opts.Principals[1].Headers}
-	if a.token == b.token && sameHeaders(a.headers, b.headers) {
+	a, err = configuredTaskPrincipal(opts.Principals[0])
+	if err != nil {
+		return a, b, err
+	}
+	b, err = configuredTaskPrincipal(opts.Principals[1])
+	if err != nil {
+		return a, b, err
+	}
+	if len(principalIdentityHeaders(a)) == 0 || len(principalIdentityHeaders(b)) == 0 {
+		return a, b, fmt.Errorf("%w: principals %q and %q each need a credential or identity header",
+			attack.ErrInconclusive, a.name, b.name)
+	}
+	if samePrincipalIdentity(a, b) {
 		return a, b, fmt.Errorf("%w: principals %q and %q present the same credential, so there is "+
 			"no scope boundary between them for this rule to test",
 			attack.ErrInconclusive, a.name, b.name)
@@ -150,12 +158,7 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 	var observed initObservation
 	for _, ep := range endpointCandidates(baseURL) {
 		headers := map[string]string{}
-		if p.token != "" {
-			headers["Authorization"] = "Bearer " + p.token
-		}
-		for k, v := range p.headers {
-			headers[k] = v
-		}
+		attachPrincipal(headers, p)
 		resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 			"jsonrpc": "2.0", "id": 1, "method": "initialize",
 			"params": map[string]interface{}{
@@ -168,7 +171,7 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 			continue
 		}
 		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-			observed.observe(classifyInitFailure(ep, p.token != "", resp))
+			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(p)) != 0, resp))
 			continue
 		}
 		session := mcpSession{
@@ -313,15 +316,6 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 		}
 	}
 	return cands, "", true
-}
-
-func attachPrincipal(h map[string]string, p taskPrincipal) {
-	if p.token != "" {
-		h["Authorization"] = "Bearer " + p.token
-	}
-	for k, v := range p.headers {
-		h[k] = v
-	}
 }
 
 // callAs invokes an approved tool and returns text used by the oracle.
