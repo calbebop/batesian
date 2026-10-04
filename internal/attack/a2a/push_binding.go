@@ -35,7 +35,7 @@ func (e *PushBindingExecutor) Execute(ctx context.Context, target string, opts a
 }
 
 func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
-	if len(opts.Principals) == 0 || opts.Principals[0].Token == "" {
+	if len(opts.Principals) == 0 || len(principalHeaders(opts.Principals[0])) == 0 {
 		return nil, fmt.Errorf("%w: an authenticated task owner is required", attack.ErrInconclusive)
 	}
 	a := opts.Principals[0]

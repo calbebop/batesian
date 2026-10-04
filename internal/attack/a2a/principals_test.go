@@ -8,10 +8,6 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// All five cross-principal rules answered this precondition with nil,nil, which
-// means "tested, and the target is secure". They send no packets in that state, so
-// a default scan with no --principal flags reported 5 of 17 A2A rules clean without
-// touching the target.
 func TestTwoPrincipals(t *testing.T) {
 	t.Run("none configured", func(t *testing.T) {
 		_, _, err := twoPrincipals(attack.Options{})
@@ -40,6 +36,85 @@ func TestTwoPrincipals(t *testing.T) {
 		// The reason has to name them, or an operator cannot tell which two.
 		if !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), `"b"`) {
 			t.Errorf("the reason should name both principals, got: %v", err)
+		}
+	})
+
+	t.Run("anonymous principal is not an authenticated identity", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "anonymous"}, {Name: "owner", Token: "owner-token"},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("want ErrInconclusive, got %v", err)
+		}
+	})
+
+	t.Run("header-only identities run", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Headers: map[string]string{"X-API-Key": "key-a"}},
+			{Name: "b", Headers: map[string]string{"X-API-Key": "key-b"}},
+		}})
+		if err != nil {
+			t.Fatalf("distinct header credentials must be accepted: %v", err)
+		}
+	})
+
+	t.Run("same token with distinct routing headers is unverified", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Token: "shared", Headers: map[string]string{"X-Tenant-Id": "a"}},
+			{Name: "b", Token: "shared", Headers: map[string]string{"X-Tenant-Id": "b"}},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("a shared bearer token cannot prove distinct identities, got %v", err)
+		}
+	})
+
+	t.Run("authorization override determines identity", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Token: "token-a", Headers: map[string]string{"Authorization": "Bearer shared"}},
+			{Name: "b", Token: "token-b", Headers: map[string]string{"authorization": "Bearer shared"}},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("identical effective credentials must be inconclusive, got %v", err)
+		}
+	})
+
+	t.Run("authorization scheme casing does not create another identity", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Token: "shared"},
+			{Name: "b", Headers: map[string]string{"Authorization": "bEaReR  shared"}},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("equivalent authorization schemes must be inconclusive, got %v", err)
+		}
+	})
+
+	t.Run("distinct authorization overrides run", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Token: "shared", Headers: map[string]string{"Authorization": "Bearer token-a"}},
+			{Name: "b", Token: "shared", Headers: map[string]string{"Authorization": "Bearer token-b"}},
+		}})
+		if err != nil {
+			t.Fatalf("distinct effective credentials must be accepted: %v", err)
+		}
+	})
+
+	t.Run("empty authorization override removes the token", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Token: "token-a", Headers: map[string]string{"Authorization": ""}},
+			{Name: "b", Token: "token-b"},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("an empty effective credential must be inconclusive, got %v", err)
+		}
+	})
+
+	t.Run("header names compare case-insensitively", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Headers: map[string]string{"X-API-Key": "shared"}},
+			{Name: "b", Headers: map[string]string{"x-api-key": "shared"}},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("identical wire headers must be inconclusive, got %v", err)
 		}
 	})
 

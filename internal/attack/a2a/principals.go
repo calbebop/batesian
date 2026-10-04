@@ -2,27 +2,13 @@ package a2a
 
 import (
 	"fmt"
+	"maps"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// twoPrincipals returns the two identities a cross-principal rule needs, or an
-// error saying why the rule cannot run.
-//
-// Five rules carried this precondition and all five answered it with nil,nil,
-// which under this project's convention means "tested, and the target is secure".
-// They send no packets in that state. So a default invocation, with no --principal
-// flags, reported a2a-multitenant-isolation-001,
-// a2a-delegation-integrity-001, a2a-context-fixation-001, a2a-push-binding-001 and
-// a2a-task-cancel-idor-001 as clean: 5 of 17 A2A rules, 29 percent of the set,
-// silently self-disabling while the operator was told the target appeared clean for
-// the tested rules. Measured against testdata/a2a_multitenant_server.py, which is
-// deliberately vulnerable: 5 rules run, zero requests, "No findings. Target appears
-// clean for the tested rules."
-//
-// Two distinct credentials are the whole premise of these rules. Without them there
-// is no second authorization context to cross, which is a reason the rule could not
-// run and not a property of the target.
+// twoPrincipals requires two distinct credential and routing contexts.
 func twoPrincipals(opts attack.Options) (a, b attack.Principal, err error) {
 	if len(opts.Principals) < 2 {
 		return a, b, fmt.Errorf("%w: this rule compares two authenticated identities and %d "+
@@ -30,10 +16,45 @@ func twoPrincipals(opts attack.Options) (a, b attack.Principal, err error) {
 			attack.ErrInconclusive, len(opts.Principals))
 	}
 	a, b = opts.Principals[0], opts.Principals[1]
-	if a.Token == b.Token {
-		return a, b, fmt.Errorf("%w: principals %q and %q carry the same token, so there is no "+
-			"second authorization context for this rule to cross",
+	aHeaders, bHeaders := principalHeaders(a), principalHeaders(b)
+	if len(aHeaders) == 0 || len(bHeaders) == 0 {
+		return a, b, fmt.Errorf("%w: principals %q and %q each need a bearer token or identity-routing headers",
+			attack.ErrInconclusive, a.Name, b.Name)
+	}
+	sharedAuthorization := aHeaders["authorization"] != "" &&
+		aHeaders["authorization"] == bHeaders["authorization"]
+	if sharedAuthorization || maps.Equal(aHeaders, bHeaders) {
+		return a, b, fmt.Errorf("%w: principals %q and %q do not establish distinct authorization contexts",
 			attack.ErrInconclusive, a.Name, b.Name)
 	}
 	return a, b, nil
+}
+
+// principalHeaders normalizes a principal's effective credentials and routing headers.
+func principalHeaders(p attack.Principal) map[string]string {
+	headers := make(map[string]string, len(p.Headers)+1)
+	if p.Token != "" {
+		headers["authorization"] = "bearer " + p.Token
+	}
+	for name, value := range p.Headers {
+		key := strings.ToLower(name)
+		if key == "authorization" {
+			value = canonicalAuthorization(value)
+		}
+		if value == "" {
+			delete(headers, key)
+		} else {
+			headers[key] = value
+		}
+	}
+	return headers
+}
+
+func canonicalAuthorization(value string) string {
+	value = strings.TrimSpace(value)
+	scheme, credential, ok := strings.Cut(value, " ")
+	if !ok {
+		return value
+	}
+	return strings.ToLower(scheme) + " " + strings.TrimLeft(credential, " ")
 }

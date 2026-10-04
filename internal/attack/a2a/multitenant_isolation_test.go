@@ -13,8 +13,14 @@ import (
 	"github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// tenantOf maps the bearer token to a tenant label for the multi-tenant fixtures.
+// tenantOf maps fixture credentials and routing headers to a tenant.
 func tenantOf(r *http.Request) string {
+	switch r.Header.Get("X-API-Key") {
+	case "key-a":
+		return "A"
+	case "key-b":
+		return "B"
+	}
 	switch r.Header.Get("Authorization") {
 	case "Bearer tok-a":
 		return "A"
@@ -152,6 +158,20 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 			!strings.Contains(f.Evidence, "response: ") {
 			t.Errorf("expected probe and response evidence, got %q", f.Evidence)
 		}
+	}
+}
+
+func TestMultiTenant_HeaderScopedPrincipals(t *testing.T) {
+	ts := tenantServer("vulnerable")
+	defer ts.Close()
+	principals := []attack.Principal{
+		{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-a"}},
+		{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
+	}
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(principals...))
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("want two confirmed cross-tenant reads, got findings=%+v err=%v", findings, err)
 	}
 }
 
