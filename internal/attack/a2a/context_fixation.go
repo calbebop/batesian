@@ -2,7 +2,9 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -72,15 +74,17 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	marker := "batesian-secret-" + vars.RandID
 
 	// Step 1: as A, send under a client-chosen contextId.
-	taskA, returnedCtx, obsA := e.sendUnderContext(ctx, clientA, endpoint, a.Headers, fixedCtx,
-		"batesian ctx-fix probe "+vars.RandID, vars.RandID, "sending a message as principal "+a.Name)
-	if taskA == "" {
-		// No task at all. A server that refuses a client-chosen contextId outright is
-		// behaving correctly, so only an authorization refusal means this rule did not
-		// get to test anything; see errIfAuthRefused.
-		return nil, obsA.errIfAuthRefused()
+	ownerMarker := "batesian ctx-fix probe " + vars.RandID
+	ownerSend := e.sendUnderContext(ctx, clientA, endpoint, a.Headers, fixedCtx,
+		ownerMarker, vars.RandID+"-owner", "sending a message as principal "+a.Name)
+	if ownerSend.taskID == "" {
+		return nil, ownerSend.obs.err()
 	}
-	if returnedCtx != fixedCtx {
+	if ownerSend.contextID == "" {
+		return nil, fmt.Errorf("%w: the owner's task response omitted its contextId",
+			attack.ErrInconclusive)
+	}
+	if ownerSend.contextID != fixedCtx {
 		// The server minted its own contextId rather than honouring the client's, which
 		// is the secure behaviour and a real tested result.
 		return nil, nil
@@ -90,18 +94,33 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 2: open-server discriminator. An unauthenticated message under the
 	// fixed context must be rejected; if it is accepted, the server enforces no
 	// auth at all (not fixation).
-	if anonTask, _, _ := e.sendUnderContext(ctx, unauthClient, endpoint, nil, fixedCtx,
-		"batesian anon "+vars.RandID, vars.RandID, "sending an unauthenticated message"); anonTask != "" {
+	anonSend := e.sendUnderContext(ctx, unauthClient, endpoint, nil, fixedCtx,
+		"batesian anon "+vars.RandID, vars.RandID+"-anon", "sending an unauthenticated message")
+	if anonSend.accepted {
 		return nil, nil
+	}
+	if !anonSend.denied[ownerSend.wire-1] {
+		return nil, fmt.Errorf("%w: anonymous message under the fixed context was not conclusively rejected as unauthorized",
+			attack.ErrInconclusive)
 	}
 
 	// Step 3: as victim B, send a secret marker under the SAME fixed context.
-	taskB, _, obsB := e.sendUnderContext(ctx, clientB, endpoint, b.Headers, fixedCtx, marker, vars.RandID,
+	victimSend := e.sendUnderContext(ctx, clientB, endpoint, b.Headers, fixedCtx, marker, vars.RandID+"-victim",
 		"sending the victim's message as principal "+b.Name)
-	if taskB == "" {
-		// B could not post, so no merge could be confirmed either way. This returned a
-		// clean result while its own comment said the credentials might be invalid.
-		return nil, obsB.err()
+	if victimSend.taskID == "" {
+		if err := victimSend.obs.err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: the victim could not create a task under the fixed context",
+			attack.ErrInconclusive)
+	}
+	if victimSend.contextID != fixedCtx {
+		return nil, fmt.Errorf("%w: the victim's task did not confirm the fixed contextId",
+			attack.ErrInconclusive)
+	}
+	if !anonSend.denied[victimSend.wire-1] {
+		return nil, fmt.Errorf("%w: anonymous continuation was not rejected on the victim's message wire",
+			attack.ErrInconclusive)
 	}
 
 	// Step 4: as A, read the context back. Confirmed only if A can see B's marker.
@@ -109,33 +128,64 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// found" in a history that was never fetched says nothing about the merge.
 	// a2a-artifact-tamper-001 reports the identical unreadable-read-back as not
 	// tested; this step used to return clean.
-	read, contains, readObs := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, taskA, marker, vars.RandID)
+	read, contains, readObs := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, ownerSend.taskID, marker, vars.RandID+"-victim")
 	if !read {
-		return nil, readObs.err()
+		if err := readObs.err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: no task-history read method returned the owner's task",
+			attack.ErrInconclusive)
 	}
 	if !contains {
+		ownRead, ownFound, _ := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers,
+			ownerSend.taskID, ownerMarker, vars.RandID+"-owner")
+		if !ownRead || !ownFound {
+			return nil, fmt.Errorf("%w: the owner's task history did not include its own probe message",
+				attack.ErrInconclusive)
+		}
 		return nil, nil // the history was read; the victim's marker was not merged into A's view
 	}
 
-	return []attack.Finding{e.finding(endpoint, a, b, fixedCtx, taskA, taskB)}, nil
+	return []attack.Finding{e.finding(endpoint, a, b, fixedCtx, ownerSend.taskID, victimSend.taskID)}, nil
 }
 
-// sendUnderContext sends a SendMessage carrying a client-supplied contextId,
-// trying the A2A v1.0 shape first then the v0.3 slash-method shape. It returns
-// the created task id and the contextId the server associated with it.
-// what names the attempt for the reason a caller may have to report. The
-// observation covers both wires: losing the first would let a v1.0-only agent that
-// refuses for auth reasons look like one with no task surface, since the v0.3
-// fallback answers -32601 and that maps to a clean result.
+type contextSendResult struct {
+	taskID, contextID string
+	accepted          bool
+	wire              int
+	denied            [2]bool
+	obs               setupObservation
+}
+
+// sendUnderContext tries v1.0 and v0.3 while retaining each wire's auth result.
 func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	extraHeaders map[string]string, contextID, text, randID, what string) (taskID, returnedCtx string, obs setupObservation) {
+	extraHeaders map[string]string, contextID, text, randID, what string) contextSendResult {
+	var result contextSendResult
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
+	requestID := "batesian-ctxfix-send-" + randID
+	acceptReply := func(resp *attack.Response, err error) bool {
+		if err != nil || resp == nil || !resp.IsSuccess() {
+			return false
+		}
+		_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+		return valid && !hasError
+	}
+	authRejected := func(resp *attack.Response) bool {
+		if resp == nil {
+			return false
+		}
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			return true
+		}
+		_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+		return resp.IsSuccess() && valid && hasError && attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body))
+	}
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-ctxfix-send-" + randID,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"message": map[string]interface{}{
@@ -146,11 +196,15 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+	result.accepted = acceptReply(resp, err)
+	if result.accepted {
+		result.wire = 1
+	} else {
+		result.denied[0] = authRejected(resp)
+		result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-ctxfix-send-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -161,16 +215,20 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 				},
 			},
 		})
+		result.accepted = acceptReply(resp, err)
+		if result.accepted {
+			result.wire = 2
+		} else {
+			result.denied[1] = authRejected(resp)
+			result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+			return result
+		}
 	}
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
-		return "", "", obs
+	result.taskID, result.contextID = extractTaskContext(resp.Body)
+	if result.taskID == "" {
+		result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
 	}
-	taskID, returnedCtx = extractTaskContext(resp.Body)
-	if taskID == "" {
-		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
-	}
-	return taskID, returnedCtx, obs
+	return result
 }
 
 // taskHistoryContains reads a task via GetTask (v1.0) / tasks/get (v0.3) and
@@ -187,27 +245,81 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
-	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-ctxfix-get-" + randID,
-		"method":  "GetTask",
-		"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
-	})
-	if err == nil && resp.IsAccepted() {
-		return true, resp.ContainsAny(marker), setupObservation{}
+	for _, shape := range []struct {
+		method  string
+		headers map[string]string
+	}{
+		{"GetTask", v1Headers},
+		{"tasks/get", extraHeaders},
+	} {
+		requestID := "batesian-ctxfix-get-" + randID + "-" + shape.method
+		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{
+			"jsonrpc": "2.0", "id": requestID, "method": shape.method,
+			"params": map[string]interface{}{"id": taskID, "historyLength": 50},
+		})
+		if err == nil && resp != nil && resp.IsSuccess() {
+			readable, found := contextTaskHistoryHasText(resp.Body, requestID, taskID, marker)
+			read = read || readable
+			if found {
+				return true, true, setupObservation{}
+			}
+			if !readable {
+				obs.observe(setupObservation{setupOtherRefusal,
+					fmt.Sprintf("%s at %s did not return task %s with a usable history", what, endpoint, taskID)})
+			}
+			continue
+		}
+		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
 	}
-	obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
-	resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      "batesian-ctxfix-get-" + randID,
-		"method":  "tasks/get",
-		"params":  map[string]interface{}{"id": taskID, "historyLength": 50},
-	})
-	if err == nil && resp.IsAccepted() {
-		return true, resp.ContainsAny(marker), setupObservation{}
+	return read, false, obs
+}
+
+func contextTaskHistoryHasText(body []byte, requestID, taskID, marker string) (readable, found bool) {
+	var reply struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      string          `json:"id"`
+		Result  json.RawMessage `json:"result"`
 	}
-	obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
-	return false, false, obs
+	if json.Unmarshal(body, &reply) != nil || reply.JSONRPC != "2.0" || reply.ID != requestID {
+		return false, false
+	}
+	type task struct {
+		ID      string          `json:"id"`
+		History json.RawMessage `json:"history"`
+	}
+	var result struct {
+		task
+		Task *task `json:"task"`
+	}
+	if json.Unmarshal(reply.Result, &result) != nil {
+		return false, false
+	}
+	candidates := []task{result.task}
+	if result.Task != nil {
+		candidates = append(candidates, *result.Task)
+	}
+	for _, candidate := range candidates {
+		if candidate.ID != taskID {
+			continue
+		}
+		var history []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		}
+		if json.Unmarshal(candidate.History, &history) != nil || history == nil {
+			continue
+		}
+		readable = true
+		for _, message := range history {
+			for _, part := range message.Parts {
+				if strings.Contains(part.Text, marker) {
+					return true, true
+				}
+			}
+		}
+	}
+	return readable, false
 }
 
 // finding builds the confirmed context-fixation cross-principal disclosure.

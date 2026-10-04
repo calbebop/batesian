@@ -351,11 +351,14 @@ with valid, distinct credentials.
 
 Sequence: (1) as attacker A, send under a client-chosen contextId - if the server
 returns its own contextId instead, it mints server-side, so no finding; (2)
-confirm an unauthenticated message under the fixed context is rejected (else it's
-an open server, not fixation); (3) as victim B, send a secret marker under the
-same contextId; (4) as A, read the context back. A **confirmed** finding is
-raised only when A can see B's marker - proving the pre-seeded contextId merged
-the two principals' conversations. Distinct from `a2a-multitenant-isolation-001`
+confirm an unauthenticated message under the fixed context is rejected on the
+same protocol wire (else it is open or untested); (3) as victim B, send a secret
+marker under the same contextId and confirm B's task reports it; (4) as A, read
+the context back. A **confirmed** finding requires B's marker in A's requested
+task history, not response metadata or another task.
+The read-back must match the request and task IDs. A clean result also requires
+A's own marker in that history; missing history is inconclusive. Distinct from
+`a2a-multitenant-isolation-001`
 (object-level read by task id) and `a2a-delegation-integrity-001` (continuing
 another principal's task): here the vector is the client-controlled context
 identifier itself.
