@@ -35,11 +35,13 @@ func scopeOpts() attack.Options {
 }
 
 type scopeServer struct {
-	auth              bool
-	enforceWriteScope bool
-	extraTool         bool
-	modernOnly        bool
-	toolCalls         atomic.Int32
+	auth                   bool
+	enforceWriteScope      bool
+	extraTool              bool
+	modernOnly             bool
+	requireInitializedAuth bool
+	initialized            atomic.Bool
+	toolCalls              atomic.Int32
 }
 
 func (s *scopeServer) validToken(token string) bool {
@@ -131,6 +133,14 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				}, http.StatusOK)
 				return
 			case "notifications/initialized":
+				if s.requireInitializedAuth {
+					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					if !s.validToken(token) {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					s.initialized.Store(true)
+				}
 				w.WriteHeader(http.StatusAccepted)
 				return
 			}
@@ -139,6 +149,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if s.auth && !s.validToken(token) {
 			rpcErr(-32000, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
+			return
+		}
+		if s.requireInitializedAuth && !s.initialized.Load() {
+			rpcErr(-32000, "session not initialized", http.StatusConflict)
 			return
 		}
 
@@ -220,6 +234,21 @@ func TestScope_VulnerableFires(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, "limited principal") {
 		t.Errorf("evidence should name the limited principal's dispatch, got: %q", f.Evidence)
+	}
+}
+
+func TestScope_InitializedNotificationUsesPrincipal(t *testing.T) {
+	s := &scopeServer{auth: true, requireInitializedAuth: true}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !s.initialized.Load() || len(findings) != 1 {
+		t.Fatalf("expected an authenticated session and one finding, got initialized=%t findings=%d: %+v",
+			s.initialized.Load(), len(findings), findings)
 	}
 }
 
