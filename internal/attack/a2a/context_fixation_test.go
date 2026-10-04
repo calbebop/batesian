@@ -47,6 +47,56 @@ func contextServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if mode == "victim-no-send" && tenant == "B" {
+				rpcErr(w, id, -32601, "Method not found")
+				return
+			}
+			if (mode == "legacy-only" || mode == "legacy-wire-auth-mismatch") && method == "SendMessage" && tenant != "" {
+				rpcErr(w, id, -32601, "Method not found")
+				return
+			}
+			if tenant == "" && mode == "wire-auth-mismatch" {
+				if method == "SendMessage" {
+					rpcErr(w, id, -32602, "invalid params")
+				} else {
+					rpcErr(w, id, -32600, "authentication required")
+				}
+				return
+			}
+			if tenant == "" && mode == "legacy-wire-auth-mismatch" {
+				if method == "SendMessage" {
+					rpcErr(w, id, -32600, "authentication required")
+				} else {
+					rpcErr(w, id, -32602, "invalid params")
+				}
+				return
+			}
+			if tenant == "" && mode == "uncorrelated-auth" {
+				if method == "SendMessage" {
+					rpcErr(w, "unrelated", -32600, "authentication required")
+				} else {
+					rpcErr(w, id, -32601, "Method not found")
+				}
+				return
+			}
+			if tenant == "" && mode == "server-error-auth-body" {
+				if method == "SendMessage" {
+					w.WriteHeader(http.StatusInternalServerError)
+					rpcErr(w, id, -32600, "authentication required")
+				} else {
+					rpcErr(w, id, -32601, "Method not found")
+				}
+				return
+			}
+			if tenant == "" && mode == "anon-message-only" {
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+					"result": map[string]string{"messageId": "anon-reply", "role": "agent"}})
+				return
+			}
+			if tenant == "" && mode == "anon-validation-error" {
+				rpcErr(w, id, -32602, "invalid params")
+				return
+			}
 			if mode != "open" && tenant == "" {
 				rpcErr(w, id, -32600, "authentication required")
 				return
@@ -72,8 +122,30 @@ func contextServer(mode string) *httptest.Server {
 			ctxMsgs[ctxID] = append(ctxMsgs[ctxID], ctxMsg{tenant: tn, text: text, taskID: taskID})
 			taskCtx[taskID] = ctxID
 			mu.Unlock()
+			if (mode == "owner-missing-context" && tenant == "A") ||
+				(mode == "victim-missing-context" && tenant == "B") {
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+					"result": map[string]string{"id": taskID}})
+				return
+			}
+			if mode == "owner-message-only" && tenant == "A" {
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+					"result": map[string]string{"messageId": "owner-reply", "role": "agent"}})
+				return
+			}
+			if mode == "owner-uncorrelated" && tenant == "A" {
+				id = "unrelated"
+			}
+			if mode == "victim-other-context" && tenant == "B" {
+				taskResult(w, id, taskID, "other-context")
+				return
+			}
 			taskResult(w, id, taskID, ctxID)
 		case "GetTask", "tasks/get":
+			if mode == "read-absent" {
+				rpcErr(w, id, -32601, "Method not found")
+				return
+			}
 			if mode == "read-fails" {
 				// The read-back breaks at the gateway: sends work, but nothing
 				// about the merge can be observed.
@@ -88,8 +160,13 @@ func contextServer(mode string) *httptest.Server {
 			mu.Lock()
 			ctxID := taskCtx[taskID]
 			var hist []ctxMsg
+			victimText, victimTask := "", ""
 			for _, m := range ctxMsgs[ctxID] {
-				if mode == "isolated" && m.taskID != taskID {
+				if m.tenant == "B" {
+					victimText, victimTask = m.text, m.taskID
+				}
+				if (mode == "isolated" || mode == "metadata-echo" || mode == "artifact-echo" ||
+					mode == "status-echo" || mode == "history-metadata") && m.taskID != taskID {
 					continue // task-scoped: no cross-principal merge
 				}
 				hist = append(hist, m)
@@ -97,6 +174,57 @@ func contextServer(mode string) *httptest.Server {
 			mu.Unlock()
 			if ctxID == "" {
 				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			if mode == "history-empty" || mode == "history-missing" || mode == "metadata-echo" ||
+				mode == "artifact-echo" || mode == "status-echo" || mode == "history-metadata" ||
+				mode == "wrong-task" || mode == "uncorrelated-get" || mode == "wrapped-history" ||
+				mode == "messages-with-task-id" {
+				result := map[string]interface{}{"id": taskID, "contextId": ctxID}
+				history := make([]interface{}, 0, len(hist))
+				for _, m := range hist {
+					message := map[string]interface{}{"role": "user", "parts": []interface{}{
+						map[string]string{"text": m.text},
+					}}
+					if mode == "history-metadata" {
+						message["metadata"] = map[string]string{"echo": victimText}
+					}
+					if mode == "messages-with-task-id" {
+						message["taskId"] = m.taskID
+					}
+					history = append(history, message)
+				}
+				if mode != "history-missing" {
+					result["history"] = history
+				}
+				if mode == "history-empty" {
+					result["history"] = []interface{}{}
+				}
+				if mode == "metadata-echo" {
+					result["metadata"] = map[string]string{"echo": victimText}
+				}
+				if mode == "artifact-echo" {
+					result["artifacts"] = []interface{}{map[string]interface{}{
+						"parts": []interface{}{map[string]string{"text": victimText}},
+					}}
+				}
+				if mode == "status-echo" {
+					result["status"] = map[string]interface{}{"message": map[string]interface{}{
+						"parts": []interface{}{map[string]string{"text": victimText}},
+					}}
+				}
+				if mode == "wrong-task" {
+					result["id"] = victimTask
+				}
+				if mode == "wrapped-history" {
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": result}})
+					return
+				}
+				if mode == "uncorrelated-get" {
+					id = "unrelated"
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
 				return
 			}
 			writeHistory(w, id, taskID, ctxID, hist)
@@ -226,6 +354,60 @@ func TestContextFixation_OpenServerIsNotFixation(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against a fully-open server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestContextFixation_ReadbackEvidence(t *testing.T) {
+	tests := []struct {
+		mode         string
+		finding      bool
+		inconclusive bool
+	}{
+		{"metadata-echo", false, false},
+		{"artifact-echo", false, false},
+		{"status-echo", false, false},
+		{"history-metadata", false, false},
+		{"wrong-task", false, true},
+		{"uncorrelated-get", false, true},
+		{"history-missing", false, true},
+		{"history-empty", false, true},
+		{"read-absent", false, true},
+		{"wrapped-history", true, false},
+		{"messages-with-task-id", true, false},
+		{"anon-message-only", false, false},
+		{"anon-validation-error", false, true},
+		{"wire-auth-mismatch", false, true},
+		{"legacy-wire-auth-mismatch", false, true},
+		{"uncorrelated-auth", false, true},
+		{"server-error-auth-body", false, true},
+		{"legacy-only", true, false},
+		{"owner-missing-context", false, true},
+		{"owner-message-only", false, true},
+		{"owner-uncorrelated", false, true},
+		{"victim-missing-context", false, true},
+		{"victim-other-context", false, true},
+		{"victim-no-send", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := contextServer(tc.mode)
+			defer srv.Close()
+			findings, err := a2a.NewContextFixationExecutor(testRuleCtx()).
+				Execute(context.Background(), srv.URL, mtOpts(tenantPrincipals()...))
+			if errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("findings=%+v err=%v; want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+			if !tc.inconclusive && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			want := 0
+			if tc.finding {
+				want = 1
+			}
+			if len(findings) != want {
+				t.Fatalf("findings=%+v; want %d", findings, want)
+			}
+		})
 	}
 }
 
