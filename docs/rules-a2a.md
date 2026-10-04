@@ -187,8 +187,10 @@ Detects broken object-level authorization (IDOR / BOLA) on task lookup using an
 **auth-enforcement discriminator** so an open server is not mislabelled. It (1)
 creates a task as the authenticated owner, (2) confirms the server *rejects* the
 same creation with no credentials, then (3) reads the owner's task from an
-unauthenticated connection. The finding fires only when creation was auth-gated
-yet the unauthenticated read still returns the task. If anonymous creation
+unauthenticated connection. It checks JSON-RPC `GetTask` and advertised HTTP+JSON
+`GET /tasks/{id}` (v1.0) or `/v1/tasks/{id}` (v0.3). The REST path first confirms
+that the owner can read the stored probe text. The finding fires only when creation
+was auth-gated yet the unauthenticated read returns that text. If anonymous creation
 succeeds, the server enforces no auth at all and no IDOR finding is raised (that
 posture belongs to other checks). The rule additionally probes `GET /v1/tasks`
 and `/tasks` for unauthenticated server-wide task disclosure. It follows REST

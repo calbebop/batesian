@@ -27,6 +27,24 @@ func NewTaskIDORExecutor(r attack.RuleContext) *TaskIDORExecutor {
 }
 
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	findings, jsonErr := e.probeJSONRPC(ctx, target, opts)
+	if len(findings) != 0 {
+		return findings, nil
+	}
+	restFindings, restErr, tested := e.probeRESTTaskReads(ctx, target, opts)
+	if len(restFindings) != 0 {
+		return restFindings, nil
+	}
+	if restErr != nil {
+		return nil, restErr
+	}
+	if tested && jsonErr == attack.ErrInconclusive {
+		return nil, nil
+	}
+	return nil, jsonErr
+}
+
+func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	var findings []attack.Finding
@@ -182,6 +200,16 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 // taskReadMarkerLocation checks content within the requested Task, not response metadata.
 func taskReadMarkerLocation(body []byte, taskID, marker string) (string, bool) {
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || len(envelope.Result) == 0 {
+		return "", false
+	}
+	return taskMarkerLocation(envelope.Result, taskID, marker)
+}
+
+func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 	type content struct {
 		Parts json.RawMessage `json:"parts"`
 	}
@@ -193,17 +221,15 @@ func taskReadMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 		Status    json.RawMessage `json:"status"`
 	}
 	var envelope struct {
-		Result *struct {
-			task
-			Task *task `json:"task"`
-		} `json:"result"`
+		task
+		Task *task `json:"task"`
 	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+	if json.Unmarshal(body, &envelope) != nil {
 		return "", false
 	}
-	candidates := []task{envelope.Result.task}
-	if envelope.Result.Task != nil {
-		candidates = append(candidates, *envelope.Result.Task)
+	candidates := []task{envelope.task}
+	if envelope.Task != nil {
+		candidates = append(candidates, *envelope.Task)
 	}
 	matched := false
 	for _, candidate := range candidates {
