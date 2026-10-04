@@ -36,17 +36,7 @@ func countNonEmpty(items []map[string]json.RawMessage) int {
 	return n
 }
 
-// listedTaskIDs returns the task identifiers a list response carried.
-//
-// Identifiers, never key names: a2a-task-enumeration-001 asks whether one
-// principal's task appears in another principal's listing, and that question can only
-// be answered by comparing ids. The same body-shape knowledge as countListedTasks
-// lives here so the two cannot disagree about what a list looks like.
-//
-// Three envelopes are read. ListTasks over JSON-RPC answers {"result":{"tasks":[...]}}
-// and, unlike a send-style reply, is not a oneof, so the tasks sit directly under
-// result. The other two are the bare {"tasks":[...]} and the plain array that REST
-// bindings return.
+// listedTaskIDs reads task IDs from JSON-RPC and REST list responses.
 func listedTaskIDs(body []byte) []string {
 	type task struct {
 		ID     string `json:"id"`
@@ -84,6 +74,27 @@ func listedTaskIDs(body []byte) []string {
 		return collect(bare)
 	}
 	return nil
+}
+
+// restTaskPageToken accepts legacy lists without a continuation field.
+func restTaskPageToken(body []byte) (string, bool) {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(body, &envelope) == nil && envelope != nil {
+		raw, present := envelope["nextPageToken"]
+		if !present {
+			return "", true
+		}
+		var token *string
+		if json.Unmarshal(raw, &token) != nil || token == nil {
+			return "", false
+		}
+		return *token, true
+	}
+	var bare []json.RawMessage
+	if json.Unmarshal(body, &bare) == nil && bare != nil {
+		return "", true
+	}
+	return "", false
 }
 
 // containsTaskID reports whether ids includes want.

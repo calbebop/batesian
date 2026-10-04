@@ -191,7 +191,9 @@ unauthenticated connection. The finding fires only when creation was auth-gated
 yet the unauthenticated read still returns the task. If anonymous creation
 succeeds, the server enforces no auth at all and no IDOR finding is raised (that
 posture belongs to other checks). The rule additionally probes `GET /v1/tasks`
-and `/tasks` for unauthenticated server-wide task disclosure.
+and `/tasks` for unauthenticated server-wide task disclosure. It follows REST
+`nextPageToken` cursors for up to ten pages per endpoint; incomplete scans are
+inconclusive rather than clean.
 
 **Precondition:** supply `--token` so there is an authenticated owner identity to
 test against. Without a token the IDOR step is skipped; the unauthenticated
