@@ -58,7 +58,7 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 		sendHeaders["Content-Type"] = "application/a2a+json"
 	}
 	ownerResp, err := owner.POST(ctx, sendURL, sendHeaders,
-		restIDORSendRequest(randID+"-owner-"+version, marker, version))
+		restTaskSendRequest(randID+"-owner-"+version, marker, version))
 	if err != nil || ownerResp == nil {
 		return nil, fmt.Errorf("%w: REST task creation at %s did not answer", attack.ErrInconclusive, sendURL), false
 	}
@@ -95,7 +95,7 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 			attack.ErrInconclusive, taskID), false
 	}
 	anonResp, err := anon.POST(ctx, sendURL, sendHeaders,
-		restIDORSendRequest(randID+"-anon-"+version, "batesian anonymous probe "+randID, version))
+		restTaskSendRequest(randID+"-anon-"+version, "batesian anonymous probe "+randID, version))
 	if err != nil || anonResp == nil {
 		return nil, fmt.Errorf("%w: anonymous REST task creation at %s did not answer",
 			attack.ErrInconclusive, sendURL), false
@@ -145,18 +145,4 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 		Remediation: e.rule.Remediation,
 		TargetURL:   readURL,
 	}}, nil, true
-}
-
-func restIDORSendRequest(messageID, text, version string) map[string]interface{} {
-	role := "ROLE_USER"
-	part := map[string]string{"text": text}
-	if version != "1.0" {
-		role = "user"
-		part["kind"] = "text"
-	}
-	return map[string]interface{}{"message": map[string]interface{}{
-		"messageId": "batesian-" + messageID,
-		"role":      role,
-		"parts":     []interface{}{part},
-	}}
 }
