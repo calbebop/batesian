@@ -251,6 +251,19 @@ func TestTaskIDOR_TwoPrincipalsSameTokenIsNotTested(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_EquivalentAuthorizationHeadersAreNotTested(t *testing.T) {
+	ts := ctxScopedServer(t, ctxScopedConfig{})
+	defer ts.Close()
+
+	findings, err := execTaskIDOR(t, ts, attack.Options{Principals: []attack.Principal{
+		{Name: "a", Token: "token-a", Headers: map[string]string{"authorization": "Bearer shared"}},
+		{Name: "b", Token: "token-b", Headers: map[string]string{"Authorization": "bearer  shared"}},
+	}})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("one effective credential cannot prove an IDOR, got findings=%+v err=%v", findings, err)
+	}
+}
+
 // A server that binds tasks to the authorization context is CLEAN, and clean rather
 // than not tested: two real identities were used and the second was refused.
 func TestTaskIDOR_ContextScopedIsClean(t *testing.T) {
