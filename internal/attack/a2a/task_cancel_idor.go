@@ -138,7 +138,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 	})
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
@@ -154,13 +154,13 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 	}
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
 	if taskID == "" {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 	}
 	return taskID, obs
 }

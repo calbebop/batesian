@@ -139,3 +139,32 @@ func TestTwoPrincipals(t *testing.T) {
 		}
 	})
 }
+
+func TestPrincipalCredentialPresent(t *testing.T) {
+	const target = "https://agent.example/a2a"
+	vars := attack.NewVars(target, "")
+	bare := attack.NewHTTPClient(attack.Options{}, vars)
+	withToken := attack.NewHTTPClient(attack.Options{Token: "owner-token"}, vars)
+	tests := []struct {
+		name    string
+		client  *attack.HTTPClient
+		url     string
+		headers map[string]string
+		want    bool
+	}{
+		{"anonymous", bare, target, nil, false},
+		{"bearer token", withToken, target, nil, true},
+		{"header-only credential", bare, target, map[string]string{"X-API-Key": "key-a"}, true},
+		{"empty override", withToken, target, map[string]string{"authorization": ""}, false},
+		{"empty override with another credential", withToken, target,
+			map[string]string{"authorization": "", "X-API-Key": "key-a"}, true},
+		{"off-origin token", withToken, "https://other.example/a2a", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := principalCredentialPresent(tt.client, tt.url, tt.headers); got != tt.want {
+				t.Errorf("principalCredentialPresent() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

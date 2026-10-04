@@ -58,3 +58,20 @@ func canonicalAuthorization(value string) string {
 	}
 	return strings.ToLower(scheme) + " " + strings.TrimLeft(credential, " ")
 }
+
+// principalCredentialPresent checks the credentials on a principal's request.
+func principalCredentialPresent(c *attack.HTTPClient, endpoint string, extra map[string]string) bool {
+	otherCredential := false
+	authorization, overridesAuthorization := "", false
+	for name, value := range extra {
+		if strings.EqualFold(name, "Authorization") {
+			authorization, overridesAuthorization = value, true
+		} else if strings.TrimSpace(value) != "" {
+			otherCredential = true
+		}
+	}
+	if overridesAuthorization {
+		return canonicalAuthorization(authorization) != "" || otherCredential
+	}
+	return c.PresentsCredential(endpoint) || otherCredential
+}

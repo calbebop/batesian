@@ -75,9 +75,9 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 	}
 	if taskID == "" {
 		return nil, classifyTaskSetup("creating a REST cancel probe task as principal "+a.Name,
-			sendURL, owner.PresentsCredential(sendURL), resp).err(), false
+			sendURL, principalCredentialPresent(owner, sendURL, a.Headers), resp).err(), false
 	}
-	if !owner.PresentsCredential(sendURL) {
+	if !principalCredentialPresent(owner, sendURL, a.Headers) {
 		return nil, fmt.Errorf("%w: REST task creation at %s used no owner credential", attack.ErrInconclusive, sendURL), true
 	}
 	readURL := endpoint.AppendPath(tasksURL, "/"+url.PathEscape(taskID))

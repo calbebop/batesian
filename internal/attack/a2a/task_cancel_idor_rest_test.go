@@ -35,6 +35,9 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer tok-") {
 			caller = ""
 		}
+		if caller == "" {
+			caller = strings.TrimPrefix(r.Header.Get("X-API-Key"), "key-")
+		}
 		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
 			baseURL := "http://" + r.Host + "/agent"
 			if mode == "off-origin" {
@@ -229,5 +232,44 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 				t.Fatal("finding without a REST cancel request")
 			}
 		})
+	}
+}
+
+func TestTaskCancelIDOR_REST_HeaderOnlyCredentials(t *testing.T) {
+	srv, hits, mu := restCancelAgent(t, "cross-leak", false, false)
+	defer srv.Close()
+	findings, err := a2a.NewTaskCancelIDORExecutor(attack.RuleContext{
+		ID: "a2a-task-cancel-idor-001", Name: "A2A Cross-Principal Task Cancellation",
+	}).Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-a"}},
+			{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
+		},
+	})
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Title, "non-owning") {
+		t.Fatalf("want cross-principal REST cancel finding, got findings=%+v err=%v", findings, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*hits) == 0 {
+		t.Fatal("finding without a REST cancel request")
+	}
+}
+
+func TestTaskCancelIDOR_REST_HeaderCredentialRefused(t *testing.T) {
+	srv, _, _ := restCancelAgent(t, "secure", false, false)
+	defer srv.Close()
+	_, err := a2a.NewTaskCancelIDORExecutor(attack.RuleContext{
+		ID: "a2a-task-cancel-idor-001", Name: "A2A Cross-Principal Task Cancellation",
+	}).Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-invalid"}},
+			{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
+		},
+	})
+	if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "credential this scan was given") {
+		t.Fatalf("want refused-credential diagnostic, got %v", err)
 	}
 }
