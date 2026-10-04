@@ -10,11 +10,7 @@ import (
 	endpointpkg "github.com/calbebop/batesian/internal/endpoint"
 )
 
-// A2A agent cards declare where the JSON-RPC transport actually lives; it is not
-// required to be at the target root. resolveA2AEndpoint discovers that endpoint
-// the way a real client would, instead of assuming the root path. Without this,
-// every JSON-RPC rule silently misses a spec-compliant server that mounts its
-// JSON-RPC handler at, for example, /a2a/jsonrpc.
+// Agent cards may put JSON-RPC off the target root.
 
 // a2aDiscoveryCard parses only the agent-card fields needed to locate the
 // JSON-RPC endpoint, across both the v1.0 and v0.3 card shapes.
@@ -71,24 +67,26 @@ func resolveHTTPJSONBase(ctx context.Context, client *attack.HTTPClient, baseURL
 	return ""
 }
 
-// resolveA2AEndpoint returns the JSON-RPC endpoint to probe and whether a usable
-// endpoint was found. It prefers the URL the agent card declares for the JSON-RPC
-// transport; failing that, it probes a small set of conventional paths. The
-// returned endpoint is always pinned to the target's scheme+host (see
-// pinToTargetOrigin), so a card that points elsewhere never redirects traffic off
-// the operator's authorized target. When ok is false, no JSON-RPC endpoint
-// responded and callers should not report the target as tested.
+const maxCardJSONRPCProbes = 16
+
+// resolveA2AEndpoint returns a reachable JSON-RPC URL on the target origin.
+// Advertised interfaces take precedence over conventional paths.
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
 	if card, found := fetchDiscoveryCard(ctx, client, baseURL); found {
-		if cardURL := selectJSONRPCURL(card); cardURL != "" {
-			// The card corroborates weak JSON-RPC or auth evidence. A dead path falls
-			// through to conventional candidates.
+		seen := map[string]bool{}
+		for _, cardURL := range jsonRPCURLs(card) {
 			pinned := pinToTargetOrigin(cardURL, baseURL)
+			if seen[pinned] {
+				continue
+			}
+			if len(seen) == maxCardJSONRPCProbes {
+				break
+			}
+			seen[pinned] = true
+			// The card corroborates weak JSON-RPC or auth evidence.
 			if probeA2AEvidence(ctx, client, pinned) != a2aEvidenceNone {
 				return pinned, true
 			}
-			// Fall through: the card's claim did not hold at this host, so try the
-			// conventional paths rather than reporting an unreachable endpoint.
 		}
 	}
 	// Strong evidence is accepted outright. Weak evidence is remembered and
@@ -158,26 +156,31 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 	return a2aDiscoveryCard{}, false
 }
 
-// selectJSONRPCURL picks the JSON-RPC service URL from a card. It checks the v1.0
-// supportedInterfaces, then the v0.3 additionalInterfaces, then the v0.3
-// top-level url (including its legacy JSONRPC default). Scheme-less entries
-// (e.g. a gRPC "host:port") are skipped, since the JSON-RPC probe needs http(s).
-func selectJSONRPCURL(card a2aDiscoveryCard) string {
+// jsonRPCURLs lists advertised JSON-RPC URLs in preference order.
+func jsonRPCURLs(card a2aDiscoveryCard) []string {
+	var urls []string
+	seen := map[string]bool{}
+	add := func(rawURL string) {
+		if hasHTTPScheme(rawURL) && !seen[rawURL] {
+			seen[rawURL] = true
+			urls = append(urls, rawURL)
+		}
+	}
 	for _, iface := range card.SupportedInterfaces {
-		if iface.isJSONRPC() && hasHTTPScheme(iface.URL) {
-			return iface.URL
+		if iface.isJSONRPC() {
+			add(iface.URL)
 		}
 	}
 	for _, iface := range card.AdditionalInterfaces {
-		if iface.isJSONRPC() && hasHTTPScheme(iface.URL) {
-			return iface.URL
+		if iface.isJSONRPC() {
+			add(iface.URL)
 		}
 	}
 	legacyJSONRPC := card.PreferredTransport == "" || strings.EqualFold(card.PreferredTransport, "JSONRPC")
-	if card.SupportedInterfaces == nil && legacyJSONRPC && hasHTTPScheme(card.URL) {
-		return card.URL
+	if card.SupportedInterfaces == nil && legacyJSONRPC {
+		add(card.URL)
 	}
-	return ""
+	return urls
 }
 
 // pinToTargetOrigin keeps the operator's target scheme+host and applies only the
