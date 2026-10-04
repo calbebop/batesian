@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -450,6 +452,138 @@ func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
 				}
 				if !strings.Contains(findings[0].Evidence, "task-owner") {
 					t.Fatalf("finding must identify the disclosed owner task: %s", findings[0].Evidence)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_PaginatedRESTList(t *testing.T) {
+	const escapedCursor = "a+b &/?"
+	tests := []struct {
+		name         string
+		page         func(string, int) (int, interface{})
+		wantCalls    int
+		wantFinding  bool
+		inconclusive bool
+	}{
+		{
+			name: "owner task on second page",
+			page: func(token string, call int) (int, interface{}) {
+				if call == 1 {
+					return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": escapedCursor}
+				}
+				return 200, map[string]interface{}{"tasks": []interface{}{map[string]string{"id": "task-owner"}}, "nextPageToken": ""}
+			},
+			wantCalls: 2, wantFinding: true,
+		},
+		{
+			name: "scoped list ends on second page",
+			page: func(token string, call int) (int, interface{}) {
+				if call == 1 {
+					return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": "next"}
+				}
+				return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": ""}
+			},
+			wantCalls: 2,
+		},
+		{
+			name: "repeated cursor",
+			page: func(string, int) (int, interface{}) {
+				return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": "repeat"}
+			},
+			wantCalls: 2, inconclusive: true,
+		},
+		{
+			name: "page limit",
+			page: func(_ string, call int) (int, interface{}) {
+				return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": fmt.Sprintf("page-%d", call)}
+			},
+			wantCalls: 10, inconclusive: true,
+		},
+		{
+			name: "failed continuation",
+			page: func(_ string, call int) (int, interface{}) {
+				if call == 2 {
+					return 500, nil
+				}
+				return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": "next"}
+			},
+			wantCalls: 2, inconclusive: true,
+		},
+		{
+			name: "invalid cursor",
+			page: func(string, int) (int, interface{}) {
+				return 200, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": 42}
+			},
+			wantCalls: 1, inconclusive: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var tokens []string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					if r.URL.Path != "/v1/tasks" {
+						http.NotFound(w, r)
+						return
+					}
+					mu.Lock()
+					tokens = append(tokens, r.URL.Query().Get("pageToken"))
+					call := len(tokens)
+					mu.Unlock()
+					status, body := tc.page(r.URL.Query().Get("pageToken"), call)
+					if status != http.StatusOK {
+						w.WriteHeader(status)
+						return
+					}
+					writeJSON(w, body)
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "SendMessage", "message/send":
+					if hasOwnerAuth(r) {
+						taskResult(w, id, "task-owner", "ctx-owner")
+					} else {
+						rpcErr(w, id, -32600, "authentication required")
+					}
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+			mu.Lock()
+			gotTokens := append([]string(nil), tokens...)
+			mu.Unlock()
+			if len(gotTokens) != tc.wantCalls {
+				t.Fatalf("GET /v1/tasks calls = %d, want %d (tokens: %q)", len(gotTokens), tc.wantCalls, gotTokens)
+			}
+			if tc.inconclusive != errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v; want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+			if !tc.inconclusive && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			wantFindings := 0
+			if tc.wantFinding {
+				wantFindings = 1
+			}
+			if len(findings) != wantFindings {
+				t.Fatalf("findings=%+v; want %d", findings, wantFindings)
+			}
+			if tc.wantFinding {
+				if gotTokens[1] != escapedCursor {
+					t.Fatalf("second page token = %q, want %q", gotTokens[1], escapedCursor)
+				}
+				u, parseErr := url.Parse(findings[0].TargetURL)
+				if parseErr != nil || u.Query().Get("pageToken") != escapedCursor {
+					t.Fatalf("finding target does not identify the leaking page: %q", findings[0].TargetURL)
 				}
 			}
 		})

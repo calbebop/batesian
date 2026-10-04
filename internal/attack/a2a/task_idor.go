@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -251,41 +252,80 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 	}
 	var probe taskListProbe
 	for _, le := range listEndpoints {
-		listResp, err := unauthClient.GET(ctx, le, nil)
-		if err == nil && listResp.StatusCode != 404 {
-			probe.reached = true
-		}
-		if err == nil && listResp.IsSuccess() {
+		next := ""
+		seen := map[string]bool{}
+		for page := 0; page < maxTaskListPages; page++ {
+			pageURL := le
+			if next != "" {
+				u, err := url.Parse(le)
+				if err != nil {
+					probe.unverified = true
+					break
+				}
+				query := u.Query()
+				query.Set("pageToken", next)
+				u.RawQuery = query.Encode()
+				pageURL = u.String()
+			}
+			listResp, err := unauthClient.GET(ctx, pageURL, nil)
+			if err != nil || listResp == nil {
+				if page > 0 {
+					probe.unverified = true
+				}
+				break
+			}
+			if listResp.StatusCode != 404 {
+				probe.reached = true
+			}
+			if !listResp.IsSuccess() {
+				if page > 0 {
+					probe.unverified = true
+				}
+				break
+			}
 			ids := listedTaskIDs(listResp.Body)
 			if len(ids) == 0 && countListedTasks(listResp.Body) > 0 {
 				probe.unverified = true
 			}
-			if !containsTaskID(ids, ownerTaskID) {
-				for _, id := range ids {
-					if id != anonTaskID {
-						probe.unverified = true
-					}
+			if containsTaskID(ids, ownerTaskID) {
+				if !ownerProtected {
+					probe.unverified = true
+				} else {
+					probe.findings = []attack.Finding{{
+						RuleID:     e.rule.ID,
+						RuleName:   e.rule.Name,
+						Severity:   "high",
+						Confidence: attack.ConfirmedExploit,
+						Title:      "A2A task list exposes an authenticated owner's task to an anonymous caller",
+						Description: fmt.Sprintf(
+							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation but did not scope the task list to the caller.", pageURL, ownerTaskID),
+						Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: %s",
+							listResp.StatusCode, pageURL, ownerTaskID, snippet(listResp.Body, 400)),
+						Remediation: e.rule.Remediation,
+						TargetURL:   pageURL,
+					}}
+					return probe
 				}
-				continue
 			}
-			if !ownerProtected {
+			for _, id := range ids {
+				if id != ownerTaskID && id != anonTaskID {
+					probe.unverified = true
+				}
+			}
+			token, valid := restTaskPageToken(listResp.Body)
+			if !valid {
 				probe.unverified = true
-				continue
+				break
 			}
-			probe.findings = []attack.Finding{{
-				RuleID:     e.rule.ID,
-				RuleName:   e.rule.Name,
-				Severity:   "high",
-				Confidence: attack.ConfirmedExploit,
-				Title:      "A2A task list exposes an authenticated owner's task to an anonymous caller",
-				Description: fmt.Sprintf(
-					"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation but did not scope the task list to the caller.", le, ownerTaskID),
-				Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: %s",
-					listResp.StatusCode, le, ownerTaskID, snippet(listResp.Body, 400)),
-				Remediation: e.rule.Remediation,
-				TargetURL:   le,
-			}}
-			return probe
+			if token == "" {
+				break
+			}
+			if seen[token] || page == maxTaskListPages-1 {
+				probe.unverified = true
+				break
+			}
+			seen[token] = true
+			next = token
 		}
 	}
 	return probe
