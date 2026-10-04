@@ -135,7 +135,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 	})
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		resp, err = c.POST(ctx, endpoint, pushBindingHeaders(p.Headers, false), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-pb-create-" + p.Name + "-" + randID,
@@ -151,13 +151,13 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 	}
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
 	if taskID == "" {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 	}
 	return taskID, obs
 }
@@ -202,7 +202,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 				return set
 			}
 		}
-		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+		obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extra), resp))
 	}
 	return pushSet{obs: obs}
 }

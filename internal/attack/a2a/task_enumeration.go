@@ -116,7 +116,7 @@ func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listUR
 	}
 	if taskID == "" {
 		return nil, classifyTaskSetup("creating a REST probe task as principal "+a.Name,
-			sendURL, clientA.PresentsCredential(sendURL), resp).err(), false
+			sendURL, principalCredentialPresent(clientA, sendURL, a.Headers), resp).err(), false
 	}
 	list := func(c *attack.HTTPClient, principalHeaders map[string]string) ([]string, listOutcome) {
 		return e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
@@ -382,7 +382,7 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 	})
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-enum-create-" + p.Name + "-" + randID,
@@ -398,13 +398,13 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 	}
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
 	if taskID == "" {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 	}
 	return taskID, contextID, taskID != "", obs
 }

@@ -134,7 +134,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	})
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
@@ -150,13 +150,13 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	}
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
 	if taskID == "" {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 	}
 	return taskID, contextID, taskID != "", obs
 }

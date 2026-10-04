@@ -201,7 +201,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		result.wire = 1
 	} else {
 		result.denied[0] = authRejected(resp)
-		result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+		result.obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -220,13 +220,13 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 			result.wire = 2
 		} else {
 			result.denied[1] = authRejected(resp)
-			result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+			result.obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
 			return result
 		}
 	}
 	result.taskID, result.contextID = extractTaskContext(resp.Body)
 	if result.taskID == "" {
-		result.obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+		result.obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
 	}
 	return result
 }
@@ -269,7 +269,7 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 			}
 			continue
 		}
-		obs.observe(classifyTaskSetup(what, endpoint, c.PresentsCredential(endpoint), resp))
+		obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
 	}
 	return read, false, obs
 }

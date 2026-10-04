@@ -112,7 +112,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 	})
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		slashHeaders := map[string]string{}
 		for k, v := range p.Headers {
 			slashHeaders[k] = v
@@ -132,13 +132,13 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 	}
 	if err != nil || !resp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
 	if taskID == "" {
 		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			c.PresentsCredential(endpoint), resp))
+			principalCredentialPresent(c, endpoint, p.Headers), resp))
 	}
 	return taskID, contextID, taskID != "", obs
 }
