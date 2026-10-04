@@ -180,7 +180,9 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 			ProtocolVersion: negotiatedVersion(resp.Body),
 			RawInit:         resp.Body,
 		}
-		_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
+		initializedHeaders := session.header()
+		attachPrincipal(initializedHeaders, p)
+		_, _ = client.POST(ctx, ep, initializedHeaders, map[string]interface{}{
 			"jsonrpc": "2.0", "method": "notifications/initialized",
 		})
 		return session, nil
