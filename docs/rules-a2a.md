@@ -551,10 +551,9 @@ is not what decided the outcome:
 
 1. Principal A creates a task. A refused creation is reported as **not tested**, naming
    the refusal, rather than as a scoped listing that was never given anything to leak.
-2. Control: A lists its own tasks and must see the task it just created. No list method
-   at all (`-32601` on every spelling) is **clean**, the surface being absent. A refused
-   listing, or one that omits the owner's own task, is **not tested**: B seeing nothing
-   would prove nothing.
+2. Control: A lists its own tasks and must see the task it just created. An absent
+   list method or REST path is **clean** for that binding. A refused list or one
+   missing the owner's task is **not tested**: B seeing nothing proves nothing.
 3. Control: an **unauthenticated** `ListTasks`. If it returns A's task, the server
    enforces no authorization on this surface at all, which is `a2a-task-idor-001`'s
    finding; reporting it here too would count one defect twice.
@@ -567,13 +566,10 @@ tenant's conversation content to prove it would be gratuitous. The rule follows
 `nextPageToken` for up to ten pages per caller. A repeated token, failed page, or
 page limit makes the result not tested rather than clean.
 
-Currency: `ListTasks` is a v1.0 JSON-RPC method. v0.3 defines `tasks/get`,
-`tasks/cancel`, `tasks/resubscribe` and the push-notification-config methods, and no
-list method, so a v0.3-only agent answers `-32601` and this reports not applicable. The
-v0.3 REST binding's list path is covered anonymously by `a2a-task-idor-001`; the
-authenticated case on that binding is not probed, because its prefix belongs to the
-deployment and guessing it is how earlier rules came to post at paths that never
-existed.
+The rule probes v1.0 JSON-RPC `ListTasks` and the HTTP+JSON task list at each
+advertised REST base: `/tasks` for v1.0 and `/v1/tasks` for v0.3. It creates a
+task through the same binding before checking its listing. REST prefixes come
+from the agent card and are pinned to the target origin, not guessed.
 
 ---
 

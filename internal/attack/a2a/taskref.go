@@ -97,6 +97,35 @@ func restTaskPageToken(body []byte) (string, bool) {
 	return "", false
 }
 
+func parseRESTTaskListPage(body []byte) ([]string, string, bool) {
+	type task struct {
+		ID     string `json:"id"`
+		TaskID string `json:"taskId"`
+	}
+	var wrapped struct {
+		Tasks *[]task `json:"tasks"`
+	}
+	var tasks []task
+	if json.Unmarshal(body, &wrapped) == nil && wrapped.Tasks != nil {
+		tasks = *wrapped.Tasks
+	} else if json.Unmarshal(body, &tasks) != nil || tasks == nil {
+		return nil, "", false
+	}
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		id := t.ID
+		if id == "" {
+			id = t.TaskID
+		}
+		if id == "" {
+			return nil, "", false
+		}
+		ids = append(ids, id)
+	}
+	token, ok := restTaskPageToken(body)
+	return ids, token, ok
+}
+
 // containsTaskID reports whether ids includes want.
 func containsTaskID(ids []string, want string) bool {
 	if want == "" {

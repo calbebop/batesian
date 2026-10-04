@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/calbebop/batesian/internal/attack"
+	endpointpkg "github.com/calbebop/batesian/internal/endpoint"
 )
 
 // TaskEnumerationExecutor checks whether ListTasks exposes one principal's task to
@@ -25,8 +27,6 @@ func NewTaskEnumerationExecutor(r attack.RuleContext) *TaskEnumerationExecutor {
 }
 
 func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	// Two distinct identities are the premise: the question is whether B sees A's
-	// task, which cannot be asked with one principal. See twoPrincipals.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err
@@ -34,25 +34,113 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
-		return nil, attack.ErrInconclusive
-	}
-
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
+	restBases := resolveHTTPJSONBases(ctx, clientA, vars.BaseURL)
+	if !ok && len(restBases) == 0 {
+		return nil, attack.ErrInconclusive
+	}
 
-	// Step 1: A owns a task. Without one there is nothing for B to find, and a clean
-	// result would claim the listing is scoped having never given it anything to leak.
-	taskID, _, _, obs := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+	var incomplete error
+	if ok {
+		findings, err := e.probeJSONRPC(ctx, endpoint, vars.RandID, a, b, clientA, clientB, unauthClient)
+		if len(findings) != 0 {
+			return findings, nil
+		}
+		incomplete = err
+	}
+	for _, base := range restBases {
+		baseTested := false
+		for _, route := range []struct{ send, list, version string }{
+			{"/message:send", "/tasks", "1.0"},
+			{"/v1/message:send", "/v1/tasks", "0.3.0"},
+		} {
+			sendURL := endpointpkg.AppendPath(base, route.send)
+			listURL := endpointpkg.AppendPath(base, route.list)
+			findings, err, tested := e.probeREST(ctx, sendURL, listURL, route.version, vars.RandID,
+				a, b, clientA, clientB, unauthClient)
+			if len(findings) != 0 {
+				return findings, nil
+			}
+			baseTested = baseTested || tested
+			if incomplete == nil {
+				incomplete = err
+			}
+		}
+		if !baseTested && incomplete == nil {
+			incomplete = fmt.Errorf("%w: advertised HTTP+JSON interface at %s did not create a task to test",
+				attack.ErrInconclusive, base)
+		}
+	}
+	return nil, incomplete
+}
+
+func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
+	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
+	taskID, _, _, obs := e.createTask(ctx, clientA, endpoint, a, randID)
 	if taskID == "" {
 		return nil, obs.err()
 	}
+	list := func(c *attack.HTTPClient, headers map[string]string) ([]string, listOutcome) {
+		return e.listTasks(ctx, c, endpoint, headers, randID, taskID)
+	}
+	return e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
+}
 
-	// Step 2: is the listing implemented at all? Asked as A, who owns a task and so
-	// should see at least one, which also confirms the surface works before any
-	// conclusion is drawn about B.
-	ownList, ownOutcome := e.listTasks(ctx, clientA, endpoint, a.Headers, vars.RandID, taskID)
+func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listURL, version, randID string,
+	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error, bool) {
+	headers := restVersionHeaders(version, a.Headers)
+	if version == "1.0" {
+		headers["Content-Type"] = "application/a2a+json"
+	}
+	messageID := randID + "-" + version
+	body := buildRESTSendRequest(messageID)
+	if version != "1.0" {
+		body = map[string]interface{}{"message": map[string]interface{}{
+			"messageId": "batesian-" + messageID,
+			"role":      "user",
+			"parts":     []interface{}{map[string]string{"kind": "text", "text": "ping"}},
+		}}
+	}
+	resp, err := clientA.POST(ctx, sendURL, headers, body)
+	if err != nil || resp == nil {
+		return nil, fmt.Errorf("%w: REST task creation at %s did not answer", attack.ErrInconclusive, sendURL), false
+	}
+	if resp.StatusCode == 404 {
+		return nil, nil, false
+	}
+	taskID := ""
+	if resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
+		taskID = restTaskID(resp.Body)
+	}
+	if taskID == "" {
+		return nil, classifyTaskSetup("creating a REST probe task as principal "+a.Name,
+			sendURL, clientA.PresentsCredential(sendURL), resp).err(), false
+	}
+	list := func(c *attack.HTTPClient, principalHeaders map[string]string) ([]string, listOutcome) {
+		return e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
+	}
+	findings, err := e.probeListing(listURL, taskID, a, b, clientA, clientB, unauthClient, list)
+	return findings, err, true
+}
+
+func restVersionHeaders(version string, extra map[string]string) map[string]string {
+	headers := map[string]string{}
+	if version == "1.0" {
+		headers["A2A-Version"] = version
+	}
+	for key, value := range extra {
+		headers[key] = value
+	}
+	return headers
+}
+
+func (e *TaskEnumerationExecutor) probeListing(endpoint, taskID string, a, b attack.Principal,
+	clientA, clientB, unauthClient *attack.HTTPClient,
+	list func(*attack.HTTPClient, map[string]string) ([]string, listOutcome)) ([]attack.Finding, error) {
+
+	ownList, ownOutcome := list(clientA, a.Headers)
 	switch ownOutcome {
 	case listAbsent:
 		// No list method here. Nothing to scope, and nothing wrong: the same call the
@@ -74,11 +162,7 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 			attack.ErrInconclusive, endpoint, a.Name, taskID)
 	}
 
-	// Step 3: open-server discriminator. If an UNAUTHENTICATED list returns A's task,
-	// the server enforces no authorization on this surface at all. That is a2a-task-
-	// idor-001's finding, not a scoping failure between two valid principals, and
-	// reporting it here would double-count one defect as two.
-	anonList, anonOutcome := e.listTasks(ctx, unauthClient, endpoint, nil, vars.RandID, taskID)
+	anonList, anonOutcome := list(unauthClient, nil)
 	if anonOutcome == listIncomplete {
 		return nil, fmt.Errorf("%w: anonymous ListTasks at %s could not complete its listing",
 			attack.ErrInconclusive, endpoint)
@@ -87,9 +171,7 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 		return nil, nil
 	}
 
-	// Step 4: B lists. A's task appearing in it is the finding: B is authenticated,
-	// holds no claim to A's task, and was handed its identifier anyway.
-	otherList, otherOutcome := e.listTasks(ctx, clientB, endpoint, b.Headers, vars.RandID, taskID)
+	otherList, otherOutcome := list(clientB, b.Headers)
 	if otherOutcome == listIncomplete {
 		return nil, fmt.Errorf("%w: ListTasks at %s could not complete principal %s's listing",
 			attack.ErrInconclusive, endpoint, b.Name)
@@ -110,7 +192,7 @@ type listOutcome int
 
 const (
 	listOK listOutcome = iota
-	// listAbsent is -32601 on every spelling tried: the method is not implemented.
+	// listAbsent means the listing method or path is not implemented.
 	listAbsent
 	// listRefused is an explicit authorization refusal.
 	listRefused
@@ -196,6 +278,54 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 		return nil, listAbsent
 	}
 	return nil, listRefused
+}
+
+func (e *TaskEnumerationExecutor) listRESTTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	headers map[string]string, wantedID string) ([]string, listOutcome) {
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, listIncomplete
+	}
+	next := ""
+	seen := map[string]bool{}
+	var ids []string
+	for page := 0; page < maxTaskListPages; page++ {
+		u := *base
+		query := u.Query()
+		query.Set("pageSize", "100")
+		query.Set("historyLength", "0")
+		if next != "" {
+			query.Set("pageToken", next)
+		}
+		u.RawQuery = query.Encode()
+		resp, err := c.GET(ctx, u.String(), headers)
+		if err != nil || resp == nil {
+			return nil, listIncomplete
+		}
+		if !resp.IsSuccess() {
+			if page == 0 && resp.StatusCode == 404 {
+				return nil, listAbsent
+			}
+			if page == 0 && isA2AAuthRejection(resp) {
+				return nil, listRefused
+			}
+			return nil, listIncomplete
+		}
+		pageIDs, token, valid := parseRESTTaskListPage(resp.Body)
+		if !valid {
+			return nil, listIncomplete
+		}
+		ids = append(ids, pageIDs...)
+		if containsTaskID(pageIDs, wantedID) || token == "" {
+			return ids, listOK
+		}
+		if seen[token] {
+			return nil, listIncomplete
+		}
+		seen[token] = true
+		next = token
+	}
+	return nil, listIncomplete
 }
 
 func parseTaskListPage(raw json.RawMessage) ([]string, string, bool) {
