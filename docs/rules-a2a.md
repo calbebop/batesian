@@ -41,6 +41,8 @@ tries advertised JSON-RPC interfaces in preference order, pinned to the target's
 own scheme and host. Legacy cards default an omitted `preferredTransport` to
 `JSONRPC`. If none answers, discovery probes conventional paths.
 Discovery checks at most 16 distinct advertised JSON-RPC URLs.
+HTTP+JSON probes likewise try up to 16 advertised bases in order. Their route
+prefixes come from the card; they are not inferred from the JSON-RPC URL.
 
 A probed path is judged by a read-only task lookup for a non-existent id, in both
 the v0.3 (`tasks/get`) and v1.0 (`GetTask`) spellings. **"Method not found" is

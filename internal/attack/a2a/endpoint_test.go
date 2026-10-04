@@ -117,6 +117,52 @@ func TestPinToTargetOrigin(t *testing.T) {
 	}
 }
 
+func TestResolveHTTPJSONBases_PreferenceAndPinning(t *testing.T) {
+	var card string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			_, _ = io.WriteString(w, card)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	card = `{"supportedInterfaces":[` +
+		`{"url":"` + srv.URL + `/old/","protocolBinding":"HTTP+JSON"},` +
+		`{"url":"grpc.example.test:50051","protocolBinding":"GRPC"},` +
+		`{"url":"https://other.example.test/live","protocolBinding":"HTTP+JSON"}],` +
+		`"additionalInterfaces":[{"url":"` + srv.URL + `/live","transport":"HTTP+JSON"}],` +
+		`"preferredTransport":"HTTP+JSON","url":"` + srv.URL + `/top"}`
+
+	got := resolveHTTPJSONBases(context.Background(), newClient(srv.URL), srv.URL)
+	want := []string{srv.URL + "/old", srv.URL + "/live", srv.URL + "/top"}
+	if !slices.Equal(got, want) {
+		t.Errorf("REST bases = %q, want %q", got, want)
+	}
+}
+
+func TestResolveHTTPJSONBases_CapsResults(t *testing.T) {
+	interfaces := make([]map[string]string, 18)
+	for i := range interfaces {
+		interfaces[i] = map[string]string{
+			"url": fmt.Sprintf("http://remote.example.test/rest-%d", i), "protocolBinding": "HTTP+JSON",
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"supportedInterfaces": interfaces})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	got := resolveHTTPJSONBases(context.Background(), newClient(srv.URL), srv.URL)
+	if len(got) != maxCardHTTPJSONBases || got[0] != srv.URL+"/rest-0" || got[15] != srv.URL+"/rest-15" {
+		t.Errorf("bounded REST bases = %q", got)
+	}
+}
+
 func newClient(target string) *attack.HTTPClient {
 	return attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(target, ""))
 }

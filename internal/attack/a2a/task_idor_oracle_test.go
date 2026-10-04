@@ -23,7 +23,7 @@ import (
 // false positive; this rule was the third instance.
 //
 // The tasks/list probe guessed vars.BaseURL+"/v1/tasks" and +"/tasks". endpoint.go
-// states plainly that the REST prefix cannot be guessed, and resolveHTTPJSONBase
+// states plainly that the REST prefix cannot be guessed, and resolveHTTPJSONBases
 // exists for it and is used by push_ssrf.go.
 
 // redactingAgent gates task creation, and answers an unauthenticated GetTask with a
@@ -227,7 +227,7 @@ func TestA2ATaskIDOR_TaskStubIsNotContentDisclosure(t *testing.T) {
 // restMountedAgent serves its HTTP+JSON binding under a prefix the card declares, and
 // leaks every task from GET {prefix}/v1/tasks to an anonymous caller. Nothing answers
 // at the target root, so a rule that guesses vars.BaseURL+"/v1/tasks" finds nothing.
-func restMountedAgent(t *testing.T, prefix string, hits *[]string) *httptest.Server {
+func restMountedAgent(t *testing.T, prefix string, hits *[]string, staleFirst bool) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,19 +237,23 @@ func restMountedAgent(t *testing.T, prefix string, hits *[]string) *httptest.Ser
 
 		if strings.Contains(r.URL.Path, "/.well-known/") {
 			w.Header().Set("Content-Type", "application/json")
+			interfaces := []interface{}{
+				map[string]interface{}{"transport": "JSONRPC", "url": "http://" + r.Host + "/"},
+			}
+			if staleFirst {
+				interfaces = append(interfaces, map[string]interface{}{
+					"transport": "HTTP+JSON", "url": "http://" + r.Host + "/old",
+				})
+			}
+			interfaces = append(interfaces, map[string]interface{}{
+				"transport": "HTTP+JSON", "url": "http://" + r.Host + prefix,
+			})
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"protocolVersion": "1.0", "name": "rest-mounted", "description": "d",
 				"version": "1.0", "capabilities": map[string]interface{}{},
 				"defaultInputModes": []string{"text"}, "defaultOutputModes": []string{"text"},
-				"skills": []interface{}{},
-				"supportedInterfaces": []interface{}{
-					map[string]interface{}{
-						"transport": "JSONRPC", "url": "http://" + r.Host + "/",
-					},
-					map[string]interface{}{
-						"transport": "HTTP+JSON", "url": "http://" + r.Host + prefix,
-					},
-				},
+				"skills":              []interface{}{},
+				"supportedInterfaces": interfaces,
 			})
 			return
 		}
@@ -290,7 +294,7 @@ func restMountedAgent(t *testing.T, prefix string, hits *[]string) *httptest.Ser
 func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 	var hits []string
 	const prefix = "/agents/finance"
-	ts := restMountedAgent(t, prefix, &hits)
+	ts := restMountedAgent(t, prefix, &hits, false)
 	defer ts.Close()
 
 	findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
@@ -318,6 +322,19 @@ func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 	}
 	if !probedPrefix {
 		t.Errorf("the advertised REST base was never probed; paths seen: %v", hits)
+	}
+}
+
+func TestA2ATaskIDOR_SecondRESTBaseFromCard(t *testing.T) {
+	var hits []string
+	const prefix = "/agents/finance"
+	ts := restMountedAgent(t, prefix, &hits, true)
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
+		Execute(context.Background(), ts.URL, idorOpts())
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].TargetURL, prefix) {
+		t.Fatalf("expected the later REST base to expose the owner task: findings=%+v err=%v paths=%v", findings, err, hits)
 	}
 }
 
