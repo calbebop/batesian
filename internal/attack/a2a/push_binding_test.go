@@ -25,6 +25,12 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 	var lastSetResult, ownerGetResult map[string]interface{}
 
 	tenant := func(r *http.Request) string {
+		switch r.Header.Get("X-API-Key") {
+		case "key-a":
+			return "tenant-a"
+		case "key-b":
+			return "tenant-b"
+		}
 		auth := r.Header.Get("Authorization")
 		switch auth {
 		case "Bearer tok-a":
@@ -406,6 +412,20 @@ func TestPushBinding_EmptyOwnerToken(t *testing.T) {
 		attack.Options{TimeoutSeconds: 5, Principals: []attack.Principal{{Name: "owner"}}})
 	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
 		t.Fatalf("unauthenticated owner cannot establish a protected task, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestPushBinding_HeaderOnlyOwner(t *testing.T) {
+	ts := pushServer("unbound")
+	defer ts.Close()
+
+	principals := []attack.Principal{
+		{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-a"}},
+		{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
+	}
+	findings := runPushBinding(t, ts, principals)
+	if len(findings) != 2 {
+		t.Fatalf("expected header-authenticated cross-principal findings, got %+v", findings)
 	}
 }
 
