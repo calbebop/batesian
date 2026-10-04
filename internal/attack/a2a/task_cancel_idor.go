@@ -39,7 +39,6 @@ type cancelProbe struct {
 }
 
 func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	// The ownership boundary needs two distinct principals.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err
@@ -47,25 +46,47 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
-		return nil, attack.ErrInconclusive
-	}
-
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
+	var rpcErr error
+	if ok {
+		findings, err := e.probeJSONRPC(ctx, endpoint, vars.RandID, a, b, clientA, clientB, unauthClient)
+		if len(findings) != 0 {
+			return findings, nil
+		}
+		rpcErr = err
+	}
+	findings, restErr, restTested := e.probeREST(ctx, vars.BaseURL, vars.RandID,
+		a, b, clientA, clientB, unauthClient)
+	if len(findings) != 0 {
+		return findings, nil
+	}
+	if restErr != nil {
+		return nil, restErr
+	}
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	if !ok && !restTested {
+		return nil, attack.ErrInconclusive
+	}
+	return nil, nil
+}
 
+func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
+	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
 	// Create and read back a live task owned by A.
-	taskID, obs := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
+	taskID, obs := e.createTask(ctx, clientA, endpoint, a, randID)
 	if taskID == "" {
 		return nil, obs.err()
 	}
-	baseline, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, vars.RandID)
+	baseline, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID)
 	if !seen || !activeTaskState(baseline) {
 		return nil, fmt.Errorf("%w: owner task %s was not confirmed in a cancelable state", attack.ErrInconclusive, taskID)
 	}
 
-	anon := e.cancelTask(ctx, unauthClient, clientA, endpoint, nil, a.Headers, taskID, vars.RandID)
+	anon := e.cancelTask(ctx, unauthClient, clientA, endpoint, nil, a.Headers, taskID, randID)
 	switch anon.outcome {
 	case cancelCanceled:
 		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline, anon.method)}, nil
@@ -74,12 +95,12 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 	case cancelOther:
 		return nil, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID)
 	}
-	preBState, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, vars.RandID)
+	preBState, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID)
 	if !seen || !activeTaskState(preBState) {
 		return nil, fmt.Errorf("%w: owner task %s was no longer live before the cross-principal cancel", attack.ErrInconclusive, taskID)
 	}
 
-	wrongOwner := e.cancelTask(ctx, clientB, clientA, endpoint, b.Headers, a.Headers, taskID, vars.RandID)
+	wrongOwner := e.cancelTask(ctx, clientB, clientA, endpoint, b.Headers, a.Headers, taskID, randID)
 	switch wrongOwner.outcome {
 	case cancelCanceled:
 		return []attack.Finding{e.idorFinding(endpoint, a, b, taskID, preBState, wrongOwner.method)}, nil

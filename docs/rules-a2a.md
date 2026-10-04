@@ -471,7 +471,8 @@ reject the array rather than dispatch it unauthenticated (CWE-288).
 
 **Cross-Principal Task Cancellation** | Severity: High | CWE-639 / CWE-862
 
-Tests whether task cancellation (`CancelTask` / `tasks/cancel`) is bound to the
+Tests whether task cancellation (`CancelTask` / `tasks/cancel`, plus the advertised
+HTTP+JSON `POST /tasks/{id}:cancel` or v0.3 `/v1/tasks/{id}:cancel`) is bound to the
 task's owner. Cancellation is a distinct handler from reading a task
 (`a2a-task-idor-001`) or continuing it (`a2a-delegation-integrity-001`) and can be
 left unprotected on its own, giving an attacker a targeted way to terminate other
