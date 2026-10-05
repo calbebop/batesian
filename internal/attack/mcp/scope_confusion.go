@@ -27,14 +27,16 @@ func NewScopeConfusionExecutor(r attack.RuleContext) *ScopeConfusionExecutor {
 }
 
 const scopeCandidateCap = 6
+const scopePageCap = 10
 const scopeCanaryPrefix = "batesian-nonexistent-"
 
 const (
-	scopeIDListFull = 3
-	scopeIDListLim  = 4
-	scopeIDAnon     = 5
-	scopeIDFullBase = 10
-	scopeIDLimBase  = 20
+	scopeIDListFull     = 3
+	scopeIDListLim      = 4
+	scopeIDAnon         = 5
+	scopeIDListPageBase = 100
+	scopeIDFullBase     = 10
+	scopeIDLimBase      = 20
 )
 
 func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -297,7 +299,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	if !scopeResponseMatches(listResp.Body, scopeIDListLim) {
 		return nil, fmt.Sprintf("tools/list returned no correlated response for the limited principal %q", princB.name), false
 	}
-	if _, ok := scopeListedTools(listResp.Body); !ok {
+	if _, _, ok := scopeListedTools(listResp.Body); !ok {
 		return nil, fmt.Sprintf("tools/list returned no successful listing for the limited principal %q", princB.name), false
 	}
 
@@ -356,39 +358,59 @@ func unapprovedScopeTools(candidates []scopeTool, allowed []string) []string {
 }
 
 func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *attack.HTTPClient, sessA mcpSession, princA taskPrincipal) (cands []scopeTool, reason string, ok bool) {
-	resp, err := sessA.postShaping(ctx, client, scopeIDListFull, "tools/list", nil,
-		func(h map[string]string) { attachPrincipal(h, princA) })
-	verdict, _ := classifyProbe(resp, err)
-	if verdict != probeAnswered {
-		return nil, fmt.Sprintf("tools/list refused the full principal %q (%s), so the privileged "+
-			"surface could not be discovered", princA.name, scopeVerdictName(verdict)), false
-	}
-	if !scopeResponseMatches(resp.Body, scopeIDListFull) {
-		return nil, "tools/list returned no correlated response for the full principal", false
-	}
-	tools, ok := scopeListedTools(resp.Body)
-	if !ok {
-		return nil, "tools/list returned no parseable listing", false
-	}
-	for _, t := range tools {
-		if scopeLooksPrivileged(t) {
-			cands = append(cands, t)
+	var params map[string]interface{}
+	seen := map[string]bool{}
+	for page := 0; page < scopePageCap; page++ {
+		id := scopeIDListFull
+		if page > 0 {
+			id = scopeIDListPageBase + page
 		}
+		resp, err := sessA.postShaping(ctx, client, id, "tools/list", params,
+			func(h map[string]string) { attachPrincipal(h, princA) })
+		verdict, _ := classifyProbe(resp, err)
+		if verdict != probeAnswered {
+			return nil, fmt.Sprintf("tools/list refused the full principal %q (%s), so the privileged "+
+				"surface could not be discovered", princA.name, scopeVerdictName(verdict)), false
+		}
+		if !scopeResponseMatches(resp.Body, id) {
+			return nil, "tools/list returned no correlated response for the full principal", false
+		}
+		tools, cursor, ok := scopeListedTools(resp.Body)
+		if !ok {
+			return nil, "tools/list returned no parseable listing", false
+		}
+		for _, t := range tools {
+			if scopeLooksPrivileged(t) {
+				cands = append(cands, t)
+				if len(cands) == scopeCandidateCap {
+					return cands, "", true
+				}
+			}
+		}
+		if cursor == nil {
+			return cands, "", true
+		}
+		if seen[*cursor] {
+			return nil, "tools/list repeated a pagination cursor", false
+		}
+		seen[*cursor] = true
+		params = map[string]interface{}{"cursor": *cursor}
 	}
-	return cands, "", true
+	return nil, "tools/list pagination exceeded the page limit", false
 }
 
-func scopeListedTools(raw []byte) ([]scopeTool, bool) {
+func scopeListedTools(raw []byte) ([]scopeTool, *string, bool) {
 	var body struct {
 		Result struct {
-			Tools []scopeTool `json:"tools"`
+			Tools      []scopeTool `json:"tools"`
+			NextCursor *string     `json:"nextCursor"`
 		} `json:"result"`
 		Error json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(raw, &body) != nil || len(body.Error) != 0 || body.Result.Tools == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	return body.Result.Tools, true
+	return body.Result.Tools, body.Result.NextCursor, true
 }
 
 type scopeCallOutcome struct {
