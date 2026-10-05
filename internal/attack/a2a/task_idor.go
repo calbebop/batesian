@@ -68,6 +68,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			"id":      "batesian-create-" + randID,
 			"method":  "SendMessage",
 			"params": map[string]interface{}{
+				"configuration": map[string]interface{}{"returnImmediately": true},
 				"message": map[string]interface{}{
 					"role":      1, // USER
 					"parts":     []interface{}{map[string]string{"text": "batesian idor probe " + randID}},

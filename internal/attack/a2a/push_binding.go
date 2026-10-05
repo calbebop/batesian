@@ -126,6 +126,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 		"id":      "batesian-pb-create-" + p.Name + "-" + randID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1,
 				"parts":     []interface{}{map[string]string{"text": "batesian push-binding probe " + randID}},

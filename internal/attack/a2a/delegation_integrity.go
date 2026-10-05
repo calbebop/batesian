@@ -125,6 +125,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 		"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": "batesian delegation probe " + randID}},
@@ -172,6 +173,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 		"id":      "batesian-deleg-cont-" + marker,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": "batesian delegation continuation " + marker}},

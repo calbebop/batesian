@@ -129,6 +129,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 		"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": "batesian cancel probe " + randID}},

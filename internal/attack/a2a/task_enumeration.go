@@ -373,6 +373,7 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 		"id":      "batesian-enum-create-" + p.Name + "-" + randID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // ROLE_USER
 				"parts":     []interface{}{map[string]string{"text": "batesian enumeration probe " + randID}},

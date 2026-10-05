@@ -77,6 +77,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		"id":      "batesian-sm-" + vars.RandID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": "ping"}},
@@ -325,6 +326,7 @@ func restTaskID(body []byte) string {
 // config; the callback is registered separately against the returned task.
 func buildRESTSendRequest(randID string) map[string]interface{} {
 	return map[string]interface{}{
+		"configuration": map[string]interface{}{"returnImmediately": true},
 		"message": map[string]interface{}{
 			"messageId": "batesian-" + randID,
 			"role":      "ROLE_USER",

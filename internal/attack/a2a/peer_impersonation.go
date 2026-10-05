@@ -202,6 +202,7 @@ func impersonationWires(randID string) []impersonationWire {
 			name:    "v1.0 SendMessage",
 			headers: map[string]string{"A2A-Version": "1.0"},
 			body: jsonRPCCall("SendMessage", map[string]interface{}{
+				"configuration": map[string]interface{}{"returnImmediately": true},
 				"message": map[string]interface{}{
 					"messageId": "batesian-pi-" + randID,
 					"role":      "ROLE_USER",

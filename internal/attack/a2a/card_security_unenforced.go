@@ -159,11 +159,15 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 	}
 	outcome := probeAuthRejected
 	for _, s := range shapes {
+		params := map[string]interface{}{"message": s.message}
+		if s.method == "SendMessage" {
+			params["configuration"] = map[string]interface{}{"returnImmediately": true}
+		}
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-cardsec-send-" + randID,
 			"method":  s.method,
-			"params":  map[string]interface{}{"message": s.message},
+			"params":  params,
 		})
 		if err != nil {
 			continue

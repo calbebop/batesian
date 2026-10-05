@@ -154,17 +154,21 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		for k, val := range extra {
 			headers[k] = val
 		}
+		params := map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":      v.role,
+				"parts":     []interface{}{v.part},
+				"messageId": "batesian-ext-" + randID,
+			},
+		}
+		if v.name == "v1.0" {
+			params["configuration"] = map[string]interface{}{"returnImmediately": true}
+		}
 		resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      "batesian-ext-" + v.name + "-" + randID,
 			"method":  v.method,
-			"params": map[string]interface{}{
-				"message": map[string]interface{}{
-					"role":      v.role,
-					"parts":     []interface{}{v.part},
-					"messageId": "batesian-ext-" + randID,
-				},
-			},
+			"params":  params,
 		})
 		if err == nil && resp.IsAccepted() {
 			return true, v.name, setupObservation{}

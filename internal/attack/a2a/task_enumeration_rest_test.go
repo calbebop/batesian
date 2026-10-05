@@ -19,7 +19,7 @@ type restEnumHit struct {
 	caller, token, path, history, size string
 }
 
-func restEnumAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Server, *[]restEnumHit, *sync.Mutex) {
+func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediate ...bool) (*httptest.Server, *[]restEnumHit, *sync.Mutex) {
 	t.Helper()
 	var mu sync.Mutex
 	var hits []restEnumHit
@@ -63,12 +63,16 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				return
 			}
 			var body struct {
+				Configuration struct {
+					ReturnImmediately bool `json:"returnImmediately"`
+				} `json:"configuration"`
 				Message struct {
 					Role string `json:"role"`
 				} `json:"message"`
 			}
 			if json.NewDecoder(r.Body).Decode(&body) != nil ||
-				(legacy && body.Message.Role != "user") || (!legacy && body.Message.Role != "ROLE_USER") {
+				(legacy && body.Message.Role != "user") || (!legacy && body.Message.Role != "ROLE_USER") ||
+				(len(requireImmediate) != 0 && requireImmediate[0] && !body.Configuration.ReturnImmediately) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -154,6 +158,16 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 		http.NotFound(w, r)
 	}))
 	return srv, &hits, &mu
+}
+
+func TestTaskEnumeration_RESTLongRunningTaskReturnsImmediately(t *testing.T) {
+	srv, _, _ := restEnumAgent(t, "unscoped", false, false, true)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected an unscoped listing finding, got %d findings and error %v", len(findings), err)
+	}
 }
 
 func TestTaskEnumeration_RESTBinding(t *testing.T) {
