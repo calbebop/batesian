@@ -444,7 +444,11 @@ func buildPrincipals(cfgPrincipals []config.PrincipalConfig, flags []string) ([]
 	}
 
 	for _, c := range cfgPrincipals {
-		if err := add(attackpkg.Principal{Name: c.Name, Token: c.Token, Tenant: c.Tenant, Headers: c.Headers}); err != nil {
+		token, err := configPrincipalToken(c.Token)
+		if err != nil {
+			return nil, fmt.Errorf("principal %q: %w", c.Name, err)
+		}
+		if err := add(attackpkg.Principal{Name: c.Name, Token: token, Tenant: c.Tenant, Headers: c.Headers}); err != nil {
 			return nil, err
 		}
 	}
@@ -458,6 +462,30 @@ func buildPrincipals(cfgPrincipals []config.PrincipalConfig, flags []string) ([]
 		}
 	}
 	return out, nil
+}
+
+func configPrincipalToken(raw string) (string, error) {
+	if !strings.HasPrefix(raw, "${") {
+		return raw, nil
+	}
+	if !strings.HasSuffix(raw, "}") {
+		return "", errors.New("invalid token environment reference")
+	}
+	name := raw[2 : len(raw)-1]
+	if name == "" {
+		return "", errors.New("invalid token environment reference")
+	}
+	for i, ch := range name {
+		letter := ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+		if !letter && ch != '_' && (i == 0 || ch < '0' || ch > '9') {
+			return "", errors.New("invalid token environment reference")
+		}
+	}
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return "", fmt.Errorf("token environment variable %s is unset or empty", name)
+	}
+	return value, nil
 }
 
 // parsePrincipalFlag parses comma-separated name, token, tenant, and repeatable
