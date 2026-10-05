@@ -65,8 +65,45 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	if !ok {
 		return nil, false
 	}
+	cursor, more := result["nextCursor"].(string)
+	_, hasCursor := result["nextCursor"]
+	complete := !hasCursor
+	seen := map[string]bool{}
+	for page := 1; page < 10 && more; page++ {
+		if seen[cursor] {
+			break
+		}
+		seen[cursor] = true
+		pageResp, pageErr := session.post(ctx, client, 3+page, "tools/list",
+			map[string]interface{}{"cursor": cursor})
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		if pageVerdict != probeAnswered {
+			break
+		}
+		if _, hasErr := pageBody["error"]; hasErr {
+			break
+		}
+		pageResult, ok := pageBody["result"].(map[string]interface{})
+		if !ok {
+			break
+		}
+		pageTools, ok := pageResult["tools"].([]interface{})
+		if !ok {
+			break
+		}
+		toolsRaw = append(toolsRaw, pageTools...)
+		next, present := pageResult["nextCursor"]
+		if !present {
+			complete = true
+			break
+		}
+		cursor, more = next.(string)
+		if !more {
+			break
+		}
+	}
 	if len(toolsRaw) == 0 {
-		return nil, true
+		return nil, complete
 	}
 
 	// Collect tool names for evidence.
@@ -81,6 +118,10 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	if len(names) == 0 {
 		return nil, false
 	}
+	evidence := fmt.Sprintf("HTTP %d from %s\ntools (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names)
+	if !complete {
+		evidence += "\nlisting incomplete: pagination stopped before the final page"
+	}
 
 	findings = []attack.Finding{{
 		RuleID:     e.rule.ID,
@@ -93,7 +134,7 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 				"and metadata to an anonymous caller. The MCP spec "+
 				"requires servers to implement proper access controls; an attacker can map the callable "+
 				"functions and craft targeted invocations.", session.Endpoint, len(names)),
-		Evidence:    fmt.Sprintf("HTTP %d from %s\ntools (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names),
+		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}}

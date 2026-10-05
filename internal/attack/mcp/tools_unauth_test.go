@@ -99,6 +99,103 @@ func TestToolsUnauth_ToolsExposed(t *testing.T) {
 	}
 }
 
+func TestToolsUnauth_FollowsEmptyCursor(t *testing.T) {
+	var followed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                     `json:"method"`
+			ID     json.RawMessage            `json:"id"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": result,
+			})
+		}
+		switch req.Method {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "paged-tools", "version": "1"},
+				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if raw, ok := req.Params["cursor"]; ok {
+				var cursor string
+				if json.Unmarshal(raw, &cursor) != nil || cursor != "" {
+					http.Error(w, "unexpected cursor", http.StatusBadRequest)
+					return
+				}
+				followed.Store(true)
+				reply(map[string]interface{}{"tools": []map[string]string{{"name": "later_tool"}}})
+				return
+			}
+			reply(map[string]interface{}{"tools": []interface{}{}, "nextCursor": ""})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	findings := runToolsUnauth(t, srv)
+	if len(findings) != 1 || !followed.Load() {
+		t.Fatalf("expected a finding for the later tool, got findings=%+v followed=%t", findings, followed.Load())
+	}
+	if findings[0].Confidence != attack.ConfirmedExploit {
+		t.Fatalf("expected a confirmed finding, got %+v", findings[0])
+	}
+}
+
+func TestToolsUnauth_IncompleteEmptyListing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                     `json:"method"`
+			ID     json.RawMessage            `json:"id"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		switch req.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-03-26",
+					"serverInfo":      map[string]string{"name": "paged-tools", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if _, ok := req.Params["cursor"]; ok {
+				http.Error(w, "unavailable", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"tools": []interface{}{}, "nextCursor": "later"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), srv.URL, testOpts())
+}
+
 // TestToolsUnauth_AuthEnforced: tools/list itself requires auth => no findings.
 func TestToolsUnauth_AuthEnforced(t *testing.T) {
 	srv := toolsUnauthServer(true, -32001, nil, nil)
