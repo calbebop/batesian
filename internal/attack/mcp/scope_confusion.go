@@ -155,8 +155,16 @@ func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoin
 }
 
 func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) (mcpSession, error) {
+	return scopeHandshakeCandidates(ctx, client, baseURL, endpointCandidates(baseURL), p)
+}
+
+func scopeHandshakeAt(ctx context.Context, client *attack.HTTPClient, endpoint string, p taskPrincipal) (mcpSession, error) {
+	return scopeHandshakeCandidates(ctx, client, endpoint, []string{endpoint}, p)
+}
+
+func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, baseURL string, endpoints []string, p taskPrincipal) (mcpSession, error) {
 	var observed initObservation
-	for _, ep := range endpointCandidates(baseURL) {
+	for _, ep := range endpoints {
 		headers := map[string]string{}
 		attachPrincipal(headers, p)
 		resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
@@ -261,9 +269,19 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		return nil, fmt.Sprintf("active scope probes require explicit approval for: %s; pass --mcp-scope-tool for each exact name",
 			strings.Join(missing, ", ")), false
 	}
+	sessB := sessA
+	if sessA.Era == EraLegacy {
+		var err error
+		sessB, err = scopeHandshakeAt(ctx, client, sessA.Endpoint, princB)
+		if err != nil {
+			return nil, fmt.Sprintf("the limited principal %q could not open a session at %s (%v)",
+				princB.name, sessA.Endpoint, err), false
+		}
+		sessB.Era = EraLegacy
+	}
 
 	// Confirm the limited credential works before grading its refusals.
-	listResp, listErr := sessA.postShaping(ctx, client, scopeIDListLim, "tools/list", nil,
+	listResp, listErr := sessB.postShaping(ctx, client, scopeIDListLim, "tools/list", nil,
 		func(h map[string]string) { attachPrincipal(h, princB) })
 	if verdict, _ := classifyProbe(listResp, listErr); verdict != probeAnswered {
 		return nil, fmt.Sprintf("tools/list refused the limited principal %q (%s), so its privilege "+
@@ -282,7 +300,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			continue // baseline did not establish dispatch; nothing to compare
 		}
 
-		limText := e.callAs(ctx, client, sessA, princB, scopeIDLimBase+i, cand, randID)
+		limText := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
 		switch {
 		case scopeShowsDispatch(limText):
 			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))

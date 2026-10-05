@@ -42,7 +42,9 @@ type scopeServer struct {
 	modernOnly             bool
 	requireInitializedAuth bool
 	rejectInitialized      bool
+	bindSessions           bool
 	initialized            atomic.Bool
+	limitedInitialized     atomic.Bool
 	toolCalls              atomic.Int32
 }
 
@@ -51,6 +53,13 @@ func (s *scopeServer) validToken(token string) bool {
 }
 
 func (s *scopeServer) hasWrite(token string) bool { return token == "tok-full-a" }
+
+func scopeSessionID(token string) string {
+	if token == "tok-lim-b" {
+		return "sess-limited"
+	}
+	return "sess-full"
+}
 
 func (s *scopeServer) tools() []map[string]interface{} {
 	tools := []map[string]interface{}{
@@ -124,7 +133,19 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		} else {
 			switch req.Method {
 			case "initialize":
-				w.Header().Set("Mcp-Session-Id", "sess-scope")
+				if s.bindSessions {
+					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					if !s.validToken(token) {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					w.Header().Set("Mcp-Session-Id", scopeSessionID(token))
+					if token == "tok-lim-b" {
+						s.limitedInitialized.Store(true)
+					}
+				} else {
+					w.Header().Set("Mcp-Session-Id", "sess-scope")
+				}
 				reply(map[string]interface{}{
 					"jsonrpc": "2.0", "id": req.ID,
 					"result": map[string]interface{}{
@@ -138,6 +159,13 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				if s.rejectInitialized {
 					w.WriteHeader(http.StatusForbidden)
 					return
+				}
+				if s.bindSessions {
+					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+					if !s.validToken(token) || r.Header.Get("Mcp-Session-Id") != scopeSessionID(token) {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
 				}
 				if s.requireInitializedAuth {
 					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -155,6 +183,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if s.auth && !s.validToken(token) {
 			rpcErr(-32000, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
+			return
+		}
+		if s.bindSessions && r.Header.Get("Mcp-Session-Id") != scopeSessionID(token) {
+			rpcErr(-32000, "session belongs to another principal", http.StatusForbidden)
 			return
 		}
 		if s.requireInitializedAuth && !s.initialized.Load() {
@@ -269,6 +301,29 @@ func TestScope_RejectedInitializedIsInconclusive(t *testing.T) {
 	}
 	if len(findings) != 0 || s.toolCalls.Load() != 0 {
 		t.Fatalf("rejected initialization must not be probed: findings=%+v calls=%d", findings, s.toolCalls.Load())
+	}
+}
+
+func TestScope_PrincipalBoundSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		enforceWriteScope bool
+		wantFindings      int
+	}{
+		{name: "vulnerable", wantFindings: 1},
+		{name: "scoped", enforceWriteScope: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &scopeServer{auth: true, bindSessions: true, enforceWriteScope: tc.enforceWriteScope}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if err != nil || len(findings) != tc.wantFindings || !s.limitedInitialized.Load() {
+				t.Fatalf("expected %d findings with both principals initialized, got findings=%+v err=%v limited=%t",
+					tc.wantFindings, findings, err, s.limitedInitialized.Load())
+			}
+		})
 	}
 }
 
