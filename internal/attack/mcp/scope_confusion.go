@@ -182,9 +182,23 @@ func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL stri
 		}
 		initializedHeaders := session.header()
 		attachPrincipal(initializedHeaders, p)
-		_, _ = client.POST(ctx, ep, initializedHeaders, map[string]interface{}{
+		initialized, err := client.POST(ctx, ep, initializedHeaders, map[string]interface{}{
 			"jsonrpc": "2.0", "method": "notifications/initialized",
 		})
+		if err != nil || initialized == nil {
+			observed.observe(initObservation{rankRefused, fmt.Sprintf(
+				"the MCP initialized notification at %s could not be delivered", ep)})
+			continue
+		}
+		if !initialized.IsSuccess() {
+			rank := rankRefused
+			if initialized.StatusCode == http.StatusUnauthorized || initialized.StatusCode == http.StatusForbidden {
+				rank = rankUnauthorized
+			}
+			observed.observe(initObservation{rank, fmt.Sprintf(
+				"the MCP initialized notification at %s was refused with HTTP %d", ep, initialized.StatusCode)})
+			continue
+		}
 		return session, nil
 	}
 	if observed.rank > rankNothing {

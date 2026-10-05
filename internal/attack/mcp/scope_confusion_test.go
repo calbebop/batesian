@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +41,7 @@ type scopeServer struct {
 	extraTool              bool
 	modernOnly             bool
 	requireInitializedAuth bool
+	rejectInitialized      bool
 	initialized            atomic.Bool
 	toolCalls              atomic.Int32
 }
@@ -133,6 +135,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				}, http.StatusOK)
 				return
 			case "notifications/initialized":
+				if s.rejectInitialized {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
 				if s.requireInitializedAuth {
 					token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 					if !s.validToken(token) {
@@ -249,6 +255,20 @@ func TestScope_InitializedNotificationUsesPrincipal(t *testing.T) {
 	if !s.initialized.Load() || len(findings) != 1 {
 		t.Fatalf("expected an authenticated session and one finding, got initialized=%t findings=%d: %+v",
 			s.initialized.Load(), len(findings), findings)
+	}
+}
+
+func TestScope_RejectedInitializedIsInconclusive(t *testing.T) {
+	s := &scopeServer{auth: true, rejectInitialized: true}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "initialized notification") {
+		t.Fatalf("expected an initialization refusal, got findings=%+v err=%v", findings, err)
+	}
+	if len(findings) != 0 || s.toolCalls.Load() != 0 {
+		t.Fatalf("rejected initialization must not be probed: findings=%+v calls=%d", findings, s.toolCalls.Load())
 	}
 }
 
