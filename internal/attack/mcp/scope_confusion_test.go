@@ -44,6 +44,10 @@ type scopeServer struct {
 	rejectInitialized       bool
 	bindSessions            bool
 	hideLimitedTool         bool
+	limitedListError        string
+	emptyFullList           bool
+	missingFullListTools    bool
+	missingLimitedListTools bool
 	limitedToolError        string
 	limitedResultText       string
 	toolResultError         bool
@@ -266,11 +270,22 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				},
 			}, http.StatusOK)
 		case "tools/list":
+			if token == "tok-lim-b" && s.limitedListError != "" {
+				rpcErr(-32001, s.limitedListError, http.StatusOK)
+				return
+			}
 			tools := s.tools()
+			if token == "tok-full-a" && s.emptyFullList {
+				tools = []map[string]interface{}{}
+			}
 			if s.hideLimitedTool && token == "tok-lim-b" {
 				tools = tools[:1]
 			}
 			result := map[string]interface{}{"tools": tools}
+			if (token == "tok-full-a" && s.missingFullListTools) ||
+				(token == "tok-lim-b" && s.missingLimitedListTools) {
+				delete(result, "tools")
+			}
 			if s.modernOnly {
 				result["resultType"] = "complete"
 			}
@@ -328,6 +343,42 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		default:
 			rpcErr(-32601, "Method not found", http.StatusOK)
 		}
+	}
+}
+
+func TestScope_ToolListNeedsSuccessfulResult(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server *scopeServer
+	}{
+		{name: "limited error", server: &scopeServer{auth: true, limitedListError: "forbidden"}},
+		{name: "limited missing tools", server: &scopeServer{auth: true, missingLimitedListTools: true}},
+		{name: "full missing tools", server: &scopeServer{auth: true, missingFullListTools: true}},
+		{name: "modern limited error", server: &scopeServer{modernOnly: true, auth: true, limitedListError: "forbidden"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.server
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 || s.toolCalls.Load() != 0 {
+				t.Fatalf("expected an inconclusive listing without tool calls, got findings=%+v err=%v calls=%d",
+					findings, err, s.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_EmptyToolListIsClean(t *testing.T) {
+	s := &scopeServer{auth: true, emptyFullList: true}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 0 || s.toolCalls.Load() != 0 {
+		t.Fatalf("expected a clean empty listing without tool calls, got findings=%+v err=%v calls=%d",
+			findings, err, s.toolCalls.Load())
 	}
 }
 
