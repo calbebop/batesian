@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -283,11 +285,42 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 		return nil
 	}
 
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
+	var body struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  struct {
+			ResultType string `json:"resultType"`
+			Contents   []struct {
+				URI  string  `json:"uri"`
+				Text *string `json:"text"`
+				Blob *string `json:"blob"`
+			} `json:"contents"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
+		string(body.ID) != strconv.Itoa(id) || len(body.Error) != 0 ||
+		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
 		return nil
 	}
-	if _, hasErr := body["error"]; hasErr {
+	hasContent := false
+	for _, item := range body.Result.Contents {
+		if item.URI == "" {
+			continue
+		}
+		if item.Text != nil && *item.Text != "" {
+			hasContent = true
+			break
+		}
+		if item.Blob != nil {
+			decoded, err := base64.StdEncoding.DecodeString(*item.Blob)
+			if err == nil && len(decoded) != 0 {
+				hasContent = true
+				break
+			}
+		}
+	}
+	if !hasContent {
 		return nil
 	}
 

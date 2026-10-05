@@ -183,6 +183,70 @@ func TestResourcesUnauth_CredentialInContent(t *testing.T) {
 	}
 }
 
+func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
+	cases := []struct {
+		name     string
+		result   map[string]interface{}
+		wrongID  bool
+		findings int
+	}{
+		{"missing contents", map[string]interface{}{}, false, 1},
+		{"empty contents", map[string]interface{}{"contents": []interface{}{}}, false, 1},
+		{"input required", map[string]interface{}{"resultType": "input_required", "inputRequests": map[string]interface{}{}}, false, 1},
+		{"empty text", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": ""}}}, false, 1},
+		{"invalid blob", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "not base64"}}}, false, 1},
+		{"wrong response ID", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, true, 1},
+		{"text content", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, false, 2},
+		{"complete result", map[string]interface{}{"resultType": "complete", "contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, false, 2},
+		{"blob content", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "ZGF0YQ=="}}}, false, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string          `json:"method"`
+					ID     json.RawMessage `json:"id"`
+				}
+				if json.NewDecoder(r.Body).Decode(&req) != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				id := req.ID
+				if req.Method == "resources/read" && tc.wrongID {
+					id = json.RawMessage("99")
+				}
+				reply := func(result interface{}) {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": id, "result": result,
+					})
+				}
+				switch req.Method {
+				case "initialize":
+					reply(map[string]interface{}{
+						"protocolVersion": "2025-03-26",
+						"serverInfo":      map[string]string{"name": "read-shape", "version": "1"},
+						"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "resources/list":
+					reply(map[string]interface{}{"resources": []map[string]string{{"uri": "config://one", "name": "one"}}})
+				case "resources/read":
+					reply(tc.result)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+			if err != nil || len(findings) != tc.findings {
+				t.Fatalf("expected %d finding(s), got findings=%+v err=%v", tc.findings, findings, err)
+			}
+		})
+	}
+}
+
 func TestResourcesUnauth_AuthRequired(t *testing.T) {
 	ts := mcpResourcesRequireAuthServer(t)
 	defer ts.Close()
