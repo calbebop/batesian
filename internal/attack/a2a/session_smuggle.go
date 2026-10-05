@@ -61,6 +61,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 			"id":      "batesian-" + vars.RandID,
 			"method":  "SendMessage",
 			"params": map[string]interface{}{
+				"configuration": map[string]interface{}{"returnImmediately": true},
 				"message": map[string]interface{}{
 					"role":      2, // AGENT, semantically the server-to-client role
 					"parts":     []interface{}{map[string]string{"text": marker}},

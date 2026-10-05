@@ -103,6 +103,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 		"id":      "batesian-mt-create-" + p.Name + "-" + randID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": "batesian mt probe " + p.Name + " " + randID}},

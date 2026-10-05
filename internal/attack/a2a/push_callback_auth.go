@@ -79,6 +79,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 		"id":      "batesian-sm-" + vars.RandID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1,
 				"parts":     []interface{}{map[string]string{"text": "ping"}},

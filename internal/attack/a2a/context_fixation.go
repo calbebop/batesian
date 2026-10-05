@@ -188,6 +188,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{"returnImmediately": true},
 			"message": map[string]interface{}{
 				"role":      1, // USER
 				"parts":     []interface{}{map[string]string{"text": text}},

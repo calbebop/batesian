@@ -7,9 +7,13 @@ func restTaskSendRequest(messageID, text, version string) map[string]interface{}
 		role = "user"
 		part["kind"] = "text"
 	}
-	return map[string]interface{}{"message": map[string]interface{}{
+	request := map[string]interface{}{"message": map[string]interface{}{
 		"messageId": "batesian-" + messageID,
 		"role":      role,
 		"parts":     []interface{}{part},
 	}}
+	if version == "1.0" {
+		request["configuration"] = map[string]interface{}{"returnImmediately": true}
+	}
+	return request
 }

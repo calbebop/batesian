@@ -43,7 +43,7 @@ const (
 
 // enumAgent is an A2A agent whose ListTasks behaviour is configurable. Task creation
 // always works for a known token, so a failure here is about the listing.
-func enumAgent(t *testing.T, behaviour enumBehaviour) *httptest.Server {
+func enumAgent(t *testing.T, behaviour enumBehaviour, requireImmediate ...bool) *httptest.Server {
 	t.Helper()
 	type task struct{ id, ctxID, owner string }
 	tasks := map[string]*task{}
@@ -80,6 +80,14 @@ func enumAgent(t *testing.T, behaviour enumBehaviour) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if len(requireImmediate) != 0 && requireImmediate[0] {
+				params, _ := req["params"].(map[string]interface{})
+				configuration, _ := params["configuration"].(map[string]interface{})
+				if method != "SendMessage" || configuration["returnImmediately"] != true {
+					rpcErr(-32602, "returnImmediately required")
+					return
+				}
+			}
 			if caller == "" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -199,6 +207,16 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 		if !strings.Contains(f.Evidence, want) {
 			t.Errorf("evidence missing %q; got:\n%s", want, f.Evidence)
 		}
+	}
+}
+
+func TestTaskEnumeration_LongRunningTaskReturnsImmediately(t *testing.T) {
+	srv := enumAgent(t, enumUnscoped, true)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected an unscoped listing finding, got %d findings and error %v", len(findings), err)
 	}
 }
 
