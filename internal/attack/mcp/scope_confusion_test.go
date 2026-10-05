@@ -36,23 +36,28 @@ func scopeOpts() attack.Options {
 }
 
 type scopeServer struct {
-	auth                   bool
-	enforceWriteScope      bool
-	extraTool              bool
-	modernOnly             bool
-	requireInitializedAuth bool
-	rejectInitialized      bool
-	bindSessions           bool
-	hideLimitedTool        bool
-	limitedToolError       string
-	limitedResultText      string
-	toolResultError        bool
-	anonymousCallStatus    int
-	anonymousCallError     string
-	anonymousCallResult    string
-	initialized            atomic.Bool
-	limitedInitialized     atomic.Bool
-	toolCalls              atomic.Int32
+	auth                    bool
+	enforceWriteScope       bool
+	extraTool               bool
+	modernOnly              bool
+	requireInitializedAuth  bool
+	rejectInitialized       bool
+	bindSessions            bool
+	hideLimitedTool         bool
+	limitedToolError        string
+	limitedResultText       string
+	toolResultError         bool
+	anonymousCallStatus     int
+	anonymousCallError      string
+	anonymousCallResult     string
+	initializeResponseID    int
+	listResponseID          int
+	anonymousCallResponseID int
+	fullCallResponseID      int
+	limitedCallResponseID   int
+	initialized             atomic.Bool
+	limitedInitialized      atomic.Bool
+	toolCalls               atomic.Int32
 }
 
 func (s *scopeServer) validToken(token string) bool {
@@ -119,8 +124,21 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(payload)
 		}
 		rpcErr := func(code int, msg string, status int) {
+			id := interface{}(req.ID)
+			if req.Method == "tools/call" {
+				switch strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				case "tok-full-a":
+					if s.fullCallResponseID != 0 {
+						id = s.fullCallResponseID
+					}
+				case "tok-lim-b":
+					if s.limitedCallResponseID != 0 {
+						id = s.limitedCallResponseID
+					}
+				}
+			}
 			reply(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
+				"jsonrpc": "2.0", "id": id,
 				"error": map[string]interface{}{"code": code, "message": msg},
 			}, status)
 		}
@@ -153,8 +171,12 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				} else {
 					w.Header().Set("Mcp-Session-Id", "sess-scope")
 				}
+				id := interface{}(req.ID)
+				if s.initializeResponseID != 0 {
+					id = s.initializeResponseID
+				}
 				reply(map[string]interface{}{
-					"jsonrpc": "2.0", "id": req.ID,
+					"jsonrpc": "2.0", "id": id,
 					"result": map[string]interface{}{
 						"protocolVersion": "2025-06-18",
 						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
@@ -194,7 +216,14 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				return
 			}
 			if s.anonymousCallError != "" {
-				rpcErr(-32602, s.anonymousCallError, http.StatusOK)
+				id := interface{}(req.ID)
+				if s.anonymousCallResponseID != 0 {
+					id = s.anonymousCallResponseID
+				}
+				reply(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32602, "message": s.anonymousCallError},
+				}, http.StatusOK)
 				return
 			}
 			if s.anonymousCallResult != "" {
@@ -245,8 +274,12 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			if s.modernOnly {
 				result["resultType"] = "complete"
 			}
+			id := interface{}(req.ID)
+			if s.listResponseID != 0 {
+				id = s.listResponseID
+			}
 			reply(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
+				"jsonrpc": "2.0", "id": id,
 				"result": result,
 			}, http.StatusOK)
 
@@ -295,6 +328,31 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		default:
 			rpcErr(-32601, "Method not found", http.StatusOK)
 		}
+	}
+}
+
+func TestScope_MismatchedResponseID(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server *scopeServer
+	}{
+		{name: "initialization", server: &scopeServer{auth: true, initializeResponseID: 99}},
+		{name: "tool listing", server: &scopeServer{auth: true, listResponseID: 99}},
+		{name: "anonymous control", server: &scopeServer{auth: true, anonymousCallError: "unauthorized", anonymousCallResponseID: 99}},
+		{name: "full call", server: &scopeServer{auth: true, fullCallResponseID: 99}},
+		{name: "limited call", server: &scopeServer{auth: true, limitedCallResponseID: 99}},
+		{name: "modern limited call", server: &scopeServer{modernOnly: true, auth: true, limitedCallResponseID: 99}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.server
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+				t.Fatalf("expected an inconclusive mismatched response, got findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
@@ -561,7 +619,8 @@ func TestScope_NoPrivilegedCandidatesClean(t *testing.T) {
 			return
 		}
 		var probe struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
 		}
 		if json.Unmarshal(raw, &probe) != nil {
 			http.NotFound(w, r)
@@ -569,7 +628,7 @@ func TestScope_NoPrivilegedCandidatesClean(t *testing.T) {
 		}
 		if probe.Method == "tools/list" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": 1,
+				"jsonrpc": "2.0", "id": probe.ID,
 				"result": map[string]interface{}{"tools": []map[string]interface{}{{
 					"name":        "list_items",
 					"annotations": map[string]interface{}{"readOnlyHint": true},

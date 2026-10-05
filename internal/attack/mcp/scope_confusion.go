@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -183,6 +184,11 @@ func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, ba
 			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(p)) != 0, resp))
 			continue
 		}
+		if !scopeResponseMatches(resp.Body, 1) {
+			observed.observe(initObservation{rankRefused, fmt.Sprintf(
+				"the MCP initialize response at %s did not match its request", ep)})
+			continue
+		}
 		session := mcpSession{
 			Endpoint:        ep,
 			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
@@ -288,6 +294,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		return nil, fmt.Sprintf("tools/list refused the limited principal %q (%s), so its privilege "+
 			"level was never established", princB.name, scopeVerdictName(verdict)), false
 	}
+	if !scopeResponseMatches(listResp.Body, scopeIDListLim) {
+		return nil, fmt.Sprintf("tools/list returned no correlated response for the limited principal %q", princB.name), false
+	}
 
 	// Anonymous dispatch rules out a scope-specific bypass.
 	anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
@@ -298,13 +307,22 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		return nil, fmt.Sprintf("the anonymous control at %s returned no authorization verdict", sessA.Endpoint), false
 	}
 
+	var unanswered string
 	for i, cand := range candidates {
 		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
+		if !fullCall.answered {
+			unanswered = fmt.Sprintf("tools/call returned no correlated response for the full principal %q", princA.name)
+			continue
+		}
 		if !scopeShowsDispatch(fullCall, randID) {
 			continue // baseline did not establish dispatch; nothing to compare
 		}
 
 		limCall := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
+		if !limCall.answered {
+			unanswered = fmt.Sprintf("tools/call returned no correlated response for the limited principal %q", princB.name)
+			continue
+		}
 		switch {
 		case scopeShowsDispatch(limCall, randID):
 			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))
@@ -313,6 +331,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		default:
 			// No verdict.
 		}
+	}
+	if unanswered != "" {
+		return findings, unanswered, false
 	}
 	return findings, "", true
 }
@@ -339,6 +360,9 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 		return nil, fmt.Sprintf("tools/list refused the full principal %q (%s), so the privileged "+
 			"surface could not be discovered", princA.name, scopeVerdictName(verdict)), false
 	}
+	if !scopeResponseMatches(resp.Body, scopeIDListFull) {
+		return nil, "tools/list returned no correlated response for the full principal", false
+	}
 	var body struct {
 		Result struct {
 			Tools []scopeTool `json:"tools"`
@@ -359,6 +383,18 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 type scopeCallOutcome struct {
 	text          string
 	protocolError bool
+	answered      bool
+}
+
+func scopeResponseMatches(body []byte, id int) bool {
+	var response struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(body, &response) != nil || response.JSONRPC != "2.0" {
+		return false
+	}
+	return string(response.ID) == strconv.Itoa(id)
 }
 
 // callAs invokes an approved tool and returns its response shape and text.
@@ -370,8 +406,11 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 	if err != nil || !resp.IsSuccess() {
 		// Preserve HTTP authorization failures for the classifier.
 		if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			return scopeCallOutcome{text: fmt.Sprintf("http %d %s", resp.StatusCode, resp.Headers.Get("WWW-Authenticate"))}
+			return scopeCallOutcome{text: fmt.Sprintf("http %d %s", resp.StatusCode, resp.Headers.Get("WWW-Authenticate")), answered: true}
 		}
+		return scopeCallOutcome{}
+	}
+	if !scopeResponseMatches(resp.Body, id) {
 		return scopeCallOutcome{}
 	}
 	var body struct {
@@ -388,14 +427,14 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 		return scopeCallOutcome{}
 	}
 	if body.Error.Message != "" {
-		return scopeCallOutcome{text: body.Error.Message, protocolError: true}
+		return scopeCallOutcome{text: body.Error.Message, protocolError: true, answered: true}
 	}
 	var sb strings.Builder
 	for _, c := range body.Result.Content {
 		sb.WriteString(c.Text)
 		sb.WriteString("\n")
 	}
-	return scopeCallOutcome{text: sb.String()}
+	return scopeCallOutcome{text: sb.String(), answered: true}
 }
 
 // scopeProbeArgs fills required fields with canary values.
