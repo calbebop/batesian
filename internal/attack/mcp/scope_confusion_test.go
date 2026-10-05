@@ -47,6 +47,7 @@ type scopeServer struct {
 	limitedListError        string
 	emptyFullList           bool
 	fullListMode            string
+	deleteAnnotations       map[string]interface{}
 	missingFullListTools    bool
 	missingLimitedListTools bool
 	limitedToolError        string
@@ -100,6 +101,9 @@ func (s *scopeServer) tools() []map[string]interface{} {
 			},
 		},
 	}
+	if s.deleteAnnotations != nil {
+		tools[1]["annotations"] = s.deleteAnnotations
+	}
 	if s.extraTool {
 		tools = append(tools, map[string]interface{}{
 			"name":        "send_email",
@@ -108,6 +112,41 @@ func (s *scopeServer) tools() []map[string]interface{} {
 		})
 	}
 	return tools
+}
+
+func TestScope_ReadOnlyHintCannotHideMutatingTool(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]interface{}
+	}{
+		{name: "read-only hint", annotations: map[string]interface{}{"readOnlyHint": true}},
+		{name: "conflicting hints", annotations: map[string]interface{}{"readOnlyHint": true, "destructiveHint": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &scopeServer{auth: true, deleteAnnotations: tc.annotations}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("expected the approved delete tool to be tested, got findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestScope_ReadOnlyHintStillRequiresApproval(t *testing.T) {
+	s := &scopeServer{auth: true, deleteAnnotations: map[string]interface{}{"readOnlyHint": true}}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	opts := scopeOpts()
+	opts.MCPScopeTools = nil
+	findings, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+	if err == nil || !strings.Contains(err.Error(), "--mcp-scope-tool") || len(findings) != 0 || s.toolCalls.Load() != 0 {
+		t.Fatalf("expected approval before calling the hinted tool, got findings=%+v err=%v calls=%d",
+			findings, err, s.toolCalls.Load())
+	}
 }
 
 func (s *scopeServer) handler() http.HandlerFunc {

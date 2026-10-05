@@ -242,14 +242,11 @@ var scopeWriteVocabulary = []string{
 
 func scopeLooksPrivileged(t scopeTool) bool {
 	if t.Annotations != nil {
-		if t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint {
-			return false // declared read-only wins over the name heuristic
-		}
 		if t.Annotations.DestructiveHint != nil && *t.Annotations.DestructiveHint {
 			return true
 		}
 		if t.Annotations.ReadOnlyHint != nil && !*t.Annotations.ReadOnlyHint {
-			return true // explicitly declared non-read-only
+			return true
 		}
 	}
 	lower := strings.ToLower(t.Name)
