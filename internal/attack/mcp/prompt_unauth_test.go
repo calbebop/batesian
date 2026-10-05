@@ -5,11 +5,115 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
+
+func pagedPromptServer(failPage, firstPagePrompt bool, followed, fetched *atomic.Bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                     `json:"method"`
+			ID     json.RawMessage            `json:"id"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": result,
+			})
+		}
+		switch req.Method {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "paged-prompts", "version": "1"},
+				"capabilities":    map[string]interface{}{"prompts": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "prompts/list":
+			if raw, ok := req.Params["cursor"]; ok {
+				var cursor string
+				if json.Unmarshal(raw, &cursor) != nil || cursor != "" {
+					http.Error(w, "unexpected cursor", http.StatusBadRequest)
+					return
+				}
+				followed.Store(true)
+				if failPage {
+					http.Error(w, "unavailable", http.StatusBadGateway)
+					return
+				}
+				reply(map[string]interface{}{"prompts": []map[string]string{{"name": "later_prompt"}}})
+				return
+			}
+			prompts := []map[string]string{}
+			if firstPagePrompt {
+				prompts = append(prompts, map[string]string{"name": "later_prompt"})
+			}
+			reply(map[string]interface{}{"prompts": prompts, "nextCursor": ""})
+		case "prompts/get":
+			var name string
+			var id int
+			_ = json.Unmarshal(req.Params["name"], &name)
+			_ = json.Unmarshal(req.ID, &id)
+			if name == "later_prompt" && id == 5 {
+				fetched.Store(true)
+			}
+			reply(map[string]interface{}{"messages": []map[string]interface{}{{
+				"role": "user", "content": map[string]string{"type": "text", "text": "private prompt"},
+			}}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestPromptUnauth_FollowsEmptyCursor(t *testing.T) {
+	var followed, fetched atomic.Bool
+	srv := pagedPromptServer(false, false, &followed, &fetched)
+	defer srv.Close()
+
+	exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+	if err != nil || len(findings) != 2 || !followed.Load() || !fetched.Load() {
+		t.Fatalf("expected later prompt to be listed and fetched, got findings=%+v err=%v followed=%t fetched=%t",
+			findings, err, followed.Load(), fetched.Load())
+	}
+}
+
+func TestPromptUnauth_IncompleteEmptyListing(t *testing.T) {
+	var followed, fetched atomic.Bool
+	srv := pagedPromptServer(true, false, &followed, &fetched)
+	defer srv.Close()
+
+	assertInconclusive(t, mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"}), srv.URL, testOpts())
+	if !followed.Load() || fetched.Load() {
+		t.Fatalf("expected the next page but no prompt fetch, got followed=%t fetched=%t", followed.Load(), fetched.Load())
+	}
+}
+
+func TestPromptUnauth_PartialListingRetainsFinding(t *testing.T) {
+	var followed, fetched atomic.Bool
+	srv := pagedPromptServer(true, true, &followed, &fetched)
+	defer srv.Close()
+
+	exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+	if err != nil || len(findings) != 2 || !followed.Load() || !fetched.Load() {
+		t.Fatalf("expected confirmed first-page findings, got findings=%+v err=%v followed=%t fetched=%t",
+			findings, err, followed.Load(), fetched.Load())
+	}
+	if !strings.Contains(findings[0].Evidence, "listing incomplete") {
+		t.Fatalf("expected partial-listing evidence, got %q", findings[0].Evidence)
+	}
+}
 
 func TestPromptUnauth_PromptsExposed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
