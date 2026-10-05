@@ -408,6 +408,75 @@ func TestResolveA2AEndpoint_MCPServerIsNotAnA2AEndpoint(t *testing.T) {
 	}
 }
 
+func TestResolveA2AEndpoint_ModernOnlyMCPIsNotAnA2AEndpoint(t *testing.T) {
+	var discoveryCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Meta map[string]interface{} `json:"_meta"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "server/discover" &&
+			r.Header.Get("MCP-Protocol-Version") == "2026-07-28" &&
+			r.Header.Get("Mcp-Method") == req.Method &&
+			req.Params.Meta["io.modelcontextprotocol/protocolVersion"] == "2026-07-28" &&
+			req.Params.Meta["io.modelcontextprotocol/clientCapabilities"] != nil {
+			discoveryCalls++
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{
+					"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+		})
+	}))
+	defer srv.Close()
+
+	if ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL+"/mcp"); ok {
+		t.Errorf("resolved %q against a modern-only MCP server", ep)
+	}
+	if discoveryCalls != 1 {
+		t.Errorf("modern discovery calls = %d, want 1", discoveryCalls)
+	}
+}
+
+func TestModernMCPDiscoverResult_RequiresCorrelatedShape(t *testing.T) {
+	const id = "probe-1"
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"valid", `{"jsonrpc":"2.0","id":"probe-1","result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}}`, true},
+		{"wrong id", `{"jsonrpc":"2.0","id":"other","result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}}`, false},
+		{"error", `{"jsonrpc":"2.0","id":"probe-1","error":{"code":-32601,"message":"Method not found"}}`, false},
+		{"legacy only", `{"jsonrpc":"2.0","id":"probe-1","result":{"resultType":"complete","supportedVersions":["2025-11-25"],"capabilities":{}}}`, false},
+		{"missing capabilities", `{"jsonrpc":"2.0","id":"probe-1","result":{"resultType":"complete","supportedVersions":["2026-07-28"]}}`, false},
+		{"missing result type", `{"jsonrpc":"2.0","id":"probe-1","result":{"supportedVersions":["2026-07-28"],"capabilities":{}}}`, false},
+		{"bare version", `{"jsonrpc":"2.0","id":"probe-1","result":{"protocolVersion":"2026-07-28"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := modernMCPDiscoverResult([]byte(tc.body), id); got != tc.want {
+				t.Errorf("modernMCPDiscoverResult = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // The reason the check is negative rather than a stricter test for A2A: agents
 // exist that implement neither task-get spelling and answer "method not found"
 // for both, including this repository's own delegation and push-binding
