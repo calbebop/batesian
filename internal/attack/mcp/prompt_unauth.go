@@ -60,10 +60,52 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		return nil, true
 	}
 
-	result, _ := listBody["result"].(map[string]interface{})
-	promptsRaw, _ := result["prompts"].([]interface{})
+	result, ok := listBody["result"].(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	promptsRaw, ok := result["prompts"].([]interface{})
+	if !ok {
+		return nil, false
+	}
+	cursor, more := result["nextCursor"].(string)
+	_, hasCursor := result["nextCursor"]
+	complete := !hasCursor
+	seen := map[string]bool{}
+	nextID := 4
+	for page := 1; page < 10 && more; page++ {
+		if seen[cursor] {
+			break
+		}
+		seen[cursor] = true
+		pageResp, pageErr := session.post(ctx, client, nextID, "prompts/list",
+			map[string]interface{}{"cursor": cursor})
+		nextID++
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		if pageVerdict != probeAnswered {
+			break
+		}
+		if _, hasErr := pageBody["error"]; hasErr {
+			break
+		}
+		pageResult, ok := pageBody["result"].(map[string]interface{})
+		if !ok {
+			break
+		}
+		pagePrompts, ok := pageResult["prompts"].([]interface{})
+		if !ok {
+			break
+		}
+		promptsRaw = append(promptsRaw, pagePrompts...)
+		next, present := pageResult["nextCursor"]
+		if !present {
+			complete = true
+			break
+		}
+		cursor, more = next.(string)
+	}
 	if len(promptsRaw) == 0 {
-		return nil, true
+		return nil, complete
 	}
 
 	// Collect prompt names for evidence.
@@ -74,6 +116,13 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 				names = append(names, name)
 			}
 		}
+	}
+	if len(names) == 0 {
+		return nil, false
+	}
+	evidence := fmt.Sprintf("HTTP %d from %s\nprompts (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names)
+	if !complete {
+		evidence += "\nlisting incomplete: pagination stopped before the final page"
 	}
 
 	findings = append(findings, attack.Finding{
@@ -89,17 +138,13 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 				"behavioral configuration that was not intended to be publicly readable. "+
 				"An attacker can use this information to craft targeted prompt injection payloads.",
 			session.Endpoint, len(names)),
-		Evidence:    fmt.Sprintf("HTTP %d from %s\nprompts (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names),
+		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	})
 
 	// Attempt to retrieve content of the first prompt via prompts/get.
-	if len(names) == 0 {
-		return findings, true
-	}
-
-	getResp, err := session.post(ctx, client, 4, "prompts/get", map[string]interface{}{"name": names[0]})
+	getResp, err := session.post(ctx, client, nextID, "prompts/get", map[string]interface{}{"name": names[0]})
 	getVerdict, getBody := classifyProbe(getResp, err)
 	if getVerdict != probeAnswered {
 		// The list finding stands: it was confirmed before this probe.
