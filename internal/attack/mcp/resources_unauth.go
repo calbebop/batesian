@@ -98,40 +98,75 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		return nil, true
 	}
 
-	result, _ := listBody["result"].(map[string]interface{})
-	resourcesRaw, _ := result["resources"].([]interface{})
+	result, ok := listBody["result"].(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	resourcesRaw, ok := result["resources"].([]interface{})
+	if !ok {
+		return nil, false
+	}
 
 	// Follow every present cursor, including an empty string.
-	cursor, more := result["nextCursor"].(string)
+	next, hasCursor := result["nextCursor"]
+	if next == nil {
+		hasCursor = false
+	}
+	cursor, more := next.(string)
+	complete := !hasCursor
+	seen := map[string]bool{}
+	nextID := 4
 	for p := 1; p < 10 && more; p++ {
-		pageResp, pageErr := session.post(ctx, client, 3+p, "resources/list",
-			map[string]interface{}{"cursor": cursor})
-		if pageErr != nil {
+		if seen[cursor] {
 			break
 		}
-		_, pageBody := classifyProbe(pageResp, pageErr)
-		if pageResult, ok := pageBody["result"].(map[string]interface{}); ok {
-			if pageResources, ok := pageResult["resources"].([]interface{}); ok {
-				resourcesRaw = append(resourcesRaw, pageResources...)
-			}
-			cursor, more = pageResult["nextCursor"].(string)
-			continue
+		seen[cursor] = true
+		pageResp, pageErr := session.post(ctx, client, nextID, "resources/list",
+			map[string]interface{}{"cursor": cursor})
+		nextID++
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		if pageVerdict != probeAnswered {
+			break
 		}
-		break
+		if _, hasErr := pageBody["error"]; hasErr {
+			break
+		}
+		pageResult, ok := pageBody["result"].(map[string]interface{})
+		if !ok {
+			break
+		}
+		pageResources, ok := pageResult["resources"].([]interface{})
+		if !ok {
+			break
+		}
+		resourcesRaw = append(resourcesRaw, pageResources...)
+		next, present := pageResult["nextCursor"]
+		if !present || next == nil {
+			complete = true
+			break
+		}
+		cursor, more = next.(string)
 	}
 
 	if len(resourcesRaw) == 0 {
-		return nil, true
+		return nil, complete
 	}
 
 	// Build a display list of resource URIs
 	var uris []string
 	for _, r := range resourcesRaw {
 		if rm, ok := r.(map[string]interface{}); ok {
-			if uri, ok := rm["uri"].(string); ok {
+			if uri, ok := rm["uri"].(string); ok && uri != "" {
 				uris = append(uris, uri)
 			}
 		}
+	}
+	if len(uris) == 0 {
+		return nil, false
+	}
+	evidence := fmt.Sprintf("HTTP %d from %s\nresources (%d): %v", listResp.StatusCode, session.Endpoint, len(uris), uris)
+	if !complete {
+		evidence += "\nlisting incomplete: pagination stopped before the final page"
 	}
 
 	findings = append(findings, attack.Finding{
@@ -144,7 +179,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 			"resources/list at %s returned %d resources without any authentication. "+
 				"An attacker can enumerate all available data sources and then read their contents "+
 				"using resources/read.", session.Endpoint, len(uris)),
-		Evidence:    fmt.Sprintf("HTTP %d from %s\nresources (%d): %v", listResp.StatusCode, session.Endpoint, len(uris), uris),
+		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	})
@@ -155,7 +190,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	// of list order: a server that lists a public README ahead of its database
 	// credentials was reported as merely readable. The listing order is the
 	// server's choice, so the rule cannot let it decide the severity.
-	read, examined := e.readResources(ctx, client, session, uris)
+	read, examined := e.readResources(ctx, client, session, uris, nextID)
 	if read == nil {
 		return findings, true
 	}
@@ -211,7 +246,7 @@ type resourceRead struct {
 //
 // examined is reported in the finding's evidence, because a run that stopped at
 // the cap has not looked at everything and must not read as though it had.
-func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *attack.HTTPClient, session mcpSession, uris []string) (result *resourceRead, examined int) {
+func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *attack.HTTPClient, session mcpSession, uris []string, firstID int) (result *resourceRead, examined int) {
 	var first *resourceRead
 
 	for i, uri := range uris {
@@ -220,7 +255,7 @@ func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *att
 		}
 		examined++
 
-		read := e.readResource(ctx, client, session, uri, i)
+		read := e.readResource(ctx, client, session, uri, firstID+i)
 		if read == nil {
 			continue
 		}
@@ -240,10 +275,10 @@ func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *att
 // readResource performs one resources/read and classifies its content. It
 // returns nil when the read did not produce content, which covers a transport
 // failure, a non-2xx reply, an unparseable body and a JSON-RPC error.
-func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, i int) *resourceRead {
+func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, id int) *resourceRead {
 	// Distinct ids per read: reusing one id across requests makes a server's
 	// replies ambiguous to correlate.
-	resp, err := session.post(ctx, client, 4+i, "resources/read", map[string]interface{}{"uri": uri})
+	resp, err := session.post(ctx, client, id, "resources/read", map[string]interface{}{"uri": uri})
 	if err != nil || !resp.IsSuccess() {
 		return nil
 	}
