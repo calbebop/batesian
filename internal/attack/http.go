@@ -52,6 +52,37 @@ type HTTPClient struct {
 	oauthOrigins map[string]struct{}
 }
 
+// RequestAugmenter adds protocol-specific query fields or JSON body fields.
+type RequestAugmenter func(method, requestURL string, headers map[string]string, body interface{}) (map[string]string, interface{})
+
+type requestAugmenterKey struct{}
+
+// WithRequestAugmenter applies request changes only within ctx.
+func WithRequestAugmenter(ctx context.Context, augment RequestAugmenter) context.Context {
+	return context.WithValue(ctx, requestAugmenterKey{}, augment)
+}
+
+func augmentRequest(ctx context.Context, method, requestURL string, headers map[string]string, body interface{}) (string, interface{}) {
+	augment, ok := ctx.Value(requestAugmenterKey{}).(RequestAugmenter)
+	if !ok {
+		return requestURL, body
+	}
+	query, body := augment(method, requestURL, headers, body)
+	if len(query) == 0 {
+		return requestURL, body
+	}
+	u, err := url.Parse(requestURL)
+	if err != nil {
+		return requestURL, body
+	}
+	values := u.Query()
+	for key, value := range query {
+		values.Set(key, value)
+	}
+	u.RawQuery = values.Encode()
+	return u.String(), body
+}
+
 // tokenAllowedFor reports whether the auto-injected bearer token may be sent to
 // this URL. It may not leave the scan target's origin or cross from HTTPS to
 // plaintext HTTP on the same host.
@@ -341,7 +372,10 @@ func (r *Response) ContainsAny(substrings ...string) bool {
 
 // GET sends a GET request to the expanded URL.
 func (c *HTTPClient) GET(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
-	return c.do(ctx, http.MethodGet, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
+	url := c.vars.Expand(urlTpl)
+	expandedHeaders := c.vars.ExpandMap(headers)
+	url, _ = augmentRequest(ctx, http.MethodGet, url, expandedHeaders, nil)
+	return c.do(ctx, http.MethodGet, url, nil, expandedHeaders)
 }
 
 // GETOAuth sends a GET only when the target-advertised OAuth URL stays within
@@ -377,15 +411,18 @@ func (c *HTTPClient) DELETEOAuth(ctx context.Context, urlTpl string, headers map
 
 // POST sends a POST request with a JSON body. body may be a map or struct.
 func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
+	url := c.vars.Expand(urlTpl)
+	expandedHeaders := c.vars.ExpandMap(headers)
+	url, body = augmentRequest(ctx, http.MethodPost, url, expandedHeaders, body)
 	jsonBytes, err := marshalBody(body, c.vars)
 	if err != nil {
 		return nil, err
 	}
 	merged := map[string]string{"Content-Type": "application/json"}
-	for k, v := range c.vars.ExpandMap(headers) {
+	for k, v := range expandedHeaders {
 		merged[k] = v
 	}
-	return c.do(ctx, http.MethodPost, c.vars.Expand(urlTpl), bytes.NewReader(jsonBytes), merged)
+	return c.do(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes), merged)
 }
 
 // POSTOAuth sends a POST only when the target-advertised OAuth URL stays within

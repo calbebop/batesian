@@ -31,6 +31,7 @@ func (e *PushBindingExecutor) Requires() []attack.ArtifactKind {
 }
 
 func (e *PushBindingExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 

@@ -45,6 +45,7 @@ func NewBatchBypassExecutor(r attack.RuleContext) *BatchBypassExecutor {
 }
 
 func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// Deliberately unauthenticated: the rule tests whether a batch slips past the
 	// server's auth gate. Injecting opts.Token would mask the bypass.

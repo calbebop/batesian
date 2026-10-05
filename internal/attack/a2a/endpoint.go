@@ -27,9 +27,10 @@ type a2aDiscoveryCard struct {
 type a2aDiscoveryInterface struct {
 	URL string `json:"url"`
 	// ProtocolBinding is the v1.0 field name; Transport is the v0.3 field name.
-	ProtocolBinding string `json:"protocolBinding"`
-	Transport       string `json:"transport"`
-	ProtocolVersion string `json:"protocolVersion"`
+	ProtocolBinding string  `json:"protocolBinding"`
+	Transport       string  `json:"transport"`
+	ProtocolVersion string  `json:"protocolVersion"`
+	Tenant          *string `json:"tenant"`
 }
 
 func (i a2aDiscoveryInterface) isJSONRPC() bool {
@@ -50,7 +51,7 @@ func resolveHTTPJSONBases(ctx context.Context, client *attack.HTTPClient, baseUR
 	}
 	var bases []string
 	seen := map[string]bool{}
-	add := func(rawURL string) {
+	add := func(rawURL string, tenant *string) {
 		if !hasHTTPScheme(rawURL) {
 			return
 		}
@@ -60,16 +61,17 @@ func resolveHTTPJSONBases(ctx context.Context, client *attack.HTTPClient, baseUR
 		}
 		seen[base] = true
 		bases = append(bases, base)
+		registerTenantRoute(ctx, base, "HTTP+JSON", tenant)
 	}
 	for _, group := range [][]a2aDiscoveryInterface{card.SupportedInterfaces, card.AdditionalInterfaces} {
 		for _, iface := range group {
 			if iface.isHTTPJSON() {
-				add(iface.URL)
+				add(iface.URL, iface.Tenant)
 			}
 		}
 	}
 	if strings.EqualFold(card.PreferredTransport, "HTTP+JSON") {
-		add(card.URL)
+		add(card.URL, nil)
 	}
 	return bases
 }
@@ -81,15 +83,20 @@ const maxCardJSONRPCProbes = 16
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
 	if card, found := fetchDiscoveryCard(ctx, client, baseURL); found {
 		seen := map[string]bool{}
-		for _, cardURL := range jsonRPCURLs(card) {
-			pinned := pinToTargetOrigin(cardURL, baseURL)
-			if seen[pinned] {
+		for _, iface := range jsonRPCInterfaces(card) {
+			pinned := pinToTargetOrigin(iface.URL, baseURL)
+			key := pinned
+			if iface.Tenant != nil {
+				key += "\x00" + *iface.Tenant
+			}
+			if seen[key] {
 				continue
 			}
 			if len(seen) == maxCardJSONRPCProbes {
 				break
 			}
-			seen[pinned] = true
+			seen[key] = true
+			registerTenantRoute(ctx, pinned, "JSONRPC", iface.Tenant)
 			// The card corroborates weak JSON-RPC or auth evidence.
 			if probeA2AEvidence(ctx, client, pinned) != a2aEvidenceNone {
 				return pinned, true
@@ -100,6 +107,7 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 	// corroborated afterwards, so a single ambiguous candidate cannot decide it.
 	weak := ""
 	for _, ep := range candidateEndpoints(baseURL) {
+		registerTenantRoute(ctx, ep, "JSONRPC", nil)
 		switch probeA2AEvidence(ctx, client, ep) {
 		case a2aEvidenceStrong:
 			return ep, true
@@ -167,27 +175,37 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 func jsonRPCURLs(card a2aDiscoveryCard) []string {
 	var urls []string
 	seen := map[string]bool{}
-	add := func(rawURL string) {
-		if hasHTTPScheme(rawURL) && !seen[rawURL] {
-			seen[rawURL] = true
-			urls = append(urls, rawURL)
+	for _, iface := range jsonRPCInterfaces(card) {
+		if !seen[iface.URL] {
+			seen[iface.URL] = true
+			urls = append(urls, iface.URL)
+		}
+	}
+	return urls
+}
+
+func jsonRPCInterfaces(card a2aDiscoveryCard) []a2aDiscoveryInterface {
+	var interfaces []a2aDiscoveryInterface
+	add := func(iface a2aDiscoveryInterface) {
+		if hasHTTPScheme(iface.URL) {
+			interfaces = append(interfaces, iface)
 		}
 	}
 	for _, iface := range card.SupportedInterfaces {
 		if iface.isJSONRPC() {
-			add(iface.URL)
+			add(iface)
 		}
 	}
 	for _, iface := range card.AdditionalInterfaces {
 		if iface.isJSONRPC() {
-			add(iface.URL)
+			add(iface)
 		}
 	}
 	legacyJSONRPC := card.PreferredTransport == "" || strings.EqualFold(card.PreferredTransport, "JSONRPC")
 	if card.SupportedInterfaces == nil && legacyJSONRPC {
-		add(card.URL)
+		add(a2aDiscoveryInterface{URL: card.URL})
 	}
-	return urls
+	return interfaces
 }
 
 // pinToTargetOrigin keeps the operator's target scheme+host and applies only the

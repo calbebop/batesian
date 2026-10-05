@@ -32,6 +32,7 @@ func NewExtCardExecutor(r attack.RuleContext) *ExtCardExecutor {
 }
 
 func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// All probes test whether the endpoint is accessible without (or with an invalid)
 	// token, so we always use an unauthClient. The fabricated-token probes inject the
@@ -66,17 +67,30 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	}
 
 	// HTTP+JSON transport uses GET /extendedAgentCard.
-	extURL := endpoint.AppendPath(vars.BaseURL, extCardHTTPPath)
-	respA, errA := unauthClient.GET(ctx, extURL, map[string]string{"Authorization": "Bearer " + invalidToken})
-	if errA == nil && respA.StatusCode != 404 {
-		reached = true
+	restBases := resolveHTTPJSONBases(ctx, unauthClient, vars.BaseURL)
+	if len(restBases) == 0 {
+		restBases = []string{vars.BaseURL}
 	}
-	if errA == nil && extCardDisclosed(respA) {
-		findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, respA))
-	} else if respB, errB := unauthClient.GET(ctx, extURL, nil); errB == nil && extCardDisclosed(respB) {
-		findings = append(findings, e.finding("HTTP GET", extURL, "", respB))
-	} else if errB == nil && respB.StatusCode != 404 {
-		reached = true
+	for _, base := range restBases {
+		extURL := endpoint.AppendPath(base, extCardHTTPPath)
+		respA, errA := unauthClient.GET(ctx, extURL, map[string]string{
+			"A2A-Version": "1.0", "Authorization": "Bearer " + invalidToken,
+		})
+		if errA == nil && respA.StatusCode != 404 {
+			reached = true
+		}
+		if errA == nil && extCardDisclosed(respA) {
+			findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, respA))
+			break
+		}
+		respB, errB := unauthClient.GET(ctx, extURL, map[string]string{"A2A-Version": "1.0"})
+		if errB == nil && extCardDisclosed(respB) {
+			findings = append(findings, e.finding("HTTP GET", extURL, "", respB))
+			break
+		}
+		if errB == nil && respB.StatusCode != 404 {
+			reached = true
+		}
 	}
 
 	// No disclosure found. If nothing was even reachable, the rule could not be

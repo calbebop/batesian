@@ -46,6 +46,7 @@ func (e *ContextFixationExecutor) Requires() []attack.ArtifactKind { return nil 
 // Execute satisfies attack.Executor by running the chained logic against a
 // throwaway blackboard, so the rule still works outside the engine.
 func (e *ContextFixationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 
