@@ -46,6 +46,7 @@ type scopeServer struct {
 	hideLimitedTool         bool
 	limitedListError        string
 	emptyFullList           bool
+	fullListMode            string
 	missingFullListTools    bool
 	missingLimitedListTools bool
 	limitedToolError        string
@@ -62,6 +63,7 @@ type scopeServer struct {
 	initialized             atomic.Bool
 	limitedInitialized      atomic.Bool
 	toolCalls               atomic.Int32
+	listPageCalls           atomic.Int32
 }
 
 func (s *scopeServer) validToken(token string) bool {
@@ -115,6 +117,7 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			ID     json.RawMessage `json:"id"`
 			Params struct {
 				Name      string                 `json:"name"`
+				Cursor    *string                `json:"cursor"`
 				Arguments map[string]interface{} `json:"arguments"`
 				Meta      map[string]interface{} `json:"_meta"`
 			} `json:"params"`
@@ -274,7 +277,43 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				rpcErr(-32001, s.limitedListError, http.StatusOK)
 				return
 			}
+			if token == "tok-full-a" && s.fullListMode == "endless" {
+				if req.Params.Cursor != nil {
+					s.listPageCalls.Add(1)
+				}
+				reply(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{
+						"tools": s.tools()[:1], "nextCursor": string(req.ID),
+					},
+				}, http.StatusOK)
+				return
+			}
 			tools := s.tools()
+			if token == "tok-full-a" && s.fullListMode != "" {
+				cursor := "second-page"
+				if s.fullListMode == "empty-cursor" {
+					cursor = ""
+				}
+				if req.Params.Cursor == nil {
+					tools = tools[:1]
+				} else {
+					s.listPageCalls.Add(1)
+					if *req.Params.Cursor != cursor {
+						rpcErr(-32602, "invalid cursor", http.StatusOK)
+						return
+					}
+					if s.fullListMode == "error" {
+						rpcErr(-32603, "page unavailable", http.StatusOK)
+						return
+					}
+					if s.fullListMode == "loop" {
+						tools = tools[:1]
+					} else {
+						tools = tools[1:2]
+					}
+				}
+			}
 			if token == "tok-full-a" && s.emptyFullList {
 				tools = []map[string]interface{}{}
 			}
@@ -282,6 +321,14 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				tools = tools[:1]
 			}
 			result := map[string]interface{}{"tools": tools}
+			if token == "tok-full-a" && s.fullListMode != "" &&
+				(req.Params.Cursor == nil || s.fullListMode == "loop") {
+				cursor := "second-page"
+				if s.fullListMode == "empty-cursor" {
+					cursor = ""
+				}
+				result["nextCursor"] = cursor
+			}
 			if (token == "tok-full-a" && s.missingFullListTools) ||
 				(token == "tok-lim-b" && s.missingLimitedListTools) {
 				delete(result, "tools")
@@ -343,6 +390,55 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		default:
 			rpcErr(-32601, "Method not found", http.StatusOK)
 		}
+	}
+}
+
+func TestScope_PaginatedToolList(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		server       *scopeServer
+		wantFindings int
+		inconclusive bool
+		wantPages    int32
+	}{
+		{name: "legacy later tool", server: &scopeServer{auth: true, fullListMode: "later"}, wantFindings: 1, wantPages: 1},
+		{name: "modern empty cursor", server: &scopeServer{modernOnly: true, auth: true, fullListMode: "empty-cursor"}, wantFindings: 1, wantPages: 1},
+		{name: "repeated cursor", server: &scopeServer{auth: true, fullListMode: "loop"}, inconclusive: true, wantPages: 1},
+		{name: "second page error", server: &scopeServer{auth: true, fullListMode: "error"}, inconclusive: true, wantPages: 1},
+		{name: "page limit", server: &scopeServer{auth: true, fullListMode: "endless"}, inconclusive: true, wantPages: 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.server
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if tc.inconclusive {
+				if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 || s.toolCalls.Load() != 0 {
+					t.Fatalf("expected inconclusive pagination without tool calls, got findings=%+v err=%v calls=%d",
+						findings, err, s.toolCalls.Load())
+				}
+			} else if err != nil || len(findings) != tc.wantFindings {
+				t.Fatalf("expected %d findings, got findings=%+v err=%v", tc.wantFindings, findings, err)
+			}
+			if s.listPageCalls.Load() != tc.wantPages {
+				t.Fatalf("expected %d cursor requests, got %d", tc.wantPages, s.listPageCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_PaginatedToolNeedsApproval(t *testing.T) {
+	s := &scopeServer{auth: true, fullListMode: "later"}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	opts := scopeOpts()
+	opts.MCPScopeTools = nil
+	findings, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+	if err == nil || !strings.Contains(err.Error(), "--mcp-scope-tool") || len(findings) != 0 || s.toolCalls.Load() != 0 {
+		t.Fatalf("expected approval for a later-page tool without calls, got findings=%+v err=%v calls=%d",
+			findings, err, s.toolCalls.Load())
 	}
 }
 
