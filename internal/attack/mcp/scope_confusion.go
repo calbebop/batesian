@@ -448,8 +448,13 @@ func scopeShowsDispatch(text string) bool {
 		return false // refused, not dispatched
 	}
 	lower := strings.ToLower(text)
+	if strings.Contains(lower, "unknown tool") || strings.Contains(lower, "no such tool") ||
+		strings.Contains(lower, "method not found") ||
+		(strings.Contains(lower, "tool ") && strings.Contains(lower, "not found")) {
+		return false
+	}
 	for _, marker := range []string{
-		"unknown tool", "not found", "no such", "does not exist", "invalid param",
+		"not found", "no such", "does not exist", "invalid param",
 		"invalid argument", "unexpected", "missing required", "validation",
 	} {
 		if strings.Contains(lower, marker) {

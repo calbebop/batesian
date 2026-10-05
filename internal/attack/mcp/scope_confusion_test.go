@@ -43,6 +43,9 @@ type scopeServer struct {
 	requireInitializedAuth bool
 	rejectInitialized      bool
 	bindSessions           bool
+	hideLimitedTool        bool
+	limitedToolError       string
+	toolResultError        bool
 	initialized            atomic.Bool
 	limitedInitialized     atomic.Bool
 	toolCalls              atomic.Int32
@@ -210,7 +213,11 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				},
 			}, http.StatusOK)
 		case "tools/list":
-			result := map[string]interface{}{"tools": s.tools()}
+			tools := s.tools()
+			if s.hideLimitedTool && token == "tok-lim-b" {
+				tools = tools[:1]
+			}
+			result := map[string]interface{}{"tools": tools}
 			if s.modernOnly {
 				result["resultType"] = "complete"
 			}
@@ -230,6 +237,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 					},
 				}, http.StatusOK)
 			case "delete_item":
+				if token == "tok-lim-b" && s.limitedToolError != "" {
+					rpcErr(-32602, s.limitedToolError, http.StatusOK)
+					return
+				}
 				if s.enforceWriteScope && !s.hasWrite(token) {
 					rpcErr(-32000, "insufficient_scope: items:write required", http.StatusForbidden)
 					return
@@ -238,6 +249,16 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				msg := "Item " + itemID + " not found"
 				if itemID == "" {
 					msg = "invalid params: item_id required"
+				}
+				if s.toolResultError {
+					reply(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"content": []map[string]interface{}{{"type": "text", "text": msg}},
+							"isError": true,
+						},
+					}, http.StatusOK)
+					return
 				}
 				rpcErr(-32602, msg, http.StatusOK)
 			default:
@@ -322,6 +343,31 @@ func TestScope_PrincipalBoundSessions(t *testing.T) {
 			if err != nil || len(findings) != tc.wantFindings || !s.limitedInitialized.Load() {
 				t.Fatalf("expected %d findings with both principals initialized, got findings=%+v err=%v limited=%t",
 					tc.wantFindings, findings, err, s.limitedInitialized.Load())
+			}
+		})
+	}
+}
+
+func TestScope_HiddenToolResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		toolError    string
+		wantFindings int
+	}{
+		{name: "hidden but callable", wantFindings: 1},
+		{name: "unknown tool", toolError: "Unknown tool: delete_item"},
+		{name: "tool not found", toolError: "Tool delete_item not found"},
+		{name: "no such tool", toolError: "No such tool: delete_item"},
+		{name: "method not found", toolError: "Method not found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &scopeServer{auth: true, hideLimitedTool: true, limitedToolError: tc.toolError, toolResultError: true}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if err != nil || len(findings) != tc.wantFindings {
+				t.Fatalf("expected %d findings, got findings=%+v err=%v", tc.wantFindings, findings, err)
 			}
 		})
 	}
