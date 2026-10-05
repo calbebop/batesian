@@ -11,6 +11,7 @@ info:
     default. Authorize every candidate by exact name with --mcp-scope-tool or
     mcp_scope_tools. Authorization permits real calls under all three
     identities, and probe arguments may have side effects.
+    A readOnlyHint does not override a mutating tool name.
 
     Two distinct, differently scoped principals are also required. Missing
     approval or credentials produces a not-tested result.

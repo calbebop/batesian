@@ -912,6 +912,7 @@ The rule discovers likely mutating tools but invokes none by default. Approve
 each candidate by exact, case-sensitive name with `--mcp-scope-tool` or
 `mcp_scope_tools`. Approval permits real calls under all three identities;
 generated probe arguments may be accepted and cause side effects.
+Server-supplied `readOnlyHint` does not exclude a tool whose name suggests a write.
 
 Two distinct, differently scoped principals are required. Missing approval or
 credentials reports **not tested**, not clean. A confirmed high finding means
