@@ -47,6 +47,9 @@ type scopeServer struct {
 	limitedToolError       string
 	limitedResultText      string
 	toolResultError        bool
+	anonymousCallStatus    int
+	anonymousCallError     string
+	anonymousCallResult    string
 	initialized            atomic.Bool
 	limitedInitialized     atomic.Bool
 	toolCalls              atomic.Int32
@@ -185,6 +188,26 @@ func (s *scopeServer) handler() http.HandlerFunc {
 		}
 
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if token == "" && req.Method == "tools/call" {
+			if s.anonymousCallStatus != 0 {
+				w.WriteHeader(s.anonymousCallStatus)
+				return
+			}
+			if s.anonymousCallError != "" {
+				rpcErr(-32602, s.anonymousCallError, http.StatusOK)
+				return
+			}
+			if s.anonymousCallResult != "" {
+				reply(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{
+						"content": []map[string]interface{}{{"type": "text", "text": s.anonymousCallResult}},
+						"isError": true,
+					},
+				}, http.StatusOK)
+				return
+			}
+		}
 		if s.auth && !s.validToken(token) {
 			rpcErr(-32000, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
 			return
@@ -405,6 +428,46 @@ func TestScope_OpenSuppressed(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against an open server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestScope_AnonymousControlNeedsVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		msg    string
+		result string
+	}{
+		{name: "server error", status: http.StatusServiceUnavailable},
+		{name: "unknown tool", msg: "Unknown tool: delete_item"},
+		{name: "business error", result: "Not allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &scopeServer{auth: true, anonymousCallStatus: tc.status,
+				anonymousCallError: tc.msg, anonymousCallResult: tc.result}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "anonymous control") {
+				t.Fatalf("expected an inconclusive anonymous control, got findings=%+v err=%v", findings, err)
+			}
+			if len(findings) != 0 || s.toolCalls.Load() != 0 {
+				t.Fatalf("probes continued after an unanswered control: findings=%+v calls=%d",
+					findings, s.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_AnonymousProtocolAuthRefusal(t *testing.T) {
+	s := &scopeServer{auth: true, anonymousCallError: "unauthorized"}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected one finding after an explicit auth refusal, got findings=%+v err=%v", findings, err)
 	}
 }
 
