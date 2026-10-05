@@ -212,6 +212,13 @@ func TestResourcesUnauth_NoResources(t *testing.T) {
 	}
 }
 
+func TestResourcesUnauth_MalformedResource(t *testing.T) {
+	ts := mcpResourcesServer(t, []map[string]interface{}{{"name": "missing URI"}}, "")
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewResourcesUnauthExecutor(resourcesRC()), ts.URL, testOpts())
+}
+
 func TestResourcesUnauth_FollowsEmptyCursor(t *testing.T) {
 	var followed atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +274,85 @@ func TestResourcesUnauth_FollowsEmptyCursor(t *testing.T) {
 	if err != nil || len(findings) != 2 || !followed.Load() {
 		t.Fatalf("expected the later resource to be listed and read, got findings=%+v err=%v followed=%t",
 			findings, err, followed.Load())
+	}
+}
+
+func interruptedResourcesServer(firstPageResource bool, followed, distinctRead *atomic.Bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                     `json:"method"`
+			ID     json.RawMessage            `json:"id"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": result,
+			})
+		}
+		switch req.Method {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "interrupted-resources", "version": "1"},
+				"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "resources/list":
+			if _, ok := req.Params["cursor"]; ok {
+				followed.Store(true)
+				http.Error(w, "unavailable", http.StatusBadGateway)
+				return
+			}
+			resources := []map[string]string{}
+			if firstPageResource {
+				resources = append(resources, map[string]string{"uri": "config://first", "name": "first"})
+			}
+			reply(map[string]interface{}{"resources": resources, "nextCursor": "later"})
+		case "resources/read":
+			var id int
+			var uri string
+			_ = json.Unmarshal(req.ID, &id)
+			_ = json.Unmarshal(req.Params["uri"], &uri)
+			if id == 5 && uri == "config://first" {
+				distinctRead.Store(true)
+			}
+			reply(map[string]interface{}{"contents": []map[string]string{{
+				"uri": uri, "text": "public data",
+			}}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestResourcesUnauth_IncompleteEmptyListing(t *testing.T) {
+	var followed, distinctRead atomic.Bool
+	ts := interruptedResourcesServer(false, &followed, &distinctRead)
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewResourcesUnauthExecutor(resourcesRC()), ts.URL, testOpts())
+	if !followed.Load() || distinctRead.Load() {
+		t.Fatalf("expected a failed next page without a read, got followed=%t read=%t", followed.Load(), distinctRead.Load())
+	}
+}
+
+func TestResourcesUnauth_PartialListingRetainsFinding(t *testing.T) {
+	var followed, distinctRead atomic.Bool
+	ts := interruptedResourcesServer(true, &followed, &distinctRead)
+	defer ts.Close()
+
+	findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil || len(findings) != 2 || !followed.Load() || !distinctRead.Load() {
+		t.Fatalf("expected first-page findings and a distinct read ID, got findings=%+v err=%v followed=%t read=%t",
+			findings, err, followed.Load(), distinctRead.Load())
+	}
+	if !strings.Contains(findings[0].Evidence, "listing incomplete") {
+		t.Fatalf("expected partial-listing evidence, got %q", findings[0].Evidence)
 	}
 }
 
