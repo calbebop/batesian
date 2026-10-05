@@ -297,6 +297,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	if !scopeResponseMatches(listResp.Body, scopeIDListLim) {
 		return nil, fmt.Sprintf("tools/list returned no correlated response for the limited principal %q", princB.name), false
 	}
+	if _, ok := scopeListedTools(listResp.Body); !ok {
+		return nil, fmt.Sprintf("tools/list returned no successful listing for the limited principal %q", princB.name), false
+	}
 
 	// Anonymous dispatch rules out a scope-specific bypass.
 	anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
@@ -363,21 +366,29 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 	if !scopeResponseMatches(resp.Body, scopeIDListFull) {
 		return nil, "tools/list returned no correlated response for the full principal", false
 	}
-	var body struct {
-		Result struct {
-			Tools []scopeTool `json:"tools"`
-		} `json:"result"`
-		Error map[string]interface{} `json:"error"`
-	}
-	if json.Unmarshal(resp.Body, &body) != nil || body.Error != nil {
+	tools, ok := scopeListedTools(resp.Body)
+	if !ok {
 		return nil, "tools/list returned no parseable listing", false
 	}
-	for _, t := range body.Result.Tools {
+	for _, t := range tools {
 		if scopeLooksPrivileged(t) {
 			cands = append(cands, t)
 		}
 	}
 	return cands, "", true
+}
+
+func scopeListedTools(raw []byte) ([]scopeTool, bool) {
+	var body struct {
+		Result struct {
+			Tools []scopeTool `json:"tools"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) != nil || len(body.Error) != 0 || body.Result.Tools == nil {
+		return nil, false
+	}
+	return body.Result.Tools, true
 }
 
 type scopeCallOutcome struct {
