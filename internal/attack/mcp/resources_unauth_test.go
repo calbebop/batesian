@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -208,6 +209,64 @@ func TestResourcesUnauth_NoResources(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings with empty resource list, got %d", len(findings))
+	}
+}
+
+func TestResourcesUnauth_FollowsEmptyCursor(t *testing.T) {
+	var followed atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                     `json:"method"`
+			ID     json.RawMessage            `json:"id"`
+			Params map[string]json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": result,
+			})
+		}
+		switch req.Method {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "paged-resources", "version": "1"},
+				"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "resources/list":
+			if raw, ok := req.Params["cursor"]; ok {
+				var cursor string
+				if json.Unmarshal(raw, &cursor) != nil || cursor != "" {
+					http.Error(w, "unexpected cursor", http.StatusBadRequest)
+					return
+				}
+				followed.Store(true)
+				reply(map[string]interface{}{"resources": []map[string]string{{"uri": "config://later", "name": "later"}}})
+				return
+			}
+			reply(map[string]interface{}{"resources": []interface{}{}, "nextCursor": ""})
+		case "resources/read":
+			reply(map[string]interface{}{"contents": []map[string]string{{
+				"uri": "config://later", "text": "public data",
+			}}})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil || len(findings) != 2 || !followed.Load() {
+		t.Fatalf("expected the later resource to be listed and read, got findings=%+v err=%v followed=%t",
+			findings, err, followed.Load())
 	}
 }
 
