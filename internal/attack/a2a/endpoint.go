@@ -123,11 +123,10 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 	return endpointpkg.AppendPath(baseURL, "/"), false
 }
 
-// looksLikeMCPServer rejects weak A2A evidence when MCP initialize or RFC 9728
-// resource metadata identifies the target. The check stays negative because some
-// A2A servers implement neither task-get method used for positive proof.
+// looksLikeMCPServer rejects weak A2A evidence when MCP discovery or resource
+// metadata identifies the target.
 func looksLikeMCPServer(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
-	if answersMCPInitialize(ctx, client, endpoint) {
+	if answersMCPInitialize(ctx, client, endpoint) || answersModernMCPDiscover(ctx, client, endpoint) {
 		return true
 	}
 	return servesMCPResourceMetadata(ctx, client, baseURL, endpoint)
@@ -385,6 +384,53 @@ func answersMCPInitialize(ctx context.Context, client *attack.HTTPClient, endpoi
 // mcpProbeVersion mirrors the MCP package's current handshake revision. A
 // successful probe must return protocolVersion.
 const mcpProbeVersion = "2025-11-25"
+
+const modernMCPProbeVersion = "2026-07-28"
+
+// answersModernMCPDiscover recognizes the stateless MCP wire, which has no
+// initialize method.
+func answersModernMCPDiscover(ctx context.Context, client *attack.HTTPClient, endpoint string) bool {
+	id := "batesian-a2a-mcp-discover-" + attack.NewVars(endpoint, "").RandID
+	resp, err := client.POST(ctx, endpoint, map[string]string{
+		"MCP-Protocol-Version": modernMCPProbeVersion,
+		"Mcp-Method":           "server/discover",
+	}, map[string]interface{}{
+		"jsonrpc": "2.0", "id": id, "method": "server/discover",
+		"params": map[string]interface{}{"_meta": map[string]interface{}{
+			"io.modelcontextprotocol/protocolVersion":    modernMCPProbeVersion,
+			"io.modelcontextprotocol/clientInfo":         map[string]interface{}{"name": "batesian", "version": attack.Version},
+			"io.modelcontextprotocol/clientCapabilities": map[string]interface{}{},
+		}},
+	})
+	return err == nil && resp.IsSuccess() && modernMCPDiscoverResult(resp.Body, id)
+}
+
+func modernMCPDiscoverResult(body []byte, expectedID string) bool {
+	var reply struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  *struct {
+			ResultType        string                     `json:"resultType"`
+			SupportedVersions []string                   `json:"supportedVersions"`
+			Capabilities      map[string]json.RawMessage `json:"capabilities"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &reply) != nil || reply.JSONRPC != "2.0" || reply.Result == nil || len(reply.Error) != 0 {
+		return false
+	}
+	var id string
+	if json.Unmarshal(reply.ID, &id) != nil || id != expectedID ||
+		reply.Result.ResultType != "complete" || reply.Result.Capabilities == nil {
+		return false
+	}
+	for _, version := range reply.Result.SupportedVersions {
+		if version == modernMCPProbeVersion {
+			return true
+		}
+	}
+	return false
+}
 
 // jsonRPCErrorMessage extracts the message from a JSON-RPC error envelope, or ""
 // when there is none. A2A defines no numeric auth code, so the message is what
