@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,121 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
+
+func promptGetResultServer(t *testing.T, getResult map[string]interface{}, wrongID bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		id := req.ID
+		if req.Method == "prompts/get" && wrongID {
+			id = json.RawMessage("99")
+		}
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id, "result": result,
+			})
+		}
+		switch req.Method {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "prompt-result-test", "version": "1"},
+				"capabilities":    map[string]interface{}{"prompts": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "prompts/list":
+			reply(map[string]interface{}{"prompts": []map[string]string{{"name": "review"}}})
+		case "prompts/get":
+			reply(getResult)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestPromptUnauth_GetRequiresContent(t *testing.T) {
+	message := func(content map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"role": "user", "content": content}
+	}
+	textResult := map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": "private prompt"})}}
+	cases := []struct {
+		name     string
+		result   map[string]interface{}
+		wrongID  bool
+		findings int
+	}{
+		{"missing messages", map[string]interface{}{}, false, 1},
+		{"empty messages", map[string]interface{}{"messages": []interface{}{}}, false, 1},
+		{"empty text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": ""})}}, false, 1},
+		{"empty image", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": ""})}}, false, 1},
+		{"invalid blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": "not base64"}})}}, false, 1},
+		{"input required", map[string]interface{}{"resultType": "input_required", "messages": textResult["messages"]}, false, 1},
+		{"wrong response ID", textResult, true, 1},
+		{"text content", textResult, false, 2},
+		{"later message", map[string]interface{}{"messages": []interface{}{
+			message(map[string]interface{}{"type": "text", "text": ""}),
+			message(map[string]interface{}{"type": "text", "text": "private prompt"}),
+		}}, false, 2},
+		{"complete result", map[string]interface{}{"resultType": "complete", "messages": textResult["messages"]}, false, 2},
+		{"image content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString([]byte("image"))})}}, false, 2},
+		{"audio content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "audio", "data": base64.StdEncoding.EncodeToString([]byte("audio"))})}}, false, 2},
+		{"embedded text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "text": "embedded prompt"}})}}, false, 2},
+		{"embedded blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": base64.StdEncoding.EncodeToString([]byte("document"))}})}}, false, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := promptGetResultServer(t, tc.result, tc.wrongID)
+			defer srv.Close()
+
+			exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
+			if err != nil || len(findings) != tc.findings {
+				t.Fatalf("want %d findings, got %+v (err=%v)", tc.findings, findings, err)
+			}
+		})
+	}
+}
+
+func TestPromptUnauth_GetEvidenceExcludesMetadataAndSecrets(t *testing.T) {
+	const metadataSecret = "metadata-token-1234567890"
+	const payloadSecret = "payload-token-1234567890"
+	for _, tc := range []struct {
+		name       string
+		text       string
+		metaSecret string
+		want       string
+		forbidden  string
+	}{
+		{"metadata", "public prompt", metadataSecret, "public prompt", metadataSecret},
+		{"payload", "Authorization: Bearer " + payloadSecret, "", "[redacted", payloadSecret},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := map[string]interface{}{
+				"messages": []map[string]interface{}{{"role": "user", "content": map[string]string{"type": "text", "text": tc.text}}},
+				"_meta":    map[string]string{"note": "Authorization: Bearer " + tc.metaSecret},
+			}
+			srv := promptGetResultServer(t, result, false)
+			defer srv.Close()
+
+			exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
+			if err != nil || len(findings) != 2 {
+				t.Fatalf("expected list and get findings, got %+v (err=%v)", findings, err)
+			}
+			if !strings.Contains(findings[1].Evidence, tc.want) || strings.Contains(findings[1].Evidence, tc.forbidden) {
+				t.Fatalf("unexpected prompt evidence: %q", findings[1].Evidence)
+			}
+		})
+	}
+}
 
 func pagedPromptServer(failPage, firstPagePrompt bool, followed, fetched *atomic.Bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
