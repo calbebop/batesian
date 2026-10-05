@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,103 @@ import (
 
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
+
+func resourcePayloadServer(t *testing.T, readResult map[string]interface{}) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		id := req["id"]
+		reply := func(result interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id, "result": result,
+			})
+		}
+		switch req["method"] {
+		case "initialize":
+			reply(map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "payload-test", "version": "1"},
+				"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "resources/list":
+			reply(map[string]interface{}{"resources": []map[string]string{{"uri": "config://readme", "name": "readme"}}})
+		case "resources/read":
+			reply(readResult)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestResourcesUnauth_MetadataCannotEscalateRead(t *testing.T) {
+	const secret = "metadata-token-1234567890"
+	ts := resourcePayloadServer(t, map[string]interface{}{
+		"contents": []map[string]string{{"uri": "config://readme", "text": "public overview"}},
+		"_meta":    map[string]string{"note": "Authorization: Bearer " + secret},
+	})
+	defer ts.Close()
+
+	findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("expected list and read findings, got findings=%+v err=%v", findings, err)
+	}
+	if findings[1].Severity != "high" || strings.Contains(findings[1].Evidence, secret) ||
+		!strings.Contains(findings[1].Evidence, "public overview") {
+		t.Fatalf("metadata must not affect or appear in the read finding: %+v", findings[1])
+	}
+}
+
+func TestResourcesUnauth_PayloadCredentialsAreRedacted(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload []map[string]string
+		secret  string
+	}{
+		{
+			name: "text",
+			payload: []map[string]string{{
+				"uri": "config://readme", "text": "Authorization: Bearer payload-token-1234567890",
+			}},
+			secret: "payload-token-1234567890",
+		},
+		{
+			name: "later content",
+			payload: []map[string]string{
+				{"uri": "config://readme", "text": "public overview"},
+				{"uri": "config://child", "text": "postgresql://admin:childsecret@db.internal/prod"},
+			},
+			secret: "childsecret",
+		},
+		{
+			name: "blob",
+			payload: []map[string]string{{
+				"uri":  "config://readme",
+				"blob": base64.StdEncoding.EncodeToString([]byte("postgresql://admin:blobsecret@db.internal/prod")),
+			}},
+			secret: "blobsecret",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := resourcePayloadServer(t, map[string]interface{}{"contents": tc.payload})
+			defer ts.Close()
+
+			findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+			if err != nil || len(findings) != 2 {
+				t.Fatalf("expected list and read findings, got findings=%+v err=%v", findings, err)
+			}
+			if findings[1].Severity != "critical" || strings.Contains(findings[1].Evidence, tc.secret) {
+				t.Fatalf("payload secret should escalate without appearing in evidence: %+v", findings[1])
+			}
+		})
+	}
+}
 
 // Reading only the first listed resource made the escalation to critical an
 // accident of list order: a server that lists a public README ahead of its

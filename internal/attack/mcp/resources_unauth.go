@@ -19,26 +19,10 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(password|passwd|pwd)\s*[=:]\s*\S{6,}`),         // Password
 	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----`),   // Private keys
 	regexp.MustCompile(`(?i)ghp_[a-zA-Z0-9]{36}`),                           // GitHub token
-	// The optional "Bearer " after the separator is what lets this match the
-	// canonical header form, Authorization: Bearer <token>. Without it the
-	// pattern reached "Bearer", six characters, and gave up against the
-	// \S{10,} it needs; the one shape most likely to appear in a leaked config
-	// was the one shape it could not see. The separator stays required, because
-	// making it optional would match any long word following the keyword, as in
-	// "Authorization requirements documented".
-	//
-	// The quote class is not cosmetic: content is matched against the raw
-	// JSON-RPC response body, so a resource holding `authorization: "Bearer x"`
-	// arrives with the quote escaped, as \" , sitting between the separator and
-	// the value.
+	// Accept quoted values and the Authorization: Bearer header form.
 	regexp.MustCompile(`(?i)(bearer|authorization)\s*[=:]\s*[\\"']*\s*(bearer\s+)?\S{10,}`), // Bearer/auth token
 	regexp.MustCompile(`(?i)eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}`),                     // JWT
-	// Credentials in a URI userinfo section, as in
-	// postgresql://admin:hunter2@db.internal:5432/prod. Connection strings are
-	// a routine thing to expose through a resource and the password pattern
-	// above cannot see one, because it looks for password=value rather than a
-	// positional secret. Requiring the @ is what keeps an ordinary
-	// http://host:8080/path from matching on its port.
+	// Require @ to distinguish URI userinfo from an ordinary host:port.
 	regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s:@]+@[^/\s]+`), // URI userinfo credentials
 }
 
@@ -303,34 +287,39 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
 		return nil
 	}
-	hasContent := false
+	read := &resourceRead{uri: uri, statusCode: resp.StatusCode}
 	for _, item := range body.Result.Contents {
 		if item.URI == "" {
 			continue
 		}
+		var payload []byte
+		var snippet string
 		if item.Text != nil && *item.Text != "" {
-			hasContent = true
-			break
-		}
-		if item.Blob != nil {
+			payload = []byte(*item.Text)
+			snippet = *item.Text
+		} else if item.Blob != nil {
 			decoded, err := base64.StdEncoding.DecodeString(*item.Blob)
-			if err == nil && len(decoded) != 0 {
-				hasContent = true
-				break
+			if err != nil || len(decoded) == 0 {
+				continue
+			}
+			payload = decoded
+			snippet = fmt.Sprintf("[binary content: %d bytes]", len(decoded))
+		} else {
+			continue
+		}
+		if read.content == "" {
+			read.content = snippet
+		}
+		for _, re := range credentialPatterns {
+			if loc := re.FindIndex(payload); loc != nil {
+				read.credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
+				read.content = "[redacted: credential pattern detected]"
+				return read
 			}
 		}
 	}
-	if !hasContent {
+	if read.content == "" {
 		return nil
-	}
-
-	content := string(resp.Body)
-	read := &resourceRead{uri: uri, statusCode: resp.StatusCode, content: content}
-	for _, re := range credentialPatterns {
-		if loc := re.FindStringIndex(content); loc != nil {
-			read.credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
-			break
-		}
 	}
 	return read
 }
