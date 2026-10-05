@@ -61,6 +61,7 @@ func NewPeerImpersonationExecutor(r attack.RuleContext) *PeerImpersonationExecut
 }
 
 func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// Two clients: one with any configured token for card fetching, and one
 	// explicitly without for the unauthenticated baseline probe (step 4).

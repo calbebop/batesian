@@ -30,6 +30,7 @@ func NewPushCallbackAuthExecutor(r attack.RuleContext) *PushCallbackAuthExecutor
 }
 
 func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 
 	listenerURL := opts.OOBListenerURL

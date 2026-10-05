@@ -34,6 +34,7 @@ func (e *MultiTenantIsolationExecutor) Requires() []attack.ArtifactKind { return
 // Execute satisfies attack.Executor by running the chained logic against a
 // throwaway blackboard, so the rule still works if invoked outside the engine.
 func (e *MultiTenantIsolationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 

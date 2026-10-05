@@ -43,18 +43,31 @@ const (
 
 // enumAgent is an A2A agent whose ListTasks behaviour is configurable. Task creation
 // always works for a known token, so a failure here is about the listing.
-func enumAgent(t *testing.T, behaviour enumBehaviour, requireImmediate ...bool) *httptest.Server {
+type enumAgentConfig struct {
+	requireImmediate bool
+	requireTenant    bool
+}
+
+func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
 	t.Helper()
+	var config enumAgentConfig
+	if len(options) != 0 {
+		config = options[0]
+	}
 	type task struct{ id, ctxID, owner string }
 	tasks := map[string]*task{}
 	n := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+			tenant := ""
+			if config.requireTenant {
+				tenant = `,"tenant":"enum"`
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"name":"Enum Agent","description":"d","version":"1.0.0",`+
 				`"protocolVersion":"1.0","capabilities":{},"skills":[],`+
-				`"supportedInterfaces":[{"url":"http://`+r.Host+`/","protocolBinding":"JSONRPC","protocolVersion":"1.0"}]}`)
+				`"supportedInterfaces":[{"url":"http://`+r.Host+`/","protocolBinding":"JSONRPC","protocolVersion":"1.0"`+tenant+`}]}`)
 			return
 		}
 		var req map[string]interface{}
@@ -77,10 +90,17 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, requireImmediate ...bool) 
 				"error": map[string]interface{}{"code": code, "message": msg},
 			})
 		}
+		if config.requireTenant && method != "" && !strings.Contains(method, "/") {
+			params, _ := req["params"].(map[string]interface{})
+			if params["tenant"] != "enum" {
+				rpcErr(-32602, "tenant required")
+				return
+			}
+		}
 
 		switch method {
 		case "SendMessage", "message/send":
-			if len(requireImmediate) != 0 && requireImmediate[0] {
+			if config.requireImmediate {
 				params, _ := req["params"].(map[string]interface{})
 				configuration, _ := params["configuration"].(map[string]interface{})
 				if method != "SendMessage" || configuration["returnImmediately"] != true {
@@ -211,7 +231,17 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 }
 
 func TestTaskEnumeration_LongRunningTaskReturnsImmediately(t *testing.T) {
-	srv := enumAgent(t, enumUnscoped, true)
+	srv := enumAgent(t, enumUnscoped, enumAgentConfig{requireImmediate: true})
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected an unscoped listing finding, got %d findings and error %v", len(findings), err)
+	}
+}
+
+func TestTaskEnumeration_AdvertisedTenant(t *testing.T) {
+	srv := enumAgent(t, enumUnscoped, enumAgentConfig{requireTenant: true})
 	defer srv.Close()
 
 	findings, err := runEnum(t, srv, enumOpts())

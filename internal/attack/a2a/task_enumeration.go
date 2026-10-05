@@ -27,6 +27,7 @@ func NewTaskEnumerationExecutor(r attack.RuleContext) *TaskEnumerationExecutor {
 }
 
 func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err

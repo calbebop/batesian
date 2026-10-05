@@ -54,6 +54,7 @@ func activationHeaders(uri string) map[string]string {
 }
 
 func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 

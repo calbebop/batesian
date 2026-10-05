@@ -29,6 +29,7 @@ func NewPushSSRFExecutor(r attack.RuleContext) *PushSSRFExecutor {
 
 // Execute runs the push-notification SSRF test.
 func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 
 	// Determine the OOB listener URL.

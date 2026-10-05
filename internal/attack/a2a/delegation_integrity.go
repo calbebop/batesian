@@ -31,6 +31,7 @@ func (e *DelegationIntegrityExecutor) Requires() []attack.ArtifactKind {
 }
 
 func (e *DelegationIntegrityExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 

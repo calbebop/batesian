@@ -55,6 +55,7 @@ const (
 )
 
 func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// Every request this rule makes is anonymous. The agent card is the PUBLIC
 	// contract an unauthenticated caller reads, and the probes must present no

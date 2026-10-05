@@ -27,6 +27,7 @@ func NewTaskIDORExecutor(r attack.RuleContext) *TaskIDORExecutor {
 }
 
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	findings, jsonErr := e.probeJSONRPC(ctx, target, opts)
 	if len(findings) != 0 {
 		return findings, nil
@@ -273,18 +274,25 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 	if !slices.Contains(bases, vars.BaseURL) {
 		bases = append(bases, vars.BaseURL)
 	}
-	var listEndpoints []string
+	type listEndpoint struct {
+		url     string
+		headers map[string]string
+	}
+	var listEndpoints []listEndpoint
 	for _, b := range bases {
-		listEndpoints = append(listEndpoints, endpoint.AppendPath(b, "/v1/tasks"), endpoint.AppendPath(b, "/tasks"))
+		listEndpoints = append(listEndpoints,
+			listEndpoint{url: endpoint.AppendPath(b, "/v1/tasks")},
+			listEndpoint{url: endpoint.AppendPath(b, "/tasks"), headers: map[string]string{"A2A-Version": "1.0"}},
+		)
 	}
 	var probe taskListProbe
 	for _, le := range listEndpoints {
 		next := ""
 		seen := map[string]bool{}
 		for page := 0; page < maxTaskListPages; page++ {
-			pageURL := le
+			pageURL := le.url
 			if next != "" {
-				u, err := url.Parse(le)
+				u, err := url.Parse(le.url)
 				if err != nil {
 					probe.unverified = true
 					break
@@ -294,7 +302,7 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 				u.RawQuery = query.Encode()
 				pageURL = u.String()
 			}
-			listResp, err := unauthClient.GET(ctx, pageURL, nil)
+			listResp, err := unauthClient.GET(ctx, pageURL, le.headers)
 			if err != nil || listResp == nil {
 				if page > 0 {
 					probe.unverified = true
