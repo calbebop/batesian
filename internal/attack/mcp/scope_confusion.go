@@ -294,6 +294,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	if scopeShowsDispatch(anonymousCall, randID) {
 		return nil, "", true
 	}
+	if !scopeShowsAuthRefusal(anonymousCall) {
+		return nil, fmt.Sprintf("the anonymous control at %s returned no authorization verdict", sessA.Endpoint), false
+	}
 
 	for i, cand := range candidates {
 		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
@@ -305,7 +308,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		switch {
 		case scopeShowsDispatch(limCall, randID):
 			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))
-		case scopeShowsAuthRefusal(limCall.text):
+		case scopeShowsAuthRefusal(limCall):
 			// Scope enforcement held.
 		default:
 			// No verdict.
@@ -434,12 +437,13 @@ var scopeAuthFlavored = regexp.MustCompile(`(?i)(insufficient[_ ]?scope|missing[
 	`unauthorized|forbidden|access denied|not authorized|not permitted|permission denied|requires?[_ ](a )?scope|` +
 	`scope[s]? required|insufficient.?privilege|not allowed)`)
 
-// scopeShowsAuthRefusal detects HTTP and message-level authorization failures.
-func scopeShowsAuthRefusal(text string) bool {
+// scopeShowsAuthRefusal detects HTTP and protocol-level authorization failures.
+func scopeShowsAuthRefusal(call scopeCallOutcome) bool {
+	text := call.text
 	if strings.HasPrefix(text, "http 401") || strings.HasPrefix(text, "http 403") {
 		return true
 	}
-	return text != "" && scopeAuthFlavored.MatchString(text)
+	return call.protocolError && text != "" && scopeAuthFlavored.MatchString(text)
 }
 
 // scopeShowsDispatch requires a tool result or a protocol error that echoes the probe canary.
