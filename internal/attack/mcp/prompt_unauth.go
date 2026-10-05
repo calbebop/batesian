@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -154,7 +157,68 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		return findings, true
 	}
 
-	content := string(getResp.Body)
+	var body struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  struct {
+			ResultType string `json:"resultType"`
+			Messages   []struct {
+				Content struct {
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					Data     string `json:"data"`
+					Resource struct {
+						URI  string `json:"uri"`
+						Text string `json:"text"`
+						Blob string `json:"blob"`
+					} `json:"resource"`
+				} `json:"content"`
+			} `json:"messages"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(getResp.Body, &body) != nil || body.JSONRPC != "2.0" ||
+		string(body.ID) != strconv.Itoa(nextID) || len(body.Error) != 0 ||
+		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
+		return findings, true
+	}
+
+	var content string
+	for _, message := range body.Result.Messages {
+		item := message.Content
+		switch item.Type {
+		case "text":
+			content = item.Text
+		case "image", "audio":
+			decoded, err := base64.StdEncoding.DecodeString(item.Data)
+			if err == nil && len(decoded) != 0 {
+				content = fmt.Sprintf("[%s content: %d bytes]", item.Type, len(decoded))
+			}
+		case "resource":
+			if item.Resource.URI == "" {
+				continue
+			}
+			content = item.Resource.Text
+			if content == "" {
+				decoded, err := base64.StdEncoding.DecodeString(item.Resource.Blob)
+				if err == nil && len(decoded) != 0 {
+					content = fmt.Sprintf("[embedded resource: %d bytes]", len(decoded))
+				}
+			}
+		}
+		if content != "" {
+			break
+		}
+	}
+	if content == "" {
+		return findings, true
+	}
+	for _, pattern := range credentialPatterns {
+		if pattern.MatchString(content) {
+			content = "[redacted: credential pattern detected]"
+			break
+		}
+	}
 	findings = append(findings, attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
