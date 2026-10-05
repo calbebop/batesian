@@ -45,6 +45,7 @@ type scopeServer struct {
 	bindSessions           bool
 	hideLimitedTool        bool
 	limitedToolError       string
+	limitedResultText      string
 	toolResultError        bool
 	initialized            atomic.Bool
 	limitedInitialized     atomic.Bool
@@ -251,6 +252,9 @@ func (s *scopeServer) handler() http.HandlerFunc {
 					msg = "invalid params: item_id required"
 				}
 				if s.toolResultError {
+					if token == "tok-lim-b" && s.limitedResultText != "" {
+						msg = s.limitedResultText
+					}
 					reply(map[string]interface{}{
 						"jsonrpc": "2.0", "id": req.ID,
 						"result": map[string]interface{}{
@@ -352,16 +356,21 @@ func TestScope_HiddenToolResponses(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		toolError    string
+		resultText   string
 		wantFindings int
 	}{
 		{name: "hidden but callable", wantFindings: 1},
+		{name: "generic tool result", resultText: "Not found", wantFindings: 1},
 		{name: "unknown tool", toolError: "Unknown tool: delete_item"},
 		{name: "tool not found", toolError: "Tool delete_item not found"},
 		{name: "no such tool", toolError: "No such tool: delete_item"},
 		{name: "method not found", toolError: "Method not found"},
+		{name: "generic protocol not found", toolError: "Not found"},
+		{name: "protocol invalid params", toolError: "Invalid params"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &scopeServer{auth: true, hideLimitedTool: true, limitedToolError: tc.toolError, toolResultError: true}
+			s := &scopeServer{auth: true, hideLimitedTool: true, limitedToolError: tc.toolError,
+				limitedResultText: tc.resultText, toolResultError: true}
 			ts := httptest.NewServer(s.handler())
 			defer ts.Close()
 

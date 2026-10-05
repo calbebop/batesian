@@ -26,6 +26,7 @@ func NewScopeConfusionExecutor(r attack.RuleContext) *ScopeConfusionExecutor {
 }
 
 const scopeCandidateCap = 6
+const scopeCanaryPrefix = "batesian-nonexistent-"
 
 const (
 	scopeIDListFull = 3
@@ -289,22 +290,22 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	}
 
 	// Anonymous dispatch rules out a scope-specific bypass.
-	anonymousText := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
-	if scopeShowsDispatch(anonymousText) {
+	anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
+	if scopeShowsDispatch(anonymousCall, randID) {
 		return nil, "", true
 	}
 
 	for i, cand := range candidates {
-		fullText := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
-		if !scopeShowsDispatch(fullText) {
+		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
+		if !scopeShowsDispatch(fullCall, randID) {
 			continue // baseline did not establish dispatch; nothing to compare
 		}
 
-		limText := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
+		limCall := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
 		switch {
-		case scopeShowsDispatch(limText):
+		case scopeShowsDispatch(limCall, randID):
 			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))
-		case scopeShowsAuthRefusal(limText):
+		case scopeShowsAuthRefusal(limCall.text):
 			// Scope enforcement held.
 		default:
 			// No verdict.
@@ -352,8 +353,13 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 	return cands, "", true
 }
 
-// callAs invokes an approved tool and returns text used by the oracle.
-func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, id int, cand scopeTool, randID string) string {
+type scopeCallOutcome struct {
+	text          string
+	protocolError bool
+}
+
+// callAs invokes an approved tool and returns its response shape and text.
+func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, id int, cand scopeTool, randID string) scopeCallOutcome {
 	args := scopeProbeArgs(cand.InputSchema, randID)
 	params := map[string]interface{}{"name": cand.Name, "arguments": args}
 	resp, err := s.postShaping(ctx, client, id, "tools/call", params,
@@ -361,9 +367,9 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 	if err != nil || !resp.IsSuccess() {
 		// Preserve HTTP authorization failures for the classifier.
 		if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			return fmt.Sprintf("http %d %s", resp.StatusCode, resp.Headers.Get("WWW-Authenticate"))
+			return scopeCallOutcome{text: fmt.Sprintf("http %d %s", resp.StatusCode, resp.Headers.Get("WWW-Authenticate"))}
 		}
-		return ""
+		return scopeCallOutcome{}
 	}
 	var body struct {
 		Result struct {
@@ -376,17 +382,17 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 		} `json:"error"`
 	}
 	if json.Unmarshal(resp.Body, &body) != nil {
-		return ""
+		return scopeCallOutcome{}
 	}
 	if body.Error.Message != "" {
-		return body.Error.Message
+		return scopeCallOutcome{text: body.Error.Message, protocolError: true}
 	}
 	var sb strings.Builder
 	for _, c := range body.Result.Content {
 		sb.WriteString(c.Text)
 		sb.WriteString("\n")
 	}
-	return sb.String()
+	return scopeCallOutcome{text: sb.String()}
 }
 
 // scopeProbeArgs fills required fields with canary values.
@@ -407,7 +413,7 @@ func scopeProbeArgs(schema map[string]interface{}, randID string) map[string]int
 		spec, _ := raw.(map[string]interface{})
 		switch spec["type"] {
 		case "string":
-			args[name] = "batesian-nonexistent-" + randID
+			args[name] = scopeCanaryPrefix + randID
 		case "number", "integer":
 			args[name] = 1
 		case "boolean":
@@ -419,7 +425,7 @@ func scopeProbeArgs(schema map[string]interface{}, randID string) map[string]int
 		}
 	}
 	if len(args) == 0 {
-		args["batesian_probe"] = "batesian-nonexistent-" + randID
+		args["batesian_probe"] = scopeCanaryPrefix + randID
 	}
 	return args
 }
@@ -436,8 +442,9 @@ func scopeShowsAuthRefusal(text string) bool {
 	return text != "" && scopeAuthFlavored.MatchString(text)
 }
 
-// scopeShowsDispatch detects responses produced after authorization.
-func scopeShowsDispatch(text string) bool {
+// scopeShowsDispatch requires a tool result or a protocol error that echoes the probe canary.
+func scopeShowsDispatch(call scopeCallOutcome, randID string) bool {
+	text := call.text
 	if text == "" {
 		return false
 	}
@@ -453,15 +460,9 @@ func scopeShowsDispatch(text string) bool {
 		(strings.Contains(lower, "tool ") && strings.Contains(lower, "not found")) {
 		return false
 	}
-	for _, marker := range []string{
-		"not found", "no such", "does not exist", "invalid param",
-		"invalid argument", "unexpected", "missing required", "validation",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	if call.protocolError {
+		return strings.Contains(text, scopeCanaryPrefix+randID)
 	}
-	// Any other result text means the handler ran.
 	return strings.TrimSpace(text) != ""
 }
 
