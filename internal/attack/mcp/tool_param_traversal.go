@@ -24,7 +24,7 @@ func NewToolParamTraversalExecutor(r attack.RuleContext) *ToolParamTraversalExec
 	return &ToolParamTraversalExecutor{rule: r}
 }
 
-// traversalCaps bounds the number of tools probed per scan.
+// traversalCaps bounds the number of tool parameters probed per wire.
 const traversalCaps = 8
 
 func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -169,13 +169,18 @@ func traversalCandidates(tools []traversalTool, modern bool) []traversalCandidat
 		}
 		props, _ := t.InputSchema["properties"].(map[string]interface{})
 		required := requiredParams(t.InputSchema)
-		for name, raw := range props {
+		names := make([]string, 0, len(props))
+		for name := range props {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			raw := props[name]
 			spec, _ := raw.(map[string]interface{})
 			if spec["type"] != "string" || !isPathParam(name) {
 				continue
 			}
 			out = append(out, traversalCandidate{tool: t.Name, param: name, others: inertArgs(props, name, required), schema: t.InputSchema})
-			break // one param per tool is enough to characterise its validation
 		}
 	}
 	return out
