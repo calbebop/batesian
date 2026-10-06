@@ -72,67 +72,25 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 		return nil, true
 	}
 
-	firstText, ok := e.listTools(ctx, client, session, 3)
+	first, ok := listToolPages(ctx, client, session, 3)
 	if !ok {
 		return nil, false
 	}
+	firstText := canonicalTools(first)
 	// Second read for the drift oracle, back to back with the first. No sleep:
 	// the round trip is the spacing, and a manifest that differs across two
 	// immediate reads is unstable by any definition that matters here.
-	secondText, ok := e.listTools(ctx, client, session, 3+toolManifestPageCap)
+	second, ok := listToolPages(ctx, client, session, 3+toolListPageCap)
 	if !ok {
 		return e.manifestFindings(session.Endpoint, firstText, ""), false
 	}
+	secondText := canonicalTools(second)
 
 	drift := ""
 	if !sameToolManifest(firstText, secondText) {
 		drift = diffSummary(firstText, secondText)
 	}
 	return e.manifestFindings(session.Endpoint, firstText, drift), true
-}
-
-const toolManifestPageCap = 10
-
-// listTools reads a complete listing; partial manifests cannot prove stability.
-func (e *ToolPoisoningExecutor) listTools(ctx context.Context, client *attack.HTTPClient, s mcpSession, startID int) (string, bool) {
-	tools := make([]json.RawMessage, 0)
-	seen := map[string]bool{}
-	var params map[string]interface{}
-	for page := 0; page < toolManifestPageCap; page++ {
-		id := startID + page
-		resp, err := s.post(ctx, client, id, "tools/list", params)
-		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
-			return "", false
-		}
-		var body struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      json.RawMessage `json:"id"`
-			Result  *struct {
-				ResultType string             `json:"resultType"`
-				Tools      *[]json.RawMessage `json:"tools"`
-				NextCursor json.RawMessage    `json:"nextCursor"`
-			} `json:"result"`
-			Error json.RawMessage `json:"error"`
-		}
-		var responseID int
-		if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
-			json.Unmarshal(body.ID, &responseID) != nil || responseID != id ||
-			body.Result == nil || body.Result.Tools == nil || len(body.Error) != 0 ||
-			(s.Era == EraModern && body.Result.ResultType != "complete") {
-			return "", false
-		}
-		tools = append(tools, *body.Result.Tools...)
-		if len(body.Result.NextCursor) == 0 {
-			return canonicalTools(tools), true
-		}
-		var cursor string
-		if string(body.Result.NextCursor) == "null" || json.Unmarshal(body.Result.NextCursor, &cursor) != nil || seen[cursor] {
-			return "", false
-		}
-		seen[cursor] = true
-		params = map[string]interface{}{"cursor": cursor}
-	}
-	return "", false
 }
 
 // canonicalTools serializes each entry compactly and sorts the results, so

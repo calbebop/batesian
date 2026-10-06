@@ -65,21 +65,22 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 		return nil, true, ""
 	}
 
-	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
-	if verdict, _ := classifyProbe(listResp, err); verdict != probeAnswered {
-		return nil, verdict == probeRejected, ""
+	listed, ok := listToolPages(ctx, client, session, 3)
+	if !ok {
+		return nil, false, ""
 	}
-	var listBody struct {
-		Result struct {
-			Tools []traversalTool `json:"tools"`
-		} `json:"result"`
-		Error map[string]interface{} `json:"error"`
-	}
-	if json.Unmarshal(listResp.Body, &listBody) != nil || listBody.Error != nil {
-		return nil, true, ""
+	tools := make([]traversalTool, 0, len(listed))
+	seen := map[string]bool{}
+	for _, raw := range listed {
+		var tool traversalTool
+		if json.Unmarshal(raw, &tool) != nil || tool.Name == "" || tool.InputSchema == nil || seen[tool.Name] {
+			return nil, false, ""
+		}
+		seen[tool.Name] = true
+		tools = append(tools, tool)
 	}
 
-	candidates := traversalCandidates(listBody.Result.Tools, session.Era == EraModern)
+	candidates := traversalCandidates(tools, session.Era == EraModern)
 	if len(candidates) == 0 {
 		return nil, true, ""
 	}
