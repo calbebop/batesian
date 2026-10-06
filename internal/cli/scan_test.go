@@ -793,7 +793,7 @@ func TestScan_InvalidTargetStopsBeforeOAuth(t *testing.T) {
 			setScanFlag(t, "dry-run", tc.dryRun)
 
 			err := runScan(scanCmd, nil)
-			if err == nil || !strings.Contains(err.Error(), `target URL must use http or https scheme, got "ftp"`) {
+			if err == nil || !strings.Contains(err.Error(), "invalid target URL: must use http or https scheme") {
 				t.Fatalf("expected target URL error, got %v", err)
 			}
 			if oauthConnections.Load() != 0 {
