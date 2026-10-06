@@ -42,7 +42,7 @@ sudo install -m 0755 batesian /usr/local/bin/batesian
 batesian --version
 ```
 
-Current releases include SHA-256 checksums, a Sigstore bundle for the checksum file, a CycloneDX SBOM for every archive, and SLSA build provenance.
+Published releases include SHA-256 checksums, a Sigstore bundle for the checksum file, a per-archive SBOM, and SLSA build provenance. Check the SBOM itself for its format; v1.7.0 uses SPDX 2.3.
 
 ### Go toolchain
 
