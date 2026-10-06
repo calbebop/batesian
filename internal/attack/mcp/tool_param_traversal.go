@@ -70,7 +70,7 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 		return nil, true
 	}
 
-	candidates := traversalCandidates(listBody.Result.Tools)
+	candidates := traversalCandidates(listBody.Result.Tools, session.Era == EraModern)
 	if len(candidates) == 0 {
 		return nil, true
 	}
@@ -116,6 +116,7 @@ type traversalCandidate struct {
 	tool   string
 	param  string
 	others map[string]interface{}
+	schema map[string]interface{}
 }
 
 // pathParamNames are the parameter names treated as carrying a filesystem path:
@@ -138,9 +139,14 @@ func isPathParam(name string) bool {
 }
 
 // traversalCandidates finds annotated tools with a path-like string parameter.
-func traversalCandidates(tools []traversalTool) []traversalCandidate {
+func traversalCandidates(tools []traversalTool, modern bool) []traversalCandidate {
 	var out []traversalCandidate
 	for _, t := range tools {
+		if modern {
+			if _, err := toolParamHeaders(t.InputSchema, nil); err != nil {
+				continue
+			}
+		}
 		if t.Annotations == nil {
 			continue // unannotated: assume it may be destructive
 		}
@@ -154,7 +160,7 @@ func traversalCandidates(tools []traversalTool) []traversalCandidate {
 			if spec["type"] != "string" || !isPathParam(name) {
 				continue
 			}
-			out = append(out, traversalCandidate{tool: t.Name, param: name, others: inertArgs(props, name, required)})
+			out = append(out, traversalCandidate{tool: t.Name, param: name, others: inertArgs(props, name, required), schema: t.InputSchema})
 			break // one param per tool is enough to characterise its validation
 		}
 	}
@@ -203,15 +209,15 @@ func inertArgs(props map[string]interface{}, skip string, required map[string]bo
 // reads: the JSON-RPC error message when the envelope carries one, otherwise
 // the textual content of the result. Both shapes occur in practice, since many
 // servers report tool failures as isError results rather than protocol errors.
-func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, tool, param, value string, others map[string]interface{}) string {
-	args := map[string]interface{}{param: value}
-	for k, v := range others {
+func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) string {
+	args := map[string]interface{}{cand.param: value}
+	for k, v := range cand.others {
 		args[k] = v
 	}
-	resp, err := session.post(ctx, client, id, "tools/call", map[string]interface{}{
-		"name":      tool,
+	resp, err := session.postToolShaping(ctx, client, id, map[string]interface{}{
+		"name":      cand.tool,
 		"arguments": args,
-	})
+	}, cand.schema, nil)
 	if err != nil {
 		return "" // transport failure: no text to judge
 	}
@@ -281,12 +287,12 @@ func traversalPayloads(canary string) []traversalPayload {
 func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) *attack.Finding {
 	canary := "batesian-" + randID
 
-	baselineText := e.callTool(ctx, client, session, 10, cand.tool, cand.param, canary, cand.others)
+	baselineText := e.callTool(ctx, client, session, 10, cand, canary)
 	baselinePath := leakedPath(baselineText, canary)
 
 	nextID := 11
 	for _, probe := range traversalPayloads(canary) {
-		text := e.callTool(ctx, client, session, nextID, cand.tool, cand.param, probe.value, cand.others)
+		text := e.callTool(ctx, client, session, nextID, cand, probe.value)
 		nextID++
 
 		path := leakedPath(text, canary)

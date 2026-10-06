@@ -86,6 +86,22 @@ func (s mcpSession) request(id interface{}, method string, params map[string]int
 	}
 }
 
+func (s mcpSession) toolRequest(id interface{}, params, schema map[string]interface{}) (map[string]string, map[string]interface{}, error) {
+	headers, body := s.request(id, "tools/call", params)
+	if s.Era != EraModern {
+		return headers, body, nil
+	}
+	args, _ := params["arguments"].(map[string]interface{})
+	paramHeaders, err := toolParamHeaders(schema, args)
+	if err != nil {
+		return nil, nil, err
+	}
+	for key, value := range paramHeaders {
+		headers[key] = value
+	}
+	return headers, body, nil
+}
+
 func encodeMCPHeaderValue(value string) string {
 	needsEncoding := strings.HasPrefix(value, "=?base64?") && strings.HasSuffix(value, "?=")
 	if value != "" && (value[0] == ' ' || value[0] == '\t' || value[len(value)-1] == ' ' || value[len(value)-1] == '\t') {
@@ -117,6 +133,18 @@ func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id inte
 func (s mcpSession) postShaping(ctx context.Context, client *attack.HTTPClient, id interface{}, method string,
 	params map[string]interface{}, shape func(map[string]string)) (*attack.Response, error) {
 	headers, body := s.request(id, method, params)
+	if shape != nil {
+		shape(headers)
+	}
+	return client.POST(ctx, s.Endpoint, headers, body)
+}
+
+func (s mcpSession) postToolShaping(ctx context.Context, client *attack.HTTPClient, id interface{},
+	params, schema map[string]interface{}, shape func(map[string]string)) (*attack.Response, error) {
+	headers, body, err := s.toolRequest(id, params, schema)
+	if err != nil {
+		return nil, err
+	}
 	if shape != nil {
 		shape(headers)
 	}

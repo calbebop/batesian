@@ -44,6 +44,7 @@ type entropyServer struct {
 	legacyResult bool
 	legacyOnly   bool
 	noExtension  bool
+	headerParam  bool
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -124,6 +125,10 @@ func (s *entropyServer) handler() http.HandlerFunc {
 			if s.noSafeTool {
 				annotations = map[string]interface{}{}
 			}
+			properties := map[string]interface{}{}
+			if s.headerParam {
+				properties["message"] = map[string]interface{}{"type": "string", "x-mcp-header": "Message"}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]interface{}{"resultType": "complete", "tools": []map[string]interface{}{{
@@ -131,7 +136,7 @@ func (s *entropyServer) handler() http.HandlerFunc {
 					"annotations": annotations,
 					"inputSchema": map[string]interface{}{
 						"type":       "object",
-						"properties": map[string]interface{}{},
+						"properties": properties,
 						"required":   []interface{}{},
 					},
 				}}},
@@ -141,6 +146,18 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				s.calls.Add(1)
 			}
 			meta, _ := req.Params["_meta"].(map[string]interface{})
+			if s.headerParam {
+				args, _ := req.Params["arguments"].(map[string]interface{})
+				message, _ := args["message"].(string)
+				if message == "" || r.Header.Get("Mcp-Param-Message") != message {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+					})
+					return
+				}
+			}
 			caps, _ := meta["io.modelcontextprotocol/clientCapabilities"].(map[string]interface{})
 			extensions, _ := caps["extensions"].(map[string]interface{})
 			_, taskCapable := extensions["io.modelcontextprotocol/tasks"]
@@ -215,6 +232,17 @@ func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	}
 	if !strings.Contains(seq.Evidence, "predicted next handle") {
 		t.Errorf("evidence should include the prediction, got: %q", seq.Evidence)
+	}
+}
+
+func TestEntropy_MirrorsAnnotatedToolArgument(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{style: styleSequential, headerParam: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) == 0 || calls.Load() < 2 {
+		t.Fatalf("annotated task tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }
 
