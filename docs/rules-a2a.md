@@ -207,14 +207,15 @@ task-list probe still runs.
 
 **Agent Role Injection / Session Smuggling** | Severity: High | CWE-384
 
-Sends a `message/send` request with `role: agent`, then **reads the task history
-back** to confirm whether the injection landed. Only when the marker is stored as an
-agent-role turn is a **confirmed** exploit reported.
+Sends v1 `SendMessage` (falling back to v0.3 `message/send`) with the agent role,
+then **reads the task history back** to confirm whether the injection landed.
+Only when the marker is stored as an agent-role turn is a **confirmed** exploit
+reported.
 
 What is reported is the stored turn, not the acceptance. The specification defines
 the roles by direction (`ROLE_USER` client-to-server, `ROLE_AGENT` server-to-client)
 and carries no MUST or SHOULD requiring a server to validate or reject a
-client-supplied role; both official SDKs accept one. A client-authored turn
+client-supplied role. A client-authored turn
 *persisted* under the agent role is the failure, because anything reading that
 history back cannot tell it from a genuine agent turn.
 

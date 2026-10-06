@@ -1,10 +1,10 @@
 # testdata
 
-This directory contains deliberately vulnerable test servers and a Go mock server
-helper used to validate Batesian rules against live HTTP endpoints.
+This directory contains vulnerable fixtures, SDK compatibility targets, and a Go
+mock server helper used to validate Batesian against live HTTP endpoints.
 
-**Do not deploy any of these servers in production or on a public network.**
-They are intentionally misconfigured to be exploitable.
+**Do not deploy these servers in production or on a public network.** Some are
+intentionally misconfigured to be exploitable.
 
 ---
 
@@ -12,6 +12,12 @@ They are intentionally misconfigured to be exploitable.
 
 ```sh
 pip install starlette uvicorn httpx "mcp>=2"
+```
+
+The official A2A SDK target has a separate dependency:
+
+```sh
+pip install "a2a-sdk[http-server]>=1,<2" uvicorn
 ```
 
 Two fixtures use the MCP Python SDK, `mcp_unauth_resources_server.py` and
@@ -34,8 +40,8 @@ a run that treats it as a clean result is reporting coverage it does not have.
 The bundled rule set is **19 A2A + 28 MCP = 47 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
-benign must stay silent). The Python servers below are optional standalone
-fixtures for live-validation / manual smoke testing.
+benign must stay silent). The Python servers below provide standalone live
+validation; selected fixtures also run in CI.
 
 | File | Port | Rules covered |
 |---|---|---|
@@ -51,6 +57,7 @@ fixtures for live-validation / manual smoke testing.
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `a2a_secured_agent.py` | 3111 | authorization control: no findings on `secured`; five ownership findings on `idor`; task enumeration on page two under `idor-paged`; anonymous task read on `unauth-read` (needs `--token tok-a` and two principals) |
+| `a2a_sdk_agent.py` | 3120 | Official Python SDK compatibility: card discovery, JSON-RPC task exchange, and `a2a-session-smuggle-001` against the current 1.x SDK |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` (two postures, see below; tracks registrations at `/__clients`) |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
