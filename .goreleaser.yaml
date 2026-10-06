@@ -57,6 +57,7 @@ checksum:
 # Requires syft to be available on the runner; the release workflow installs it.
 sboms:
   - artifacts: archive
+    args: ["$artifact", "--output", "cyclonedx-json=$document"]
 
 # Sign checksums keylessly with GitHub OIDC. Cosign v3 stores the signature,
 # certificate, and transparency-log entry in one Sigstore bundle.
@@ -110,13 +111,15 @@ release:
   github:
     owner: calbebop
     name: batesian
-  draft: false
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
   prerelease: auto
   name_template: "v{{.Version}}"
   # Keep the header release-agnostic; the changelog covers release-specific
   # changes. Update the bundled rule count before tagging.
   header: |
-    ## Batesian {{.Version}}
+    ## Batesian v{{.Version}}
 
     Adversarial red-team CLI for AI agent protocols (A2A and MCP).
     47 bundled attack rules (19 A2A + 28 MCP). Single binary. No runtime dependencies.

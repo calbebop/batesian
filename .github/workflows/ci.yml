@@ -94,6 +94,38 @@ jobs:
     permissions:
       contents: read
 
+  release-snapshot:
+    name: Verify release snapshot
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Test release verifier
+        run: python3 -m unittest discover -s .github/scripts -p test_verify_release.py
+
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=sign,publish
+
+      - name: Verify release snapshot
+        run: python3 .github/scripts/verify_release.py
+
   release:
     name: Release (goreleaser)
     runs-on: ubuntu-latest
@@ -135,10 +167,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Record SLSA build provenance for each published archive and the checksums
-      # file. This complements the cosign signature (which proves the checksums
-      # came from this pipeline) by attesting how the artifacts were built.
-      # Verify with: gh attestation verify <artifact> --repo calbebop/batesian
+      - name: Verify draft contents
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" |
+            python3 .github/scripts/verify_release.py --tag "$GITHUB_REF_NAME" --release-json -
+
+      - name: Verify checksum signature
+        run: |
+          cosign verify-blob dist/checksums.txt \
+            --bundle dist/checksums.txt.sigstore.json \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+      # Attest archives and checksums before publishing the draft.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -146,3 +189,20 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for artifact in dist/*.tar.gz dist/*.zip dist/checksums.txt; do
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA"
+          done
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
