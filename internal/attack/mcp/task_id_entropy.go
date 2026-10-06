@@ -128,6 +128,10 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 			"name":      safeTool.name,
 			"arguments": synthesizeArgs(safeTool.schema, "batesian-"+fmt.Sprint(i)),
 		}, safeTool.schema)
+		if isMCPHeaderMismatch(resp) {
+			return nil, fmt.Sprintf("tools/call for %q returned HeaderMismatch; task handles were not fully sampled",
+				safeTool.name), false, nil
+		}
 		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("task-augmented tools/call against %q was %s on this wire, so "+

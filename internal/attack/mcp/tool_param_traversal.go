@@ -35,9 +35,18 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 	client := attack.NewHTTPClient(opts, vars)
 
 	pending := map[string]bool{}
+	var mismatchTool string
 	findings, err := runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
-		return e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
+		fs, determined, mismatch := e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
+		if mismatch != "" {
+			mismatchTool = mismatch
+		}
+		return fs, determined
 	})
+	if len(findings) == 0 && mismatchTool != "" {
+		return nil, fmt.Errorf("%w: tools/call for %q returned HeaderMismatch; the path probe was not assessed",
+			attack.ErrInconclusive, mismatchTool)
+	}
 	if len(findings) == 0 && len(pending) > 0 {
 		names := make([]string, 0, len(pending))
 		for name := range pending {
@@ -51,14 +60,14 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 }
 
 // probeSession checks one wire and records tools awaiting approval.
-func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, approved []string, pending map[string]bool) ([]attack.Finding, bool) {
+func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, approved []string, pending map[string]bool) ([]attack.Finding, bool, string) {
 	if !session.ServerSupports("tools") {
-		return nil, true
+		return nil, true, ""
 	}
 
 	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
 	if verdict, _ := classifyProbe(listResp, err); verdict != probeAnswered {
-		return nil, verdict == probeRejected
+		return nil, verdict == probeRejected, ""
 	}
 	var listBody struct {
 		Result struct {
@@ -67,12 +76,12 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 		Error map[string]interface{} `json:"error"`
 	}
 	if json.Unmarshal(listResp.Body, &listBody) != nil || listBody.Error != nil {
-		return nil, true
+		return nil, true, ""
 	}
 
 	candidates := traversalCandidates(listBody.Result.Tools, session.Era == EraModern)
 	if len(candidates) == 0 {
-		return nil, true
+		return nil, true, ""
 	}
 	approvedCandidates := make([]traversalCandidate, 0, len(candidates))
 	for _, cand := range candidates {
@@ -83,7 +92,7 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 		}
 	}
 	if len(approvedCandidates) == 0 {
-		return nil, false
+		return nil, false, ""
 	}
 
 	var findings []attack.Finding
@@ -93,11 +102,15 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 			break
 		}
 		driven++
-		if f := e.probeTool(ctx, client, session, randID, cand); f != nil {
+		f, mismatch := e.probeTool(ctx, client, session, randID, cand)
+		if mismatch {
+			return findings, false, cand.tool
+		}
+		if f != nil {
 			findings = append(findings, *f)
 		}
 	}
-	return findings, true
+	return findings, true, ""
 }
 
 // traversalTool is the slice of a tools/list entry this rule needs.
@@ -205,11 +218,8 @@ func inertArgs(props map[string]interface{}, skip string, required map[string]bo
 	return args
 }
 
-// callTool issues one tools/call and returns the response text the oracle
-// reads: the JSON-RPC error message when the envelope carries one, otherwise
-// the textual content of the result. Both shapes occur in practice, since many
-// servers report tool failures as isError results rather than protocol errors.
-func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) string {
+// callTool returns tool text and flags header mismatches separately.
+func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, bool) {
 	args := map[string]interface{}{cand.param: value}
 	for k, v := range cand.others {
 		args[k] = v
@@ -218,8 +228,11 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		"name":      cand.tool,
 		"arguments": args,
 	}, cand.schema, nil)
-	if err != nil {
-		return "" // transport failure: no text to judge
+	if err != nil || resp == nil {
+		return "", false // transport failure: no text to judge
+	}
+	if isMCPHeaderMismatch(resp) {
+		return "", true
 	}
 	var body struct {
 		Result struct {
@@ -233,17 +246,17 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		} `json:"error"`
 	}
 	if json.Unmarshal(resp.Body, &body) != nil {
-		return ""
+		return "", false
 	}
 	if body.Error.Message != "" {
-		return body.Error.Message
+		return body.Error.Message, false
 	}
 	var sb strings.Builder
 	for _, c := range body.Result.Content {
 		sb.WriteString(c.Text)
 		sb.WriteString("\n")
 	}
-	return sb.String()
+	return sb.String(), false
 }
 
 // traversalPayload is one attack-shaped argument for the path parameter.
@@ -280,19 +293,23 @@ func traversalPayloads(canary string) []traversalPayload {
 	}
 }
 
-// probeTool drives the baseline plus every payload against one tool's path
-// parameter and grades what came back. A nil return means the tool validated
-// its paths, refused them without disclosing resolutions, or could not be
-// characterised; none of those is a finding.
-func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) *attack.Finding {
+// probeTool compares the baseline with path payloads. Header mismatches leave
+// the probe undetermined.
+func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, bool) {
 	canary := "batesian-" + randID
 
-	baselineText := e.callTool(ctx, client, session, 10, cand, canary)
+	baselineText, mismatch := e.callTool(ctx, client, session, 10, cand, canary)
+	if mismatch {
+		return nil, true
+	}
 	baselinePath := leakedPath(baselineText, canary)
 
 	nextID := 11
 	for _, probe := range traversalPayloads(canary) {
-		text := e.callTool(ctx, client, session, nextID, cand, probe.value)
+		text, mismatch := e.callTool(ctx, client, session, nextID, cand, probe.value)
+		if mismatch {
+			return nil, true
+		}
 		nextID++
 
 		path := leakedPath(text, canary)
@@ -304,10 +321,10 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 			continue
 		}
 		if escapedOutsideBaseline(path, baselinePath) {
-			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path)
+			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), false
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // resolvedAbsolute reports whether p is an absolute path with its traversal

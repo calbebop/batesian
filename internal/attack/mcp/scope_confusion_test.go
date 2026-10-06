@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,8 @@ type scopeServer struct {
 	extraTool               bool
 	modernOnly              bool
 	headerParam             bool
+	headerMismatchStatus    int
+	headerMismatchToken     string
 	requireInitializedAuth  bool
 	rejectInitialized       bool
 	bindSessions            bool
@@ -398,6 +401,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 
 		case "tools/call":
 			s.toolCalls.Add(1)
+			if s.headerMismatchStatus != 0 && token == s.headerMismatchToken {
+				rpcErr(-32020, "HeaderMismatch", s.headerMismatchStatus)
+				return
+			}
 			switch req.Params.Name {
 			case "list_items":
 				reply(map[string]interface{}{
@@ -765,6 +772,30 @@ func TestScope_ModernMirrorsAnnotatedToolArgument(t *testing.T) {
 	findings, err := runScope(t, ts)
 	if err != nil || len(findings) != 1 || srv.toolCalls.Load() < 2 {
 		t.Fatalf("annotated tool was not assessed: findings=%+v calls=%d err=%v", findings, srv.toolCalls.Load(), err)
+	}
+}
+
+func TestScope_ModernHeaderMismatchIsInconclusive(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusOK} {
+		for _, token := range []string{"tok-full-a", "tok-lim-b"} {
+			t.Run(fmt.Sprintf("%d/%s", status, token), func(t *testing.T) {
+				srv := &scopeServer{modernOnly: true, auth: true, headerParam: true,
+					headerMismatchStatus: status, headerMismatchToken: token}
+				ts := httptest.NewServer(srv.handler())
+				defer ts.Close()
+
+				findings, err := runScope(t, ts)
+				wantCalls := int32(1)
+				if token == "tok-lim-b" {
+					wantCalls = 2
+				}
+				if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+					!strings.Contains(err.Error(), "HeaderMismatch") || srv.toolCalls.Load() != wantCalls {
+					t.Fatalf("mismatch must stop without retry: findings=%+v calls=%d err=%v",
+						findings, srv.toolCalls.Load(), err)
+				}
+			})
+		}
 	}
 }
 

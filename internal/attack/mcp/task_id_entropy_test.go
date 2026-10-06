@@ -34,17 +34,18 @@ const (
 
 // entropyServer mints modern task handles for one read-only tool.
 type entropyServer struct {
-	style        entropyStyle
-	annotations  map[string]interface{}
-	calls        *atomic.Int32
-	listRPCError bool
-	noSafeTool   bool
-	refuseCalls  bool
-	badCallID    bool
-	legacyResult bool
-	legacyOnly   bool
-	noExtension  bool
-	headerParam  bool
+	style                entropyStyle
+	annotations          map[string]interface{}
+	calls                *atomic.Int32
+	listRPCError         bool
+	noSafeTool           bool
+	refuseCalls          bool
+	badCallID            bool
+	legacyResult         bool
+	legacyOnly           bool
+	noExtension          bool
+	headerParam          bool
+	headerMismatchStatus int
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -172,6 +173,14 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				})
 				return
 			}
+			if s.headerMismatchStatus != 0 {
+				w.WriteHeader(s.headerMismatchStatus)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+				})
+				return
+			}
 			if s.refuseCalls {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": req.ID,
@@ -243,6 +252,24 @@ func TestEntropy_MirrorsAnnotatedToolArgument(t *testing.T) {
 	findings, err := runEntropy(t, ts)
 	if err != nil || len(findings) == 0 || calls.Load() < 2 {
 		t.Fatalf("annotated task tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestEntropy_HeaderMismatchIsInconclusive(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusOK} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var calls atomic.Int32
+			ts := httptest.NewServer((&entropyServer{
+				style: styleSequential, headerParam: true, headerMismatchStatus: status, calls: &calls,
+			}).handler())
+			defer ts.Close()
+
+			findings, err := runEntropy(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "HeaderMismatch") || calls.Load() != 1 {
+				t.Fatalf("mismatch must stop without retry: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+			}
+		})
 	}
 }
 
