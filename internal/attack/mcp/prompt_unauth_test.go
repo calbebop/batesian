@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -129,6 +131,150 @@ func TestPromptUnauth_GetEvidenceExcludesMetadataAndSecrets(t *testing.T) {
 	}
 }
 
+func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		firstResult interface{}
+		firstError  bool
+		firstStatus int
+		wrongID     bool
+	}{
+		{"rejected", nil, true, 0, false},
+		{"HTTP unauthorized", nil, false, http.StatusUnauthorized, false},
+		{"empty", map[string]interface{}{"messages": []interface{}{}}, false, 0, false},
+		{"wrong response ID", map[string]interface{}{"messages": []map[string]interface{}{{
+			"role": "user", "content": map[string]string{"type": "text", "text": "first content"},
+		}}}, false, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var fetched []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string          `json:"method"`
+					ID     json.RawMessage `json:"id"`
+					Params struct {
+						Name string `json:"name"`
+					} `json:"params"`
+				}
+				if json.NewDecoder(r.Body).Decode(&req) != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				reply := map[string]interface{}{"jsonrpc": "2.0", "id": req.ID}
+				switch req.Method {
+				case "initialize":
+					reply["result"] = map[string]interface{}{
+						"protocolVersion": "2025-03-26",
+						"serverInfo":      map[string]string{"name": "prompt-read-test", "version": "1"},
+						"capabilities":    map[string]interface{}{"prompts": map[string]interface{}{}},
+					}
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+					return
+				case "prompts/list":
+					reply["result"] = map[string]interface{}{"prompts": []map[string]string{{"name": "first"}, {"name": "second"}}}
+				case "prompts/get":
+					mu.Lock()
+					fetched = append(fetched, req.Params.Name)
+					mu.Unlock()
+					if req.Params.Name == "first" {
+						if tc.firstStatus != 0 {
+							w.WriteHeader(tc.firstStatus)
+							return
+						}
+						if tc.firstError {
+							reply["error"] = map[string]interface{}{"code": -32001, "message": "Unauthorized"}
+						} else {
+							reply["result"] = tc.firstResult
+						}
+						if tc.wrongID {
+							reply["id"] = 99
+						}
+					} else {
+						reply["result"] = map[string]interface{}{"messages": []map[string]interface{}{{
+							"role": "user", "content": map[string]string{"type": "text", "text": "later content"},
+						}}}
+					}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(reply)
+			}))
+			defer srv.Close()
+
+			exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
+			if err != nil || len(findings) != 2 {
+				t.Fatalf("expected list and later content findings, got %+v (err=%v)", findings, err)
+			}
+			if !strings.Contains(findings[1].Title, `"second"`) || !strings.Contains(findings[1].Evidence, "later content") {
+				t.Fatalf("expected second prompt content, got %+v", findings[1])
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(fetched) != 2 || fetched[0] != "first" || fetched[1] != "second" {
+				t.Fatalf("unexpected prompts/get order: %v", fetched)
+			}
+		})
+	}
+}
+
+func TestPromptUnauth_LimitsPromptReads(t *testing.T) {
+	var mu sync.Mutex
+	var fetched []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		reply := map[string]interface{}{"jsonrpc": "2.0", "id": req.ID}
+		switch req.Method {
+		case "initialize":
+			reply["result"] = map[string]interface{}{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]string{"name": "prompt-limit-test", "version": "1"},
+				"capabilities":    map[string]interface{}{"prompts": map[string]interface{}{}},
+			}
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+			return
+		case "prompts/list":
+			prompts := make([]map[string]string, 12)
+			for i := range prompts {
+				prompts[i] = map[string]string{"name": fmt.Sprintf("prompt-%d", i)}
+			}
+			reply["result"] = map[string]interface{}{"prompts": prompts}
+		case "prompts/get":
+			mu.Lock()
+			fetched = append(fetched, req.Params.Name)
+			mu.Unlock()
+			reply["error"] = map[string]interface{}{"code": -32001, "message": "Unauthorized"}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(reply)
+	}))
+	defer srv.Close()
+
+	exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
+	findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
+	mu.Lock()
+	defer mu.Unlock()
+	if err != nil || len(findings) != 1 || len(fetched) != 10 {
+		t.Fatalf("expected one list finding and ten prompt reads, got findings=%+v fetched=%v err=%v", findings, fetched, err)
+	}
+}
+
 func pagedPromptServer(failPage, firstPagePrompt bool, followed, fetched *atomic.Bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -232,6 +378,7 @@ func TestPromptUnauth_PartialListingRetainsFinding(t *testing.T) {
 }
 
 func TestPromptUnauth_PromptsExposed(t *testing.T) {
+	var getCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -260,6 +407,7 @@ func TestPromptUnauth_PromptsExposed(t *testing.T) {
 				},
 			})
 		case "prompts/get":
+			getCalls.Add(1)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
@@ -282,8 +430,8 @@ func TestPromptUnauth_PromptsExposed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) < 2 {
-		t.Fatalf("expected at least 2 findings (list + get), got %d", len(findings))
+	if len(findings) != 2 || getCalls.Load() != 1 {
+		t.Fatalf("expected list and one get finding, got %d findings and %d reads", len(findings), getCalls.Load())
 	}
 	hasMedium, hasHigh := false, false
 	for _, f := range findings {

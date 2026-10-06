@@ -146,17 +146,53 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		TargetURL:   session.Endpoint,
 	})
 
-	// Attempt to retrieve content of the first prompt via prompts/get.
-	getResp, err := session.post(ctx, client, nextID, "prompts/get", map[string]interface{}{"name": names[0]})
-	getVerdict, getBody := classifyProbe(getResp, err)
-	if getVerdict != probeAnswered {
-		// The list finding stands: it was confirmed before this probe.
-		return findings, true
-	}
-	if _, hasErr := getBody["error"]; hasErr {
-		return findings, true
+	const maxPromptReads = 10
+	for i, name := range names {
+		if i >= maxPromptReads {
+			break
+		}
+		id := nextID
+		nextID++
+		getResp, err := session.post(ctx, client, id, "prompts/get", map[string]interface{}{"name": name})
+		getVerdict, getBody := classifyProbe(getResp, err)
+		if getVerdict != probeAnswered {
+			continue
+		}
+		if _, hasErr := getBody["error"]; hasErr {
+			continue
+		}
+		content := promptGetContent(getResp.Body, id)
+		if content == "" {
+			continue
+		}
+		for _, pattern := range credentialPatterns {
+			if pattern.MatchString(content) {
+				content = "[redacted: credential pattern detected]"
+				break
+			}
+		}
+		findings = append(findings, attack.Finding{
+			RuleID:     e.rule.ID,
+			RuleName:   e.rule.Name,
+			Severity:   "high",
+			Confidence: attack.ConfirmedExploit,
+			Title: fmt.Sprintf(
+				"MCP prompt %q full content readable without authentication", name),
+			Description: fmt.Sprintf(
+				"prompts/get for %q at %s returned full template content without authentication. "+
+					"The content is now directly readable by any unauthenticated caller.",
+				name, session.Endpoint),
+			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent snippet: %.400s", getResp.StatusCode, session.Endpoint, name, content),
+			Remediation: e.rule.Remediation,
+			TargetURL:   session.Endpoint,
+		})
+		break
 	}
 
+	return findings, true
+}
+
+func promptGetContent(response []byte, id int) string {
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
@@ -177,10 +213,10 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		} `json:"result"`
 		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(getResp.Body, &body) != nil || body.JSONRPC != "2.0" ||
-		string(body.ID) != strconv.Itoa(nextID) || len(body.Error) != 0 ||
+	if json.Unmarshal(response, &body) != nil || body.JSONRPC != "2.0" ||
+		string(body.ID) != strconv.Itoa(id) || len(body.Error) != 0 ||
 		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
-		return findings, true
+		return ""
 	}
 
 	var content string
@@ -210,30 +246,5 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			break
 		}
 	}
-	if content == "" {
-		return findings, true
-	}
-	for _, pattern := range credentialPatterns {
-		if pattern.MatchString(content) {
-			content = "[redacted: credential pattern detected]"
-			break
-		}
-	}
-	findings = append(findings, attack.Finding{
-		RuleID:     e.rule.ID,
-		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title: fmt.Sprintf(
-			"MCP prompt %q full content readable without authentication", names[0]),
-		Description: fmt.Sprintf(
-			"prompts/get for %q at %s returned full template content without authentication. "+
-				"The content is now directly readable by any unauthenticated caller.",
-			names[0], session.Endpoint),
-		Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent snippet: %.400s", getResp.StatusCode, session.Endpoint, names[0], content),
-		Remediation: e.rule.Remediation,
-		TargetURL:   session.Endpoint,
-	})
-
-	return findings, true
+	return content
 }
