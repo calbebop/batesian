@@ -87,6 +87,13 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
+  validate-release:
+    name: Validate release targets
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/validation.yml
+    permissions:
+      contents: read
+
   release:
     name: Release (goreleaser)
     runs-on: ubuntu-latest
@@ -94,7 +101,7 @@ jobs:
     # Tag PUSH only. workflow_dispatch accepts any ref, including a tag, so a
     # ref test alone would let a manual run re-publish an existing release.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, lint, vuln]
+    needs: [build, lint, vuln, validate-release]
     permissions:
       contents: write      # create GitHub releases and upload assets
       id-token: write      # cosign keyless signing via Sigstore OIDC

@@ -11,15 +11,15 @@ on:
   pull_request:
     branches: [main, dev]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
-# One run at a time per ref. A superseded scheduled run is cancelled rather than
-# left competing for a runner.
+# Keep reusable runs outside CI's concurrency group; never cancel tag validation.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   a2a-sdk:
