@@ -518,6 +518,59 @@ func TestSessionPost_ModernMirrorsMcpName(t *testing.T) {
 	}
 }
 
+func TestSessionRequest_EncodesMcpName(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"spike://notes", "spike://notes"},
+		{"Hello, 世界", "=?base64?SGVsbG8sIOS4lueVjA==?="},
+		{" padded ", "=?base64?IHBhZGRlZCA=?="},
+		{"line1\nline2", "=?base64?bGluZTEKbGluZTI=?="},
+		{"=?base64?literal?=", "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?="},
+		{"inner space", "inner space"},
+		{"inner\ttab", "inner\ttab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mcpSession{Era: EraModern}
+			headers, body := s.request(1, "tools/call", map[string]interface{}{"name": tt.name})
+			if got := headers["Mcp-Name"]; got != tt.want {
+				t.Errorf("Mcp-Name = %q, want %q", got, tt.want)
+			}
+			params := body["params"].(map[string]interface{})
+			if got := params["name"]; got != tt.name {
+				t.Errorf("body name changed to %q", got)
+			}
+		})
+	}
+}
+
+func TestSessionPost_ModernEncodedNameMatchesBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Params struct {
+				URI string `json:"uri"`
+			} `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil ||
+			r.Header.Get("Mcp-Name") != "=?base64?SGVsbG8sIOS4lueVjA==?=" ||
+			body.Params.URI != "Hello, 世界" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"contents":[]}}`))
+	}))
+	defer srv.Close()
+
+	s := mcpSession{Endpoint: srv.URL, Era: EraModern}
+	resp, err := s.post(context.Background(), wireClient(), 1, "resources/read", map[string]interface{}{"uri": "Hello, 世界"})
+	if err != nil || !resp.IsAccepted() {
+		t.Fatalf("encoded name was not accepted: response=%v, err=%v", resp, err)
+	}
+}
+
 // A wire that establishes nothing must not read as a clean pass. This is what
 // carries the per-probe verdict up to the engine, which records ErrInconclusive
 // as skipped rather than as a secure result.
