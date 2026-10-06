@@ -470,11 +470,7 @@ func TestOAuthAudience_RateLimitedEverythingIsNotTested(t *testing.T) {
 	}
 }
 
-// An explicit JSON-RPC refusal counts as a rejection at any HTTP status, the
-// same rule classifyAccess applies: a 400 carrying an error envelope is the
-// JSON-RPC layer saying no, not a verdict the scanner could not read. Every
-// probe refused is a tested surface, so the result is clean.
-func TestOAuthAudience_ExplicitJSONRPCRefusalIsARejection(t *testing.T) {
+func TestOAuthAudience_InvalidRequestIsNotAnAuthVerdict(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -488,8 +484,8 @@ func TestOAuthAudience_ExplicitJSONRPCRefusalIsARejection(t *testing.T) {
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
 	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
-	if err != nil {
-		t.Fatalf("an explicit refusal is a tested surface; want clean, got %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("invalid requests did not test authorization; want inconclusive, got %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d", len(findings))
