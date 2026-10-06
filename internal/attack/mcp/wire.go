@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -68,7 +70,7 @@ func (s mcpSession) request(id interface{}, method string, params map[string]int
 		// and report clean.
 		if key, ok := nameBearingMethods[method]; ok {
 			if name, ok := params[key].(string); ok && name != "" {
-				headers["Mcp-Name"] = name
+				headers["Mcp-Name"] = encodeMCPHeaderValue(name)
 			}
 		}
 	}
@@ -82,6 +84,23 @@ func (s mcpSession) request(id interface{}, method string, params map[string]int
 		"method":  method,
 		"params":  params,
 	}
+}
+
+func encodeMCPHeaderValue(value string) string {
+	needsEncoding := strings.HasPrefix(value, "=?base64?") && strings.HasSuffix(value, "?=")
+	if value != "" && (value[0] == ' ' || value[0] == '\t' || value[len(value)-1] == ' ' || value[len(value)-1] == '\t') {
+		needsEncoding = true
+	}
+	for i := 0; !needsEncoding && i < len(value); i++ {
+		b := value[i]
+		if b != '\t' && (b < 0x20 || b > 0x7e) {
+			needsEncoding = true
+		}
+	}
+	if !needsEncoding {
+		return value
+	}
+	return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(value)) + "?="
 }
 
 // post sends a JSON-RPC request on whichever wire this session belongs to,
