@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,5 +113,119 @@ func TestCanary_NonMCP(t *testing.T) {
 	ts := canaryServer("nonmcp")
 	defer ts.Close()
 
+	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func modernCanaryHandler(reflectToken, legacy bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+			Params struct {
+				Meta map[string]interface{} `json:"_meta"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		write := func(field string, value interface{}) {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, field: value})
+		}
+		if r.Header.Get("MCP-Protocol-Version") != modernVersion {
+			if !legacy {
+				write("error", map[string]interface{}{"code": -32602, "message": "modern metadata required"})
+				return
+			}
+			switch req.Method {
+			case "initialize":
+				write("result", map[string]interface{}{
+					"protocolVersion": "2025-11-25", "serverInfo": map[string]string{"name": "canary-test", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				})
+			case "notifications/initialized":
+				w.WriteHeader(http.StatusAccepted)
+			default:
+				write("result", map[string]interface{}{"tools": []interface{}{}})
+			}
+			return
+		}
+		if r.Header.Get("Mcp-Method") != req.Method || req.Params.Meta["io.modelcontextprotocol/protocolVersion"] != modernVersion {
+			write("error", map[string]interface{}{"code": -32020, "message": "header mismatch"})
+			return
+		}
+		switch req.Method {
+		case "server/discover":
+			write("result", map[string]interface{}{"resultType": "complete", "supportedVersions": []string{modernVersion}})
+		case "tools/list":
+			if reflectToken {
+				write("error", map[string]interface{}{"code": -32000, "message": "invalid token: " + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")})
+				return
+			}
+			write("result", map[string]interface{}{"tools": []interface{}{}})
+		case "resources/list":
+			write("result", map[string]interface{}{"resources": []interface{}{}})
+		default:
+			write("error", map[string]interface{}{"code": -32601, "message": "method not found"})
+		}
+	})
+}
+
+func TestCanary_ModernOnlyReflection(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sse=%t", stream), func(t *testing.T) {
+			handler := modernCanaryHandler(true, false)
+			if stream {
+				handler = sseWrap(handler)
+			}
+			ts := httptest.NewServer(handler)
+			defer ts.Close()
+			findings := runCanary(t, ts)
+			if len(findings) != 1 {
+				t.Fatalf("modern reflection: want one finding, got %+v", findings)
+			}
+			if !strings.Contains(findings[0].Evidence, "request: modern tools/list") {
+				t.Errorf("finding lacks the modern request source: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestCanary_ModernOnlyClean(t *testing.T) {
+	ts := httptest.NewServer(modernCanaryHandler(false, false))
+	defer ts.Close()
+	if findings := runCanary(t, ts); len(findings) != 0 {
+		t.Fatalf("clean modern server: got %+v", findings)
+	}
+}
+
+func TestCanary_DualWireModernReflection(t *testing.T) {
+	ts := httptest.NewServer(modernCanaryHandler(true, true))
+	defer ts.Close()
+	if findings := runCanary(t, ts); len(findings) != 1 {
+		t.Fatalf("dual-wire modern reflection: want one finding, got %+v", findings)
+	}
+}
+
+func TestCanary_ProtocolErrorsAreInconclusive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1,
+			"error": map[string]interface{}{"code": -32602, "message": "invalid request"},
+		})
+	}))
+	defer ts.Close()
+	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func TestCanary_GenericJSONEchoIsNotMCP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": r.Header.Get("Authorization")})
+	}))
+	defer ts.Close()
 	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
