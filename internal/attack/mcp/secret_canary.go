@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -29,7 +30,11 @@ func NewSecretCanaryExecutor(r attack.RuleContext) *SecretCanaryExecutor {
 }
 
 func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	canary := "batesian-canary-" + randomHex(16)
+	suffix, err := randomHex(16)
+	if err != nil {
+		return nil, fmt.Errorf("generating canary: %w", err)
+	}
+	canary := "batesian-canary-" + suffix
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// Override the token with the canary so it is the only credential presented.
@@ -45,16 +50,16 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool) {
 	applicable := false
 	reflectedIn := ""
+	reflectedAt := ""
 
-	record := func(body string) {
-		if body == "" {
+	record := func(resp *attack.Response, at string) {
+		if resp == nil {
 			return
 		}
-		if looksJSONRPC(body) {
-			applicable = true
-		}
+		body := resp.BodyString()
 		if reflectedIn == "" && strings.Contains(body, canary) {
 			reflectedIn = body
+			reflectedAt = at
 		}
 	}
 
@@ -69,27 +74,39 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	var session mcpSession
-	if err == nil {
-		record(initResp.BodyString())
-		session = mcpSession{Endpoint: ep, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
-	}
-
-	// Listing requests can expose token reflection without invoking a tool.
-	probes := []map[string]interface{}{
-		{"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]interface{}{}},
-		{"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": map[string]interface{}{}},
-	}
-	for _, p := range probes {
-		resp, perr := client.POST(ctx, ep, session.header(), p)
-		if perr == nil {
-			record(resp.BodyString())
+	if err == nil && initResp != nil {
+		record(initResp, "legacy initialize")
+		if isMCPInitialize(initResp) {
+			applicable = true
+			session := mcpSession{Endpoint: ep, Era: EraLegacy, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
+			initialized, _ := client.POST(ctx, ep, session.header(), map[string]interface{}{
+				"jsonrpc": "2.0", "method": "notifications/initialized",
+			})
+			record(initialized, "legacy notifications/initialized")
+			for i, method := range []string{"tools/list", "resources/list"} {
+				resp, _ := session.post(ctx, client, i+2, method, nil)
+				record(resp, "legacy "+method)
+			}
 		}
 	}
 
+	modern := mcpSession{Endpoint: ep, Era: EraModern}
+	discover, _ := modern.post(ctx, client, 4, "server/discover", nil)
+	record(discover, "modern server/discover")
+	if discover != nil && ((discover.IsAccepted() && modernWireAdvertised(discover.Body)) ||
+		(authRefusal(discover) && hasBearerChallenge(discover))) {
+		applicable = true
+	}
+	for i, method := range []string{"tools/list", "resources/list"} {
+		resp, _ := modern.post(ctx, client, i+5, method, nil)
+		record(resp, "modern "+method)
+	}
+
+	if !applicable && reflectedIn != "" && looksJSONRPC(reflectedIn) {
+		applicable = true
+	}
+
 	if !applicable || reflectedIn == "" {
-		// applicable == false means no JSON-RPC/MCP-shaped response was seen
-		// (not an MCP endpoint); applicable == true with no reflection is secure.
 		return nil, applicable
 	}
 
@@ -104,18 +121,22 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 				"response body. Copying credentials into protocol output means the secret flows into any sink that "+
 				"records responses - server logs, distributed traces, error trackers, shared SSE streams, and "+
 				"client-side console output - exposing it to anyone with access to those sinks.", ep),
-		Evidence: fmt.Sprintf("endpoint: %s\ncanary token: %s\nreflected in response: %s",
-			ep, canary, snippetAround(reflectedIn, canary)),
+		Evidence: fmt.Sprintf("endpoint: %s\nrequest: %s\ncanary token: %s\nreflected in response: %s",
+			ep, reflectedAt, canary, snippetAround(reflectedIn, canary)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
 	}}, true
 }
 
-// looksJSONRPC reports whether a response body resembles a JSON-RPC / MCP reply,
-// used to scope the rule to MCP endpoints rather than arbitrary HTTP servers.
+// looksJSONRPC rejects generic JSON errors that only resemble MCP replies.
 func looksJSONRPC(body string) bool {
-	return strings.Contains(body, `"jsonrpc"`) || strings.Contains(body, `"result"`) ||
-		strings.Contains(body, `"error"`) || strings.Contains(body, `"protocolVersion"`)
+	var envelope struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	return json.Unmarshal([]byte(body), &envelope) == nil && envelope.JSONRPC == "2.0" &&
+		(envelope.Result != nil || envelope.Error != nil)
 }
 
 // snippetAround returns a short window of text surrounding the first occurrence
@@ -153,10 +174,10 @@ func snippetAround(body, needle string) string {
 	return prefix + body[start:end] + suffix
 }
 
-func randomHex(n int) string {
+func randomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		return "fallbackcanary"
+		return "", err
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

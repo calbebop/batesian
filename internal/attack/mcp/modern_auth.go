@@ -22,7 +22,7 @@ func probeModernAuthGate(ctx context.Context, anon *attack.HTTPClient, ep string
 	if err != nil || resp == nil {
 		return modernAuthGate{}
 	}
-	if authRefusal(resp) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Headers.Get("WWW-Authenticate"))), "bearer") {
+	if authRefusal(resp) && hasBearerChallenge(resp) {
 		return modernAuthGate{method: "server/discover", ready: true}
 	}
 	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
@@ -35,6 +35,10 @@ func probeModernAuthGate(ctx context.Context, anon *attack.HTTPClient, ep string
 		}
 	}
 	return modernAuthGate{}
+}
+
+func hasBearerChallenge(resp *attack.Response) bool {
+	return resp != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Headers.Get("WWW-Authenticate"))), "bearer")
 }
 
 func probeModernBearer(ctx context.Context, anon *attack.HTTPClient, ep, method, token string) (*attack.Response, accessVerdict) {
