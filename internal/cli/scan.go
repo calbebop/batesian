@@ -87,7 +87,7 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 }
 
-func runScan(cmd *cobra.Command, args []string) error {
+func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	configPath, _ := cmd.Flags().GetString("config")
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -123,6 +123,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		target = cfg.Target
 	}
+	redactor := newOutputRedactor(target)
+	defer func() { runErr = redactor.err(runErr) }()
 	// Cobra's default cannot distinguish an omitted flag from explicit "table".
 	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
 	format, err := report.ParseFormat(outputFmt)
@@ -231,10 +233,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if format == report.FormatJSON || format == report.FormatSARIF {
 		statusOut = os.Stderr
 	}
-	displayTarget := target
-	if dryRun {
-		displayTarget = attackpkg.RedactURL(target)
-	}
+	displayTarget := redactor.display
 	printer := report.New(statusOut, verbose)
 	printer.Banner()
 	printer.ProbeHeader(displayTarget, coalesceProtocol(protocol))
@@ -281,6 +280,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if !noCoalesce {
 		results = engine.Coalesce(results)
 	}
+	results = redactor.results(results)
 
 	switch format {
 	case report.FormatSARIF:
@@ -289,7 +289,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		// The machine-readable payload always goes to stdout; status/banner
 		// output (above) goes to stderr so `batesian scan --output json | jq`
 		// receives clean JSON.
-		return report.New(os.Stdout, verbose).PrintJSON(buildScanJSON(target, results))
+		return report.New(os.Stdout, verbose).PrintJSON(buildScanJSON(displayTarget, results))
 	default:
 		printer.PrintScanSummary(results)
 	}
@@ -500,7 +500,7 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 		}
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
-			return p, fmt.Errorf("invalid --principal segment %q; expected key=value", part)
+			return p, errors.New("invalid --principal segment; expected key=value")
 		}
 		k = strings.TrimSpace(k)
 		v = strings.TrimSpace(v)
@@ -515,7 +515,7 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 			hk, hv, found := strings.Cut(v, ":")
 			hk = strings.TrimSpace(hk)
 			if !found || hk == "" {
-				return p, fmt.Errorf("invalid --principal header %q; expected header=Name:Value", v)
+				return p, errors.New("invalid --principal header; expected header=Name:Value")
 			}
 			if p.Headers == nil {
 				p.Headers = map[string]string{}
@@ -526,11 +526,11 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 			// thing an operator tries here.
 			return p, fmt.Errorf("use header=Name:Value (repeatable) rather than headers= in --principal")
 		default:
-			return p, fmt.Errorf("unknown --principal key %q (valid: name, token, tenant, header)", k)
+			return p, errors.New("unknown --principal key (valid: name, token, tenant, header)")
 		}
 	}
 	if p.Name == "" {
-		return p, fmt.Errorf("--principal %q is missing name=", raw)
+		return p, errors.New("--principal is missing name=")
 	}
 	return p, nil
 }

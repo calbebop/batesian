@@ -1,23 +1,23 @@
 package cli
 
 import (
-	"fmt"
+	"errors"
 	"net/url"
 )
 
 func validateTargetURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("invalid target URL %q: %w", raw, err)
+		return errors.New("invalid target URL syntax")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("target URL must use http or https scheme, got %q", u.Scheme)
+		return errors.New("invalid target URL: must use http or https scheme")
 	}
 	if u.Opaque != "" {
-		return fmt.Errorf("invalid target URL %q: opaque URLs are not supported", raw)
+		return errors.New("invalid target URL: opaque URLs are not supported")
 	}
 	if u.Hostname() == "" {
-		return fmt.Errorf("invalid target URL %q: missing host", raw)
+		return errors.New("invalid target URL: missing host")
 	}
 	return nil
 }

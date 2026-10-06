@@ -56,8 +56,10 @@ func init() {
 	rootCmd.AddCommand(probeCmd)
 }
 
-func runProbe(cmd *cobra.Command, args []string) error {
+func runProbe(cmd *cobra.Command, args []string) (runErr error) {
 	target, _ := cmd.Flags().GetString("target")
+	redactor := newOutputRedactor(target)
+	defer func() { runErr = redactor.err(runErr) }()
 	protocol, _ := cmd.Flags().GetString("protocol")
 	outputFmt, _ := cmd.Flags().GetString("output")
 	verbose, _ := cmd.Flags().GetBool("verbose")
@@ -107,6 +109,7 @@ func runProbe(cmd *cobra.Command, args []string) error {
 }
 
 func probeA2A(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
+	redactor := newOutputRedactor(target)
 	opts := []a2a.ClientOption{
 		a2a.WithTimeout(timeout),
 	}
@@ -125,22 +128,27 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 		return err
 	}
 
-	printer.ProbeHeader(target, "a2a")
+	printer.ProbeHeader(redactor.display, "a2a")
 
-	printer.Verbose("GET " + target + a2a.WellKnownPath)
+	printer.Verbose("GET " + redactor.text(target+a2a.WellKnownPath))
 	card, cardResult, err := client.FetchAgentCard(ctx)
 	if err != nil {
 		if cardResult != nil && cardResult.StatusCode > 0 {
-			printer.Error(fmt.Sprintf("Agent Card fetch failed: HTTP %d from %s", cardResult.StatusCode, cardResult.URL))
+			printer.Error(fmt.Sprintf("Agent Card fetch failed: HTTP %d from %s", cardResult.StatusCode, redactor.url(cardResult.URL)))
 			return fmt.Errorf("could not fetch Agent Card: %w", err)
 		}
-		printer.Error("Agent Card fetch failed: " + err.Error())
+		printer.Error("Agent Card fetch failed: " + redactor.text(err.Error()))
 		return err
 	}
 	printer.Verbose(fmt.Sprintf("HTTP %d in %s", cardResult.StatusCode, cardResult.Elapsed.Round(time.Millisecond)))
 	printer.Success("Agent Card retrieved")
 
 	result := cardToProbeResult(card, cardResult.Elapsed)
+	result.URL = redactor.url(result.URL)
+	result.Provider = redactor.text(result.Provider)
+	if card.Provider != nil && card.Provider.URL != "" {
+		result.Provider = fmt.Sprintf("%s (%s)", redactor.text(card.Provider.Organization), redactor.url(card.Provider.URL))
+	}
 
 	if card.SupportsExtendedCard() {
 		printer.Verbose("Probing extended agent card (unauthenticated)...")
@@ -173,10 +181,11 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 			Message:  "Push notifications enabled. Run scan to test for SSRF via callback URL registration.",
 		})
 	}
+	redactor.a2aProbeResult(result)
 
 	switch format {
 	case report.FormatJSON:
-		return report.New(os.Stdout, false).PrintJSON(buildJSONOutput(card, result))
+		return report.New(os.Stdout, false).PrintJSON(redactor.value(buildJSONOutput(card, result)))
 	default:
 		printer.PrintProbeTable(result)
 	}
@@ -229,6 +238,7 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 }
 
 func probeMCP(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
+	redactor := newOutputRedactor(target)
 	opts := []mcp.ClientOption{
 		mcp.WithTimeout(timeout),
 	}
@@ -247,14 +257,14 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		return err
 	}
 
-	printer.ProbeHeader(target, "mcp")
+	printer.ProbeHeader(redactor.display, "mcp")
 
 	printer.Verbose("Connecting to MCP endpoint...")
 	start := time.Now()
 	session, err := client.Connect(ctx)
 	elapsed := time.Since(start)
 	if err != nil {
-		printer.Error("MCP connection failed: " + err.Error())
+		printer.Error("MCP connection failed: " + redactor.text(err.Error()))
 		return fmt.Errorf("could not connect to MCP server: %w", err)
 	}
 	printer.Success(fmt.Sprintf("MCP server connected (%s)", elapsed.Round(time.Millisecond)))
@@ -263,7 +273,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		ServerName:      session.ServerInfo.Name,
 		ServerVersion:   session.ServerInfo.Version,
 		ServerTitle:     session.ServerInfo.Title,
-		URL:             session.Endpoint,
+		URL:             redactor.url(session.Endpoint),
 		ProtocolVersion: session.ProtocolVersion,
 		Elapsed:         elapsed,
 		HasTools:        session.HasCapability("tools"),
@@ -287,7 +297,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 			// Silence here reads as "no tools", which is the one conclusion a
 			// failed listing can never support - and probe's whole deliverable
 			// is the surface map.
-			printer.Warn(fmt.Sprintf("tools/list failed: %v (tool surface not enumerated)", err))
+			printer.Warn(fmt.Sprintf("tools/list failed: %s (tool surface not enumerated)", redactor.text(err.Error())))
 		}
 	}
 
@@ -302,7 +312,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 				})
 			}
 		} else {
-			printer.Warn(fmt.Sprintf("resources/list failed: %v (resource surface not enumerated)", err))
+			printer.Warn(fmt.Sprintf("resources/list failed: %s (resource surface not enumerated)", redactor.text(err.Error())))
 		}
 
 		anonResources := resources
@@ -339,7 +349,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 				})
 			}
 		} else {
-			printer.Warn(fmt.Sprintf("prompts/list failed: %v (prompt surface not enumerated)", err))
+			printer.Warn(fmt.Sprintf("prompts/list failed: %s (prompt surface not enumerated)", redactor.text(err.Error())))
 		}
 	}
 
@@ -350,6 +360,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 			Message:  "No authentication used. Run scan to check OAuth DCR and token validation.",
 		})
 	}
+	redactor.mcpProbeResult(result)
 
 	switch format {
 	case report.FormatJSON:

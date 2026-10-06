@@ -50,7 +50,7 @@ func TestProbeRejectsInvalidTarget(t *testing.T) {
 			setProbeFlag(t, "proxy", "")
 
 			err := runProbe(probeCmd, nil)
-			const want = `invalid target URL "https:///mcp": missing host`
+			const want = `invalid target URL: missing host`
 			if err == nil || err.Error() != want {
 				t.Fatalf("error = %v, want %q", err, want)
 			}
