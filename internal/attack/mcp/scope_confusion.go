@@ -302,6 +302,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 
 	// Anonymous dispatch rules out a scope-specific bypass.
 	anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
+	if anonymousCall.headerMismatch {
+		return nil, fmt.Sprintf("tools/call for %q returned HeaderMismatch on the anonymous control", candidates[0].Name), false
+	}
 	if scopeShowsDispatch(anonymousCall, randID) {
 		return nil, "", true
 	}
@@ -312,6 +315,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	var unanswered string
 	for i, cand := range candidates {
 		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
+		if fullCall.headerMismatch {
+			return findings, fmt.Sprintf("tools/call for %q returned HeaderMismatch for the full principal", cand.Name), false
+		}
 		if !fullCall.answered {
 			unanswered = fmt.Sprintf("tools/call returned no correlated response for the full principal %q", princA.name)
 			continue
@@ -321,6 +327,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		}
 
 		limCall := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
+		if limCall.headerMismatch {
+			return findings, fmt.Sprintf("tools/call for %q returned HeaderMismatch for the limited principal", cand.Name), false
+		}
 		if !limCall.answered {
 			unanswered = fmt.Sprintf("tools/call returned no correlated response for the limited principal %q", princB.name)
 			continue
@@ -416,9 +425,10 @@ func scopeListedTools(raw []byte) ([]scopeTool, *string, bool) {
 }
 
 type scopeCallOutcome struct {
-	text          string
-	protocolError bool
-	answered      bool
+	text           string
+	protocolError  bool
+	answered       bool
+	headerMismatch bool
 }
 
 func scopeResponseMatches(body []byte, id int) bool {
@@ -438,6 +448,9 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 	params := map[string]interface{}{"name": cand.Name, "arguments": args}
 	resp, err := s.postToolShaping(ctx, client, id, params, cand.InputSchema,
 		func(h map[string]string) { attachPrincipal(h, p) })
+	if isMCPHeaderMismatch(resp) {
+		return scopeCallOutcome{headerMismatch: true}
+	}
 	if err != nil || !resp.IsSuccess() {
 		// Preserve HTTP authorization failures for the classifier.
 		if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {

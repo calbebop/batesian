@@ -254,15 +254,6 @@ func (e *HeaderBodySplitExecutor) toolsList(ctx context.Context, client *attack.
 	return accessGranted
 }
 
-// headerMismatchCode is the JSON-RPC error a server MUST answer a header/body
-// validation failure with. SEP-2243 specified -32001; the specification renumbered
-// it into the range reserved for protocol-defined errors, and this rule keys on the
-// spec value. It is the oracle for the Mcp-Name probes below, which unlike the
-// Mcp-Method ones cannot use "did the body execute": their subject deliberately does
-// not exist, so a compliant and a non-compliant server both answer with an error and
-// only the CODE separates them.
-const headerMismatchCode = -32020
-
 // nameProbeSubject is the resource URI and prompt name the Mcp-Name probes ask for.
 // It is deliberately absent from every server: the point is to compare which error
 // comes back, and a subject that does not exist cannot be executed. That is what

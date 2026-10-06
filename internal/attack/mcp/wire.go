@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -41,6 +42,8 @@ var nameBearingMethods = map[string]string{
 	"prompts/get":    "name",
 	"resources/read": "uri",
 }
+
+const headerMismatchCode = -32020
 
 // request builds the headers and body this session's era requires for one call.
 // It is split out of post so postShaping can reshape the headers without
@@ -149,6 +152,14 @@ func (s mcpSession) postToolShaping(ctx context.Context, client *attack.HTTPClie
 		shape(headers)
 	}
 	return client.POST(ctx, s.Endpoint, headers, body)
+}
+
+func isMCPHeaderMismatch(resp *attack.Response) bool {
+	if resp == nil || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false
+	}
+	code, ok := jsonRPCErrorCode(resp.Body)
+	return ok && code == headerMismatchCode
 }
 
 // modernMeta is the _meta block every modern request must carry. clientCapabilities

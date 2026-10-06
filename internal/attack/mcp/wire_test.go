@@ -571,6 +571,24 @@ func TestSessionPost_ModernEncodedNameMatchesBody(t *testing.T) {
 	}
 }
 
+func TestIsMCPHeaderMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{http.StatusBadRequest, `{"jsonrpc":"2.0","error":{"code":-32020}}`, true},
+		{http.StatusOK, `{"jsonrpc":"2.0","error":{"code":-32020}}`, true},
+		{http.StatusUnauthorized, `{"jsonrpc":"2.0","error":{"code":-32020}}`, false},
+		{http.StatusBadRequest, `{"jsonrpc":"2.0","error":{"code":-32602}}`, false},
+	} {
+		resp := &attack.Response{StatusCode: tc.status, Body: []byte(tc.body)}
+		if got := isMCPHeaderMismatch(resp); got != tc.want {
+			t.Errorf("status %d body %s: mismatch = %t, want %t", tc.status, tc.body, got, tc.want)
+		}
+	}
+}
+
 // A wire that establishes nothing must not read as a clean pass. This is what
 // carries the per-probe verdict up to the engine, which records ErrInconclusive
 // as skipped rather than as a secure result.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -176,7 +177,8 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 }
 
-func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
+func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32) ([]attack.Finding, int32, error) {
+	t.Helper()
 	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -210,7 +212,15 @@ func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
 			props["path"].(map[string]interface{})["x-mcp-header"] = "Path"
 			result = map[string]interface{}{"resultType": "complete", "tools": []interface{}{tool}}
 		case "tools/call":
-			calls.Add(1)
+			callNumber := calls.Add(1)
+			if mismatchStatus != 0 && callNumber == mismatchAt {
+				w.WriteHeader(mismatchStatus)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+				})
+				return
+			}
 			path, _ := req.Params.Arguments["path"].(string)
 			if path == "" || r.Header.Get("Mcp-Param-Path") != path {
 				w.WriteHeader(http.StatusBadRequest)
@@ -233,8 +243,27 @@ func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := runTraversal(t, ts)
-	if err != nil || len(findings) != 1 || calls.Load() < 2 {
-		t.Fatalf("annotated path tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	return findings, calls.Load(), err
+}
+
+func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
+	findings, calls, err := modernTraversalCase(t, 0, 0)
+	if err != nil || len(findings) != 1 || calls < 2 {
+		t.Fatalf("annotated path tool was not assessed: findings=%+v calls=%d err=%v", findings, calls, err)
+	}
+}
+
+func TestTraversal_HeaderMismatchIsInconclusive(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusOK} {
+		for _, rejectAt := range []int32{1, 2} {
+			t.Run(fmt.Sprintf("%d/call-%d", status, rejectAt), func(t *testing.T) {
+				findings, calls, err := modernTraversalCase(t, status, rejectAt)
+				if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+					!strings.Contains(err.Error(), "HeaderMismatch") || calls != rejectAt {
+					t.Fatalf("mismatch must stop without retry: findings=%+v calls=%d err=%v", findings, calls, err)
+				}
+			})
+		}
 	}
 }
 
