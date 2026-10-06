@@ -22,51 +22,40 @@ JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
 
 ## Protocol currency
 
-These rules target the **handshake-based** MCP revisions (`2024-11-05` through
-`2025-11-25`), which establish a session with `initialize` and carry
-`Mcp-Session-Id`.
+The rules cover the **handshake-based** MCP revisions (`2024-11-05` through
+`2025-11-25`) and, where noted below, the stateless `2026-07-28` wire. Legacy
+requests use `initialize`; modern requests carry protocol metadata on each call.
 
-The **`2026-07-28`** revision makes MCP stateless. It removes the
-`initialize`/`notifications/initialized` handshake in favour of per-request
-`_meta`, removes protocol-level sessions and the `Mcp-Session-Id` header,
-removes the HTTP GET stream and `Last-Event-ID` resumability, removes
-`logging/setLevel`, and moves tasks into an extension. Individual rules whose
-surface changed carry a **Currency** note below.
+The **[`2026-07-28` revision](https://modelcontextprotocol.io/specification/2026-07-28/changelog)**
+makes MCP stateless. It removes the `initialize`/`notifications/initialized`
+handshake in favour of per-request `_meta`, protocol-level sessions and the
+`Mcp-Session-Id` header, the HTTP GET stream and `Last-Event-ID` resumability,
+and `logging/setLevel`. It also moves tasks into an extension. Individual rules
+whose surface changed carry a **Currency** note below.
 
-The Tier-1 SDKs shipped that revision on 2026-07-27 and 2026-07-28: TypeScript
-`@modelcontextprotocol/server` 2.0.0, Python `mcp` 2.0.0, Go 1.7.0, C# 2.0.
-**They serve both eras from one server.** A 2026-era server built on the Python
-or TypeScript SDK answers `server/discover` *and* the 2025-era `initialize`
-handshake on the same endpoint, unless the deployment goes out of its way to
-disable the older one. These rules therefore keep working against current
-servers, and era detection only reports a target as unsupported when it is
-modern-only.
+Some current SDKs can serve both eras on one endpoint, but deployments can also
+be modern-only. Modern-capable scan rules discover each available wire
+independently and test modern-only servers. Rules that depend on a legacy
+handshake or session cannot exercise that wire and mark the check not tested,
+rather than clean.
 
 `@modelcontextprotocol/server-everything`, the example server, is a separate
 matter: it is still pinned to the 1.x SDK and negotiates `2025-11-25`. Its
 version is not a signal about the ecosystem.
 
-Era detection itself is checked weekly against a server built on the current
-official SDK (`.github/workflows/mcp-era-watch.yml`, using
-`testdata/mcp_modern_era_server.py`), so a change in the specification, the SDK,
-or our classification surfaces as a failing job rather than as a wrong scan
-result.
+Era detection is checked weekly against the official Python SDK
+(`.github/workflows/mcp-era-watch.yml`, using
+`testdata/mcp_modern_era_server.py`).
 
-Rules gate on advertised capabilities and on reaching a live endpoint, so
-against a server this rule set cannot handshake with they report **inconclusive
-or skip**, never a clean pass. A target that could not be exercised is reported
-as not tested rather than as secure.
+Rules check reachability and, where relevant, advertised capabilities before
+judging a target. If a rule cannot exercise its required wire, it reports
+**inconclusive or skipped**, not clean.
 
-A skip names the reason where the handshake explained itself, because the actions
-they call for differ. The common one is a server that requires a credential: it
-answers every request and refuses the handshake, so the skip says so rather than
-reporting a plainly reachable target as unreachable. It also distinguishes a
-refused **anonymous** handshake from a **rejected credential**, since telling an
-operator to pass `--token` when they already did is worse than saying nothing, and
-several of these rules send no credential by design so that `--token` would change
-nothing. An endpoint that answers but does not implement `initialize` is reported
-as not speaking MCP. `could not reach a testable endpoint` means what it says:
-nothing answered, or no candidate path is served.
+For legacy-only rules, a rejected `initialize` produces a skip reason that
+distinguishes missing credentials from rejected ones. An endpoint without
+`initialize` may still be a valid modern-only MCP server; modern-capable rules
+probe it through `server/discover`. `Could not reach a testable endpoint` means
+no usable wire was established.
 
 ## OAuth-gated rules
 
@@ -76,12 +65,11 @@ to test: an authorization-server or protected-resource document, or a registrati
 endpoint. When none is advertised they report **clean**, because a server without
 OAuth is not applicable rather than insecure.
 
-That holds only for a server that answered. A target where nothing responded to an
-MCP handshake is reported as **not tested**, since a clean result there would say
-the OAuth handling is sound about a host the rule never reached. Reachability is
-settled with a single `initialize` per candidate, on the bail path only, and a
-2026-07-28 server is reported as speaking an unsupported protocol version rather
-than as unreachable.
+That holds only when Batesian can establish the target is an MCP server. If no
+OAuth surface is found, a fallback checks legacy `initialize` responses and
+then identifies modern-only servers separately. A modern-only response on that
+path is **not tested** by these checks, rather than clean or unreachable. If
+neither wire can be recognized, the target is also not tested.
 
 OAuth URLs advertised by the target are followed only on the target's exact origin.
 For deployments with a separate authorization server, explicitly add that origin to
@@ -110,12 +98,11 @@ payload and removing the client first could cancel the fetch being listened for.
 
 ## Both protocol wires
 
-A server built on the current SDKs answers **both** the handshake-based revisions
-and 2026-07-28 on the same endpoint. The four unauthenticated-access rules,
-`mcp-resources-unauth-001`, `mcp-tools-unauth-001`, `mcp-prompt-unauth-001` and
-`mcp-completion-unauth-001`, are exercised on each wire it serves, because the two
-need not be gated alike: a server can enforce authorization on one and not the
-other.
+When a server answers **both** the handshake-based revisions and `2026-07-28`
+on one endpoint, the four unauthenticated-access rules are exercised on each
+wire: `mcp-resources-unauth-001`, `mcp-tools-unauth-001`,
+`mcp-prompt-unauth-001` and `mcp-completion-unauth-001`. The two wires need not
+be gated alike: a server can enforce authorization on one and not the other.
 
 Three of those four read the advertised capability per wire, so a surface the server
 exposes on only one era is probed only there. The tools rule only lists tools;
@@ -136,10 +123,11 @@ distinguishable results rather than what looks like a duplicate. A legacy-only
 target reports exactly what it reported before, with no suffix.
 
 A modern request carries no session: the protocol version and client capabilities
-travel in `params._meta`, the method is mirrored into `Mcp-Method`, and for
-`tools/call`, `prompts/get` and `resources/read` the named subject is mirrored into
-`Mcp-Name`. Every one of those is mandatory, and a mismatch or omission earns
-`-32020`.
+travel in `params._meta`, the version is mirrored into `MCP-Protocol-Version`,
+and the method into `Mcp-Method`. For `tools/call`, `prompts/get` and
+`resources/read`, the named subject is mirrored into `Mcp-Name`. The HTTP
+headers are required; missing or mismatched routing headers and missing
+request metadata are distinct protocol errors.
 
 `mcp-log-optin-001` runs on the 2026-07-28 wire **only**, because the requirement
 it tests was introduced by that revision and has no equivalent on an earlier one.
@@ -318,11 +306,12 @@ distinguishable from one that saw everything.
 
 Sends `prompts/list` and `prompts/get` without credentials. Prompt templates can
 encode system-level instructions and internal context that were not intended to be
-public. The prompts capability is confirmed structurally from the captured
-`initialize` result (`ServerSupports`), not by substring-matching the response
-body. A list-only disclosure is **medium**; retrieving template content as well is
-**high** - both **confirmed**. A server that requires auth, or does not advertise
-the prompts capability, produces no finding.
+public. The prompts capability is read from the `initialize` or
+`server/discover` result for the wire being tested, not from a substring match.
+The rule tries up to ten listed prompts, stopping at the first readable
+template. A list-only disclosure is **medium**; retrieving template content as
+well is **high** - both **confirmed**. A server that requires auth, or does not
+advertise the prompts capability, produces no finding.
 
 ---
 
@@ -332,7 +321,7 @@ the prompts capability, produces no finding.
 
 Tools are the primary MCP attack surface: a tool is a server-side function a
 caller can invoke, not just data or a template. The tools capability is confirmed
-structurally from the captured `initialize` result (`ServerSupports`). The rule
+structurally from the captured `initialize` or `server/discover` result. The rule
 confirms an unauthenticated `tools/list` disclosure of tool names and metadata
 (**medium**). It sends no `tools/call`, so invocation
 authorization remains untested. An unknown name is not guaranteed harmless on a
@@ -347,8 +336,8 @@ A server that requires auth or does not advertise tools produces no finding.
 
 `completion/complete` returns autocompletion suggestions for prompt arguments and
 resource-template URIs; servers that support it advertise the `completions`
-capability, which is confirmed structurally from the captured `initialize` result
-(`ServerSupports`). The MCP spec requires implementations to control access to
+capability, which is read from the `initialize` or `server/discover` result.
+The MCP spec requires implementations to control access to
 completion suggestions and prevent completion-based information disclosure, so an
 unauthenticated completion endpoint is both an access-control failure and an
 enumeration oracle. The rule confirms two outcomes: `completion/complete`
