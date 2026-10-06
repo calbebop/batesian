@@ -15,28 +15,9 @@ import (
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
-// OAuthAudienceExecutor implements rule mcp-oauth-audience-002.
-//
-// It complements mcp-token-replay-001 by probing whether the server's `aud`
-// matching logic is robust to common implementation bugs (substring match,
-// case canonicalization, array-shape branch skip) once the operator's expected
-// audience value is known. The expected value is taken from
-// opts.AudienceClaim or, when unset, RFC 9728 protected-resource-metadata.
-//
-// Every probe is derived from that value, so it decides whether the rule tests
-// anything at all: the server compares the forged `aud` against its OWN
-// configured audience, and RFC 7519 section 4.1.3 makes that comparison exact.
-// A value that does not byte-match is a plain mismatch the server refuses
-// whether or not its matching logic is sound, which reads as a clean result. So
-// before reporting clean on an operator-supplied value, the rule checks it
-// against what the server advertises and reports not tested when they disagree.
-// Hostname case is the likeliest way for that to happen, since DNS is
-// case-insensitive and audience comparison is not.
-//
-// Because probes are forged HS256 self-signed tokens, acceptance indicates a
-// compound failure: signature validation AND audience matching both inadequate.
-// The "validly signed cross-resource token" class (Parse CVE-2026-30863) is
-// out of scope for v1 and is tracked as a follow-up issue.
+// OAuthAudienceExecutor tests audience-matching traps on both MCP wires.
+// A forged-token acceptance also implies broken signature validation; this rule
+// does not test validly signed tokens issued for another resource.
 type OAuthAudienceExecutor struct {
 	rule attack.RuleContext
 }
@@ -127,19 +108,32 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 
 	probes := buildProbes(expected)
 
-	endpoint, outcomes, err := runProbesAgainstEndpoint(ctx, client,
-		attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL, probes)
+	anon := attack.NewUnauthHTTPClient(opts, vars)
+	endpoint, outcomes, legacyErr := runProbesAgainstEndpoint(ctx, client,
+		anon, vars.BaseURL, probes)
+	modernEndpoint, modernOutcomes, err := runModernAudienceProbes(ctx, anon, vars.BaseURL, probes)
 	if err != nil {
 		return nil, err
 	}
-	if endpoint == "" {
-		// No candidate endpoint produced a usable response for any probe.
-		return nil, attack.ErrInconclusive
+	var findings []attack.Finding
+	if endpoint != "" {
+		if finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes); finding != nil {
+			findings = append(findings, *finding)
+		}
 	}
-
-	finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes)
-	if finding != nil {
-		return []attack.Finding{*finding}, nil
+	if modernEndpoint != "" {
+		if finding := coalesceOutcomes(e.rule, modernEndpoint, expected, modernOutcomes); finding != nil {
+			findings = append(findings, labelEra(mcpSession{Era: EraModern}, []attack.Finding{*finding})...)
+		}
+	}
+	if len(findings) > 0 {
+		return findings, nil
+	}
+	if endpoint == "" && modernEndpoint == "" {
+		if legacyErr != nil {
+			return nil, legacyErr
+		}
+		return nil, attack.ErrInconclusive
 	}
 
 	// Nothing was accepted. Before calling that a clean result, check that the
@@ -149,10 +143,10 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	// inconclusive" is a scan that never happened, not a server that enforced
 	// its gate. This runs before the premise check below: that one explains
 	// refusals, and a rate limiter refused nothing.
-	if everyProbeInconclusive(outcomes) {
-		return nil, fmt.Errorf("%w: every audience probe at %s came back without a verdict "+
-			"(HTTP %s), so whether the server enforces audience matching could not be judged",
-			attack.ErrInconclusive, endpoint, outcomeStatuses(outcomes))
+	if (endpoint == "" || everyProbeInconclusive(outcomes)) &&
+		(modernEndpoint == "" || everyProbeInconclusive(modernOutcomes)) {
+		return nil, fmt.Errorf("%w: no credential-gated MCP request judged an audience probe (legacy HTTP %s; modern HTTP %s)",
+			attack.ErrInconclusive, outcomeStatuses(outcomes), outcomeStatuses(modernOutcomes))
 	}
 
 	// Nothing was accepted. That is only a clean result if the probes were built
@@ -161,6 +155,10 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	// scan that found something needs no premise check, and a disagreement is not
 	// a reason to withhold a finding the server demonstrated.
 	if operatorSupplied {
+		judgedEndpoint := endpoint
+		if judgedEndpoint == "" {
+			judgedEndpoint = modernEndpoint
+		}
 		advertised, _, _, err := discoverExpectedAudience(ctx, client,
 			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 		if err != nil {
@@ -172,10 +170,46 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 				"aud claim exactly, so every probe was a plain mismatch this server refuses whether "+
 				"or not its audience matching is sound; rerun with the advertised value, or with no "+
 				"--audience-claim to use it automatically",
-				attack.ErrInconclusive, expected, endpoint, advertised)
+				attack.ErrInconclusive, expected, judgedEndpoint, advertised)
 		}
 	}
 	return nil, nil
+}
+
+func runModernAudienceProbes(ctx context.Context, anon *attack.HTTPClient, baseURL string, probes []audienceProbe) (string, []probeOutcome, error) {
+	for _, ep := range endpointCandidates(baseURL) {
+		gate := probeModernAuthGate(ctx, anon, ep)
+		if !gate.ready {
+			continue
+		}
+		outcomes := make([]probeOutcome, 0, len(probes))
+		for _, p := range probes {
+			tok, err := forgeHS256JWT(map[string]interface{}{
+				"iss": "https://attacker.example.com", "sub": "batesian-probe",
+				"aud": p.audClaim, "iat": 1700000000, "exp": 9999999999,
+			})
+			if err != nil {
+				return "", nil, fmt.Errorf("forging token for probe %s: %w", p.name, err)
+			}
+			resp, access := probeModernBearer(ctx, anon, ep, gate.method, tok)
+			outcome := probeOutcome{probe: p, verdict: verdictInconclusive, tokenHP: jwtHeaderPayload(tok), judgedAt: gate.method}
+			if resp != nil {
+				outcome.status = resp.StatusCode
+				outcome.bodySnip = snippetMCP(resp.Body)
+			}
+			switch access {
+			case accessGranted:
+				outcome.verdict = verdictAcceptedVulnerable
+			case accessRefused:
+				outcome.verdict = verdictRejected
+			}
+			outcomes = append(outcomes, outcome)
+		}
+		if !everyProbeInconclusive(outcomes) {
+			return ep, outcomes, nil
+		}
+	}
+	return "", nil, nil
 }
 
 // buildProbes constructs the v1 probe set from the operator's expected audience.
@@ -338,6 +372,28 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		if u := parseResourceMetadataURL(resp.Headers.Get("WWW-Authenticate")); u != "" {
 			// A challenge is itself proof the endpoint is live and gated.
 			return u, true, observed
+		}
+		modern := mcpSession{Endpoint: ep, Era: EraModern}
+		modernResp, modernErr := modern.postShaping(ctx, client, 1, "server/discover", nil, func(headers map[string]string) {
+			headers["Authorization"] = ""
+		})
+		if modernErr == nil && modernResp != nil {
+			if u := parseResourceMetadataURL(modernResp.Headers.Get("WWW-Authenticate")); u != "" {
+				return u, true, observed
+			}
+			if modernResp.IsAccepted() && modernWireAdvertised(modernResp.Body) {
+				for _, method := range modernAuthMethods {
+					methodResp, methodErr := modern.postShaping(ctx, client, 2, method, nil, func(headers map[string]string) {
+						headers["Authorization"] = ""
+					})
+					if methodErr == nil && methodResp != nil {
+						if u := parseResourceMetadataURL(methodResp.Headers.Get("WWW-Authenticate")); u != "" {
+							return u, true, observed
+						}
+					}
+				}
+				return "", true, observed
+			}
 		}
 		// An endpoint that answered the handshake is the server, and it issued no
 		// challenge. The remaining candidates are the same server at paths it does
@@ -519,31 +575,17 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 	return "", nil, nil
 }
 
-// classifyResponse maps an HTTP response into the verdict taxonomy.
-//
-// HTTP 200 + a JSON-RPC `result` envelope is the cleanest acceptance signal.
-// HTTP 200 + a JSON-RPC `error` envelope is treated as rejection because the
-// server is explicitly refusing the call. HTTP 200 with neither shape (empty
-// body, raw HTML, "{}", etc.) is inconclusive: it is not evidence that the call
-// was accepted, so it produces no finding. (Previously this was treated as a
-// downgraded "ambiguous" acceptance, which false-positived non-MCP targets whose
-// /mcp request fell through to a 200 HTML page.)
-//
-// An explicit JSON-RPC `error` envelope counts as a rejection at any HTTP
-// status, the same rule classifyAccess applies: the JSON-RPC layer said no.
-// Every other reply outside 200/401/403 is inconclusive, a 429 above all.
-// Reading the remaining 4xx as a rejection made a rate-limited negative control
-// look like "the audience value was the decisive factor", which upgraded an
-// accepted trap to a confirmed finding, and made a rate-limited scan report
-// audience matching sound.
+// classifyResponse distinguishes token refusals from protocol errors and
+// transport failures. Only a JSON-RPC result proves acceptance.
 func classifyResponse(resp *attack.Response) audVerdict {
 	switch {
 	case resp.StatusCode == 200:
 		body := resp.BodyString()
-		// Strict precedence: an `error` envelope means the JSON-RPC layer
-		// rejected the call regardless of HTTP status.
 		if isJSONRPCError(body) {
-			return verdictRejected
+			if authRefusal(resp) {
+				return verdictRejected
+			}
+			return verdictInconclusive
 		}
 		if isJSONRPCResult(body) {
 			return verdictAcceptedVulnerable
@@ -557,8 +599,7 @@ func classifyResponse(resp *attack.Response) audVerdict {
 		// worked, which is how this rule reported a whole target secure on the
 		// strength of paths that did not exist.
 		return verdictInconclusive
-	case isJSONRPCError(resp.BodyString()):
-		// An explicit JSON-RPC refusal counts whatever HTTP status carries it.
+	case authRefusal(resp):
 		return verdictRejected
 	default:
 		// A 429 from a rate limiter, a bare 400, an HTML 500: the server did not

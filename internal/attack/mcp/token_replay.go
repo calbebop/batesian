@@ -14,37 +14,8 @@ import (
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
-// TokenReplayExecutor tests whether an MCP server accepts forged or unsigned
-// OAuth 2.1 bearer tokens (rule mcp-token-replay-001). The HS256 probes are
-// signed with a random secret the server cannot know, so acceptance proves the
-// server does not validate the token signature - which also defeats audience
-// binding and enables cross-audience replay. Audience-matching bugs on
-// signature-valid tokens are isolated separately by mcp-oauth-audience-002.
-//
-// Attack sequence:
-//
-//  1. Confirm the server participates in OAuth 2.1 / OIDC by probing the known
-//     discovery documents (RFC 9728 protected-resource-metadata, RFC 8414
-//     authorization-server metadata, and OIDC openid-configuration). If none is
-//     present, skip gracefully (the server does not appear to use OAuth).
-//
-//  2. Forge three JWTs using stdlib only (no third-party JWT library):
-//     - no-aud: HS256 token with no aud claim
-//     - wrong-aud: HS256 token with aud pointing to a different server
-//     - alg-none: unsigned token (alg:none) whose aud matches the target
-//
-//  3. POST each token to {target}/mcp with an MCP initialize request body.
-//
-//  4. For a probe the server ACCEPTS - HTTP 200 carrying a JSON-RPC `result`
-//     envelope - establish where tokens are actually examined before reporting
-//     (see init_gate.go): an anonymous initialize. If initialize itself gates,
-//     acceptance is a finding. If initialize is open, the probe is re-run
-//     against the advertised listing that DOES gate; only acceptance there is
-//     a finding. A server that answers both anonymously reports not tested.
-//
-//     A 200 carrying a JSON-RPC `error` (a protocol-layer rejection) or any 4xx
-//     is treated as a rejection, so a server that returns 200 + {"error":...}
-//     for a bad token is not a finding.
+// TokenReplayExecutor tests forged and unsigned bearer tokens on credential-gated
+// MCP methods. It probes both the handshake and stateless protocol wires.
 type TokenReplayExecutor struct {
 	rule attack.RuleContext
 }
@@ -58,13 +29,7 @@ func NewTokenReplayExecutor(r attack.RuleContext) *TokenReplayExecutor {
 	return &TokenReplayExecutor{rule: r}
 }
 
-// mcpInitBody is the standard MCP initialize request used as the probe body. The
-// offered protocolVersion mirrors latestStable: a stale offered version here is
-// rejected as "Unsupported protocol version" by current servers (a silent false
-// negative). mcpInitBody is a raw JSON template and cannot reference latestStable
-// directly, so TestMcpInitBodyOffersCurrentRevision pins the two together. Shared
-// by token_replay and oauth_audience (the legacy wire); dns_rebind_origin pairs
-// against the wire-opening handshake and uses legacyHandshakeBody instead.
+// mcpInitBody is the legacy-wire probe; a test pins its version to latestStable.
 const mcpInitBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"batesian","version":"dev"}}}`
 
 // Execute runs the token replay / audience validation test.
@@ -158,25 +123,13 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		},
 	}
 
-	// Step 3: Send each probe to each candidate MCP endpoint path.
-	// Since the OAuth metadata confirmed this is an OAuth-protected MCP server,
-	// we try all standard candidate paths rather than doing an unauthenticated
-	// discover probe (which would fail because the endpoint requires a token).
-	// anyEndpoint records that at least one candidate answered as something other
-	// than an unrouted path. Without it the rule reported clean when every candidate
-	// 404'd: the MCP handler may be mounted at /sse + /messages, or at /v1/mcp,
-	// while the OAuth metadata sits at the root, and then no forged token was ever
-	// examined yet the server was reported as rejecting alg:none and forged
-	// signatures. oauth_audience took this fix in #148 against the same candidate
-	// list and the same init body; this rule did not.
-	//
-	// anon carries no credential (the operator's --token included), because the
-	// controls that attribute an accepted probe ask what the server does for a
-	// caller who presents nothing.
+	// Probe each candidate without treating an unrouted path as a token verdict.
+	// Controls use no operator credential.
 	anon := attack.NewUnauthHTTPClient(opts, vars)
 	gates := map[string]gateProbe{}
 	notTestedReason := ""
 	anyEndpoint := false
+	judged := false
 	var findings []attack.Finding
 	for _, p := range probes {
 		headers := map[string]string{
@@ -190,6 +143,9 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			}
 			if !endpointAbsent(resp) {
 				anyEndpoint = true
+			}
+			if authRefusal(resp) {
+				judged = true
 			}
 			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
 			// carries a JSON-RPC error is a protocol-layer rejection of the
@@ -209,6 +165,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			}
 			switch gp.gate {
 			case gateOnInit:
+				judged = true
 				findings = append(findings, attack.Finding{
 					RuleID:      e.rule.ID,
 					RuleName:    e.rule.Name,
@@ -227,6 +184,9 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 				// Initialize does not authenticate; the advertised listing does.
 				// The acceptance above proves nothing, so judge the token there.
 				mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, p.token)
+				if verdict != accessUndetermined {
+					judged = true
+				}
 				if verdict == accessGranted {
 					findings = append(findings, attack.Finding{
 						RuleID:      e.rule.ID,
@@ -256,14 +216,49 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			break // Found a responsive endpoint for this probe; no need to try others.
 		}
 	}
+	for _, ep := range endpointCandidates(vars.BaseURL) {
+		gate := probeModernAuthGate(ctx, anon, ep)
+		if !gate.ready {
+			continue
+		}
+		modernJudged := false
+		for _, p := range probes {
+			resp, verdict := probeModernBearer(ctx, anon, ep, gate.method, p.token)
+			if verdict != accessUndetermined {
+				judged = true
+				modernJudged = true
+			}
+			if verdict != accessGranted {
+				continue
+			}
+			findings = append(findings, attack.Finding{
+				RuleID:      e.rule.ID,
+				RuleName:    e.rule.Name,
+				Severity:    p.severity,
+				Confidence:  attack.ConfirmedExploit,
+				Title:       fmt.Sprintf("MCP server %s [MCP %s wire]", p.titleSufx, modernEraVersion),
+				Description: p.descSufx,
+				Evidence: fmt.Sprintf("wire: MCP %s (stateless)\nprobe: %s (judged at %s, which refuses an anonymous caller)\ntoken header.payload: %s...[signature omitted]\n%s",
+					modernEraVersion, p.name, gate.method, jwtHeaderPayload(p.token), evidenceSnippet(resp, ep)),
+				Remediation: e.rule.Remediation,
+				TargetURL:   ep,
+			})
+		}
+		if modernJudged {
+			break
+		}
+	}
 
-	if len(findings) == 0 && notTestedReason != "" {
+	if len(findings) == 0 && !judged && notTestedReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, notTestedReason)
 	}
-	if len(findings) == 0 && !anyEndpoint {
+	if len(findings) == 0 && !anyEndpoint && !judged {
 		return nil, fmt.Errorf("%w: %s publishes OAuth metadata but no MCP endpoint answered at "+
 			"any candidate path, so no forged token was ever examined",
 			attack.ErrInconclusive, vars.BaseURL)
+	}
+	if len(findings) == 0 && !judged {
+		return nil, fmt.Errorf("%w: no credential-gated MCP request judged a forged token", attack.ErrInconclusive)
 	}
 	return findings, nil
 }

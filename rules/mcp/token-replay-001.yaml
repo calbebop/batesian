@@ -13,15 +13,10 @@ info:
 
     Accepting any of them proves the server does not validate the token
     signature - provided the surface the token was presented to examines tokens
-    at all. Plenty of servers leave `initialize` ungated and authorize the calls
-    that follow, so before reporting, an anonymous `initialize` control
-    establishes where the gate sits. If `initialize` itself refuses the
-    anonymous caller, acceptance there is the finding. If `initialize` answers
-    anyone, the probes are re-run against the server's first advertised listing
-    (`ping` when nothing is listable), which the control confirms refuses an
-    anonymous caller; only acceptance at that method is a finding. A server
-    that answers both anonymously authenticates nothing this rule can reach and
-    is reported not tested - the unauthenticated-access rules own that surface.
+    at all. On legacy servers, an anonymous control checks whether `initialize`
+    or a later method is gated. On stateless 2026-07-28 servers, the control uses
+    a valid modern request and tests a gated method. Acceptance on an ungated
+    method is not a token-validation finding.
 
     Without signature validation, audience binding cannot be enforced
     either, so a token forged for any audience, or issued for an unrelated
@@ -29,9 +24,8 @@ info:
     signature-valid tokens are isolated separately by mcp-oauth-audience-002.
 
     Acceptance is judged at the protocol layer: a probe counts as accepted only
-    when the server returns HTTP 200 with a JSON-RPC `result` envelope. A 200
-    carrying a JSON-RPC `error` (e.g. invalid_token) or any 4xx is a rejection
-    and produces no finding.
+    when the server returns a JSON-RPC `result` envelope. An authentication
+    refusal is a rejection; a protocol error or rate limit is inconclusive.
 
   references:
     - https://www.rfc-editor.org/rfc/rfc9068

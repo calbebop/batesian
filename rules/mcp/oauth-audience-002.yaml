@@ -37,16 +37,10 @@ info:
       canaries. Catches validators that only inspect string-form `aud` and skip
       the array-shape branch entirely.
 
-    Every probe is submitted with an MCP `initialize` request, and plenty of
-    servers leave `initialize` ungated and authorize the calls that follow - a
-    probe accepted there was accepted by a method that never looked at it. When
-    any probe is accepted, an anonymous `initialize` control therefore
-    establishes where the gate sits: if `initialize` itself refuses the
-    anonymous caller, its verdicts stand; if it answers anyone, every probe is
-    re-judged at the server's first advertised listing (`ping` when nothing is
-    listable), confirmed to refuse an anonymous caller, and the evidence names
-    that method. A server that answers both anonymously is reported not tested -
-    the unauthenticated-access rules own that surface.
+    Legacy probes use `initialize`, then a gated method if the handshake is
+    open. Stateless 2026-07-28 probes carry the required version, method header,
+    and metadata. Both wires require an anonymous control to identify a gated
+    method; protocol errors do not count as audience rejections.
 
     Honest scope: because probes are forged HS256 self-signed tokens, acceptance
     indicates that **both** signature validation and audience matching are
