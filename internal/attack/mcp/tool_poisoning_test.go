@@ -3,9 +3,11 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -84,6 +86,145 @@ func (s *poisoningServer) handler() http.HandlerFunc {
 				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
 			})
 		}
+	}
+}
+
+func pagedPoisoningCase(t *testing.T, modern bool, mode string, versions [][][]map[string]interface{}) ([]attack.Finding, int32, error) {
+	t.Helper()
+	var calls atomic.Int32
+	listings := 0
+	active := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Cursor *string `json:"cursor"`
+			} `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		result := map[string]interface{}{}
+		switch req.Method {
+		case "initialize":
+			if modern {
+				break
+			}
+			w.Header().Set("Mcp-Session-Id", "sess-paged-poison")
+			result = map[string]interface{}{
+				"protocolVersion": "2025-06-18",
+				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				"serverInfo":      map[string]interface{}{"name": "paged-poison", "version": "1"},
+			}
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+			return
+		case "server/discover":
+			if !modern {
+				break
+			}
+			result = map[string]interface{}{
+				"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
+				"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+			}
+		case "tools/list":
+			calls.Add(1)
+			page := 0
+			if req.Params.Cursor == nil {
+				active = listings % len(versions)
+				listings++
+			} else if *req.Params.Cursor == "page-1" || (mode == "empty-cursor" && *req.Params.Cursor == "") {
+				page = 1
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if mode == "fail-second" && active == 1 && page == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if page >= len(versions[active]) {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			result = map[string]interface{}{"tools": versions[active][page]}
+			if modern {
+				result["resultType"] = "complete"
+				if mode == "incomplete-modern" && page == 1 {
+					result["resultType"] = "input_required"
+				}
+			}
+			if page+1 < len(versions[active]) || mode == "loop" {
+				cursor := "page-1"
+				if mode == "empty-cursor" {
+					cursor = ""
+				}
+				result["nextCursor"] = cursor
+			}
+			if mode == "invalid-cursor" && page == 0 {
+				result["nextCursor"] = 42
+			}
+			if mode == "bad-id" && page == 1 {
+				req.ID = json.RawMessage("999")
+			}
+		default:
+			break
+		}
+		if len(result) == 0 {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer ts.Close()
+	findings, err := runPoisoning(t, ts)
+	return findings, calls.Load(), err
+}
+
+func TestPoisoning_PaginatedManifests(t *testing.T) {
+	clean := toolEntry("search", "Search documents.")
+	poisoned := toolEntry("summarize", "Summarize text\u200b.")
+	tests := []struct {
+		name     string
+		modern   bool
+		mode     string
+		versions [][][]map[string]interface{}
+		want     string
+		calls    int32
+	}{
+		{"later-page injection", false, "", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "hidden characters", 4},
+		{"empty cursor", false, "empty-cursor", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "hidden characters", 4},
+		{"cross-page duplicate", false, "", [][][]map[string]interface{}{{{clean}, {clean}}}, "more than once", 4},
+		{"later-page drift", false, "", [][][]map[string]interface{}{{{clean}, {toolEntry("summarize", "Summarize text.")}}, {{clean}, {toolEntry("summarize", "Summarize and translate text.")}}}, "changed between", 4},
+		{"modern later-page injection", true, "", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "hidden characters", 4},
+		{"modern incomplete page", true, "incomplete-modern", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "", 2},
+		{"repeated cursor", false, "loop", [][][]map[string]interface{}{{{clean}, {clean}}}, "", 2},
+		{"invalid cursor", false, "invalid-cursor", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "", 1},
+		{"failed second listing", false, "fail-second", [][][]map[string]interface{}{{{clean}, {toolEntry("summarize", "Summarize text.")}}, {{clean}, {toolEntry("summarize", "Summarize text.")}}}, "", 4},
+		{"finding survives second failure", false, "fail-second", [][][]map[string]interface{}{{{clean}, {poisoned}}, {{clean}, {poisoned}}}, "hidden characters", 4},
+		{"uncorrelated page", false, "bad-id", [][][]map[string]interface{}{{{clean}, {poisoned}}}, "", 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings, calls, err := pagedPoisoningCase(t, tc.modern, tc.mode, tc.versions)
+			if calls != tc.calls {
+				t.Fatalf("tools/list calls: got %d, want %d", calls, tc.calls)
+			}
+			if tc.want == "" {
+				if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+					t.Fatalf("incomplete manifest was assessed: findings=%+v err=%v", findings, err)
+				}
+				return
+			}
+			if err != nil || findingsWith(findings, tc.want) == nil {
+				t.Fatalf("missed %q: findings=%+v err=%v", tc.want, findings, err)
+			}
+		})
 	}
 }
 
