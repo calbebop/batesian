@@ -1,22 +1,9 @@
-"""
-Batesian MCP era-detection target: a server that speaks the 2026-07-28 revision.
+"""Dual-era MCP target for protocol detection tests.
 
-Unlike every other server in this directory, this one is NOT deliberately
-vulnerable and no rule fires against it. It exists so era detection
-(internal/attack/mcp/era.go) can be checked against a real modern-era server
-rather than against the specification alone.
+Requires the MCP Python SDK v2 (`pip install "mcp>=2"`). Serves legacy
+`initialize` and modern `server/discover` on the same endpoint.
 
-The MCP Python SDK v2 implements 2026-07-28 and still serves every 2025-era
-client from the same MCPServer, so this one process answers both a modern
-server/discover and a legacy initialize. That is what a real deployment looks
-like: the SDK gives you both eras unless you go out of your way, which is why
-the legacy rules keep working against current servers.
-
-Requires the MCP Python SDK v2 (`pip install "mcp>=2"`).
-
-Run:
-    python testdata/mcp_modern_era_server.py [port]
-
+Run: python testdata/mcp_modern_era_server.py [port]
 Endpoint: http://127.0.0.1:7799/mcp
 """
 import sys
