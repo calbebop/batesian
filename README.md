@@ -140,6 +140,8 @@ batesian scan --target https://agent.example.com \
   --principal name=tenant-b,token="$TOKEN_B",tenant=B,header=X-Tenant-Id:B
 ```
 
+In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment references. An unset or empty variable stops the scan before requests are sent.
+
 ## Safe operation
 
 - `--dry-run` records a redacted request plan and sends no network traffic. Header values, URL userinfo and queries, and request body values are hidden; hosts and paths remain visible. Requests that depend on live responses, acquired tokens, or callbacks cannot be expanded fully until a real scan.

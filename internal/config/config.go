@@ -296,6 +296,7 @@ func Example() string {
 # one identity's valid token cannot read another tenant's objects.
 # Each principal needs a unique name; supply a token and/or tenant-routing
 # headers as the target requires.
+# Set the named environment variables before scanning; empty values are rejected.
 # principals:
 #   - name: tenant-a
 #     token: "${BATESIAN_TOKEN_A}"

@@ -117,6 +117,35 @@ func TestBuildPrincipals_MergesConfigThenFlags(t *testing.T) {
 	}
 }
 
+func TestBuildPrincipals_ResolvesConfigTokenEnvironment(t *testing.T) {
+	t.Setenv("BATESIAN_TOKEN_A", "principal-secret")
+	got, err := buildPrincipals([]config.PrincipalConfig{
+		{Name: "tenant-a", Token: "${BATESIAN_TOKEN_A}"},
+		{Name: "tenant-b", Token: "literal-token"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("building principals: %v", err)
+	}
+	if got[0].Token != "principal-secret" || got[1].Token != "literal-token" {
+		t.Fatal("config token references were not resolved")
+	}
+}
+
+func TestBuildPrincipals_RejectsUnavailableConfigToken(t *testing.T) {
+	t.Setenv("BATESIAN_TOKEN_A", "")
+	_, err := buildPrincipals([]config.PrincipalConfig{{Name: "tenant-a", Token: "${BATESIAN_TOKEN_A}"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "BATESIAN_TOKEN_A") {
+		t.Fatalf("error = %v, want missing environment variable name", err)
+	}
+}
+
+func TestBuildPrincipals_RejectsMalformedConfigTokenReference(t *testing.T) {
+	_, err := buildPrincipals([]config.PrincipalConfig{{Name: "tenant-a", Token: "${BATESIAN_TOKEN_A"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid token environment reference") {
+		t.Fatalf("error = %v, want malformed reference error", err)
+	}
+}
+
 func TestBuildPrincipals_DuplicateAcrossSources(t *testing.T) {
 	cfgPrincipals := []config.PrincipalConfig{{Name: "dup", Token: "x"}}
 	flags := []string{"name=dup,token=y"}
