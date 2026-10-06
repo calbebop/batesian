@@ -35,17 +35,17 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 	client := attack.NewHTTPClient(opts, vars)
 
 	pending := map[string]bool{}
-	var mismatchTool string
+	var stopReason string
 	findings, err := runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
-		fs, determined, mismatch := e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
-		if mismatch != "" {
-			mismatchTool = mismatch
+		fs, determined, reason := e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
+		if reason != "" {
+			stopReason = reason
 		}
 		return fs, determined
 	})
-	if len(findings) == 0 && mismatchTool != "" {
-		return nil, fmt.Errorf("%w: tools/call for %q returned HeaderMismatch; the path probe was not assessed",
-			attack.ErrInconclusive, mismatchTool)
+	if len(findings) == 0 && stopReason != "" {
+		return nil, fmt.Errorf("%w: tools/call for %s; the path probe was not assessed",
+			attack.ErrInconclusive, stopReason)
 	}
 	if len(findings) == 0 && len(pending) > 0 {
 		names := make([]string, 0, len(pending))
@@ -102,9 +102,9 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 			break
 		}
 		driven++
-		f, mismatch := e.probeTool(ctx, client, session, randID, cand)
-		if mismatch {
-			return findings, false, cand.tool
+		f, reason := e.probeTool(ctx, client, session, randID, cand)
+		if reason != "" {
+			return findings, false, fmt.Sprintf("%q: %s", cand.tool, reason)
 		}
 		if f != nil {
 			findings = append(findings, *f)
@@ -218,8 +218,8 @@ func inertArgs(props map[string]interface{}, skip string, required map[string]bo
 	return args
 }
 
-// callTool returns tool text and flags header mismatches separately.
-func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, bool) {
+// callTool returns text only from a completed, matching tool response.
+func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, string) {
 	args := map[string]interface{}{cand.param: value}
 	for k, v := range cand.others {
 		args[k] = v
@@ -229,34 +229,58 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		"arguments": args,
 	}, cand.schema, nil)
 	if err != nil || resp == nil {
-		return "", false // transport failure: no text to judge
+		return "", "transport failure"
 	}
 	if isMCPHeaderMismatch(resp) {
-		return "", true
+		return "", "HeaderMismatch"
+	}
+	if !resp.IsSuccess() {
+		return "", fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 	var body struct {
-		Result struct {
-			Content []struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  *struct {
+			ResultType string `json:"resultType"`
+			Content    *[]struct {
+				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
-			IsError bool `json:"isError"`
 		} `json:"result"`
-		Error struct {
+		Error *struct {
+			Code    *int   `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(resp.Body, &body) != nil {
-		return "", false
+	var responseID int
+	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
+		json.Unmarshal(body.ID, &responseID) != nil || responseID != id ||
+		(body.Result == nil) == (body.Error == nil) {
+		return "", "malformed or uncorrelated JSON-RPC response"
 	}
-	if body.Error.Message != "" {
-		return body.Error.Message, false
+	if body.Error != nil {
+		if body.Error.Code == nil || body.Error.Message == "" {
+			return "", "malformed JSON-RPC error"
+		}
+		return body.Error.Message, ""
+	}
+	if session.Era == EraModern && body.Result.ResultType != "complete" {
+		return "", "incomplete tool result"
+	}
+	if body.Result.Content == nil {
+		return "", "tool result has no text content"
 	}
 	var sb strings.Builder
-	for _, c := range body.Result.Content {
-		sb.WriteString(c.Text)
-		sb.WriteString("\n")
+	for _, c := range *body.Result.Content {
+		if c.Type == "text" && c.Text != "" {
+			sb.WriteString(c.Text)
+			sb.WriteString("\n")
+		}
 	}
-	return sb.String(), false
+	if sb.Len() == 0 {
+		return "", "tool result has no text content"
+	}
+	return sb.String(), ""
 }
 
 // traversalPayload is one attack-shaped argument for the path parameter.
@@ -293,22 +317,21 @@ func traversalPayloads(canary string) []traversalPayload {
 	}
 }
 
-// probeTool compares the baseline with path payloads. Header mismatches leave
-// the probe undetermined.
-func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, bool) {
+// probeTool compares the baseline with path payloads.
+func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, string) {
 	canary := "batesian-" + randID
 
-	baselineText, mismatch := e.callTool(ctx, client, session, 10, cand, canary)
-	if mismatch {
-		return nil, true
+	baselineText, reason := e.callTool(ctx, client, session, 10, cand, canary)
+	if reason != "" {
+		return nil, "baseline returned " + reason
 	}
 	baselinePath := leakedPath(baselineText, canary)
 
 	nextID := 11
 	for _, probe := range traversalPayloads(canary) {
-		text, mismatch := e.callTool(ctx, client, session, nextID, cand, probe.value)
-		if mismatch {
-			return nil, true
+		text, reason := e.callTool(ctx, client, session, nextID, cand, probe.value)
+		if reason != "" {
+			return nil, probe.label + " returned " + reason
 		}
 		nextID++
 
@@ -321,10 +344,10 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 			continue
 		}
 		if escapedOutsideBaseline(path, baselinePath) {
-			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), false
+			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), ""
 		}
 	}
-	return nil, false
+	return nil, ""
 }
 
 // resolvedAbsolute reports whether p is an absolute path with its traversal

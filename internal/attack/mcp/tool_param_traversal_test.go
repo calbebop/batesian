@@ -31,6 +31,7 @@ type traversalServer struct {
 	caps  map[string]interface{}
 	tools []map[string]interface{}
 	call  func(name string, args map[string]interface{}) (resultText string, isError bool, errMessage string)
+	reply func(http.ResponseWriter, json.Number, map[string]interface{})
 }
 
 func (s *traversalServer) handler() http.HandlerFunc {
@@ -63,6 +64,10 @@ func (s *traversalServer) handler() http.HandlerFunc {
 			params := body.Params
 			name, _ := params["name"].(string)
 			args, _ := params["arguments"].(map[string]interface{})
+			if s.reply != nil {
+				s.reply(w, body.ID, args)
+				return
+			}
 			text, isErr, errMsg := s.call(name, args)
 			if errMsg != "" {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -177,7 +182,25 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 }
 
-func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32) ([]attack.Finding, int32, error) {
+func TestTraversal_JSONRPCErrorCanDiscloseResolvedPath(t *testing.T) {
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			path, _ := args["path"].(string)
+			return "", false, strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("resolved path in JSON-RPC error was missed: findings=%+v err=%v", findings, err)
+	}
+}
+
+func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, firstResultType string) ([]attack.Finding, int32, error) {
 	t.Helper()
 	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +257,9 @@ func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32) ([]
 			result = map[string]interface{}{"resultType": "complete", "content": []interface{}{
 				map[string]interface{}{"type": "text", "text": text},
 			}}
+			if callNumber == 1 && firstResultType != "" {
+				result["resultType"] = firstResultType
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -247,7 +273,7 @@ func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32) ([]
 }
 
 func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
-	findings, calls, err := modernTraversalCase(t, 0, 0)
+	findings, calls, err := modernTraversalCase(t, 0, 0, "")
 	if err != nil || len(findings) != 1 || calls < 2 {
 		t.Fatalf("annotated path tool was not assessed: findings=%+v calls=%d err=%v", findings, calls, err)
 	}
@@ -257,13 +283,85 @@ func TestTraversal_HeaderMismatchIsInconclusive(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusOK} {
 		for _, rejectAt := range []int32{1, 2} {
 			t.Run(fmt.Sprintf("%d/call-%d", status, rejectAt), func(t *testing.T) {
-				findings, calls, err := modernTraversalCase(t, status, rejectAt)
+				findings, calls, err := modernTraversalCase(t, status, rejectAt, "")
 				if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
 					!strings.Contains(err.Error(), "HeaderMismatch") || calls != rejectAt {
 					t.Fatalf("mismatch must stop without retry: findings=%+v calls=%d err=%v", findings, calls, err)
 				}
 			})
 		}
+	}
+}
+
+func TestTraversal_ModernIncompleteResultIsInconclusive(t *testing.T) {
+	findings, calls, err := modernTraversalCase(t, 0, 0, "input_required")
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls != 1 {
+		t.Fatalf("incomplete result must stop the probe: findings=%+v calls=%d err=%v", findings, calls, err)
+	}
+}
+
+func TestTraversal_UnusableToolRepliesAreInconclusive(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   func(json.Number, string) interface{}
+		raw    string
+	}{
+		{"HTTP error", http.StatusInternalServerError, func(id json.Number, path string) interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))}},
+			}}
+		}, ""},
+		{"wrong ID", http.StatusOK, func(id json.Number, path string) interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": 999, "result": map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))}},
+			}}
+		}, ""},
+		{"missing envelope", http.StatusOK, func(id json.Number, path string) interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id}
+		}, ""},
+		{"missing version", http.StatusOK, func(id json.Number, path string) interface{} {
+			return map[string]interface{}{"id": id, "result": map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": "refused"}},
+			}}
+		}, ""},
+		{"no text", http.StatusOK, func(id json.Number, path string) interface{} {
+			return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"type": "image", "data": "AAAA"}},
+			}}
+		}, ""},
+		{"malformed JSON", http.StatusOK, nil, "{"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := &traversalServer{
+				caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+				tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+				reply: func(w http.ResponseWriter, id json.Number, args map[string]interface{}) {
+					path, _ := args["path"].(string)
+					if calls.Add(1) == 1 {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+							"content": []interface{}{map[string]interface{}{"type": "text", "text": strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))}},
+						}})
+						return
+					}
+					w.WriteHeader(tc.status)
+					if tc.raw != "" {
+						_, _ = w.Write([]byte(tc.raw))
+						return
+					}
+					_ = json.NewEncoder(w).Encode(tc.body(id, path))
+				},
+			}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+
+			findings, err := runTraversal(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 2 {
+				t.Fatalf("unusable reply must stop the probe: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+			}
+		})
 	}
 }
 
