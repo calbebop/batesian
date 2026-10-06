@@ -30,6 +30,7 @@ func traversalRC() attack.RuleContext {
 type traversalServer struct {
 	caps  map[string]interface{}
 	tools []map[string]interface{}
+	list  func(http.ResponseWriter, json.Number, map[string]interface{})
 	call  func(name string, args map[string]interface{}) (resultText string, isError bool, errMessage string)
 	reply func(http.ResponseWriter, json.Number, map[string]interface{})
 }
@@ -56,6 +57,10 @@ func (s *traversalServer) handler() http.HandlerFunc {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			if s.list != nil {
+				s.list(w, body.ID, body.Params)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": body.ID,
 				"result": map[string]interface{}{"tools": s.tools},
@@ -182,6 +187,131 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 }
 
+func TestTraversal_PaginatedToolDiscovery(t *testing.T) {
+	noPath := readOnlySchemaTool("noop")
+	noPath["inputSchema"].(map[string]interface{})["properties"] = map[string]interface{}{
+		"message": map[string]interface{}{"type": "string"},
+	}
+	noPath["inputSchema"].(map[string]interface{})["required"] = []interface{}{"message"}
+	tests := []struct {
+		name      string
+		mode      string
+		wantCalls bool
+	}{
+		{"later-page tool", "", true},
+		{"empty cursor", "empty-cursor", true},
+		{"repeated cursor", "loop", false},
+		{"failed page", "fail", false},
+		{"uncorrelated page", "bad-id", false},
+		{"later-page approval", "unapproved", false},
+		{"duplicate name", "duplicate", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var listCalls, toolCalls atomic.Int32
+			srv := &traversalServer{
+				caps: map[string]interface{}{"tools": map[string]interface{}{}},
+				list: func(w http.ResponseWriter, id json.Number, params map[string]interface{}) {
+					listCalls.Add(1)
+					cursor, paged := params["cursor"]
+					wantCursor := "next"
+					if tc.mode == "empty-cursor" {
+						wantCursor = ""
+					}
+					if paged && cursor != wantCursor {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if paged && tc.mode == "fail" {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					result := map[string]interface{}{}
+					if !paged {
+						first := noPath
+						if tc.mode == "loop" || tc.mode == "fail" || tc.mode == "duplicate" {
+							first = readOnlySchemaTool("read_note")
+						}
+						result["tools"] = []interface{}{first}
+						result["nextCursor"] = wantCursor
+					} else {
+						tool := readOnlySchemaTool("read_note")
+						if tc.mode == "unapproved" {
+							tool = readOnlySchemaTool("delete_note")
+						}
+						if tc.mode == "duplicate" {
+							tool["annotations"] = map[string]interface{}{"readOnlyHint": false}
+						}
+						result["tools"] = []interface{}{tool}
+						if tc.mode == "loop" {
+							result["nextCursor"] = wantCursor
+						}
+						if tc.mode == "bad-id" {
+							id = "999"
+						}
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+				},
+				call: func(name string, args map[string]interface{}) (string, bool, string) {
+					toolCalls.Add(1)
+					path, _ := args["path"].(string)
+					return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+				},
+			}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+
+			findings, err := runTraversal(t, ts)
+			if listCalls.Load() != 2 {
+				t.Fatalf("tools/list calls: got %d, want 2", listCalls.Load())
+			}
+			if tc.wantCalls {
+				if err != nil || len(findings) != 1 || toolCalls.Load() < 2 {
+					t.Fatalf("later-page tool was missed: findings=%+v calls=%d err=%v", findings, toolCalls.Load(), err)
+				}
+			} else if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || toolCalls.Load() != 0 {
+				t.Fatalf("incomplete or ambiguous listing invoked a tool: findings=%+v calls=%d err=%v", findings, toolCalls.Load(), err)
+			}
+			if tc.mode == "unapproved" && !strings.Contains(err.Error(), "delete_note") {
+				t.Fatalf("later-page tool did not require exact approval: %v", err)
+			}
+		})
+	}
+}
+
+func TestTraversal_PaginationKeepsToolCap(t *testing.T) {
+	var toolCalls atomic.Int32
+	tools := make([]map[string]interface{}, 9)
+	approved := make([]string, len(tools))
+	for i := range tools {
+		approved[i] = fmt.Sprintf("read_note_%d", i)
+		tools[i] = readOnlySchemaTool(approved[i])
+	}
+	srv := &traversalServer{
+		caps: map[string]interface{}{"tools": map[string]interface{}{}},
+		list: func(w http.ResponseWriter, id json.Number, params map[string]interface{}) {
+			result := map[string]interface{}{"tools": tools[:4], "nextCursor": "next"}
+			if params["cursor"] == "next" {
+				result = map[string]interface{}{"tools": tools[4:]}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+		},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			toolCalls.Add(1)
+			path, _ := args["path"].(string)
+			return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := mcp.NewToolParamTraversalExecutor(traversalRC()).Execute(
+		t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: approved})
+	if err != nil || len(findings) != 8 || toolCalls.Load() != 16 {
+		t.Fatalf("tool cap changed: findings=%d calls=%d err=%v", len(findings), toolCalls.Load(), err)
+	}
+}
+
 func TestTraversal_JSONRPCErrorCanDiscloseResolvedPath(t *testing.T) {
 	srv := &traversalServer{
 		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
@@ -200,7 +330,7 @@ func TestTraversal_JSONRPCErrorCanDiscloseResolvedPath(t *testing.T) {
 	}
 }
 
-func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, firstResultType string) ([]attack.Finding, int32, error) {
+func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, firstResultType string, paged bool) ([]attack.Finding, int32, error) {
 	t.Helper()
 	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +339,7 @@ func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, fir
 			ID     json.RawMessage `json:"id"`
 			Params struct {
 				Arguments map[string]interface{} `json:"arguments"`
+				Cursor    *string                `json:"cursor"`
 			} `json:"params"`
 		}
 		if json.NewDecoder(r.Body).Decode(&req) != nil {
@@ -229,6 +360,18 @@ func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, fir
 				"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
 			}
 		case "tools/list":
+			if paged && req.Params.Cursor == nil {
+				noop := readOnlySchemaTool("noop")
+				schema := noop["inputSchema"].(map[string]interface{})
+				schema["properties"] = map[string]interface{}{"message": map[string]interface{}{"type": "string"}}
+				schema["required"] = []interface{}{"message"}
+				result = map[string]interface{}{"resultType": "complete", "tools": []interface{}{noop}, "nextCursor": "next"}
+				break
+			}
+			if paged && *req.Params.Cursor != "next" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			tool := readOnlySchemaTool("read_note")
 			schema := tool["inputSchema"].(map[string]interface{})
 			props := schema["properties"].(map[string]interface{})
@@ -273,9 +416,16 @@ func modernTraversalCase(t *testing.T, mismatchStatus int, mismatchAt int32, fir
 }
 
 func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
-	findings, calls, err := modernTraversalCase(t, 0, 0, "")
+	findings, calls, err := modernTraversalCase(t, 0, 0, "", false)
 	if err != nil || len(findings) != 1 || calls < 2 {
 		t.Fatalf("annotated path tool was not assessed: findings=%+v calls=%d err=%v", findings, calls, err)
+	}
+}
+
+func TestTraversal_ModernDiscoversLaterPage(t *testing.T) {
+	findings, calls, err := modernTraversalCase(t, 0, 0, "", true)
+	if err != nil || len(findings) != 1 || calls < 2 {
+		t.Fatalf("later-page annotated path tool was missed: findings=%+v calls=%d err=%v", findings, calls, err)
 	}
 }
 
@@ -283,7 +433,7 @@ func TestTraversal_HeaderMismatchIsInconclusive(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusOK} {
 		for _, rejectAt := range []int32{1, 2} {
 			t.Run(fmt.Sprintf("%d/call-%d", status, rejectAt), func(t *testing.T) {
-				findings, calls, err := modernTraversalCase(t, status, rejectAt, "")
+				findings, calls, err := modernTraversalCase(t, status, rejectAt, "", false)
 				if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
 					!strings.Contains(err.Error(), "HeaderMismatch") || calls != rejectAt {
 					t.Fatalf("mismatch must stop without retry: findings=%+v calls=%d err=%v", findings, calls, err)
@@ -294,7 +444,7 @@ func TestTraversal_HeaderMismatchIsInconclusive(t *testing.T) {
 }
 
 func TestTraversal_ModernIncompleteResultIsInconclusive(t *testing.T) {
-	findings, calls, err := modernTraversalCase(t, 0, 0, "input_required")
+	findings, calls, err := modernTraversalCase(t, 0, 0, "input_required", false)
 	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls != 1 {
 		t.Fatalf("incomplete result must stop the probe: findings=%+v calls=%d err=%v", findings, calls, err)
 	}
