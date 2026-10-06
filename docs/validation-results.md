@@ -210,10 +210,11 @@ almost immediately and the probe task reached a terminal state before it could b
 cancelled. That limitation is documented in the rule catalog rather than papered
 over.
 
-> **Reproducing this one is currently awkward.** The `a2a-python` repository has
-> restructured and its `samples/` directory no longer carries a runnable agent, so
-> the A2A results above date from the pull requests that fixed them rather than
-> from a re-run. The MCP results in this document were captured fresh.
+The historical sample results above date from those pull requests. The daily
+validation workflow now runs a small agent built with the current official
+Python SDK (`testdata/a2a_sdk_agent.py`). It checks card discovery, a real
+`SendMessage`/`GetTask` exchange, and the confirmed role-injection finding.
+This gate does not reproduce the original sample's full security posture.
 
 ---
 

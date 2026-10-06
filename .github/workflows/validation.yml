@@ -22,6 +22,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  a2a-sdk:
+    name: A2A official SDK compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install current A2A SDK
+        run: pip install "a2a-sdk[http-server]>=1,<2" uvicorn
+
+      - name: Build batesian
+        run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
+
+      - name: Validate SDK compatibility
+        run: python .github/scripts/validate_a2a_sdk.py
+        env:
+          BATESIAN_BIN: ./batesian
+
   a2a-secured-agent:
     name: A2A false-positive gate (secured agent)
     runs-on: ubuntu-latest
