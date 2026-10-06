@@ -52,7 +52,7 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 			})
 			return
 		}
-		if !(openDiscovery && call.Method == "server/discover") && !accept(r.Header.Get("Authorization")) {
+		if (!openDiscovery || call.Method != "server/discover") && !accept(r.Header.Get("Authorization")) {
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+srv.URL+`/metadata"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
