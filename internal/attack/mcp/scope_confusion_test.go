@@ -40,6 +40,7 @@ type scopeServer struct {
 	enforceWriteScope       bool
 	extraTool               bool
 	modernOnly              bool
+	headerParam             bool
 	requireInitializedAuth  bool
 	rejectInitialized       bool
 	bindSessions            bool
@@ -81,6 +82,10 @@ func scopeSessionID(token string) string {
 }
 
 func (s *scopeServer) tools() []map[string]interface{} {
+	itemSchema := map[string]interface{}{"type": "string"}
+	if s.headerParam {
+		itemSchema["x-mcp-header"] = "Item"
+	}
 	tools := []map[string]interface{}{
 		{
 			"name":        "list_items",
@@ -95,7 +100,7 @@ func (s *scopeServer) tools() []map[string]interface{} {
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"item_id": map[string]interface{}{"type": "string"},
+					"item_id": itemSchema,
 				},
 				"required": []interface{}{"item_id"},
 			},
@@ -200,6 +205,13 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				(req.Method == "tools/call" && r.Header.Get("Mcp-Name") != req.Params.Name) {
 				rpcErr(-32020, "modern wire required", http.StatusBadRequest)
 				return
+			}
+			if s.headerParam && req.Method == "tools/call" {
+				item, _ := req.Params.Arguments["item_id"].(string)
+				if item == "" || r.Header.Get("Mcp-Param-Item") != item {
+					rpcErr(-32020, "Mcp-Param-Item mismatch", http.StatusBadRequest)
+					return
+				}
 			}
 		} else {
 			switch req.Method {
@@ -742,6 +754,17 @@ func TestScope_ModernOnly(t *testing.T) {
 				t.Errorf("expected modern wire evidence, got: %q", findings[0].Evidence)
 			}
 		})
+	}
+}
+
+func TestScope_ModernMirrorsAnnotatedToolArgument(t *testing.T) {
+	srv := &scopeServer{modernOnly: true, auth: true, headerParam: true}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 1 || srv.toolCalls.Load() < 2 {
+		t.Fatalf("annotated tool was not assessed: findings=%+v calls=%d err=%v", findings, srv.toolCalls.Load(), err)
 	}
 }
 

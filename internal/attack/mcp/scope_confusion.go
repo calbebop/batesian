@@ -377,6 +377,11 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 			return nil, "tools/list returned no parseable listing", false
 		}
 		for _, t := range tools {
+			if sessA.Era == EraModern {
+				if _, err := toolParamHeaders(t.InputSchema, nil); err != nil {
+					continue
+				}
+			}
 			if scopeLooksPrivileged(t) {
 				cands = append(cands, t)
 				if len(cands) == scopeCandidateCap {
@@ -431,7 +436,7 @@ func scopeResponseMatches(body []byte, id int) bool {
 func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, id int, cand scopeTool, randID string) scopeCallOutcome {
 	args := scopeProbeArgs(cand.InputSchema, randID)
 	params := map[string]interface{}{"name": cand.Name, "arguments": args}
-	resp, err := s.postShaping(ctx, client, id, "tools/call", params,
+	resp, err := s.postToolShaping(ctx, client, id, params, cand.InputSchema,
 		func(h map[string]string) { attachPrincipal(h, p) })
 	if err != nil || !resp.IsSuccess() {
 		// Preserve HTTP authorization failures for the classifier.

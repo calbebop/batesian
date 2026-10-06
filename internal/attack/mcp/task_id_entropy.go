@@ -127,7 +127,7 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 		resp, err := teCallTaskTool(ctx, client, session, requestID, map[string]interface{}{
 			"name":      safeTool.name,
 			"arguments": synthesizeArgs(safeTool.schema, "batesian-"+fmt.Sprint(i)),
-		})
+		}, safeTool.schema)
 		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("task-augmented tools/call against %q was %s on this wire, so "+
@@ -153,8 +153,11 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 }
 
 func teCallTaskTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int,
-	params map[string]interface{}) (*attack.Response, error) {
-	headers, body := session.request(id, "tools/call", params)
+	params, schema map[string]interface{}) (*attack.Response, error) {
+	headers, body, err := session.toolRequest(id, params, schema)
+	if err != nil {
+		return nil, err
+	}
 	meta := body["params"].(map[string]interface{})["_meta"].(map[string]interface{})
 	caps := meta[metaClientCapabilities].(map[string]interface{})
 	caps["extensions"] = map[string]interface{}{"io.modelcontextprotocol/tasks": map[string]interface{}{}}
@@ -214,6 +217,11 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 	}
 	var pending []string
 	for _, t := range body.Result.Tools {
+		if s.Era == EraModern {
+			if _, err := toolParamHeaders(t.InputSchema, nil); err != nil {
+				continue
+			}
+		}
 		if t.Annotations == nil {
 			continue
 		}

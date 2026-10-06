@@ -176,6 +176,68 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 }
 
+func TestTraversal_ModernMirrorsAnnotatedPath(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Arguments map[string]interface{} `json:"arguments"`
+			} `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var result map[string]interface{}
+		switch req.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+			return
+		case "server/discover":
+			result = map[string]interface{}{
+				"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
+				"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+			}
+		case "tools/list":
+			tool := readOnlySchemaTool("read_note")
+			schema := tool["inputSchema"].(map[string]interface{})
+			props := schema["properties"].(map[string]interface{})
+			props["path"].(map[string]interface{})["x-mcp-header"] = "Path"
+			result = map[string]interface{}{"resultType": "complete", "tools": []interface{}{tool}}
+		case "tools/call":
+			calls.Add(1)
+			path, _ := req.Params.Arguments["path"].(string)
+			if path == "" || r.Header.Get("Mcp-Param-Path") != path {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+				})
+				return
+			}
+			text := strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))
+			result = map[string]interface{}{"resultType": "complete", "content": []interface{}{
+				map[string]interface{}{"type": "text", "text": text},
+			}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil || len(findings) != 1 || calls.Load() < 2 {
+		t.Fatalf("annotated path tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
 // TestTraversal_PatchedStaysSilent: the server validates containment and
 // refuses without echoing any path. MUST stay silent.
 func TestTraversal_PatchedStaysSilent(t *testing.T) {
