@@ -21,13 +21,11 @@ import (
 // failures behind rug-pull and description-injection attacks
 // (rule mcp-tool-poisoning-001, OWASP MCP03).
 //
-// The client is the trust boundary here: an agent reads tool descriptions as
-// instructions, so whatever a manifest says is what the model does. Four
-// heuristic checks:
+// Agents may pass tool definitions to models as context. Four heuristic checks:
 //
 //  1. Hidden characters. Format characters can obscure tool definitions but
 //     may also be legitimate Unicode text. Indicator, medium.
-//  2. Duplicate tool names. Name-based approval and dispatch may be ambiguous.
+//  2. Duplicate names or JSON members. Dispatch or parsing may be ambiguous.
 //     Indicator, medium.
 //  3. Instruction-injection patterns. Imperative phrases aimed at the model
 //     ("ignore previous instructions"), credential paths paired with send/
@@ -103,19 +101,12 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	return findings, true
 }
 
-// canonicalTools preserves JSON numbers and sorts entries for comparison.
+// canonicalTools preserves numbers and duplicate-member order while sorting keys.
 func canonicalTools(tools []json.RawMessage) string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {
-		var v interface{}
-		dec := json.NewDecoder(bytes.NewReader(t))
-		dec.UseNumber()
-		if dec.Decode(&v) == nil {
-			if b, err := json.Marshal(v); err == nil {
-				out = append(out, string(b))
-			} else {
-				out = append(out, string(t))
-			}
+		if entry, err := canonicalToolEntry(t); err == nil {
+			out = append(out, entry)
 		} else {
 			out = append(out, string(t))
 		}
@@ -123,6 +114,146 @@ func canonicalTools(tools []json.RawMessage) string {
 	sort.Strings(out)
 	sum := sha256.Sum256([]byte(strings.Join(out, "\n")))
 	return hex.EncodeToString(sum[:]) + "\n" + strings.Join(out, "\n")
+}
+
+func canonicalToolEntry(raw []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var out strings.Builder
+	if err := writeCanonicalJSON(dec, &out); err != nil {
+		return "", err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err == nil {
+			return "", fmt.Errorf("multiple JSON values")
+		}
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func writeCanonicalJSON(dec *json.Decoder, out *strings.Builder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			type member struct{ key, value string }
+			var members []member
+			for dec.More() {
+				keyToken, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return fmt.Errorf("invalid JSON member name")
+				}
+				var nested strings.Builder
+				if err := writeCanonicalJSON(dec, &nested); err != nil {
+					return err
+				}
+				members = append(members, member{key, nested.String()})
+			}
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			sort.SliceStable(members, func(i, j int) bool { return members[i].key < members[j].key })
+			out.WriteByte('{')
+			for i, member := range members {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				key, _ := json.Marshal(member.key)
+				out.Write(key)
+				out.WriteByte(':')
+				out.WriteString(member.value)
+			}
+			out.WriteByte('}')
+		case '[':
+			out.WriteByte('[')
+			for i := 0; dec.More(); i++ {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				if err := writeCanonicalJSON(dec, out); err != nil {
+					return err
+				}
+			}
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			out.WriteByte(']')
+		default:
+			return fmt.Errorf("unexpected JSON delimiter %q", value)
+		}
+	case string:
+		encoded, _ := json.Marshal(value)
+		out.Write(encoded)
+	case json.Number:
+		out.WriteString(value.String())
+	case bool:
+		if value {
+			out.WriteString("true")
+		} else {
+			out.WriteString("false")
+		}
+	case nil:
+		out.WriteString("null")
+	default:
+		return fmt.Errorf("unexpected JSON token %T", token)
+	}
+	return nil
+}
+
+func duplicateJSONMember(raw []byte) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return duplicateMemberValue(dec)
+}
+
+func duplicateMemberValue(dec *json.Decoder) (string, bool) {
+	token, err := dec.Token()
+	if err != nil {
+		return "", false
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return "", false
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		for dec.More() {
+			keyToken, err := dec.Token()
+			if err != nil {
+				return "", false
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return "", false
+			}
+			if seen[key] {
+				return key, true
+			}
+			seen[key] = true
+			if duplicate, found := duplicateMemberValue(dec); found {
+				return duplicate, true
+			}
+		}
+		_, _ = dec.Token()
+	case '[':
+		for dec.More() {
+			if duplicate, found := duplicateMemberValue(dec); found {
+				return duplicate, true
+			}
+		}
+		_, _ = dec.Token()
+	}
+	return "", false
 }
 
 // sameToolManifest compares two canonical serializations byte for byte.
@@ -207,8 +338,9 @@ var injectionPatterns = []struct {
 	{"fetch-and-exfiltrate chain", injectionFetchPost},
 }
 
-func matchInjectionText(line string) (string, string, bool) {
+func jsonStringValues(line string) []string {
 	dec := json.NewDecoder(strings.NewReader(line))
+	dec.UseNumber()
 	var values []string
 	for {
 		token, err := dec.Token()
@@ -216,12 +348,36 @@ func matchInjectionText(line string) (string, string, bool) {
 			break
 		}
 		if err != nil {
-			return "", "", false
+			return nil
 		}
 		if value, ok := token.(string); ok {
 			values = append(values, value)
 		}
 	}
+	return values
+}
+
+func matchHiddenText(values []string) (rune, int, string, bool) {
+	for _, value := range values {
+		if idx := strings.IndexAny(value, hiddenRunes); idx >= 0 {
+			r, _ := utf8.DecodeRuneInString(value[idx:])
+			runes := []rune(value)
+			pos := utf8.RuneCountInString(value[:idx])
+			start := max(0, pos-12)
+			end := min(len(runes), pos+13)
+			snippet := strings.Map(func(r rune) rune {
+				if strings.ContainsRune(hiddenRunes, r) {
+					return '\u25A1'
+				}
+				return r
+			}, string(runes[start:end]))
+			return r, idx, snippet, true
+		}
+	}
+	return 0, 0, "", false
+}
+
+func matchInjectionText(values []string) (string, string, bool) {
 	for _, pattern := range injectionPatterns {
 		for _, value := range values {
 			if loc := pattern.re.FindStringIndex(value); loc != nil {
@@ -269,23 +425,28 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 		}
 	}
 
-	// Check format characters in raw entries and injection patterns in each
-	// decoded string, including schema keys and descriptions.
+	// Check ambiguous members, format characters, and injection patterns.
 	for i, line := range entries {
 		name := toolDisplayName(line, i)
+		values := jsonStringValues(line)
+		if member, duplicate := duplicateJSONMember([]byte(line)); duplicate {
+			findings = append(findings, attack.Finding{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
+				Title:      fmt.Sprintf("MCP tool %q repeats JSON member %q (ambiguous definition)", name, member),
+				Description: fmt.Sprintf(
+					"Entry %d of the tools/list response from %s repeats the JSON member %q. "+
+						"Clients may keep different values or reject the definition, so review the raw entry.",
+					i+1, endpoint, member),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\nrepeated member: %q", endpoint, name, member),
+				Remediation: e.rule.Remediation,
+				TargetURL:   endpoint,
+			})
+		}
 
-		if idx := strings.IndexAny(line, hiddenRunes); idx >= 0 {
-			r, _ := utf8.DecodeRuneInString(line[idx:])
-			contextEnd := idx + 24
-			if contextEnd > len(line) {
-				contextEnd = len(line)
-			}
-			snippet := strings.Map(func(r rune) rune {
-				if strings.ContainsRune(hiddenRunes, r) {
-					return '\u25A1' // visible placeholder for the invisible rune
-				}
-				return r
-			}, line[max(0, idx-24):contextEnd])
+		if r, idx, snippet, ok := matchHiddenText(values); ok {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
@@ -297,13 +458,13 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 						"Format characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
 						"Review the code point and surrounding text before treating the definition as poisoned.",
 					i+1, endpoint, r),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nbyte offset: %d\n...%s...", endpoint, name, r, idx, snippet),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\n...%s...", endpoint, name, r, idx, snippet),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			})
 		}
 
-		if pattern, snippet, ok := matchInjectionText(line); ok {
+		if pattern, snippet, ok := matchInjectionText(values); ok {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,

@@ -956,25 +956,26 @@ track for its own clients.
 **Tool Manifest Integrity (Poisoning)** | Severity: Medium | indicator | CWE-74
 
 Inspects the server's `tools/list` manifest for the integrity failures behind
-rug-pull and description-injection attacks (OWASP MCP03). An agent reads tool
-descriptions as instructions, so whatever the manifest says is what the model
-does. Four checks use only listing responses; no tool is invoked:
+rug-pull and description-injection attacks (OWASP MCP03). Agents may pass tool
+definitions to models as context. Four checks use only listing responses; no
+tool is invoked:
 
 1. **Hidden characters** (indicator, medium). Zero-width and bidirectional
    format characters can obscure a tool definition, but some are legitimate
    in Unicode text. The evidence names the code point and renders it visibly
    for review. Injection patterns are checked independently.
-2. **Duplicate tool names** (indicator, medium). The spec recommends unique
-   names per server. Repeated names can make name-based approval and dispatch
-   ambiguous; the listing alone does not establish which definition is used.
+2. **Duplicate tool names or JSON members** (indicator, medium). Repeated tool
+   names can make approval and dispatch ambiguous. Repeated JSON members can
+   make parsers disagree on a tool definition. Those members remain visible to
+   the injection and drift checks.
 3. **Injection patterns** (indicator, medium). Imperative phrases aimed at the
    model ("ignore previous instructions"), credential paths paired with
    send/upload verbs, and fetch-and-exfiltrate chains match the recurring
    shapes of published poisoning samples. Heuristic by nature: security
    tooling can legitimately describe such operations, and the finding says so.
-   Each JSON string is checked separately, including schema text and keys, so
-   unrelated fields cannot form a match. One finding per entry keeps the report
-   readable.
+   Each decoded JSON string is checked separately, including schema text and
+   keys, so unrelated fields cannot form a match. One finding per entry keeps
+   the report readable.
 4. **Manifest drift between two consecutive reads** (indicator, medium). The
    tool set may change over time. Rapid changes merit review where clients
    cache or approve definitions, but two listings do not establish a rug-pull
