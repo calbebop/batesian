@@ -967,9 +967,9 @@ them reads only the listing - no tool is ever invoked:
    are how payload content hides from whoever reviews and approves the tool
    while still reaching the model. The evidence renders the invisible runes as
    visible placeholders so an operator can see exactly where they sit.
-2. **Duplicate tool names** (confirmed, medium). The spec requires names to be
-   unique per server; a repeated name lets one definition shadow whichever
-   definition the caller approved - the squatting half of the attack class.
+2. **Duplicate tool names** (indicator, medium). The spec recommends unique
+   names per server. Repeated names can make name-based approval and dispatch
+   ambiguous; the listing alone does not establish which definition is used.
 3. **Injection patterns** (indicator, medium). Imperative phrases aimed at the
    model ("ignore previous instructions"), credential paths paired with
    send/upload verbs, and fetch-and-exfiltrate chains match the recurring
