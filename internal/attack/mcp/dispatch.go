@@ -195,7 +195,7 @@ func classifyAccess(resp *attack.Response, err error) accessVerdict {
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return accessRefused
 	}
-	var body map[string]interface{}
+	var body map[string]json.RawMessage
 	if json.Unmarshal(resp.Body, &body) == nil && body != nil {
 		if _, hasErr := body["error"]; hasErr {
 			return accessRefused

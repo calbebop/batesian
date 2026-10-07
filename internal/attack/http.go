@@ -294,8 +294,8 @@ func (r *Response) IsAccepted() bool {
 	if !r.IsSuccess() {
 		return false
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(r.Body, &m); err != nil {
+	m, ok := parseJSONObject(r.Body)
+	if !ok {
 		return false
 	}
 	_, hasResult := m["result"]
@@ -309,13 +309,21 @@ func (r *Response) IsAccepted() bool {
 // before applying a structural shape check. Prefer IsAccepted for JSON-RPC
 // method calls, which additionally requires a result envelope.
 func (r *Response) IsJSON() bool {
-	var m map[string]interface{}
-	if err := json.Unmarshal(r.Body, &m); err != nil {
-		return false
+	_, ok := parseJSONObject(r.Body)
+	return ok
+}
+
+func parseJSONObject(body []byte) (map[string]interface{}, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var value map[string]interface{}
+	if dec.Decode(&value) != nil || value == nil {
+		return nil, false
 	}
-	// A JSON "null" unmarshals to a nil map without error, but it is not a JSON
-	// object, so it must not qualify as one.
-	return m != nil
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return value, true
 }
 
 // NormalizeHeaders returns a lowercase-keyed map of the response headers.
@@ -332,8 +340,8 @@ func (r *Response) NormalizeHeaders() map[string]string {
 // Example: JSONField("scope") returns the "scope" value from a flat JSON object.
 // Returns empty string if the field is absent or the body is not valid JSON.
 func (r *Response) JSONField(path string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal(r.Body, &m); err != nil {
+	m, ok := parseJSONObject(r.Body)
+	if !ok {
 		return ""
 	}
 	parts := strings.Split(path, ".")
