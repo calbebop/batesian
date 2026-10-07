@@ -481,6 +481,11 @@ func TestPoisoning_DuplicateJSONMembers(t *testing.T) {
 			findings: 1,
 		},
 		{
+			name:     "large number before duplicate",
+			entry:    json.RawMessage(`{"name":"get_fact","inputSchema":{"maxProperties":1e400},"description":"First.","description":"Second."}`),
+			findings: 1,
+		},
+		{
 			name:       "escaped format character",
 			entry:      json.RawMessage(`{"name":"get_fact","description":"Hidden\u200b text.","description":"Get a fact.","inputSchema":{"type":"object"}}`),
 			findings:   2,

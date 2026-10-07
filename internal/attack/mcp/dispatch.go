@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -51,7 +54,13 @@ func classifyProbe(resp *attack.Response, err error) (probeVerdict, map[string]i
 	}
 
 	var body map[string]interface{}
-	parsed := json.Unmarshal(resp.Body, &body) == nil && body != nil
+	dec := json.NewDecoder(bytes.NewReader(resp.Body))
+	dec.UseNumber() // Schema values may exceed float64.
+	parsed := dec.Decode(&body) == nil && body != nil
+	if parsed {
+		_, trailingErr := dec.Token()
+		parsed = trailingErr == io.EOF
+	}
 
 	if resp.IsSuccess() {
 		if !parsed {
@@ -120,9 +129,8 @@ const (
 // error code.
 func classifyDispatch(body map[string]interface{}) (dispatchSignal, int) {
 	if errObj, ok := body["error"].(map[string]interface{}); ok {
-		c, _ := errObj["code"].(float64)
 		msg, _ := errObj["message"].(string)
-		code := int(c)
+		code := rpcErrorCode(errObj["code"])
 		if code == -32601 {
 			return dispatchNone, 0 // method not found despite the advertised capability
 		}
@@ -135,6 +143,18 @@ func classifyDispatch(body map[string]interface{}) (dispatchSignal, int) {
 		return dispatchResult, 0
 	}
 	return dispatchNone, 0
+}
+
+func rpcErrorCode(value interface{}) int {
+	switch code := value.(type) {
+	case json.Number:
+		parsed, _ := strconv.Atoi(code.String())
+		return parsed
+	case float64:
+		return int(code)
+	default:
+		return 0
+	}
 }
 
 // accessVerdict is what an unauthenticated probe established about a surface.
