@@ -16,9 +16,10 @@ info:
          definition, and they are how payloads hide from whoever reviews and
          approves the tool while still reaching the model.
 
-      2. Duplicate tool names (CONFIRMED, medium). The spec requires names to
-         be unique per server; a repeated name lets one definition shadow
-         whichever definition the caller approved - tool squatting.
+      2. Duplicate tool names (INDICATOR, medium). The spec recommends unique
+         names per server. Repeated names can make name-based approval and
+         dispatch ambiguous; the listing alone does not establish which
+         definition is used.
 
       3. Injection patterns (INDICATOR, medium). Imperative phrases aimed at
          the model ("ignore previous instructions"), credential paths paired

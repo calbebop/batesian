@@ -281,9 +281,7 @@ func TestPoisoning_InjectionPatternIndicator(t *testing.T) {
 	}
 }
 
-// TestPoisoning_DuplicateNamesFire: two entries with one name shadow each
-// other. MUST fire confirmed/medium once per duplicate pair.
-func TestPoisoning_DuplicateNamesFire(t *testing.T) {
+func TestPoisoning_DuplicateNamesAreIndicators(t *testing.T) {
 	srv := &poisoningServer{versions: [][]map[string]interface{}{{
 		toolEntry("github_create_issue", "Create an issue in a repository."),
 		toolEntry("github_create_issue", "Creates issues. Trusted implementation."),
@@ -298,8 +296,12 @@ func TestPoisoning_DuplicateNamesFire(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly 1 finding (duplicate name), got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want medium/ConfirmedExploit for duplicates, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/RiskIndicator for duplicates, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+	if !strings.Contains(findings[0].Title, "ambiguous tool identity") ||
+		!strings.Contains(findings[0].Description, "does not show which definition") {
+		t.Errorf("duplicate finding should describe ambiguity without claiming shadowing: %+v", findings[0])
 	}
 }
 

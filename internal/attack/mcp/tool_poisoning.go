@@ -26,9 +26,8 @@ import (
 //     description needs invisible text or direction overrides, and both are
 //     how payloads hide from the human who approved the tool. Confirmed,
 //     high.
-//  2. Duplicate tool names. The spec requires names unique per server; a
-//     repeated name lets whichever entry sorts last shadow the trusted one.
-//     Confirmed, medium.
+//  2. Duplicate tool names. Name-based approval and dispatch may be ambiguous.
+//     Indicator, medium.
 //  3. Instruction-injection patterns. Imperative phrases aimed at the model
 //     ("ignore previous instructions"), credential paths paired with send/
 //     upload verbs, and fetch-and-post chains are the recurring shapes of
@@ -217,13 +216,13 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "medium",
-				Confidence: attack.ConfirmedExploit,
-				Title:      fmt.Sprintf("MCP manifest declares %q more than once (tool shadowing)", t.Name),
+				Confidence: attack.RiskIndicator,
+				Title:      fmt.Sprintf("MCP manifest declares %q more than once (ambiguous tool identity)", t.Name),
 				Description: fmt.Sprintf(
 					"The tools/list response from %s contains two entries named %q (positions %d and %d). "+
-						"The spec requires tool names to be unique per server; a duplicated name lets one "+
-						"definition shadow whichever definition the caller approved, which is the "+
-						"tool-squatting half of description injection.", endpoint, t.Name, firstAt+1, i+1),
+						"The spec recommends unique names per server. Duplicates can make name-based approval "+
+						"and dispatch ambiguous, but this listing does not show which definition a client or "+
+						"server will use.", endpoint, t.Name, firstAt+1, i+1),
 				Evidence:    fmt.Sprintf("endpoint: %s\nduplicate tool name: %s", endpoint, t.Name),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
