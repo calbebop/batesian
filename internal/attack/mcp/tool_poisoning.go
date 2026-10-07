@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -21,11 +22,8 @@ import (
 // instructions, so whatever a manifest says is what the model does. Four
 // checks, all judged on bytes rather than semantics:
 //
-//  1. Hidden characters. Zero-width spaces and bidi control codes inside a
-//     name or description are concealment, full stop: no legitimate
-//     description needs invisible text or direction overrides, and both are
-//     how payloads hide from the human who approved the tool. Confirmed,
-//     high.
+//  1. Hidden characters. Format characters can obscure tool definitions but
+//     may also be legitimate Unicode text. Indicator, medium.
 //  2. Duplicate tool names. Name-based approval and dispatch may be ambiguous.
 //     Indicator, medium.
 //  3. Instruction-injection patterns. Imperative phrases aimed at the model
@@ -169,8 +167,7 @@ func canonNameMap(canon string) map[string]string {
 	return out
 }
 
-// hiddenRunes are zero-width and bidirectional control characters: invisible
-// in any review surface, load-bearing in a prompt.
+// hiddenRunes includes zero-width and bidirectional format characters.
 const hiddenRunes = "\u200B\u200C\u200D\u2060\uFEFF\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069"
 
 var (
@@ -232,6 +229,7 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 		name := toolDisplayName(line, i)
 
 		if idx := strings.IndexAny(line, hiddenRunes); idx >= 0 {
+			r, _ := utf8.DecodeRuneInString(line[idx:])
 			contextEnd := idx + 24
 			if contextEnd > len(line) {
 				contextEnd = len(line)
@@ -245,20 +243,18 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
-				Severity:   "high",
-				Confidence: attack.ConfirmedExploit,
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
 				Title:      fmt.Sprintf("MCP tool %q carries hidden characters in its definition", name),
 				Description: fmt.Sprintf(
-					"Entry %d of the tools/list response from %s contains zero-width or bidirectional "+
-						"control characters (shown as \u25A1 in the evidence). Invisible text and direction "+
-						"overrides have no legitimate use in a tool definition; they exist to hide payload "+
-						"content from whoever reviews and approves the tool while it still reaches the model.",
-					i+1, endpoint),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\nhidden character at byte offset %d\n...%s...", endpoint, name, idx, snippet),
+					"Entry %d of the tools/list response from %s contains U+%04X (shown as \u25A1 in the evidence). "+
+						"Format characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
+						"Review the code point and surrounding text before treating the definition as poisoned.",
+					i+1, endpoint, r),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nbyte offset: %d\n...%s...", endpoint, name, r, idx, snippet),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			})
-			continue // one concealment finding per entry; patterns add nothing here
 		}
 
 		for _, p := range injectionPatterns {
