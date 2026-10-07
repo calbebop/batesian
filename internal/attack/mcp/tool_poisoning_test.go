@@ -422,6 +422,24 @@ func TestPoisoning_DriftIsIndicator(t *testing.T) {
 	}
 }
 
+func TestPoisoning_DriftPreservesLargeIntegers(t *testing.T) {
+	before := toolEntry("search_docs", "Search documentation.")
+	after := toolEntry("search_docs", "Search documentation.")
+	before["inputSchema"].(map[string]interface{})["maxProperties"] = json.Number("9007199254740992")
+	after["inputSchema"].(map[string]interface{})["maxProperties"] = json.Number("9007199254740993")
+	srv := &poisoningServer{versions: [][]map[string]interface{}{{before}, {after}}}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runPoisoning(t, ts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 || findingsWith(findings, "changed between") == nil {
+		t.Errorf("large integer change was not reported: %+v", findings)
+	}
+}
+
 func TestPoisoning_DriftSummarizesDuplicateNames(t *testing.T) {
 	a := toolEntry("shared", "Alpha definition.")
 	b := toolEntry("shared", "Beta definition.")
