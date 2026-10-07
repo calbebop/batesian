@@ -29,13 +29,11 @@ info:
          so read the flagged text before trusting the tool. One pattern
          finding per entry keeps the report readable.
 
-      4. Manifest drift between two consecutive reads (CONFIRMED, high). Two
-         tools/list requests issued back to back on the same session must
-         return identical manifests. Differences - names added, removed, or
-         altered - mean approval-time content and execution-time content
-         disagree, which is the primitive every rug-pull relies on. What this
-         check cannot see is slow drift across deployments; that belongs to
-         scheduled scans diffing their own output.
+      4. Manifest drift between two consecutive reads (INDICATOR, medium).
+         The tool set may change over time. Rapid changes merit review where
+         clients cache or approve definitions, but two listings do not show
+         whether a client used an outdated definition. Scheduled scans are
+         needed to detect slower changes across deployments.
 
     Every check reads only the listing. No tool is ever invoked by this rule.
 
@@ -46,6 +44,7 @@ info:
     - https://owasp.org/www-project-mcp-top-10/
     - https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
     - https://nvd.nist.gov/vuln/detail/CVE-2025-54136
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
     - https://cwe.mitre.org/data/definitions/74.html
 
