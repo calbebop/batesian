@@ -34,12 +34,8 @@ import (
 //     published poisoning samples. Pattern matches are reported as an
 //     indicator at medium: a security scanner's own description can trip a
 //     pattern without being malicious, and the finding says so.
-//  4. Manifest drift between two consecutive reads. A manifest that changes
-//     between one listing and the next - same wire, same session, seconds
-//     apart - is exactly the rug-pull primitive: approval-time content and
-//     execution-time content disagreeing. Confirmed, high. What this cannot
-//     see is slow drift across deployments, which belongs to scheduled scans
-//     diffing their own output, not to a single connection.
+//  4. Manifest drift between consecutive reads. Rapid changes may affect
+//     clients that cache or approve tool definitions. Indicator, medium.
 //
 // Every check reads only the listing; nothing is invoked, so no tool ever
 // runs because of this rule.
@@ -76,9 +72,7 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 		return nil, false
 	}
 	firstText := canonicalTools(first)
-	// Second read for the drift oracle, back to back with the first. No sleep:
-	// the round trip is the spacing, and a manifest that differs across two
-	// immediate reads is unstable by any definition that matters here.
+	// Compare a second listing on the same wire for rapid changes.
 	second, ok := listToolPages(ctx, client, session, 3+toolListPageCap)
 	if !ok {
 		return e.manifestFindings(session.Endpoint, firstText, ""), false
@@ -297,15 +291,13 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
-			Title:      "MCP tool manifest changed between two consecutive reads (rug-pull primitive)",
+			Severity:   "medium",
+			Confidence: attack.RiskIndicator,
+			Title:      "MCP tool manifest changed between two consecutive reads",
 			Description: fmt.Sprintf(
-				"Two tools/list requests issued back to back on the same session at %s returned different "+
-					"manifests (%s). Approval-time content and execution-time content disagreeing is the "+
-					"primitive every rug-pull attack relies on: a tool approved under one definition runs "+
-					"under another. Whatever mechanism mutates the manifest between immediate reads also "+
-					"serves mutated definitions to clients that listed tools once and connected later.", endpoint, drift),
+				"Two tools/list requests to %s returned different manifests (%s). MCP permits the tool set "+
+					"to change over time. Rapid changes merit review where clients cache or approve definitions, "+
+					"but these responses do not show whether a client used an outdated definition.", endpoint, drift),
 			Evidence:    fmt.Sprintf("endpoint: %s\ndifferences: %s", endpoint, drift),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,

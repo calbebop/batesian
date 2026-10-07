@@ -976,12 +976,11 @@ them reads only the listing - no tool is ever invoked:
    shapes of published poisoning samples. Heuristic by nature: security
    tooling can legitimately describe such operations, and the finding says so.
    One pattern finding per entry keeps the report readable.
-4. **Manifest drift between two consecutive reads** (confirmed, high). Two
-   `tools/list` requests issued back to back on the same session must return
-   identical manifests. Differences mean approval-time content and
-   execution-time content disagree, which is the primitive every rug-pull
-   relies on. What this check cannot see is slow drift across deployments;
-   that belongs to scheduled scans diffing their own output.
+4. **Manifest drift between two consecutive reads** (indicator, medium). The
+   tool set may change over time. Rapid changes merit review where clients
+   cache or approve definitions, but two listings do not establish a rug-pull
+   or show whether a client used an outdated definition. Scheduled scans are
+   needed to detect slower changes across deployments.
 
 Both protocol wires are driven where a server serves them, since a manifest
 need not agree with itself across eras either.
