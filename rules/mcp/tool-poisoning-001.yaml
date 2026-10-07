@@ -25,8 +25,9 @@ info:
          with send/upload verbs, and fetch-and-exfiltrate chains match the
          recurring shapes of published poisoning samples. Heuristic by
          nature: security tooling can legitimately describe such operations,
-         so read the flagged text before trusting the tool. One pattern
-         finding per entry keeps the report readable.
+         so read the flagged text before trusting the tool. Each JSON string,
+         including schema text and keys, is checked separately. One finding
+         per entry keeps the report readable.
 
       4. Manifest drift between two consecutive reads (INDICATOR, medium).
          The tool set may change over time. Rapid changes merit review where

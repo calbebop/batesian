@@ -958,7 +958,7 @@ track for its own clients.
 Inspects the server's `tools/list` manifest for the integrity failures behind
 rug-pull and description-injection attacks (OWASP MCP03). An agent reads tool
 descriptions as instructions, so whatever the manifest says is what the model
-does. Four byte-level checks use only listing responses; no tool is invoked:
+does. Four checks use only listing responses; no tool is invoked:
 
 1. **Hidden characters** (indicator, medium). Zero-width and bidirectional
    format characters can obscure a tool definition, but some are legitimate
@@ -972,7 +972,9 @@ does. Four byte-level checks use only listing responses; no tool is invoked:
    send/upload verbs, and fetch-and-exfiltrate chains match the recurring
    shapes of published poisoning samples. Heuristic by nature: security
    tooling can legitimately describe such operations, and the finding says so.
-   One pattern finding per entry keeps the report readable.
+   Each JSON string is checked separately, including schema text and keys, so
+   unrelated fields cannot form a match. One finding per entry keeps the report
+   readable.
 4. **Manifest drift between two consecutive reads** (indicator, medium). The
    tool set may change over time. Rapid changes merit review where clients
    cache or approve definitions, but two listings do not establish a rug-pull
