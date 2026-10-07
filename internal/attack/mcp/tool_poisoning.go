@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"sort"
@@ -204,6 +205,31 @@ var injectionPatterns = []struct {
 	{"fetch-and-exfiltrate chain", injectionFetchPost},
 }
 
+func matchInjectionText(line string) (string, string, bool) {
+	dec := json.NewDecoder(strings.NewReader(line))
+	var values []string
+	for {
+		token, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", "", false
+		}
+		if value, ok := token.(string); ok {
+			values = append(values, value)
+		}
+	}
+	for _, pattern := range injectionPatterns {
+		for _, value := range values {
+			if loc := pattern.re.FindStringIndex(value); loc != nil {
+				return pattern.name, matchSnippet(value, loc), true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // manifestFindings inspects one listing and optionally reports drift.
 func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift string) []attack.Finding {
 	lines := strings.Split(canon, "\n")
@@ -241,8 +267,8 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 		}
 	}
 
-	// Checks 1 and 3 scan each entry's raw bytes: name, description and schema
-	// all reach the model, so all three are candidates.
+	// Check format characters in raw entries and injection patterns in each
+	// decoded string, including schema keys and descriptions.
 	for i, line := range entries {
 		name := toolDisplayName(line, i)
 
@@ -275,28 +301,22 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 			})
 		}
 
-		for _, p := range injectionPatterns {
-			if loc := p.re.FindStringIndex(line); loc != nil {
-				findings = append(findings, attack.Finding{
-					RuleID:     e.rule.ID,
-					RuleName:   e.rule.Name,
-					Severity:   "medium",
-					Confidence: attack.RiskIndicator,
-					Title:      fmt.Sprintf("MCP tool %q description matches an injection pattern (%s)", name, p.name),
-					Description: fmt.Sprintf(
-						"Entry %d of the tools/list response from %s contains %s phrasing aimed at the model "+
-							"rather than documentation aimed at a developer. Tool descriptions are read by agents "+
-							"as instructions, so imperative text about prior instructions, credentials, or "+
-							"outbound URLs is the shape of a poisoned definition. This check is heuristic: "+
-							"security tooling legitimately describes such operations, so treat it as a lead and "+
-							"read the flagged text before trusting the tool.",
-						i+1, endpoint, p.name),
-					Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\n...%s...", endpoint, name, p.name, matchSnippet(line, loc)),
-					Remediation: e.rule.Remediation,
-					TargetURL:   endpoint,
-				})
-				break // one pattern finding per entry keeps the report readable
-			}
+		if pattern, snippet, ok := matchInjectionText(line); ok {
+			findings = append(findings, attack.Finding{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
+				Title:      fmt.Sprintf("MCP tool %q definition matches an injection pattern (%s)", name, pattern),
+				Description: fmt.Sprintf(
+					"Entry %d of the tools/list response from %s contains %s phrasing in a tool-definition string. "+
+						"Agents may consume names, descriptions, and schemas, so imperative text about prior "+
+						"instructions, credentials, or outbound URLs can signal poisoning. This check is "+
+						"heuristic; review the matched text before treating it as malicious.", i+1, endpoint, pattern),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\n%s", endpoint, name, pattern, snippet),
+				Remediation: e.rule.Remediation,
+				TargetURL:   endpoint,
+			})
 		}
 	}
 
