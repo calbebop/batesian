@@ -35,8 +35,7 @@ import (
 //  4. Manifest drift between consecutive reads. Rapid changes may affect
 //     clients that cache or approve tool definitions. Indicator, medium.
 //
-// Every check reads only the listing; nothing is invoked, so no tool ever
-// runs because of this rule.
+// Completed listings are inspected without invoking tools.
 type ToolPoisoningExecutor struct {
 	rule attack.RuleContext
 }
@@ -81,7 +80,24 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	if !sameToolManifest(firstText, secondText) {
 		drift = diffSummary(firstText, secondText)
 	}
-	return e.manifestFindings(session.Endpoint, firstText, drift), true
+	findings := e.manifestFindings(session.Endpoint, firstText, drift)
+	if drift == "" {
+		return findings, true
+	}
+	type findingKey struct{ title, evidence string }
+	seen := make(map[findingKey]struct{}, len(findings))
+	for _, finding := range findings {
+		seen[findingKey{finding.Title, finding.Evidence}] = struct{}{}
+	}
+	for _, finding := range e.manifestFindings(session.Endpoint, secondText, "") {
+		key := findingKey{finding.Title, finding.Evidence}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		findings = append(findings, finding)
+		seen[key] = struct{}{}
+	}
+	return findings, true
 }
 
 // canonicalTools serializes each entry compactly and sorts the results, so
@@ -185,8 +201,7 @@ var injectionPatterns = []struct {
 	{"fetch-and-exfiltrate chain", injectionFetchPost},
 }
 
-// manifestFindings runs the four checks over one manifest. drift is empty
-// when the second listing matched or was unavailable.
+// manifestFindings inspects one listing and optionally reports drift.
 func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift string) []attack.Finding {
 	lines := strings.Split(canon, "\n")
 	entries := lines[1:]

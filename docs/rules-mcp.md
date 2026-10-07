@@ -958,8 +958,7 @@ track for its own clients.
 Inspects the server's `tools/list` manifest for the integrity failures behind
 rug-pull and description-injection attacks (OWASP MCP03). An agent reads tool
 descriptions as instructions, so whatever the manifest says is what the model
-does. Four checks, all judged on bytes rather than semantics, and every one of
-them reads only the listing - no tool is ever invoked:
+does. Four byte-level checks use only listing responses; no tool is invoked:
 
 1. **Hidden characters** (indicator, medium). Zero-width and bidirectional
    format characters can obscure a tool definition, but some are legitimate
@@ -981,7 +980,8 @@ them reads only the listing - no tool is ever invoked:
    needed to detect slower changes across deployments.
 
 Both protocol wires are driven where a server serves them, since a manifest
-need not agree with itself across eras either.
+need not agree with itself across eras either. Each completed listing is
+inspected; findings shared by both are reported once.
 
 ---
 
