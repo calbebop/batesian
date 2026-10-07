@@ -91,7 +91,7 @@ The bundled catalogs contain [19 A2A rules](docs/rules-a2a.md) and [28 MCP rules
 | Push notifications | Callback SSRF, control-plane binding, missing callback authentication |
 | MCP authorization surfaces | Unauthenticated tools, resources, prompts, completions, and logging controls |
 | Transport boundaries | Origin validation, header/body routing, protocol downgrade, SSE replay, session misuse |
-| Tool and manifest integrity | Argument traversal, hidden payloads, description injection, duplicate-name ambiguity, manifest drift |
+| Tool and manifest integrity | Argument traversal, hidden characters, description injection, duplicate-name ambiguity, manifest drift |
 | Deployment exposure | Shadow listeners, secret leakage, and known vulnerable component versions |
 
 The suite is validated against vulnerable fixtures and third-party reference implementations. See [validation results](docs/validation-results.md) for expected findings, secure controls, and known applicability limits.

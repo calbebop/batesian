@@ -168,7 +168,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
-| `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | High / Medium | confirmed / indicator | CWE-74 |
+| `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
 | `mcp-vulnerable-version-001` | [Known-Vulnerable Component Identity](#mcp-vulnerable-version-001) | High | indicator | CWE-1104 |
 | `mcp-origin-prefix-bypass-001` | [Origin Prefix-Match Bypass](#mcp-origin-prefix-bypass-001) | High | confirmed | CWE-346 |
 | `mcp-task-id-entropy-001` | [MCP Tasks Extension Handle Entropy](#mcp-task-id-entropy-001) | High / Medium | indicator | CWE-330 |
@@ -953,7 +953,7 @@ track for its own clients.
 
 ### mcp-tool-poisoning-001
 
-**Tool Manifest Integrity (Poisoning)** | Severity: High / Medium | confirmed / indicator | CWE-74
+**Tool Manifest Integrity (Poisoning)** | Severity: Medium | indicator | CWE-74
 
 Inspects the server's `tools/list` manifest for the integrity failures behind
 rug-pull and description-injection attacks (OWASP MCP03). An agent reads tool
@@ -961,12 +961,10 @@ descriptions as instructions, so whatever the manifest says is what the model
 does. Four checks, all judged on bytes rather than semantics, and every one of
 them reads only the listing - no tool is ever invoked:
 
-1. **Hidden characters** (confirmed, high). Zero-width spaces and bidi control
-   codes inside a name or description are concealment: invisible text and
-   direction overrides have no legitimate use in a tool definition, and they
-   are how payload content hides from whoever reviews and approves the tool
-   while still reaching the model. The evidence renders the invisible runes as
-   visible placeholders so an operator can see exactly where they sit.
+1. **Hidden characters** (indicator, medium). Zero-width and bidirectional
+   format characters can obscure a tool definition, but some are legitimate
+   in Unicode text. The evidence names the code point and renders it visibly
+   for review. Injection patterns are checked independently.
 2. **Duplicate tool names** (indicator, medium). The spec recommends unique
    names per server. Repeated names can make name-based approval and dispatch
    ambiguous; the listing alone does not establish which definition is used.
