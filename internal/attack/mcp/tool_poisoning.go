@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,7 +23,7 @@ import (
 //
 // The client is the trust boundary here: an agent reads tool descriptions as
 // instructions, so whatever a manifest says is what the model does. Four
-// checks, all judged on bytes rather than semantics:
+// heuristic checks:
 //
 //  1. Hidden characters. Format characters can obscure tool definitions but
 //     may also be legitimate Unicode text. Indicator, medium.
@@ -102,13 +103,14 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	return findings, true
 }
 
-// canonicalTools serializes each entry compactly and sorts the results, so
-// manifest comparison is independent of the server's array order.
+// canonicalTools preserves JSON numbers and sorts entries for comparison.
 func canonicalTools(tools []json.RawMessage) string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {
 		var v interface{}
-		if json.Unmarshal(t, &v) == nil {
+		dec := json.NewDecoder(bytes.NewReader(t))
+		dec.UseNumber()
+		if dec.Decode(&v) == nil {
 			if b, err := json.Marshal(v); err == nil {
 				out = append(out, string(b))
 			} else {
