@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -127,8 +128,8 @@ func sameToolManifest(a, b string) bool { return a == b }
 // diffSummary names the tool-level differences between two manifests: names
 // added, removed, and present in both but altered.
 func diffSummary(oldCanon, newCanon string) string {
-	oldSet := canonNameMap(oldCanon)
-	newSet := canonNameMap(newCanon)
+	oldSet := canonEntriesByName(oldCanon)
+	newSet := canonEntriesByName(newCanon)
 	var added, removed, changed []string
 	for name, oldEntry := range oldSet {
 		newEntry, ok := newSet[name]
@@ -136,7 +137,7 @@ func diffSummary(oldCanon, newCanon string) string {
 			removed = append(removed, name)
 			continue
 		}
-		if oldEntry != newEntry {
+		if !slices.Equal(oldEntry, newEntry) {
 			changed = append(changed, name)
 		}
 	}
@@ -159,15 +160,14 @@ func diffSummary(oldCanon, newCanon string) string {
 		parts = append(parts, "changed: "+strings.Join(changed, ", "))
 	}
 	if len(parts) == 0 {
-		return "manifest hash changed (entry order or unnamed fields)"
+		return "manifest hash changed (unnamed or unparseable entries)"
 	}
 	return strings.Join(parts, "; ")
 }
 
-// canonNameMap extracts name -> canonical entry pairs from a canonical
-// serialization (hash line first, then one JSON object per line).
-func canonNameMap(canon string) map[string]string {
-	out := map[string]string{}
+// canonEntriesByName keeps every definition for each name.
+func canonEntriesByName(canon string) map[string][]string {
+	out := map[string][]string{}
 	lines := strings.Split(canon, "\n")
 	for _, line := range lines[1:] {
 		if line == "" {
@@ -177,8 +177,11 @@ func canonNameMap(canon string) map[string]string {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal([]byte(line), &probe) == nil && probe.Name != "" {
-			out[probe.Name] = line
+			out[probe.Name] = append(out[probe.Name], line)
 		}
+	}
+	for name := range out {
+		sort.Strings(out[name])
 	}
 	return out
 }
