@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -184,6 +185,88 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, sandboxRoot) {
 		t.Errorf("evidence should name the baseline root, got: %q", f.Evidence)
+	}
+}
+
+func TestTraversal_ProbesEachPathParameter(t *testing.T) {
+	tool := readOnlySchemaTool("read_note")
+	schema := tool["inputSchema"].(map[string]interface{})
+	schema["properties"] = map[string]interface{}{
+		"a_path": map[string]interface{}{"type": "string"},
+		"z_path": map[string]interface{}{"type": "string"},
+	}
+	schema["required"] = []interface{}{"a_path", "z_path"}
+	var mu sync.Mutex
+	var probed []string
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{tool},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			param := "a_path"
+			path, _ := args[param].(string)
+			if path == "" {
+				param = "z_path"
+				path, _ = args[param].(string)
+			}
+			mu.Lock()
+			probed = append(probed, param)
+			mu.Unlock()
+			if param == "a_path" {
+				if strings.Contains(path, "..") {
+					return "rejected", true, ""
+				}
+				return strings.ReplaceAll(leakTemplate, "<PATH>", sandboxRoot+"/"+path), true, ""
+			}
+			return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "parameter: z_path") {
+		t.Fatalf("second path parameter was missed: findings=%+v err=%v", findings, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(probed) != 9 {
+		t.Fatalf("unexpected probe count: %v", probed)
+	}
+	for i, param := range probed {
+		if (i < 7 && param != "a_path") || (i >= 7 && param != "z_path") {
+			t.Fatalf("path parameters were not probed in name order: %v", probed)
+		}
+	}
+}
+
+func TestTraversal_MultiplePathsRespectCap(t *testing.T) {
+	tool := readOnlySchemaTool("read_note")
+	schema := tool["inputSchema"].(map[string]interface{})
+	props := map[string]interface{}{}
+	for i := range 9 {
+		props[fmt.Sprintf("path_%d", i)] = map[string]interface{}{"type": "string"}
+	}
+	schema["properties"] = props
+	schema["required"] = []interface{}{}
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{tool},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			calls.Add(1)
+			for _, value := range args {
+				path, _ := value.(string)
+				return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+			}
+			return "", true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil || len(findings) != 8 || calls.Load() != 16 {
+		t.Fatalf("parameter cap changed: findings=%d calls=%d err=%v", len(findings), calls.Load(), err)
 	}
 }
 

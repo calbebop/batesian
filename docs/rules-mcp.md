@@ -884,6 +884,7 @@ filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
 whose safe tools take no such parameter reports clean: the rule does not
 dispatch unannotated tools, and the catalog records that trade-off here rather
 than hiding it behind a clean-looking result.
+The rule tests eligible parameters in name order, up to eight per wire.
 
 ---
 
