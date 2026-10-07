@@ -28,6 +28,12 @@ func TestClassifyProbe(t *testing.T) {
 			why:  "a parseable 2xx is the only case the caller can interpret",
 		},
 		{
+			name: "2xx with a large number", status: 200,
+			body: `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"inputSchema":{"maxProperties":1e400}}]}}`,
+			want: probeAnswered,
+			why:  "a valid nested JSON number must not make the envelope inconclusive",
+		},
+		{
 			name: "2xx with a JSON-RPC error", status: 200,
 			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Unauthorized"}}`,
 			want: probeAnswered,
@@ -56,6 +62,12 @@ func TestClassifyProbe(t *testing.T) {
 			why:  "the method is absent, so the surface is closed; this must stay clean, not become untested",
 		},
 		{
+			name: "500 with a large error number", status: 500,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"data":{"size":1e400}}}`,
+			want: probeRejected,
+			why:  "a valid JSON-RPC error remains a protocol-level answer",
+		},
+		{
 			// The case that motivated all of this.
 			name: "502 from a gateway", status: 502, body: `Bad Gateway`,
 			want: probeInconclusive,
@@ -75,6 +87,11 @@ func TestClassifyProbe(t *testing.T) {
 			name: "2xx that will not parse", status: 200, body: `{"result":{"tools":[`,
 			want: probeInconclusive,
 			why:  "a truncated or malformed body establishes nothing; this is what the 1 MB read limit produced",
+		},
+		{
+			name: "2xx with trailing JSON", status: 200, body: `{"result":{}}{"result":{}}`,
+			want: probeInconclusive,
+			why:  "multiple JSON values are not one response envelope",
 		},
 		{
 			name: "2xx carrying JSON null", status: 200, body: `null`,

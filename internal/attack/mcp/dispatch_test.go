@@ -1,9 +1,11 @@
 package mcp
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func errBody(code int, msg string) map[string]interface{} {
-	// json.Unmarshal decodes numbers as float64, so the fixture must too.
 	return map[string]interface{}{"error": map[string]interface{}{"code": float64(code), "message": msg}}
 }
 
@@ -34,6 +36,27 @@ func TestClassifyDispatch_MethodNotFound(t *testing.T) {
 	sig, _ := classifyDispatch(errBody(-32601, "Method not found"))
 	if sig != dispatchNone {
 		t.Errorf("got %d, want none (method not found excludes dispatch)", sig)
+	}
+}
+
+func TestClassifyDispatch_JSONNumberCodes(t *testing.T) {
+	tests := []struct {
+		code     string
+		want     dispatchSignal
+		wantCode int
+	}{
+		{"-32601", dispatchNone, 0},
+		{"-32001", dispatchNone, 0},
+		{"-32602", dispatchError, -32602},
+	}
+	for _, tc := range tests {
+		body := map[string]interface{}{"error": map[string]interface{}{
+			"code": json.Number(tc.code), "message": "validation failure",
+		}}
+		sig, code := classifyDispatch(body)
+		if sig != tc.want || code != tc.wantCode {
+			t.Errorf("code %s: got %d/%d, want %d/%d", tc.code, sig, code, tc.want, tc.wantCode)
+		}
 	}
 }
 

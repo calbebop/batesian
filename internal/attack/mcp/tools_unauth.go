@@ -49,9 +49,9 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	}
 
 	if errObj, ok := listBody["error"].(map[string]interface{}); ok {
-		code, _ := errObj["code"].(float64)
+		code := rpcErrorCode(errObj["code"])
 		message, _ := errObj["message"].(string)
-		return nil, int(code) == -32601 || authFlavoredError(int(code), message)
+		return nil, code == -32601 || authFlavoredError(code, message)
 	}
 	if _, hasErr := listBody["error"]; hasErr {
 		return nil, false
