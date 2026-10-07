@@ -332,6 +332,9 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 		return nil, "baseline returned " + reason
 	}
 	baselinePath := leakedPath(baselineText, canary)
+	if !resolvedAbsolute(baselinePath) {
+		return nil, "baseline did not disclose a resolved absolute path"
+	}
 
 	nextID := 11
 	for _, probe := range traversalPayloads(canary) {
@@ -415,17 +418,9 @@ func looksLikePath(s string) bool {
 	return strings.Contains(s, "../") || strings.Contains(s, "..\\")
 }
 
-// escapedOutsideBaseline decides whether the traversal probe resolved the
-// canary somewhere the baseline did not: a different parent directory that is
-// not beneath the baseline's own directory. A sandboxed server looks up both
-// under the same root; an escaped one lands elsewhere entirely. The traversal
-// path has already passed resolvedAbsolute, so the comparison runs on where
-// the server actually looked.
+// escapedOutsideBaseline checks whether the lookup left the baseline's tree.
 func escapedOutsideBaseline(traversalPath, baselinePath string) bool {
 	if baselinePath == "" {
-		// No baseline resolution to compare against. Without it the rule cannot
-		// name the root the tool was supposed to stay inside, so it declines to
-		// report rather than guess containment from one lookup.
 		return false
 	}
 	baseDir := parentDir(baselinePath)
