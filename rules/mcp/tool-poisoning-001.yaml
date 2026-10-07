@@ -34,7 +34,8 @@ info:
          whether a client used an outdated definition. Scheduled scans are
          needed to detect slower changes across deployments.
 
-    Every check reads only the listing. No tool is ever invoked by this rule.
+    Each completed listing is inspected, with shared findings reported once.
+    No tool is invoked by this rule.
 
     Both protocol wires are driven where a server serves them, since a
     manifest need not agree with itself across eras either.
