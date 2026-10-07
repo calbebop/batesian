@@ -5,29 +5,28 @@ info:
   severity: medium
   description: |
     Inspects the server's tools/list manifest for the integrity failures
-    behind rug-pull and description-injection attacks (OWASP MCP03). An agent
-    reads tool descriptions as instructions, so whatever the manifest says is
-    what the model does. Four checks, all judged on bytes rather than
-    semantics:
+    behind rug-pull and description-injection attacks (OWASP MCP03). Agents
+    may pass tool definitions to models as context. Four heuristic checks use
+    completed listings:
 
       1. Hidden characters (INDICATOR, medium). Zero-width and bidirectional
          format characters may obscure tool definitions, but some are needed
          for legitimate Unicode text. The finding shows the code point and
          context so an operator can review it.
 
-      2. Duplicate tool names (INDICATOR, medium). The spec recommends unique
-         names per server. Repeated names can make name-based approval and
-         dispatch ambiguous; the listing alone does not establish which
-         definition is used.
+      2. Duplicate tool names or JSON members (INDICATOR, medium). Repeated
+         tool names can make approval and dispatch ambiguous. Repeated JSON
+         members can make parsers disagree on a definition. Those members
+         remain visible to injection and drift checks.
 
       3. Injection patterns (INDICATOR, medium). Imperative phrases aimed at
          the model ("ignore previous instructions"), credential paths paired
          with send/upload verbs, and fetch-and-exfiltrate chains match the
          recurring shapes of published poisoning samples. Heuristic by
          nature: security tooling can legitimately describe such operations,
-         so read the flagged text before trusting the tool. Each JSON string,
-         including schema text and keys, is checked separately. One finding
-         per entry keeps the report readable.
+         so read the flagged text before trusting the tool. Each decoded JSON
+         string, including schema text and keys, is checked separately. One
+         finding per entry keeps the report readable.
 
       4. Manifest drift between two consecutive reads (INDICATOR, medium).
          The tool set may change over time. Rapid changes merit review where
@@ -46,6 +45,7 @@ info:
     - https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
     - https://nvd.nist.gov/vuln/detail/CVE-2025-54136
     - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    - https://www.rfc-editor.org/rfc/rfc8259#section-4
     - https://www.unicode.org/reports/tr51/tr51-30.html
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
     - https://cwe.mitre.org/data/definitions/74.html
@@ -67,8 +67,8 @@ remediation: |
      control, pin them, and diff on every server deploy.
   2. Show format characters visibly during review; remove unexpected ones
      without breaking legitimate Unicode text.
-  3. Enforce unique tool names per server at startup; refuse to serve a
-     manifest that violates it.
+  3. Enforce unique tool names and JSON members; refuse to serve a manifest
+     that violates either constraint.
   4. Keep descriptions factual documentation of behavior for a developer;
      never write imperative text addressed to the model about credentials,
      prior instructions, or outbound URLs.
