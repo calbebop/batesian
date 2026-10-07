@@ -598,50 +598,36 @@ func TestTraversal_UnusableToolRepliesAreInconclusive(t *testing.T) {
 	}
 }
 
-// TestTraversal_PatchedStaysSilent: the server validates containment and
-// refuses without echoing any path. MUST stay silent.
-func TestTraversal_PatchedStaysSilent(t *testing.T) {
-	srv := &traversalServer{
-		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
-		tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
-		call: func(name string, args map[string]interface{}) (string, bool, string) {
-			return "rejected: path escapes the notes directory", true, ""
-		},
+func TestTraversal_UnresolvedBaselineIsInconclusive(t *testing.T) {
+	tests := []struct {
+		name string
+		text func(string) string
+	}{
+		{"generic refusal", func(string) string { return "rejected: path escapes the notes directory" }},
+		{"echo", func(path string) string { return "no note found at " + path }},
+		{"relative lookup", func(path string) string { return "../" + path }},
 	}
-	ts := httptest.NewServer(srv.handler())
-	defer ts.Close()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := &traversalServer{
+				caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+				tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+				call: func(name string, args map[string]interface{}) (string, bool, string) {
+					calls.Add(1)
+					path, _ := args["path"].(string)
+					return tc.text(path), true, ""
+				},
+			}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
 
-	findings, err := runTraversal(t, ts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings against containment validation, got %d: %+v", len(findings), findings)
-	}
-}
-
-// TestTraversal_EchoOnlyStaysSilent: a chatty tool echoes the caller's input,
-// dot-dot segments intact, without resolving anything. An echo is not
-// resolution evidence; reporting it would accuse any tool that repeats what it
-// was sent. MUST stay silent.
-func TestTraversal_EchoOnlyStaysSilent(t *testing.T) {
-	srv := &traversalServer{
-		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
-		tools: []map[string]interface{}{readOnlySchemaTool("echo_note_path")},
-		call: func(name string, args map[string]interface{}) (string, bool, string) {
-			p, _ := args["path"].(string)
-			return "no note found at " + p, true, ""
-		},
-	}
-	ts := httptest.NewServer(srv.handler())
-	defer ts.Close()
-
-	findings, err := runTraversal(t, ts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings against an echoing (non-resolving) tool, got %d: %+v", len(findings), findings)
+			findings, err := runTraversal(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "baseline") || calls.Load() != 1 {
+				t.Fatalf("unresolved baseline must stop the probe: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+			}
+		})
 	}
 }
 
@@ -726,7 +712,7 @@ func TestTraversal_RequiresExactToolApproval(t *testing.T) {
 		}
 	}
 	_, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, MCPInvokeTools: []string{"delete_note"}})
-	if err != nil || calls.Load() == 0 {
+	if !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 1 {
 		t.Fatalf("exact approval did not enable the probe: calls=%d err=%v", calls.Load(), err)
 	}
 }
