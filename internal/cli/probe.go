@@ -49,7 +49,7 @@ Inline checks performed during probe:
 
 func init() {
 	probeCmd.Flags().StringP("protocol", "p", "a2a", "Protocol to probe: a2a, mcp")
-	probeCmd.Flags().String("token", "", "Bearer token for authenticated requests")
+	probeCmd.Flags().String("token", "", "Bearer token for authenticated requests (default: BATESIAN_TOKEN)")
 	probeCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
 	probeCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
 	probeCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
@@ -64,6 +64,7 @@ func runProbe(cmd *cobra.Command, args []string) (runErr error) {
 	outputFmt, _ := cmd.Flags().GetString("output")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	token, _ := cmd.Flags().GetString("token")
+	token = firstNonEmpty(token, os.Getenv("BATESIAN_TOKEN"))
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")

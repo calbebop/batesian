@@ -108,7 +108,7 @@ export BATESIAN_TOKEN
 batesian scan --target https://mcp.example.com
 ```
 
-`--token` is also available for short-lived credentials.
+`BATESIAN_TOKEN` works with both `scan` and `probe`. A non-empty `--token` overrides it. `scan` checks the token in `batesian.yaml` before the environment; `probe` does not load YAML config.
 
 ### OAuth client credentials
 
