@@ -9,6 +9,8 @@
 
 Batesian is a single-binary CLI that tests deployed AI agent infrastructure with real protocol traffic. It exercises authorization, identity, discovery, task isolation, callbacks, sessions, and tool boundaries, then reports evidence as a confirmed exploit or a risk indicator. Table, JSON, and SARIF output support local testing and CI.
 
+This README describes the current `main` branch. The latest tagged release is v1.7.0; JSON rule outcomes and SARIF coverage metadata are available on `main` but not in that release. See the [v1.7.0 documentation](https://github.com/calbebop/batesian/tree/v1.7.0) for released behavior.
+
 ![Batesian demo](docs/demo.gif)
 
 > [!CAUTION]
@@ -51,6 +53,8 @@ Go 1.25 or newer is required when installing from source:
 ```bash
 go install github.com/calbebop/batesian/cmd/batesian@latest
 ```
+
+`@latest` installs the latest tagged release. To try the unreleased `main` branch, use `@main` instead. Pin a reviewed commit or release tag in CI.
 
 ## Quick start
 
@@ -163,11 +167,11 @@ In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment refe
 
 A finding is marked `confirmed` only when the rule observes exploit evidence. An `indicator` identifies a risky condition without claiming successful exploitation.
 
-`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
+`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. On `main`, SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 
 ## CI integration
 
-The following workflow uploads A2A findings to GitHub code scanning:
+The following workflow uses unreleased `main` coverage metadata to upload A2A findings and fail when selected rules do not complete:
 
 ```yaml
 name: Batesian
@@ -184,17 +188,30 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-      - run: go install github.com/calbebop/batesian/cmd/batesian@v1.7.0
+      - run: go install github.com/calbebop/batesian/cmd/batesian@main
       - name: Scan
         env:
           BATESIAN_TOKEN: ${{ secrets.BATESIAN_TOKEN }}
         run: batesian scan --target https://agent.example.com --protocol a2a --output sarif > results.sarif
       - uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
           sarif_file: results.sarif
+      - name: Require complete coverage
+        run: |
+          jq -e '
+            (.runs | length) == 1 and
+            (.runs[0].invocations | length) == 1 and
+            (.runs[0].invocations[0] |
+              .executionSuccessful == true and
+              .properties.rulesSelected > 0 and
+              .properties.rulesCompleted == .properties.rulesSelected and
+              .properties.rulesSkipped == 0 and
+              .properties.rulesErrored == 0)
+          ' results.sarif
 ```
 
-Pin the Batesian version used in CI and update it deliberately. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
+Replace `@main` with a reviewed commit SHA in real CI, then move to a release tag when the coverage metadata ships. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
 
 ## Configuration and rule packs
 
