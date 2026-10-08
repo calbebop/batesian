@@ -426,6 +426,100 @@ func TestPerformPKCEFlow_StateMismatch(t *testing.T) {
 	}
 }
 
+func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
+	tests := []struct {
+		name      string
+		stateMode string
+		wantError string
+	}{
+		{name: "missing", stateMode: "missing", wantError: "state parameter mismatch"},
+		{name: "mismatched", stateMode: "mismatched", wantError: "state parameter mismatch"},
+		{name: "duplicate", stateMode: "duplicate", wantError: "state parameter mismatch"},
+		{name: "matching", stateMode: "matching", wantError: "authorization server returned error: access_denied"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			port := pickFreePort(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			urlCh := make(chan string, 1)
+			resultCh := make(chan error, 1)
+			go func() {
+				_, err := auth.PerformPKCEFlow(ctx, auth.PKCEFlowConfig{
+					AuthURL:         "https://auth.example.com/authorize",
+					TokenURL:        "https://auth.example.com/token",
+					ClientID:        "client",
+					RedirectPort:    port,
+					CallbackTimeout: 5 * time.Second,
+					Logger: func(format string, args ...interface{}) {
+						msg := fmt.Sprintf(format, args...)
+						if strings.Contains(msg, "code_challenge") {
+							urlCh <- strings.TrimSpace(msg)
+						}
+					},
+				})
+				resultCh <- err
+			}()
+
+			var authURL string
+			select {
+			case authURL = <-urlCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("flow did not print authorization URL")
+			}
+			parsed, err := url.Parse(authURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := parsed.Query().Get("state")
+			if state == "" {
+				t.Fatal("authorization URL missing state")
+			}
+
+			query := url.Values{"error": {"access_denied"}, "error_description": {"denied"}}
+			switch tc.stateMode {
+			case "mismatched":
+				query.Set("state", "tampered")
+			case "duplicate":
+				query.Add("state", state)
+				query.Add("state", "tampered")
+			case "matching":
+				query.Set("state", state)
+			}
+			callback := fmt.Sprintf("http://127.0.0.1:%d/callback?%s", port, query.Encode())
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Get(callback)
+			if err != nil {
+				t.Fatalf("hitting callback: %v", err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("callback status = %d, want 400", resp.StatusCode)
+			}
+			if tc.stateMode != "matching" && strings.Contains(string(body), "access_denied") {
+				t.Fatalf("unverified OAuth error appeared in callback response: %s", body)
+			}
+			if tc.stateMode == "matching" && !strings.Contains(string(body), "access_denied") {
+				t.Fatalf("verified OAuth error missing from callback response: %s", body)
+			}
+
+			select {
+			case err := <-resultCh:
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("flow error = %v, want %q", err, tc.wantError)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("flow did not return after callback")
+			}
+		})
+	}
+}
+
 // pickFreePort asks the kernel for an unused TCP port on 127.0.0.1.
 func pickFreePort(t *testing.T) int {
 	t.Helper()

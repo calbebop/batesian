@@ -207,20 +207,20 @@ func waitForCallback(
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		states := q["state"]
+		if len(states) != 1 || states[0] != expectedState {
+			respondCallbackError(w, "state mismatch", "the state parameter did not match the value sent in the authorization request")
+			once.Do(func() {
+				resultCh <- result{err: errors.New("state parameter mismatch (possible CSRF; aborting)")}
+			})
+			return
+		}
 		errParam := q.Get("error")
 		if errParam != "" {
 			desc := q.Get("error_description")
 			respondCallbackError(w, errParam, desc)
 			once.Do(func() {
 				resultCh <- result{err: fmt.Errorf("authorization server returned error: %s (%s)", errParam, desc)}
-			})
-			return
-		}
-		gotState := q.Get("state")
-		if gotState != expectedState {
-			respondCallbackError(w, "state mismatch", "the state parameter did not match the value sent in the authorization request")
-			once.Do(func() {
-				resultCh <- result{err: errors.New("state parameter mismatch (possible CSRF; aborting)")}
 			})
 			return
 		}
