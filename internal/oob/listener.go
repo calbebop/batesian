@@ -56,7 +56,7 @@ func (l *Listener) Start() (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.started {
-		return l.URL(), nil
+		return l.urlLocked(), nil
 	}
 
 	ln, err := net.Listen("tcp", "0.0.0.0:0")

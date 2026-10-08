@@ -98,6 +98,40 @@ func TestListener_StopResetsLifecycle(t *testing.T) {
 	}
 }
 
+func TestListener_RepeatedStartReturnsSameURL(t *testing.T) {
+	l := New()
+	first, err := l.Start()
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+
+	type startResult struct {
+		url string
+		err error
+	}
+	resultCh := make(chan startResult, 1)
+	go func() {
+		url, err := l.Start()
+		resultCh <- startResult{url: url, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("second start: %v", result.err)
+		}
+		if result.url != first {
+			t.Fatalf("second start URL = %q, want %q", result.url, first)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second start blocked")
+	}
+
+	if err := l.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // TestListener_StopRepeatNeverReportsOwnDoubleClose drives the interleaving
 // the single start/stop above only samples once: whether the serve goroutine
 // has registered the listener before Stop runs decides which of Stop's two
