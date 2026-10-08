@@ -100,6 +100,56 @@ func TestInvalidTargetErrorHidesURL(t *testing.T) {
 	}
 }
 
+func TestCLIInvalidProxyHidesCredentials(t *testing.T) {
+	const secret = "proxy-secret-value"
+	const proxy = "http://user:" + secret + "@"
+	const target = "http://127.0.0.1:1"
+
+	t.Run("probe", func(t *testing.T) {
+		if probeCmd.Flags().Lookup("target") == nil {
+			probeCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+		}
+		setProbeFlag(t, "target", target)
+		setProbeFlag(t, "proxy", proxy)
+		out, err := captureCLIOutput(t, func() error { return runProbe(probeCmd, nil) })
+		if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
+			t.Fatalf("probe error exposed proxy credentials: %v", err)
+		}
+	})
+
+	t.Run("scan", func(t *testing.T) {
+		if scanCmd.Flags().Lookup("target") == nil {
+			scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+		}
+		configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+		if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		setScanFlag(t, "config", configPath)
+		setScanFlag(t, "target", target)
+		setScanFlag(t, "proxy", proxy)
+		out, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+		if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
+			t.Fatalf("scan error exposed proxy credentials: %v", err)
+		}
+	})
+
+	t.Run("scan config", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+		if err := os.WriteFile(configPath, []byte("proxy: \""+proxy+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		setScanFlag(t, "config", configPath)
+		setScanFlag(t, "target", target)
+		setScanFlag(t, "proxy", "")
+		scanCmd.Flags().Lookup("proxy").Changed = false
+		out, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+		if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
+			t.Fatalf("scan config error exposed proxy credentials: %v", err)
+		}
+	})
+}
+
 func TestOutputRedactorProbeCard(t *testing.T) {
 	r := newOutputRedactor("https://user:password@example.com/mcp?token=secret-value")
 	card := map[string]any{
