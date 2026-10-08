@@ -25,7 +25,25 @@ func TestClassifyProbe(t *testing.T) {
 			name: "2xx with a result", status: 200,
 			body: `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
 			want: probeAnswered,
-			why:  "a parseable 2xx is the only case the caller can interpret",
+			why:  "a valid JSON-RPC result lets the caller interpret the answer",
+		},
+		{
+			name: "2xx with a versionless result", status: 200,
+			body: `{"id":1,"result":{"tools":[{"name":"admin"}]}}`,
+			want: probeInconclusive,
+			why:  "a generic JSON result is not an MCP answer",
+		},
+		{
+			name: "2xx with a missing response id", status: 200,
+			body: `{"jsonrpc":"2.0","result":{"tools":[{"name":"admin"}]}}`,
+			want: probeInconclusive,
+			why:  "an uncorrelated result does not prove the probe was answered",
+		},
+		{
+			name: "2xx with both result and error", status: 200,
+			body: `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32603,"message":"Internal error"}}`,
+			want: probeInconclusive,
+			why:  "a JSON-RPC response cannot contain both result and error",
 		},
 		{
 			name: "2xx with a large number", status: 200,
@@ -173,7 +191,12 @@ func TestClassifyAccess(t *testing.T) {
 		body   string
 		want   accessVerdict
 	}{
-		{"result", 200, `{"jsonrpc":"2.0","result":{"value":1e400}}`, accessGranted},
+		{"result", 200, `{"jsonrpc":"2.0","id":1,"result":{"value":1e400}}`, accessGranted},
+		{"null result", 200, `{"jsonrpc":"2.0","id":1,"result":null}`, accessGranted},
+		{"versionless result", 200, `{"id":1,"result":{"value":1}}`, accessUndetermined},
+		{"missing response id", 200, `{"jsonrpc":"2.0","result":{"value":1}}`, accessUndetermined},
+		{"RPC error over HTTP 200", 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`, accessRefused},
+		{"malformed RPC error over HTTP 200", 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601}}`, accessUndetermined},
 		{"error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"value":1e400}}}`, accessRefused},
 		{"gateway error", 502, `{"error":"Bad Gateway"}`, accessUndetermined},
 		{"incomplete JSON-RPC error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`, accessUndetermined},

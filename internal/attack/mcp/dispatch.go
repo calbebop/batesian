@@ -27,8 +27,7 @@ const (
 	// being enforced or the method being absent, the surface is closed and a
 	// clean result is correct.
 	probeRejected
-	// probeAnswered means an HTTP 2xx carrying a parseable JSON object, which the
-	// caller can interpret.
+	// probeAnswered means an HTTP 2xx carrying a JSON-RPC response envelope.
 	probeAnswered
 )
 
@@ -56,7 +55,7 @@ func classifyProbe(resp *attack.Response, err error) (probeVerdict, map[string]i
 	body, parsed := parseResponseBody(resp.Body)
 
 	if resp.IsSuccess() {
-		if !parsed {
+		if !parsed || (!validRPCResult(body) && !validRPCError(body)) {
 			return probeInconclusive, nil
 		}
 		return probeAnswered, body
@@ -83,6 +82,20 @@ func parseResponseBody(raw []byte) (map[string]interface{}, bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+func validRPCResult(body map[string]interface{}) bool {
+	if body["jsonrpc"] != "2.0" {
+		return false
+	}
+	if _, hasID := body["id"]; !hasID {
+		return false
+	}
+	if _, hasError := body["error"]; hasError {
+		return false
+	}
+	_, hasResult := body["result"]
+	return hasResult
 }
 
 func validRPCError(body map[string]interface{}) bool {
@@ -216,13 +229,17 @@ func classifyAccess(resp *attack.Response, err error) accessVerdict {
 	if err != nil || resp == nil {
 		return accessUndetermined
 	}
-	if resp.IsAccepted() {
-		return accessGranted
-	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return accessRefused
 	}
-	if body, ok := parseResponseBody(resp.Body); ok && validRPCError(body) {
+	body, ok := parseResponseBody(resp.Body)
+	if !ok {
+		return accessUndetermined
+	}
+	if resp.IsSuccess() && validRPCResult(body) {
+		return accessGranted
+	}
+	if validRPCError(body) {
 		return accessRefused
 	}
 	return accessUndetermined
