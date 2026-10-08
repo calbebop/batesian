@@ -420,7 +420,7 @@ func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.
 		"params":  map[string]interface{}{},
 	})
 	// A refused listing is undetermined, not evidence that tasks are absent.
-	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
+	if verdict, _ := classifyProbe(resp, err, 2); verdict != probeAnswered {
 		return safeTool{}, premiseUndetermined, nil
 	}
 	var body struct {
@@ -496,7 +496,7 @@ func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPCl
 			"task":      map[string]interface{}{"ttl": 60000},
 		},
 	})
-	verdict, _ := classifyProbe(resp, err)
+	verdict, _ := classifyProbe(resp, err, 3)
 	switch verdict {
 	case probeInconclusive:
 		return "", premiseUndetermined
@@ -543,7 +543,7 @@ func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClien
 		"method":  "tasks/get",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	verdict, _ := classifyProbe(resp, err)
+	verdict, _ := classifyProbe(resp, err, 4)
 	if verdict != probeAnswered {
 		return taskState{}, verdict
 	}

@@ -74,7 +74,7 @@ func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, op
 func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
 	// Step 1: resources/list - enumerate available resources
 	listResp, err := session.post(ctx, client, 3, "resources/list", nil)
-	verdict, listBody := classifyProbe(listResp, err)
+	verdict, listBody := classifyProbe(listResp, err, 3)
 	if verdict != probeAnswered {
 		return nil, verdict == probeRejected
 	}
@@ -107,10 +107,11 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 			break
 		}
 		seen[cursor] = true
-		pageResp, pageErr := session.post(ctx, client, nextID, "resources/list",
-			map[string]interface{}{"cursor": cursor})
+		pageID := nextID
 		nextID++
-		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		pageResp, pageErr := session.post(ctx, client, pageID, "resources/list",
+			map[string]interface{}{"cursor": cursor})
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr, pageID)
 		if pageVerdict != probeAnswered {
 			break
 		}

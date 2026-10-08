@@ -199,7 +199,7 @@ func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTT
 		"ref":      ref.params,
 		"argument": map[string]interface{}{"name": ref.argName, "value": ""},
 	})
-	verdict, body := classifyProbe(resp, err)
+	verdict, body := classifyProbe(resp, err, 7)
 	if verdict != probeAnswered {
 		return nil, verdict == probeRejected
 	}

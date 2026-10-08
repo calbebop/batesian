@@ -17,7 +17,7 @@ func listToolPages(ctx context.Context, client *attack.HTTPClient, s mcpSession,
 	for page := 0; page < toolListPageCap; page++ {
 		id := startID + page
 		resp, err := s.post(ctx, client, id, "tools/list", params)
-		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
+		if verdict, _ := classifyProbe(resp, err, id); verdict != probeAnswered {
 			return nil, false
 		}
 		var body struct {

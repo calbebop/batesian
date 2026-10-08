@@ -53,7 +53,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 
 	// Call prompts/list without any auth token.
 	listResp, err := session.post(ctx, client, 3, "prompts/list", nil)
-	verdict, listBody := classifyProbe(listResp, err)
+	verdict, listBody := classifyProbe(listResp, err, 3)
 	if verdict != probeAnswered {
 		return nil, verdict == probeRejected
 	}
@@ -81,10 +81,11 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			break
 		}
 		seen[cursor] = true
-		pageResp, pageErr := session.post(ctx, client, nextID, "prompts/list",
-			map[string]interface{}{"cursor": cursor})
+		pageID := nextID
 		nextID++
-		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		pageResp, pageErr := session.post(ctx, client, pageID, "prompts/list",
+			map[string]interface{}{"cursor": cursor})
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr, pageID)
 		if pageVerdict != probeAnswered {
 			break
 		}
@@ -154,7 +155,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		id := nextID
 		nextID++
 		getResp, err := session.post(ctx, client, id, "prompts/get", map[string]interface{}{"name": name})
-		getVerdict, getBody := classifyProbe(getResp, err)
+		getVerdict, getBody := classifyProbe(getResp, err, id)
 		if getVerdict != probeAnswered {
 			continue
 		}
