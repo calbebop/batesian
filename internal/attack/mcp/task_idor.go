@@ -15,11 +15,9 @@ import (
 // TaskIDORExecutor checks whether 2025-11-25 durable tasks are scoped to their
 // creating authorization context. It invokes only approved, annotated tools.
 //
-// This oracle does not apply to the 2026-07-28 tasks extension. That extension
-// permits high-entropy task IDs as bearer capabilities and removes tasks/result
-// and tasks/list; mcp-task-id-entropy-001 covers its requirement instead. Because
-// 2025-11-25 context binding is conditional, an anonymous control must first
-// establish that the server enforces an authorization boundary.
+// The modern extension removes tasks/result and tasks/list and permits task IDs
+// as bearer capabilities. A cross-principal read with a known ID alone does not
+// prove IDOR there. This rule tests only the legacy wire.
 type TaskIDORExecutor struct {
 	rule attack.RuleContext
 }
@@ -697,10 +695,8 @@ const tasksExtensionName = "io.modelcontextprotocol/tasks"
 // tasksExtensionAdvertised reports whether the handshake declared the 2026-07-28
 // tasks extension, at capabilities.extensions["io.modelcontextprotocol/tasks"].
 //
-// A server advertising this is not one this rule can assess: the extension removed
-// tasks/result and tasks/list and dropped the context-binding requirement, so the
-// rule's oracle does not apply to it. Distinguishing it from a server with no tasks
-// at all is what keeps the report honest.
+// The legacy oracle does not apply to this extension. Distinguishing it from a
+// server with no tasks keeps the report honest.
 func tasksExtensionAdvertised(rawInit []byte) bool {
 	var body struct {
 		Result struct {

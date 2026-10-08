@@ -526,11 +526,9 @@ func TestTaskIDOR_NotMCP(t *testing.T) {
 }
 
 // A server carrying tasks under the 2026-07-28 io.modelcontextprotocol/tasks
-// extension has a task surface this rule cannot assess: the extension removed
-// tasks/result and tasks/list and dropped the context-binding requirement the rule
-// tests, so its oracle does not apply. That is different from a server with no
-// tasks at all, and reporting it clean would assert task scoping is sound on a
-// surface never touched.
+// extension has a task surface this legacy rule cannot assess. The extension
+// removed tasks/result and tasks/list and permits bearer task IDs, so this
+// oracle does not apply. It must not be reported as clean.
 func TestTaskIDOR_TasksExtensionIsNotTested(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}

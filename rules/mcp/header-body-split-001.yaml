@@ -58,12 +58,9 @@ info:
     resources/read and prompts/get are reads, and a subject that does not exist
     cannot be read.
 
-    Mcp-Param-{Name} carries the same requirement and is deliberately NOT probed.
-    Those headers come from x-mcp-header annotations on a specific tool's
-    inputSchema, so a header is only "recognized" for that tool, and testing a
-    mismatch would require calling a real annotated tool - the tenant or region
-    parameter of, say, an execute_sql. A scanner must not invoke a tool to learn
-    whether the header is validated.
+    Mcp-Param-{Name} is covered separately by mcp-param-header-mismatch-001.
+    That rule requires exact approval of an annotated read-only tool before
+    invoking it; this rule never invokes tools.
 
   references:
     - https://modelcontextprotocol.io/seps/2243-http-standardization

@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **28 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **29 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -157,6 +157,7 @@ candidate answers does a rule report that it could not test.
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
+| `mcp-param-header-mismatch-001` | [Annotated Parameter Header/Body Mismatch](#mcp-param-header-mismatch-001) | Medium | indicator | CWE-436 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
 | `mcp-oauth-metadata-ssrf-001` | [OAuth Discovery / Metadata-Fetch SSRF](#mcp-oauth-metadata-ssrf-001) | High | confirmed / indicator | CWE-918 |
 | `mcp-secret-canary-001` | [Credential Canary Reflected in Responses](#mcp-secret-canary-001) | Medium | confirmed | CWE-522 |
@@ -581,15 +582,31 @@ whether presence is enforced; it is not itself reported, for consistency with th
 The subject asked for deliberately does not exist, which keeps that dimension
 **read-only**: the oracle is which error comes back, and a server that does not
 validate the header is precisely one that would otherwise act on the body. `tools/call`
-is never used for it, because probing there would invite a non-validating server to
-execute a tool. `Mcp-Param-{Name}` carries the same requirement and is deliberately not
-probed at all, for the same reason: those headers come from `x-mcp-header` annotations
-on a specific tool's schema, so testing one means calling that real annotated tool.
+is never used for this check. Annotated tool parameters are tested separately by
+`mcp-param-header-mismatch-001` with explicit tool approval.
 
 A fourth probe runs only when the plain mismatch was correctly rejected: header names
 are case-insensitive but **values are not**, so `Mcp-Method: TOOLS/LIST` against a body
 of `tools/list` must also be refused. A server that executes it validates the value but
 folds case, and an exact-match intermediary is walked past.
+
+---
+
+### mcp-param-header-mismatch-001
+
+**Annotated Parameter Header/Body Mismatch** | Severity: Medium | indicator | CWE-436
+
+For MCP 2026-07-28, a tool argument marked `x-mcp-header` must match its
+`Mcp-Param-*` HTTP header. This rule makes a matching call, then changes one
+header while keeping the body fixed. A successful second call is a risk indicator:
+gateway policy may use the header while the tool acts on the body. A conforming
+server returns HTTP `400` with JSON-RPC `-32020` (`HeaderMismatch`). Other
+responses are not graded as clean.
+
+Both calls require an exact `--mcp-invoke-tool` approval, a `readOnlyHint: true`
+annotation, and a usable annotated argument. Review the tool before approval;
+server-supplied annotations are not a safety guarantee. Missing prerequisites
+are reported as not tested.
 
 ---
 

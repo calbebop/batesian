@@ -195,6 +195,10 @@ type teSafeTool struct {
 
 // teFindSafeTool picks an approved, annotated task-capable tool.
 func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, approved []string) (teSafeTool, bool, []string, bool) {
+	return teFindSafeToolFiltered(ctx, client, s, approved, false)
+}
+
+func teFindSafeToolFiltered(ctx context.Context, client *attack.HTTPClient, s mcpSession, approved []string, requireParamHeader bool) (teSafeTool, bool, []string, bool) {
 	resp, err := s.post(ctx, client, 20, "tools/list", nil)
 	if verdict, _ := classifyProbe(resp, err, 20); verdict != probeAnswered {
 		return teSafeTool{}, false, nil, false
@@ -222,8 +226,18 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 	var pending []string
 	for _, t := range body.Result.Tools {
 		if s.Era == EraModern {
-			if _, err := toolParamHeaders(t.InputSchema, nil); err != nil {
+			var bindings []toolHeaderBinding
+			if err := collectToolHeaderBindings(t.InputSchema, nil, true, map[string]bool{}, &bindings); err != nil {
 				continue
+			}
+			if requireParamHeader && len(bindings) == 0 {
+				continue
+			}
+			if requireParamHeader {
+				headers, err := toolParamHeaders(t.InputSchema, synthesizeArgs(t.InputSchema, "header-control"))
+				if err != nil || len(headers) == 0 {
+					continue
+				}
 			}
 		}
 		if t.Annotations == nil {

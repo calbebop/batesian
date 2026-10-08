@@ -1,0 +1,36 @@
+id: mcp-param-header-mismatch-001
+info:
+  name: MCP Annotated Parameter Header/Body Mismatch
+  author: batesian
+  severity: medium
+  description: |
+    Checks whether a modern MCP server rejects a tools/call whose Mcp-Param-*
+    header disagrees with the corresponding annotated argument. A matching call
+    must complete first; the mismatch changes only one header. Acceptance is a
+    risk indicator because gateway routing or policy may rely on that header.
+
+    The rule invokes only a tool named in --mcp-invoke-tool or mcp_invoke_tools
+    with readOnlyHint: true and a usable x-mcp-header annotation. Annotations are
+    untrusted hints, so review the tool before approving it. Missing approval,
+    unusable arguments, and ambiguous responses are reported as not tested.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    - https://cwe.mitre.org/data/definitions/436.html
+
+  tags:
+    - mcp
+    - streamable-http
+    - sep-2243
+    - headers
+    - cwe-436
+
+attack:
+  protocol: mcp
+  type: mcp-param-header-mismatch
+
+remediation: |
+  Validate every recognized Mcp-Param-* header against its annotated argument
+  after decoding the header value. Reject missing or mismatched values with HTTP
+  400 and JSON-RPC -32020 (HeaderMismatch). Keep gateway policy aligned with
+  the body value the tool executes.
