@@ -37,7 +37,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **19 A2A + 28 MCP = 47 rules**. Every rule's primary
+The bundled rule set is **19 A2A + 29 MCP = 48 rules**. Every rule's primary
 validation is an in-process `net/http/httptest` harness in its Go
 `*_test.go` (multiple server postures: vulnerable must fire / patched / open /
 benign must stay silent). The Python servers below provide standalone live
@@ -87,9 +87,10 @@ validation; selected fixtures also run in CI.
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` fires on `prefix`; stays silent on `port-prefix`, `hardened`, and `open` |
 | `mcp_task_entropy_server.py` | 7812 | Modern Tasks extension; `mcp-task-id-entropy-001` flags `weak` with `--mcp-invoke-tool wait_a_moment`, silent on `clean` |
 | `mcp_token_replay_server.py` | 7813 | `mcp-token-replay-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
+| `mcp_param_header_server.py` | 7814 | `mcp-param-header-mismatch-001` flags `vulnerable` with `--mcp-invoke-tool lookup`; silent on `patched` |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
-**Coverage.** All 47 rules have a standalone Python fixture above, and each
+**Coverage.** All 48 rules have a standalone Python fixture above, and each
 of those was checked by actually running it rather than by reading this table.
 The last holdout, `mcp-token-replay-001`, gained `mcp_token_replay_server.py`
 (port 7813) alongside the nightly suite that drives it. The same is true of
@@ -565,6 +566,19 @@ issued - an exact presentation match that a random-keyed signature fails for
 the same reason real signature verification fails it - so every forged probe
 is rejected and the rule stays silent. The fixture implements no tool surface:
 the probe is purely about token handling.
+
+**`mcp_param_header_server.py` takes a posture argument**, defaulting to
+`vulnerable`:
+
+```sh
+python testdata/mcp_param_header_server.py vulnerable  # medium indicator
+python testdata/mcp_param_header_server.py patched     # silent
+batesian scan --target http://127.0.0.1:7814 --rule-ids mcp-param-header-mismatch-001 --mcp-invoke-tool lookup -v
+```
+
+The fixture invokes only `lookup`, an annotated read-only tool that returns an
+empty result. The vulnerable posture accepts a changed parameter header while
+the body stays fixed; the patched posture returns HTTP 400 and JSON-RPC -32020.
 
 ---
 
