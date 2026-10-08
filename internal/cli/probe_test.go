@@ -18,11 +18,7 @@ import (
 	"github.com/calbebop/batesian/internal/report"
 )
 
-// TestCardToProbeResult_ExtendedCardAndProtocol covers the two card fields whose
-// v0.3 spellings probe could not see. ExtendedCardAvailable is not merely a
-// printed row: probe gates two live checks of /extendedAgentCard on it, one of
-// which fetches the endpoint with a fabricated Bearer token, so a v0.3 agent got
-// neither.
+// TestCardToProbeResult_ExtendedCardAndProtocol covers both card versions.
 func TestCardToProbeResult_ExtendedCardAndProtocol(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -40,10 +36,10 @@ func TestCardToProbeResult_ExtendedCardAndProtocol(t *testing.T) {
 		},
 		{
 			name:         "v1.0 card",
-			fields:       `"protocolVersion":"1.0","capabilities":{"extendedAgentCard":true}`,
+			fields:       `"supportedInterfaces":[{"url":"https://agent.example.com/rpc","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"capabilities":{"extendedAgentCard":true}`,
 			wantExtended: true,
 			wantProtocol: "1.0",
-			why:          "the v1.0 path must be unaffected",
+			why:          "v1.0 versions are advertised by interfaces",
 		},
 		{
 			name:         "no extended card, no protocol declared",
@@ -255,6 +251,8 @@ func TestProbeMCP_ContextCancellationInterruptsInitialize(t *testing.T) {
 	}
 }
 
+const validProbeA2ACard = `{"name":"Agent","description":"Test agent","version":"1","supportedInterfaces":[{"url":"https://agent.example.com","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"capabilities":{"extendedAgentCard":true},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[{"id":"test","name":"Test","description":"Test skill","tags":["test"]}]}`
+
 func TestProbeA2A_TokenDoesNotTurnExtendedCardCheckIntoAuthenticatedRequest(t *testing.T) {
 	var mu sync.Mutex
 	var cardAuth string
@@ -269,7 +267,7 @@ func TestProbeA2A_TokenDoesNotTurnExtendedCardCheckIntoAuthenticatedRequest(t *t
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+			_, _ = io.WriteString(w, validProbeA2ACard)
 		case a2a.ExtendedCardPath:
 			mu.Lock()
 			extAuth = append(extAuth, r.Header.Get("Authorization"))
@@ -306,13 +304,13 @@ func TestProbeA2A_TokenStillFlagsAnonymousExtendedCard(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+			_, _ = io.WriteString(w, validProbeA2ACard)
 		case a2a.ExtendedCardPath:
 			if r.Header.Get("Authorization") != "" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `{"name":"Extended Agent","description":"Private capabilities","version":"1","supportedInterfaces":[{"url":"https://agent.example.com","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`)
+			_, _ = io.WriteString(w, `{"name":"Extended Agent","description":"Private capabilities","version":"1","supportedInterfaces":[{"url":"https://agent.example.com","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[{"id":"private","name":"Private","description":"Private skill","tags":["private"]}]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -334,7 +332,7 @@ func TestProbeA2A_GenericExtendedCardResponseNotFlagged(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case a2a.WellKnownPath:
-					_, _ = io.WriteString(w, `{"name":"Agent","version":"1","capabilities":{"extendedAgentCard":true},"skills":[]}`)
+					_, _ = io.WriteString(w, validProbeA2ACard)
 				case a2a.ExtendedCardPath:
 					_, _ = io.WriteString(w, body)
 				default:

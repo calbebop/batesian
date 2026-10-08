@@ -44,15 +44,99 @@ func TestIsCompleteAgentCard(t *testing.T) {
 	if !IsCompleteAgentCard([]byte(legacy)) {
 		t.Fatal("complete v0.3 card rejected")
 	}
+	legacyGRPC := `{"name":"Legacy Agent","description":"Older agent","version":"0.3.0","url":"grpc.example.com:443","preferredTransport":"GRPC","capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	if !IsCompleteAgentCard([]byte(legacyGRPC)) {
+		t.Fatal("complete v0.3 gRPC card rejected")
+	}
 	for _, body := range []string{
 		`null`, `{}`, `{"name":"Agent"}`,
 		`{"name":"Agent","description":"","version":"1","supportedInterfaces":[],"capabilities":{},"defaultInputModes":[],"defaultOutputModes":[],"skills":[]}`,
 		`{"name":"Agent","description":"","version":"1","url":"https://agent.example.com","capabilities":{},"defaultInputModes":[1],"defaultOutputModes":[],"skills":[]}`,
 		`{"name":"Agent","description":"","version":"1","url":"https://agent.example.com","capabilities":{},"defaultInputModes":[],"defaultOutputModes":[],"skills":[{}]}`,
+		`{"name":"Agent","description":"Agent","version":"1","url":"invalid","capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`,
 	} {
 		if IsCompleteAgentCard([]byte(body)) {
 			t.Errorf("invalid card accepted: %s", body)
 		}
+	}
+}
+
+func TestValidateAgentCardRequiredFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		edit  func(map[string]any)
+	}{
+		{"name", "name", func(m map[string]any) { delete(m, "name") }},
+		{"description", "description", func(m map[string]any) { m["description"] = " " }},
+		{"version", "version", func(m map[string]any) { m["version"] = nil }},
+		{"capabilities", "capabilities", func(m map[string]any) { m["capabilities"] = nil }},
+		{"input modes", "defaultInputModes", func(m map[string]any) { m["defaultInputModes"] = []any{} }},
+		{"output modes", "defaultOutputModes", func(m map[string]any) { delete(m, "defaultOutputModes") }},
+		{"skills", "skills", func(m map[string]any) { m["skills"] = []any{} }},
+		{"skill description", "description", func(m map[string]any) {
+			delete(m["skills"].([]any)[0].(map[string]any), "description")
+		}},
+		{"skill tags", "tags", func(m map[string]any) {
+			m["skills"].([]any)[0].(map[string]any)["tags"] = []any{}
+		}},
+		{"interfaces", "supportedInterfaces", func(m map[string]any) { m["supportedInterfaces"] = []any{} }},
+		{"interface version", "supportedInterfaces", func(m map[string]any) {
+			delete(m["supportedInterfaces"].([]any)[0].(map[string]any), "protocolVersion")
+		}},
+		{"later interface", "supportedInterfaces", func(m map[string]any) {
+			m["supportedInterfaces"] = append(m["supportedInterfaces"].([]any), map[string]any{"url": "https://agent.example.com/other", "protocolBinding": "JSONRPC"})
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var fields map[string]any
+			if err := json.Unmarshal([]byte(minimalV1CardJSON), &fields); err != nil {
+				t.Fatal(err)
+			}
+			tc.edit(fields)
+			body, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateAgentCard(body); err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("validation error = %v, want %s", err, tc.field)
+			}
+			if IsCompleteAgentCard(body) {
+				t.Error("invalid card accepted as complete")
+			}
+		})
+	}
+}
+
+func TestGetProtocolVersionMatchesServiceEndpoint(t *testing.T) {
+	card := AgentCard{
+		ProtocolVersion: "0.3",
+		SupportedInterfaces: []AgentInterface{
+			{URL: "grpc.example.com:443", ProtocolBinding: "GRPC", ProtocolVersion: "1.0"},
+			{URL: "https://agent.example.com/rpc", ProtocolBinding: "JSONRPC", ProtocolVersion: "1.1"},
+		},
+	}
+	if got := card.GetServiceURL(); got != "https://agent.example.com/rpc" {
+		t.Errorf("service URL = %q", got)
+	}
+	if got := card.GetProtocolVersion(); got != "1.1" {
+		t.Errorf("service version = %q, want 1.1", got)
+	}
+	card.SupportedInterfaces[1].ProtocolBinding = "HTTP+JSON"
+	if got := card.GetProtocolVersion(); got != "1.1" {
+		t.Errorf("HTTP+JSON version = %q, want 1.1", got)
+	}
+	card.SupportedInterfaces = card.SupportedInterfaces[:1]
+	if got := card.GetProtocolVersion(); got != "1.0" {
+		t.Errorf("gRPC-only version = %q, want 1.0", got)
+	}
+	if got := card.GetServiceURL(); got != "" {
+		t.Errorf("gRPC-only JSON-RPC URL = %q, want empty", got)
+	}
+	card.SupportedInterfaces = nil
+	if got := card.GetProtocolVersion(); got != "0.3" {
+		t.Errorf("legacy version = %q, want 0.3", got)
 	}
 }
 
@@ -63,6 +147,8 @@ const legacyV03CardJSON = `{
 	"url": "https://legacy.example.com",
 	"version": "0.3.0",
 	"capabilities": {},
+	"defaultInputModes": ["text/plain"],
+	"defaultOutputModes": ["text/plain"],
 	"skills": [
 		{
 			"id": "task",
@@ -404,6 +490,8 @@ func TestFetchAgentCard_RealV1SecuredCard(t *testing.T) {
 		"description": "Agent that enforces bearer authorization",
 		"version": "1.0.0",
 		"capabilities": {"streaming": true},
+		"defaultInputModes": ["text/plain"],
+		"defaultOutputModes": ["text/plain"],
 		"skills": [{"id": "echo", "name": "Echo", "description": "Echoes", "tags": ["echo"]}],
 		"supportedInterfaces": [{"url": "https://agent.example.com/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
 		"securitySchemes": {"bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}},
@@ -745,6 +833,28 @@ func TestFetchAgentCard_V1Path(t *testing.T) {
 	}
 	if card.Name != "Hello World Agent" {
 		t.Errorf("Name = %q", card.Name)
+	}
+}
+
+func TestFetchAgentCardRejectsIncompleteCard(t *testing.T) {
+	legacyCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == WellKnownPathLegacy {
+			legacyCalls++
+		}
+		_, _ = w.Write([]byte(`{"name":"Agent"}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, result, err := client.FetchAgentCard(t.Context())
+	if card != nil || err == nil || !strings.Contains(err.Error(), "description") {
+		t.Fatalf("card = %v, error = %v; want required-field error", card, err)
+	}
+	if result == nil || result.StatusCode != http.StatusOK || legacyCalls != 0 {
+		t.Errorf("result = %v, legacy calls = %d; want primary 200 only", result, legacyCalls)
 	}
 }
 
