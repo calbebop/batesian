@@ -65,6 +65,7 @@ func init() {
 	scanCmd.Flags().StringSlice("mcp-invoke-tool", nil, "Allow traversal and task rules to call this exact MCP tool name (comma-separated)")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")
+	scanCmd.Flags().Bool("no-config", false, "Ignore config files; use flags and environment variables only")
 	// OAuth token acquisition.
 	scanCmd.Flags().String("token-url", "", "OAuth 2.0 token endpoint URL")
 	scanCmd.Flags().String("client-id", "", "OAuth 2.0 client ID (used with --token-url or --auth-url)")
@@ -89,9 +90,20 @@ func init() {
 
 func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	configPath, _ := cmd.Flags().GetString("config")
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("loading configuration: %w", err)
+	noConfig, _ := cmd.Flags().GetBool("no-config")
+	if noConfig && cmd.Flags().Changed("config") {
+		return fmt.Errorf("--config and --no-config cannot be used together")
+	}
+	var cfg *config.Config
+	var configSource string
+	if noConfig {
+		cfg = &config.Config{}
+	} else {
+		var err error
+		cfg, configSource, err = config.LoadWithSource(configPath)
+		if err != nil {
+			return fmt.Errorf("loading configuration: %w", err)
+		}
 	}
 
 	target, _ := cmd.Flags().GetString("target")
@@ -257,6 +269,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	displayTarget := redactor.displayTarget()
 	printer := report.New(statusOut, verbose)
 	printer.Banner()
+	switch {
+	case noConfig:
+		printer.Info("Config disabled (--no-config)")
+	case configSource != "":
+		printer.Info("Loaded config: " + configSource)
+	default:
+		printer.Info("No config file loaded")
+	}
 	printer.ProbeHeader(displayTarget, coalesceProtocol(protocol))
 
 	printer.Info(fmt.Sprintf("Running %d rule(s) against %s", len(filtered), displayTarget))
