@@ -62,8 +62,9 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 			"the anonymous initialize control at %s did not answer, so acceptance of a forged token at initialize could not be attributed", ep)}
 	}
 
-	if !resp.IsAccepted() {
-		switch classifyAccess(resp, nil) {
+	verdict := classifyAccess(resp, nil, 1)
+	if verdict != accessGranted {
+		switch verdict {
 		case accessRefused:
 			// The endpoint demanded a credential for the handshake itself.
 			return gateProbe{gate: gateOnInit}
@@ -99,7 +100,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 	})
 
 	listResp, err := session.post(ctx, anon, 9, method, map[string]interface{}{})
-	switch classifyAccess(listResp, err) {
+	switch classifyAccess(listResp, err, 9) {
 	case accessRefused:
 		return gateProbe{gate: gateAfterInit, method: method, session: session}
 	case accessGranted:
@@ -126,11 +127,12 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 	if err != nil {
 		return nil, accessUndetermined
 	}
-	if !initResp.IsAccepted() {
+	initVerdict := classifyAccess(initResp, nil, 1)
+	if initVerdict != accessGranted {
 		// Initialize was open for an anonymous caller moments ago; this reply
 		// differs only in the forged Authorization header, so whatever it says
 		// was said to that token.
-		return initResp, classifyAccess(initResp, nil)
+		return initResp, initVerdict
 	}
 
 	session := mcpSession{
@@ -147,7 +149,7 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 	resp, err := session.postShaping(ctx, anon, 10, method, map[string]interface{}{}, func(h map[string]string) {
 		h["Authorization"] = "Bearer " + token
 	})
-	return resp, classifyAccess(resp, err)
+	return resp, classifyAccess(resp, err, 10)
 }
 
 // judgedAtLabel names the surface a probe's verdict came from, for evidence.

@@ -205,11 +205,13 @@ func TestClassifyAccess(t *testing.T) {
 	}{
 		{"result", 200, `{"jsonrpc":"2.0","id":1,"result":{"value":1e400}}`, accessGranted},
 		{"null result", 200, `{"jsonrpc":"2.0","id":1,"result":null}`, accessGranted},
+		{"unmatched result", 200, `{"jsonrpc":"2.0","id":999,"result":{"value":1}}`, accessUndetermined},
 		{"versionless result", 200, `{"id":1,"result":{"value":1}}`, accessUndetermined},
 		{"missing response id", 200, `{"jsonrpc":"2.0","result":{"value":1}}`, accessUndetermined},
 		{"RPC error over HTTP 200", 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`, accessRefused},
 		{"malformed RPC error over HTTP 200", 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601}}`, accessUndetermined},
 		{"error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"value":1e400}}}`, accessRefused},
+		{"unmatched error", 500, `{"jsonrpc":"2.0","id":999,"error":{"code":-32603,"message":"Internal error"}}`, accessUndetermined},
 		{"gateway error", 502, `{"error":"Bad Gateway"}`, accessUndetermined},
 		{"incomplete JSON-RPC error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`, accessUndetermined},
 		{"missing response id", 500, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`, accessUndetermined},
@@ -219,7 +221,7 @@ func TestClassifyAccess(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := &attack.Response{StatusCode: tc.status, Body: []byte(tc.body)}
-			if got := classifyAccess(resp, nil); got != tc.want {
+			if got := classifyAccess(resp, nil, 1); got != tc.want {
 				t.Errorf("classifyAccess() = %d, want %d", got, tc.want)
 			}
 		})

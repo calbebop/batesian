@@ -145,6 +145,63 @@ func TestEraDowngrade_NoGateAnywhereIsSuppressed(t *testing.T) {
 	}
 }
 
+func TestEraDowngrade_IgnoresUnmatchedListing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		modern := r.Header.Get("MCP-Protocol-Version") == "2026-07-28"
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "server/discover":
+			if !modern {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"supportedVersions": []string{"2026-07-28"},
+					"resultType": "complete", "capabilities": map[string]interface{}{"tools": map[string]interface{}{}}}})
+		case "initialize":
+			if modern {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{"protocolVersion": "2025-06-18",
+					"serverInfo":   map[string]string{"name": "stale-result", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if !modern {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": 999,
+				"result": map[string]interface{}{"tools": []map[string]string{{"name": "echo"}}}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := mcpattack.NewEraDowngradeExecutor(eraDowngradeRC()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unmatched listing cannot prove a wire asymmetry: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestEraDowngrade_GatedOnBothWiresIsSecure(t *testing.T) {
 	ts := dualEraGateServer(t, true, true)
 	defer ts.Close()

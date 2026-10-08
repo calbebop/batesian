@@ -234,7 +234,7 @@ func mismatchMethodHeader(h map[string]string) { h["Mcp-Method"] = "tools/call" 
 // such requirement.
 func (e *HeaderBodySplitExecutor) toolsList(ctx context.Context, client *attack.HTTPClient, session mcpSession, shape func(map[string]string)) accessVerdict {
 	resp, err := session.postShaping(ctx, client, 2, "tools/list", nil, shape)
-	v := classifyAccess(resp, err)
+	v := classifyAccess(resp, err, 2)
 	if v != accessGranted {
 		return v
 	}

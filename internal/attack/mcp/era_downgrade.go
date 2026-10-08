@@ -190,7 +190,7 @@ func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTT
 	out := listOutcome{era: session.Era, method: method}
 
 	resp, err := session.post(ctx, client, 2, out.method, nil)
-	out.verdict = classifyAccess(resp, err)
+	out.verdict = classifyAccess(resp, err, 2)
 	if err != nil {
 		// A transport failure is not a refusal. The method stays set so the caller
 		// can distinguish "this wire did not answer" from "this wire advertised

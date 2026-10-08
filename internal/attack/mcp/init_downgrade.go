@@ -314,7 +314,7 @@ func (e *InitDowngradeExecutor) probeList(ctx context.Context, client *attack.HT
 		"method":  method,
 		"params":  map[string]interface{}{},
 	})
-	verdict := classifyAccess(resp, err)
+	verdict := classifyAccess(resp, err, 2)
 	if verdict != accessGranted {
 		return verdict, 0
 	}
