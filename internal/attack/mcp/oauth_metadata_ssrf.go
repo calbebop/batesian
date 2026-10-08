@@ -130,7 +130,8 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "batesian-"+vars.RandID)
 	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, resp)
 	if !received {
-		return nil, nil
+		return nil, fmt.Errorf("%w: no metadata callback observed; the listener may be unreachable or the fetch delayed",
+			attack.ErrInconclusive)
 	}
 	field := matchMarker(cb.URL, markerFor)
 	return []attack.Finding{{

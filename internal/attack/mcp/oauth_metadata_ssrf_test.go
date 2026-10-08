@@ -114,13 +114,34 @@ func TestMetadataSSRF_Fetch(t *testing.T) {
 	}
 }
 
-// TestMetadataSSRF_NoFetch: server does not fetch => no finding.
-func TestMetadataSSRF_NoFetch(t *testing.T) {
+func TestMetadataSSRF_NoCallbackIsIncomplete(t *testing.T) {
 	ts := metadataSSRFServer("nofetch")
 	defer ts.Close()
 
-	if findings := runMetadataSSRF(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings when server does not fetch metadata, got %d: %+v", len(findings), findings)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	findings, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).Execute(ctx, ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unobserved callback must be incomplete, got findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(err.Error(), "callback") {
+		t.Errorf("skip reason should identify the missing callback: %v", err)
+	}
+}
+
+func TestMetadataSSRF_ExternalOOBNeedsVerification(t *testing.T) {
+	ts := metadataSSRFServer("nofetch")
+	defer ts.Close()
+
+	findings, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{
+		TimeoutSeconds: 5,
+		OOBListenerURL: "http://oob.batesian.invalid",
+	})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("external callbacks need manual verification, got findings=%+v err=%v", findings, err)
+	}
+	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
 	}
 }
 
