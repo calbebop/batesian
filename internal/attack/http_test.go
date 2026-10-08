@@ -186,11 +186,7 @@ func TestResponseContainsAny_SkipsEmptySubstring(t *testing.T) {
 	}
 }
 
-// TestResponse_IsAccepted guards the canonical JSON-RPC success oracle. The
-// older IsSuccess() && !isJSONRPCError(body) idiom treated any 2xx that was not a
-// JSON-RPC error envelope as success - including HTML, empty bodies, and "{}" -
-// which false-positived targets that answer an unauthenticated probe with a 2xx
-// non-JSON body. IsAccepted must require a real result envelope.
+// TestResponse_IsAccepted distinguishes JSON-RPC results from generic 2xx bodies.
 func TestResponse_IsAccepted(t *testing.T) {
 	cases := []struct {
 		name string
@@ -200,8 +196,11 @@ func TestResponse_IsAccepted(t *testing.T) {
 	}{
 		{"valid result object", 200, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, true},
 		{"large result number", 200, `{"jsonrpc":"2.0","id":1,"result":{"value":1e400}}`, true},
-		{"null result is a valid success", 200, `{"result":null}`, true},
-		{"empty-object result is a valid success", 200, `{"result":{}}`, true},
+		{"null result is a valid success", 200, `{"jsonrpc":"2.0","id":1,"result":null}`, true},
+		{"empty-object result is a valid success", 200, `{"jsonrpc":"2.0","id":1,"result":{}}`, true},
+		{"versionless result is not JSON-RPC", 200, `{"id":1,"result":{}}`, false},
+		{"result without id is not JSON-RPC", 200, `{"jsonrpc":"2.0","result":{}}`, false},
+		{"wrong version is not JSON-RPC", 200, `{"jsonrpc":"1.0","id":1,"result":{}}`, false},
 		{"error envelope is rejection", 200, `{"jsonrpc":"2.0","error":{"code":-32600}}`, false},
 		{"html body is rejection", 200, `<html><body>please log in</body></html>`, false},
 		{"empty body is rejection", 200, ``, false},

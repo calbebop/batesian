@@ -274,22 +274,8 @@ func (r *Response) IsSuccess() bool {
 	return r.StatusCode >= 200 && r.StatusCode < 300
 }
 
-// IsAccepted reports whether the response represents a successful JSON-RPC
-// result: an HTTP 2xx whose body is valid JSON carrying a "result" envelope and
-// no "error" envelope. This is the canonical "the JSON-RPC call succeeded"
-// oracle.
-//
-// It exists because the older idiom IsSuccess() && !isJSONRPCError(body) treats
-// any 2xx that is not a JSON-RPC error envelope as success - including an HTML
-// login page, an empty body, "{}", or a bare object. Those are not results, and
-// judging them as "accepted" produces false positives whenever a target answers
-// an unauthenticated probe with a 2xx non-JSON body (common: redirects to a
-// login page, generic 200 acks, HTML error interstitials).
-//
-// A JSON-null or empty-object result ({"result":null}, {"result":{}}) still
-// counts as accepted: both are valid JSON-RPC success shapes, and rejecting
-// them would risk false negatives on methods that legitimately return an empty
-// result (e.g. logging/setLevel).
+// IsAccepted reports whether an HTTP 2xx response contains a JSON-RPC 2.0
+// success envelope. Null and empty-object results are valid.
 func (r *Response) IsAccepted() bool {
 	if !r.IsSuccess() {
 		return false
@@ -300,7 +286,8 @@ func (r *Response) IsAccepted() bool {
 	}
 	_, hasResult := m["result"]
 	_, hasError := m["error"]
-	return hasResult && !hasError
+	_, hasID := m["id"]
+	return m["jsonrpc"] == "2.0" && hasID && hasResult && !hasError
 }
 
 // IsJSON reports whether the response body is a JSON object. Use it for raw HTTP
