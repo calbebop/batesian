@@ -296,6 +296,10 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		printDryRunPlan(os.Stdout, target, recorder, redactor)
 		return nil
 	}
+	var outcomes []scanJSONRuleOutcome
+	if format == report.FormatJSON {
+		outcomes = redactor.ruleOutcomes(results)
+	}
 
 	noCoalesce, _ := cmd.Flags().GetBool("no-coalesce")
 	if !noCoalesce {
@@ -310,7 +314,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		// The machine-readable payload always goes to stdout; status/banner
 		// output (above) goes to stderr so `batesian scan --output json | jq`
 		// receives clean JSON.
-		return report.New(os.Stdout, verbose).PrintJSON(buildScanJSON(displayTarget, results))
+		doc, err := buildScanJSON(scanJSONInput{
+			Target: displayTarget, Reported: results, Outcomes: outcomes,
+			Loaded: loaded, Supplemental: rulesDir != "",
+		})
+		if err != nil {
+			return err
+		}
+		return report.New(os.Stdout, verbose).PrintJSON(doc)
 	default:
 		printer.PrintScanSummary(results)
 	}
@@ -789,7 +800,7 @@ func oneLine(s string, max int) string {
 }
 
 // buildScanJSON creates the JSON representation of scan results.
-func buildScanJSON(target string, results []engine.RunResult) map[string]interface{} {
+func buildScanJSON(input scanJSONInput) (map[string]any, error) {
 	type jsonChainStep struct {
 		Hop       int    `json:"hop"`
 		Principal string `json:"principal,omitempty"`
@@ -837,7 +848,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 	skipped := make([]map[string]string, 0)
 	ruleErrors := make([]map[string]string, 0)
 
-	for _, r := range results {
+	for _, r := range input.Reported {
 		for _, f := range r.Findings {
 			findings = append(findings, toJSONFinding(f))
 		}
@@ -855,13 +866,29 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 		}
 	}
 
-	return map[string]interface{}{
-		"target":   target,
-		"findings": findings,
-		"skipped":  skipped,
-		"errors":   ruleErrors,
-		"summary":  buildSummary(results),
+	digest, err := ruleCatalogSHA256(input.Loaded)
+	if err != nil {
+		return nil, err
 	}
+	source := "builtin"
+	if input.Supplemental {
+		source = "builtin+supplemental"
+	}
+	return map[string]any{
+		"schema_version": scanJSONSchemaVersion,
+		"scanner": scanJSONScanner{
+			Name: "batesian", Version: attackpkg.Version, Commit: buildCommit, BuildDate: buildDate,
+		},
+		"ruleset": scanJSONRuleset{
+			Source: source, Loaded: len(input.Loaded), Selected: len(input.Outcomes), SHA256: digest,
+		},
+		"target":        input.Target,
+		"findings":      findings,
+		"rule_outcomes": input.Outcomes,
+		"skipped":       skipped,
+		"errors":        ruleErrors,
+		"summary":       buildSummary(input.Reported),
+	}, nil
 }
 
 // buildSummary uses an unknown bucket so severity totals remain complete.

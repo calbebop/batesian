@@ -45,7 +45,7 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
 		t.Fatal(err)
 	}
-	jsonBody, err := json.Marshal(buildScanJSON(r.displayTarget(), safe))
+	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), safe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,29 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 		if !strings.Contains(body, "REDACTED") {
 			t.Errorf("%s output lost the redacted target", format)
 		}
+	}
+}
+
+func TestRuleOutcomeRedaction(t *testing.T) {
+	const target = "https://operator:password@example.com/mcp?access_token=secret-value"
+	r := newOutputRedactor(target)
+	results := []engine.RunResult{
+		{Rule: &rules.Rule{ID: "skipped"}, Skipped: true, SkipMsg: "unreachable: " + target},
+		{Rule: &rules.Rule{ID: "error"}, Err: errors.New("request failed: " + target)},
+	}
+	outcomes := r.ruleOutcomes(results)
+	if len(outcomes) != 2 || outcomes[0].Status != "skipped" || outcomes[1].Status != "error" {
+		t.Fatalf("outcomes = %+v", outcomes)
+	}
+	for _, outcome := range outcomes {
+		for _, secret := range []string{"operator", "password", "secret-value"} {
+			if strings.Contains(outcome.Reason+outcome.Error, secret) {
+				t.Errorf("outcome %s disclosed %q", outcome.RuleID, secret)
+			}
+		}
+	}
+	if !strings.Contains(results[0].SkipMsg, "secret-value") || !strings.Contains(results[1].Err.Error(), "secret-value") {
+		t.Fatal("redaction modified input results")
 	}
 }
 
@@ -92,7 +115,7 @@ func TestCoalescedDetailsAcrossScanFormats(t *testing.T) {
 	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
 		t.Fatal(err)
 	}
-	jsonBody, err := json.Marshal(buildScanJSON(target, safe))
+	jsonBody, err := json.Marshal(testScanJSON(t, target, safe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +191,7 @@ func TestOutputRedactorConfiguredSecrets(t *testing.T) {
 	if err := report.WriteSARIF(&sarif, results, "test"); err != nil {
 		t.Fatal(err)
 	}
-	jsonBody, err := json.Marshal(buildScanJSON(r.displayTarget(), results))
+	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), results))
 	if err != nil {
 		t.Fatal(err)
 	}

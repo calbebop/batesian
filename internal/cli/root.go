@@ -8,12 +8,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var buildCommit = "none"
+var buildDate = "unknown"
+
 // SetVersion injects build-time version metadata, called from main.
 // The version string is also propagated to the attack package so that every
 // outbound HTTP request carries an accurate User-Agent header.
 func SetVersion(version, commit, date string) {
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", version, commit, date)
 	attack.Version = version
+	buildCommit = commit
+	buildDate = date
 }
 
 var rootCmd = &cobra.Command{
