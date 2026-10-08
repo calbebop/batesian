@@ -171,6 +171,84 @@ func TestFetchDiscoveryCard_VersionHeaderByPath(t *testing.T) {
 	}
 }
 
+func TestResolveHTTPJSONBases_FallsBackFromUnusablePrimaryCard(t *testing.T) {
+	for _, primary := range []string{
+		`{}`,
+		`null`,
+		`{"supportedInterfaces":[{"url":"127.0.0.1:50051","protocolBinding":"GRPC"}]}`,
+	} {
+		t.Run(primary, func(t *testing.T) {
+			var serverURL string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case cardPathPrimary:
+					_, _ = io.WriteString(w, primary)
+				case cardPathLegacy:
+					_, _ = io.WriteString(w, `{"preferredTransport":"HTTP+JSON","url":"`+serverURL+`/legacy-rest"}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			serverURL = server.URL
+
+			got := resolveHTTPJSONBases(t.Context(), newClient(server.URL), server.URL)
+			if want := []string{server.URL + "/legacy-rest"}; !slices.Equal(got, want) {
+				t.Errorf("REST bases = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestResolveHTTPJSONBases_PrefersUsablePrimaryCard(t *testing.T) {
+	var serverURL string
+	legacyReads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case cardPathPrimary:
+			_, _ = io.WriteString(w, `{"supportedInterfaces":[{"protocolBinding":"HTTP+JSON","url":"`+serverURL+`/current"}]}`)
+		case cardPathLegacy:
+			legacyReads++
+			_, _ = io.WriteString(w, `{"preferredTransport":"HTTP+JSON","url":"`+serverURL+`/legacy"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	got := resolveHTTPJSONBases(t.Context(), newClient(server.URL), server.URL)
+	if want := []string{server.URL + "/current"}; !slices.Equal(got, want) {
+		t.Errorf("REST bases = %q, want %q", got, want)
+	}
+	if legacyReads != 0 {
+		t.Errorf("legacy card was read %d times", legacyReads)
+	}
+}
+
+func TestResolveA2AEndpoint_FallsBackFromUnusablePrimaryCard(t *testing.T) {
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case cardPathPrimary:
+			_, _ = io.WriteString(w, `{}`)
+		case cardPathLegacy:
+			_, _ = io.WriteString(w, `{"url":"`+serverURL+`/custom-rpc"}`)
+		case "/custom-rpc":
+			writeTaskNotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	got, ok := resolveA2AEndpoint(t.Context(), newClient(server.URL), server.URL)
+	if !ok || got != server.URL+"/custom-rpc" {
+		t.Errorf("endpoint = %q, %v; want %q, true", got, ok, server.URL+"/custom-rpc")
+	}
+}
+
 func TestResolveHTTPJSONBases_CapsResults(t *testing.T) {
 	interfaces := make([]map[string]string, 18)
 	for i := range interfaces {
