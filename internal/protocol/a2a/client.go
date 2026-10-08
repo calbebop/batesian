@@ -159,8 +159,8 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 		if err := json.Unmarshal(body, &card); err != nil {
 			return nil, result, fmt.Errorf("response from %s is not valid JSON: %w", target, err)
 		}
-		if card.Name == "" {
-			return nil, result, fmt.Errorf("response from %s is missing required field 'name' (is this an A2A agent?)", target)
+		if err := ValidateAgentCard(body); err != nil {
+			return nil, result, fmt.Errorf("invalid Agent Card from %s: %w", target, err)
 		}
 		return &card, result, nil
 	}

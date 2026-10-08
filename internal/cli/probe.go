@@ -203,7 +203,7 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 		Description:           card.Description,
 		URL:                   card.GetServiceURL(),
 		Version:               card.Version,
-		ProtocolVersion:       card.ProtocolVersion,
+		ProtocolVersion:       card.GetProtocolVersion(),
 		Streaming:             card.Capabilities.Streaming,
 		PushNotifications:     card.Capabilities.PushNotifications,
 		ExtendedCardAvailable: card.SupportsExtendedCard(),

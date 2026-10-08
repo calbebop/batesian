@@ -262,7 +262,7 @@ func TestProbeOutputHidesBearerToken(t *testing.T) {
 	const secret = "probe-bearer-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"name":"Agent","description":"`+secret+`","url":"`+"http://"+r.Host+`","version":"1.0","skills":[]}`)
+		_, _ = io.WriteString(w, `{"name":"Agent","description":"`+secret+`","url":"`+"http://"+r.Host+`","version":"1.0","capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`)
 	}))
 	defer server.Close()
 	if probeCmd.Flags().Lookup("target") == nil {

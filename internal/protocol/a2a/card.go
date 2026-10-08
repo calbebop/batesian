@@ -4,6 +4,8 @@ package a2a
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -31,10 +33,7 @@ type AgentCard struct {
 	// (e.g. "JSONRPC", "GRPC").
 	PreferredTransport string `json:"preferredTransport,omitempty"`
 
-	// ProtocolVersion is the A2A revision the agent speaks ("0.3.0", "1.0"). It is
-	// the field that distinguishes the two card dialects from each other, so it is
-	// worth surfacing: every version-specific field below has a different name or
-	// shape depending on it.
+	// ProtocolVersion is the v0.3 top-level version. v1.0 puts it on interfaces.
 	ProtocolVersion string `json:"protocolVersion,omitempty"`
 
 	// SupportsAuthenticatedExtendedCard is the v0.3 spelling of the extended-card
@@ -66,85 +65,130 @@ type AgentCard struct {
 	Signatures []AgentCardSignature `json:"signatures,omitempty"`
 }
 
-// IsCompleteAgentCard checks the required v1.0 fields, accepting the v0.3 URL
-// in place of supportedInterfaces for older agents.
+// IsCompleteAgentCard reports whether a card has the required fields.
 func IsCompleteAgentCard(body []byte) bool {
-	var card struct {
-		Name                string          `json:"name"`
-		Description         *string         `json:"description"`
-		Version             string          `json:"version"`
-		Capabilities        json.RawMessage `json:"capabilities"`
-		Skills              json.RawMessage `json:"skills"`
-		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
-		URL                 string          `json:"url"`
-		DefaultInputModes   json.RawMessage `json:"defaultInputModes"`
-		DefaultOutputModes  json.RawMessage `json:"defaultOutputModes"`
-	}
-	if json.Unmarshal(body, &card) != nil || strings.TrimSpace(card.Name) == "" ||
-		card.Description == nil || strings.TrimSpace(card.Version) == "" {
-		return false
-	}
-	var capabilities map[string]json.RawMessage
-	if json.Unmarshal(card.Capabilities, &capabilities) != nil || capabilities == nil {
-		return false
-	}
-	var skills []AgentSkill
-	if json.Unmarshal(card.Skills, &skills) != nil || skills == nil {
-		return false
-	}
-	for _, skill := range skills {
-		if strings.TrimSpace(skill.ID) == "" || strings.TrimSpace(skill.Name) == "" || skill.Tags == nil {
-			return false
-		}
-	}
-	for _, raw := range []json.RawMessage{card.DefaultInputModes, card.DefaultOutputModes} {
-		var modes []string
-		if json.Unmarshal(raw, &modes) != nil || modes == nil {
-			return false
-		}
-	}
-	if len(card.SupportedInterfaces) != 0 {
-		var interfaces []AgentInterface
-		if json.Unmarshal(card.SupportedInterfaces, &interfaces) != nil || len(interfaces) == 0 {
-			return false
-		}
-		for _, iface := range interfaces {
-			if iface.URL == "" || iface.ProtocolBinding == "" || iface.ProtocolVersion == "" {
-				return false
-			}
-		}
-		return true
-	}
-	return hasHTTPScheme(card.URL)
+	return ValidateAgentCard(body) == nil
 }
 
-// GetServiceURL returns the agent's JSON-RPC service URL, the transport batesian
-// speaks. It selects by binding rather than by position, because the first
-// supportedInterfaces entry is frequently gRPC (whose URL is often scheme-less).
-// Preference order: a v1.0 JSON-RPC interface, then a v0.3 additionalInterfaces
-// JSON-RPC entry, then the top-level url when preferredTransport is JSONRPC.
-// Failing that it returns the first http(s) interface, then the legacy url.
+// ValidateAgentCard checks required fields in v1.0 and legacy cards.
+func ValidateAgentCard(body []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return fmt.Errorf("invalid Agent Card JSON")
+	}
+	for _, key := range []string{"name", "description", "version"} {
+		if _, err := requiredCardString(fields, key); err != nil {
+			return err
+		}
+	}
+	var capabilities map[string]json.RawMessage
+	if err := json.Unmarshal(fields["capabilities"], &capabilities); err != nil || capabilities == nil {
+		return fmt.Errorf("missing or invalid required field capabilities")
+	}
+	_, modern := fields["supportedInterfaces"]
+	for _, key := range []string{"defaultInputModes", "defaultOutputModes"} {
+		var modes []string
+		if err := json.Unmarshal(fields[key], &modes); err != nil || modes == nil || modern && len(modes) == 0 {
+			return fmt.Errorf("missing or invalid required field %s", key)
+		}
+		for _, mode := range modes {
+			if strings.TrimSpace(mode) == "" {
+				return fmt.Errorf("invalid %s entry", key)
+			}
+		}
+	}
+	var skills []map[string]json.RawMessage
+	if err := json.Unmarshal(fields["skills"], &skills); err != nil || skills == nil || modern && len(skills) == 0 {
+		return fmt.Errorf("missing or invalid required field skills")
+	}
+	for i, skill := range skills {
+		for _, key := range []string{"id", "name", "description"} {
+			if _, err := requiredCardString(skill, key); err != nil {
+				return fmt.Errorf("skill %d: %w", i, err)
+			}
+		}
+		var tags []string
+		if err := json.Unmarshal(skill["tags"], &tags); err != nil || tags == nil || modern && len(tags) == 0 {
+			return fmt.Errorf("skill %d has missing or invalid tags", i)
+		}
+		for _, tag := range tags {
+			if strings.TrimSpace(tag) == "" {
+				return fmt.Errorf("skill %d has an empty tag", i)
+			}
+		}
+	}
+	if modern {
+		var interfaces []AgentInterface
+		if err := json.Unmarshal(fields["supportedInterfaces"], &interfaces); err != nil || len(interfaces) == 0 {
+			return fmt.Errorf("missing or invalid required field supportedInterfaces")
+		}
+		for i, iface := range interfaces {
+			if strings.TrimSpace(iface.URL) == "" || strings.TrimSpace(iface.ProtocolBinding) == "" || strings.TrimSpace(iface.ProtocolVersion) == "" {
+				return fmt.Errorf("supportedInterfaces[%d] is missing a required field", i)
+			}
+		}
+		return nil
+	}
+	legacyURL, err := requiredCardString(fields, "url")
+	if err != nil {
+		return err
+	}
+	var transport string
+	_ = json.Unmarshal(fields["preferredTransport"], &transport)
+	if strings.EqualFold(transport, "GRPC") {
+		host, port, err := net.SplitHostPort(legacyURL)
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("invalid required field url")
+		}
+	} else if (transport == "" || strings.EqualFold(transport, "JSONRPC") || strings.EqualFold(transport, "HTTP+JSON")) && !hasHTTPScheme(legacyURL) {
+		return fmt.Errorf("invalid required field url")
+	}
+	return nil
+}
+
+func requiredCardString(fields map[string]json.RawMessage, key string) (string, error) {
+	var value string
+	if err := json.Unmarshal(fields[key], &value); err != nil || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("missing or invalid required field %s", key)
+	}
+	return value, nil
+}
+
+// GetServiceURL prefers the JSON-RPC endpoint, then another HTTP endpoint.
 func (c *AgentCard) GetServiceURL() string {
+	url, _ := c.serviceEndpoint()
+	return url
+}
+
+// GetProtocolVersion returns the selected or preferred interface version.
+func (c *AgentCard) GetProtocolVersion() string {
+	_, version := c.serviceEndpoint()
+	return version
+}
+
+func (c *AgentCard) serviceEndpoint() (string, string) {
 	for _, i := range c.SupportedInterfaces {
 		if strings.EqualFold(i.ProtocolBinding, "JSONRPC") && hasHTTPScheme(i.URL) {
-			return i.URL
+			return i.URL, i.ProtocolVersion
 		}
 	}
 	for _, i := range c.AdditionalInterfaces {
 		if strings.EqualFold(i.Transport, "JSONRPC") && hasHTTPScheme(i.URL) {
-			return i.URL
+			return i.URL, c.ProtocolVersion
 		}
 	}
 	if strings.EqualFold(c.PreferredTransport, "JSONRPC") && c.URL != "" {
-		return c.URL
+		return c.URL, c.ProtocolVersion
 	}
-	// No JSON-RPC interface advertised; fall back to a usable URL for display.
 	for _, i := range c.SupportedInterfaces {
 		if hasHTTPScheme(i.URL) {
-			return i.URL
+			return i.URL, i.ProtocolVersion
 		}
 	}
-	return c.URL
+	if len(c.SupportedInterfaces) > 0 {
+		return c.URL, c.SupportedInterfaces[0].ProtocolVersion
+	}
+	return c.URL, c.ProtocolVersion
 }
 
 // hasHTTPScheme reports whether rawURL is an absolute http(s) URL. gRPC interface

@@ -54,7 +54,9 @@ func extendedCard() map[string]interface{} {
 		"capabilities":       map[string]interface{}{"extendedAgentCard": true},
 		"defaultInputModes":  []string{"text/plain"},
 		"defaultOutputModes": []string{"text/plain"},
-		"skills":             []interface{}{},
+		"skills": []map[string]interface{}{{
+			"id": "private", "name": "Private", "description": "Private capability", "tags": []string{"private"},
+		}},
 	}
 }
 
