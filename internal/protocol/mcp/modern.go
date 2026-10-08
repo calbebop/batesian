@@ -61,7 +61,23 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, endpoint)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("modern MCP discovery authorization refused: HTTP %d", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed ||
+			resp.StatusCode == http.StatusNotImplemented {
+			return nil, fmt.Errorf("%w: HTTP %d", errModernUnavailable, resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusBadRequest {
+			raw, readErr := readBody(resp)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if legacyDiscoveryError(raw) {
+				return nil, fmt.Errorf("%w: discovery RPC rejected", errModernUnavailable)
+			}
+		}
+		return nil, fmt.Errorf("modern MCP discovery returned HTTP %d", resp.StatusCode)
 	}
 	raw, err := readBody(resp)
 	if err != nil {
@@ -69,18 +85,24 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 	}
 	var envelope map[string]interface{}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, fmt.Errorf("non-JSON discovery response from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("non-JSON modern MCP discovery response: %w", err)
 	}
 	if envelope["jsonrpc"] != "2.0" || envelope["id"] != requestID {
-		return nil, fmt.Errorf("invalid discovery response from %s", endpoint)
+		return nil, fmt.Errorf("invalid modern MCP discovery response")
+	}
+	if _, ok := envelope["error"]; ok {
+		if legacyDiscoveryError(raw) {
+			return nil, fmt.Errorf("%w: discovery RPC rejected", errModernUnavailable)
+		}
+		return nil, fmt.Errorf("modern MCP discovery RPC error")
 	}
 	result, ok := envelope["result"].(map[string]interface{})
 	if !ok || result["resultType"] != "complete" {
-		return nil, fmt.Errorf("missing complete discovery result from %s", endpoint)
+		return nil, fmt.Errorf("missing complete modern MCP discovery result")
 	}
 	versions, ok := result["supportedVersions"].([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("missing supportedVersions from %s", endpoint)
+		return nil, fmt.Errorf("missing supportedVersions in modern MCP discovery")
 	}
 	supported := false
 	for _, version := range versions {
@@ -90,11 +112,11 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 		}
 	}
 	if !supported {
-		return nil, fmt.Errorf("%s does not advertise MCP %s", endpoint, modernVersion)
+		return nil, fmt.Errorf("%w: MCP %s not advertised", errModernUnavailable, modernVersion)
 	}
 	caps, ok := result["capabilities"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("missing capabilities from %s", endpoint)
+		return nil, fmt.Errorf("missing capabilities in modern MCP discovery")
 	}
 	meta, _ := result["_meta"].(map[string]interface{})
 	info, _ := meta["io.modelcontextprotocol/serverInfo"].(map[string]interface{})
@@ -109,4 +131,16 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 		},
 		Capabilities: caps,
 	}, nil
+}
+
+func legacyDiscoveryError(raw []byte) bool {
+	var envelope struct {
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return false
+	}
+	return envelope.Error.Code == -32601 || envelope.Error.Code == -32022
 }
