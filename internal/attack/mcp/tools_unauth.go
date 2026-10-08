@@ -43,7 +43,7 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 
 	// Request tools/list without a bearer token.
 	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
-	verdict, listBody := classifyProbe(listResp, err)
+	verdict, listBody := classifyProbe(listResp, err, 3)
 	if verdict != probeAnswered {
 		return nil, verdict == probeRejected
 	}
@@ -76,7 +76,7 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 		seen[cursor] = true
 		pageResp, pageErr := session.post(ctx, client, 3+page, "tools/list",
 			map[string]interface{}{"cursor": cursor})
-		pageVerdict, pageBody := classifyProbe(pageResp, pageErr)
+		pageVerdict, pageBody := classifyProbe(pageResp, pageErr, 3+page)
 		if pageVerdict != probeAnswered {
 			break
 		}

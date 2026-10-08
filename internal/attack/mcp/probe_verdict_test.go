@@ -40,6 +40,12 @@ func TestClassifyProbe(t *testing.T) {
 			why:  "an uncorrelated result does not prove the probe was answered",
 		},
 		{
+			name: "2xx with another request id", status: 200,
+			body: `{"jsonrpc":"2.0","id":999,"result":{"tools":[{"name":"admin"}]}}`,
+			want: probeInconclusive,
+			why:  "another request's result does not answer this probe",
+		},
+		{
 			name: "2xx with both result and error", status: 200,
 			body: `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32603,"message":"Internal error"}}`,
 			want: probeInconclusive,
@@ -84,6 +90,12 @@ func TestClassifyProbe(t *testing.T) {
 			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"size":1e400}}}`,
 			want: probeRejected,
 			why:  "a valid JSON-RPC error remains a protocol-level answer",
+		},
+		{
+			name: "500 with another request id", status: 500,
+			body: `{"jsonrpc":"2.0","id":999,"error":{"code":-32603,"message":"Internal error"}}`,
+			want: probeInconclusive,
+			why:  "another request's refusal does not close this surface",
 		},
 		{
 			name: "502 with a JSON gateway error", status: 502,
@@ -154,7 +166,7 @@ func TestClassifyProbe(t *testing.T) {
 			client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(srv.URL, ""))
 			resp, err := client.POST(context.Background(), srv.URL, nil, map[string]interface{}{"jsonrpc": "2.0"})
 
-			got, body := classifyProbe(resp, err)
+			got, body := classifyProbe(resp, err, 1)
 			if got != tt.want {
 				t.Errorf("classifyProbe() = %v, want %v (%s)", got, tt.want, tt.why)
 			}
@@ -179,7 +191,7 @@ func TestClassifyProbe_TransportFailure(t *testing.T) {
 	if err == nil {
 		t.Skip("expected the closed server to fail the request")
 	}
-	if got, _ := classifyProbe(resp, err); got != probeInconclusive {
+	if got, _ := classifyProbe(resp, err, 1); got != probeInconclusive {
 		t.Errorf("classifyProbe() = %v, want probeInconclusive for a transport failure", got)
 	}
 }

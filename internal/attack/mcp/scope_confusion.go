@@ -289,7 +289,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 	// Confirm the limited credential works before grading its refusals.
 	listResp, listErr := sessB.postShaping(ctx, client, scopeIDListLim, "tools/list", nil,
 		func(h map[string]string) { attachPrincipal(h, princB) })
-	if verdict, _ := classifyProbe(listResp, listErr); verdict != probeAnswered {
+	if verdict, _ := classifyProbe(listResp, listErr, scopeIDListLim); verdict != probeAnswered {
 		return nil, fmt.Sprintf("tools/list refused the limited principal %q (%s), so its privilege "+
 			"level was never established", princB.name, scopeVerdictName(verdict)), false
 	}
@@ -373,7 +373,7 @@ func (e *ScopeConfusionExecutor) scopeCandidates(ctx context.Context, client *at
 		}
 		resp, err := sessA.postShaping(ctx, client, id, "tools/list", params,
 			func(h map[string]string) { attachPrincipal(h, princA) })
-		verdict, _ := classifyProbe(resp, err)
+		verdict, _ := classifyProbe(resp, err, id)
 		if verdict != probeAnswered {
 			return nil, fmt.Sprintf("tools/list refused the full principal %q (%s), so the privileged "+
 				"surface could not be discovered", princA.name, scopeVerdictName(verdict)), false

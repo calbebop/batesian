@@ -132,7 +132,7 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 			return nil, fmt.Sprintf("tools/call for %q returned HeaderMismatch; task handles were not fully sampled",
 				safeTool.name), false, nil
 		}
-		if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
+		if verdict, _ := classifyProbe(resp, err, requestID); verdict != probeAnswered {
 			if len(ids) == 0 {
 				return nil, fmt.Sprintf("task-augmented tools/call against %q was %s on this wire, so "+
 					"no handle could be minted", safeTool.name, scopeVerdictName(verdict)), false, nil
@@ -196,7 +196,7 @@ type teSafeTool struct {
 // teFindSafeTool picks an approved, annotated task-capable tool.
 func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, approved []string) (teSafeTool, bool, []string, bool) {
 	resp, err := s.post(ctx, client, 20, "tools/list", nil)
-	if verdict, _ := classifyProbe(resp, err); verdict != probeAnswered {
+	if verdict, _ := classifyProbe(resp, err, 20); verdict != probeAnswered {
 		return teSafeTool{}, false, nil, false
 	}
 	var body struct {

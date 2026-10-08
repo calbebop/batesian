@@ -65,7 +65,7 @@ func (e *LoggingUnauthExecutor) Execute(ctx context.Context, target string, opts
 		"method":  "logging/setLevel",
 		"params":  map[string]interface{}{"level": bogusLevel},
 	})
-	verdict, body := classifyProbe(resp, err)
+	verdict, body := classifyProbe(resp, err, 3)
 	if verdict != probeAnswered {
 		if verdict == probeRejected {
 			// An auth status, or a JSON-RPC error at a non-2xx: the surface is
