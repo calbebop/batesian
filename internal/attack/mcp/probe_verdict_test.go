@@ -63,9 +63,33 @@ func TestClassifyProbe(t *testing.T) {
 		},
 		{
 			name: "500 with a large error number", status: 500,
-			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"data":{"size":1e400}}}`,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"size":1e400}}}`,
 			want: probeRejected,
 			why:  "a valid JSON-RPC error remains a protocol-level answer",
+		},
+		{
+			name: "502 with a JSON gateway error", status: 502,
+			body: `{"error":"Bad Gateway"}`,
+			want: probeInconclusive,
+			why:  "a gateway error is not a JSON-RPC rejection",
+		},
+		{
+			name: "500 with an incomplete JSON-RPC error", status: 500,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`,
+			want: probeInconclusive,
+			why:  "an error without a message is not a JSON-RPC error response",
+		},
+		{
+			name: "500 with a versionless error", status: 500,
+			body: `{"id":1,"error":{"code":-32603,"message":"Internal error"}}`,
+			want: probeInconclusive,
+			why:  "an unversioned error is not an MCP JSON-RPC response",
+		},
+		{
+			name: "500 with a mismatched error shape", status: 500,
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":"-32603","message":"Internal error"}}`,
+			want: probeInconclusive,
+			why:  "JSON-RPC error codes must be integers",
 		},
 		{
 			// The case that motivated all of this.
@@ -142,7 +166,7 @@ func TestClassifyProbe_TransportFailure(t *testing.T) {
 	}
 }
 
-func TestClassifyAccessLargeNumbers(t *testing.T) {
+func TestClassifyAccess(t *testing.T) {
 	tests := []struct {
 		name   string
 		status int
@@ -150,7 +174,12 @@ func TestClassifyAccessLargeNumbers(t *testing.T) {
 		want   accessVerdict
 	}{
 		{"result", 200, `{"jsonrpc":"2.0","result":{"value":1e400}}`, accessGranted},
-		{"error", 500, `{"jsonrpc":"2.0","error":{"code":-32603,"data":{"value":1e400}}}`, accessRefused},
+		{"error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"value":1e400}}}`, accessRefused},
+		{"gateway error", 502, `{"error":"Bad Gateway"}`, accessUndetermined},
+		{"incomplete JSON-RPC error", 500, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`, accessUndetermined},
+		{"missing response id", 500, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`, accessUndetermined},
+		{"result and error", 500, `{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"Internal error"}}`, accessUndetermined},
+		{"auth status", 401, `{"error":"Unauthorized"}`, accessRefused},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

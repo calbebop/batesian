@@ -53,14 +53,7 @@ func classifyProbe(resp *attack.Response, err error) (probeVerdict, map[string]i
 		return probeInconclusive, nil
 	}
 
-	var body map[string]interface{}
-	dec := json.NewDecoder(bytes.NewReader(resp.Body))
-	dec.UseNumber() // Schema values may exceed float64.
-	parsed := dec.Decode(&body) == nil && body != nil
-	if parsed {
-		_, trailingErr := dec.Token()
-		parsed = trailingErr == io.EOF
-	}
+	body, parsed := parseResponseBody(resp.Body)
 
 	if resp.IsSuccess() {
 		if !parsed {
@@ -73,14 +66,48 @@ func classifyProbe(resp *attack.Response, err error) (probeVerdict, map[string]i
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return probeRejected, nil
 	}
-	// Otherwise the server must have said something in JSON-RPC terms for this to
-	// count as an answer.
-	if parsed {
-		if _, hasErr := body["error"]; hasErr {
-			return probeRejected, nil
-		}
+	if parsed && validRPCError(body) {
+		return probeRejected, nil
 	}
 	return probeInconclusive, nil
+}
+
+func parseResponseBody(raw []byte) (map[string]interface{}, bool) {
+	var body map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&body) != nil || body == nil {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return body, true
+}
+
+func validRPCError(body map[string]interface{}) bool {
+	if body["jsonrpc"] != "2.0" {
+		return false
+	}
+	if _, hasID := body["id"]; !hasID {
+		return false
+	}
+	if _, hasResult := body["result"]; hasResult {
+		return false
+	}
+	errObj, ok := body["error"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	code, ok := errObj["code"].(json.Number)
+	if !ok {
+		return false
+	}
+	if _, err := strconv.ParseInt(code.String(), 10, 64); err != nil {
+		return false
+	}
+	_, ok = errObj["message"].(string)
+	return ok
 }
 
 // authFlavoredError reports whether a JSON-RPC error signals an authentication
@@ -195,11 +222,8 @@ func classifyAccess(resp *attack.Response, err error) accessVerdict {
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return accessRefused
 	}
-	var body map[string]json.RawMessage
-	if json.Unmarshal(resp.Body, &body) == nil && body != nil {
-		if _, hasErr := body["error"]; hasErr {
-			return accessRefused
-		}
+	if body, ok := parseResponseBody(resp.Body); ok && validRPCError(body) {
+		return accessRefused
 	}
 	return accessUndetermined
 }
