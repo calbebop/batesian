@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,8 @@ const (
 
 // candidatePaths are tried in order when discovering the MCP endpoint.
 var candidatePaths = []string{"/mcp", "/", "/api", "/rpc"}
+
+var errModernUnavailable = errors.New("modern MCP discovery unavailable")
 
 // Client is a lightweight MCP protocol client for use by the probe command.
 type Client struct {
@@ -182,17 +185,19 @@ func (c *Client) Initialize(ctx context.Context) (*Session, error) {
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
-// Connect uses the legacy handshake when available, then tries modern discovery.
+// Connect prefers modern discovery and falls back to the legacy handshake.
 func (c *Client) Connect(ctx context.Context) (*Session, error) {
 	candidates := endpoint.Candidates(c.baseURL, candidatePaths)
 	for _, ep := range candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if session, err := c.tryInitialize(ctx, ep); err == nil {
-			return session, nil
-		}
 		if session, err := c.tryDiscover(ctx, ep); err == nil {
+			return session, nil
+		} else if !errors.Is(err, errModernUnavailable) {
+			return nil, err
+		}
+		if session, err := c.tryInitialize(ctx, ep); err == nil {
 			return session, nil
 		}
 	}
