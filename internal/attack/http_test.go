@@ -94,6 +94,20 @@ func TestValidateOAuthOrigins(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthOriginsErrorsHideCredentials(t *testing.T) {
+	const secret = "origin-secret-value"
+	for _, raw := range []string{
+		"https://user:" + secret + "@login.example.com",
+		"https://login.example.com?key=" + secret,
+		"https://login.example.com/%zz?key=" + secret,
+	} {
+		err := attack.ValidateOAuthOrigins([]string{raw})
+		if err == nil || strings.Contains(err.Error(), secret) {
+			t.Fatalf("OAuth origin error disclosed credentials: %v", err)
+		}
+	}
+}
+
 func TestHTTPClient_OAuthDestinationPolicy(t *testing.T) {
 	c := attack.NewHTTPClient(attack.Options{
 		OAuthOrigins: []string{"https://login.example.com"},

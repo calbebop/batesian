@@ -59,7 +59,7 @@ func TestPrintDryRunPlan_StatesBothDivergences(t *testing.T) {
 	rec.SetCurrentRule("r1")
 
 	var buf bytes.Buffer
-	printDryRunPlan(&buf, "http://t/mcp", rec)
+	printDryRunPlan(&buf, "http://t/mcp", rec, newOutputRedactor("http://t/mcp"))
 	out := buf.String()
 
 	if strings.Contains(out, "would be issued") {
@@ -78,7 +78,8 @@ func TestPrintDryRunPlan_StatesBothDivergences(t *testing.T) {
 
 func TestPrintDryRunPlan_RedactsTargetCredentials(t *testing.T) {
 	var buf bytes.Buffer
-	printDryRunPlan(&buf, "https://user:pass@example.com/mcp?token=secret#fragment", &attackpkg.Recorder{})
+	target := "https://user:pass@example.com/mcp?token=secret#fragment"
+	printDryRunPlan(&buf, target, &attackpkg.Recorder{}, newOutputRedactor(target))
 	for _, secret := range []string{"user", "pass", "secret", "fragment"} {
 		if strings.Contains(buf.String(), secret) {
 			t.Errorf("plan contains %q: %s", secret, buf.String())

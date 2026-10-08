@@ -67,6 +67,8 @@ func runProbe(cmd *cobra.Command, args []string) (runErr error) {
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
+	redactor.addSecret(token)
+	redactor.addURL(proxy)
 	timeout, err := requestTimeout(timeoutSecs)
 	if err != nil {
 		return err
@@ -110,6 +112,8 @@ func runProbe(cmd *cobra.Command, args []string) (runErr error) {
 
 func probeA2A(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error { //nolint:cyclop
 	redactor := newOutputRedactor(target)
+	redactor.addSecret(token)
+	redactor.addURL(proxy)
 	opts := []a2a.ClientOption{
 		a2a.WithTimeout(timeout),
 	}
@@ -128,7 +132,7 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 		return err
 	}
 
-	printer.ProbeHeader(redactor.display, "a2a")
+	printer.ProbeHeader(redactor.displayTarget(), "a2a")
 
 	printer.Verbose("GET " + redactor.text(target+a2a.WellKnownPath))
 	card, cardResult, err := client.FetchAgentCard(ctx)
@@ -239,6 +243,8 @@ func cardToProbeResult(card *a2a.AgentCard, elapsed time.Duration) *report.Probe
 
 func probeMCP(ctx context.Context, target, token string, timeout time.Duration, skipTLS bool, proxy string, format report.Format, printer *report.Printer) error {
 	redactor := newOutputRedactor(target)
+	redactor.addSecret(token)
+	redactor.addURL(proxy)
 	opts := []mcp.ClientOption{
 		mcp.WithTimeout(timeout),
 	}
@@ -257,7 +263,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		return err
 	}
 
-	printer.ProbeHeader(redactor.display, "mcp")
+	printer.ProbeHeader(redactor.displayTarget(), "mcp")
 
 	printer.Verbose("Connecting to MCP endpoint...")
 	start := time.Now()
