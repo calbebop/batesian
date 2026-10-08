@@ -416,6 +416,13 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 	fmt.Fprintf(p.w, "%s %s  %s%s\n", icon, label, Bold(f.Title), confidenceTag)
 	fmt.Fprintf(p.w, "   %s %s\n", Dim("rule:"), f.RuleID)
 	fmt.Fprintf(p.w, "   %s %s\n", Dim("target:"), f.TargetURL)
+	if len(f.Related) > 0 {
+		ids := make([]string, 0, len(f.Related))
+		for _, related := range f.Related {
+			ids = append(ids, related.RuleID)
+		}
+		fmt.Fprintf(p.w, "   %s %s\n", Dim("related rules:"), strings.Join(ids, ", "))
+	}
 	if confidence == attackpkg.RiskIndicator {
 		fmt.Fprintf(p.w, "   %s %s\n", Dim("note:"), Dim("not confirmed - manual verification recommended"))
 	}
@@ -423,6 +430,29 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 		fmt.Fprintf(p.w, "   %s\n", Dim("evidence:"))
 		for _, line := range strings.Split(f.Evidence, "\n") {
 			fmt.Fprintf(p.w, "     %s\n", Dim(line))
+		}
+	}
+	if p.verbose {
+		for _, related := range f.Related {
+			fmt.Fprintf(p.w, "   %s %s\n", Dim("related finding:"), related.RuleID)
+			for _, field := range []struct{ name, value string }{
+				{"evidence", related.Evidence}, {"remediation", related.Remediation},
+			} {
+				if field.value == "" {
+					continue
+				}
+				fmt.Fprintf(p.w, "     %s\n", Dim(field.name+":"))
+				for _, line := range strings.Split(field.value, "\n") {
+					fmt.Fprintf(p.w, "       %s\n", Dim(line))
+				}
+			}
+			for _, step := range related.Chain {
+				principal := ""
+				if step.Principal != "" {
+					principal = " (" + step.Principal + ")"
+				}
+				fmt.Fprintf(p.w, "     %s %d%s: %s -> %s\n", Dim("chain"), step.Hop, Dim(principal), Dim(step.Action), Dim(step.Outcome))
+			}
 		}
 	}
 	fmt.Fprintln(p.w)

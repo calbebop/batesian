@@ -142,6 +142,8 @@ type Finding struct {
 	// Chain is the optional provenance trail for findings produced by a
 	// multi-step chained rule. Nil/empty for single-shot rules.
 	Chain []ChainStep
+	// Related retains findings subsumed during cross-rule coalescing.
+	Related []Finding
 }
 
 // EffectiveConfidence requires explicit confirmation and nonempty evidence.

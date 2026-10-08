@@ -807,6 +807,30 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 		Remediation string          `json:"remediation,omitempty"`
 		TargetURL   string          `json:"target_url"`
 		Chain       []jsonChainStep `json:"chain,omitempty"`
+		Related     []jsonFinding   `json:"related_findings,omitempty"`
+	}
+	var toJSONFinding func(attackpkg.Finding) jsonFinding
+	toJSONFinding = func(f attackpkg.Finding) jsonFinding {
+		jf := jsonFinding{
+			RuleID:      f.RuleID,
+			RuleName:    f.RuleName,
+			Severity:    severity.CanonicalOrRaw(f.Severity),
+			Confidence:  string(f.EffectiveConfidence()),
+			Title:       f.Title,
+			Description: f.Description,
+			Evidence:    f.Evidence,
+			Remediation: f.Remediation,
+			TargetURL:   f.TargetURL,
+		}
+		for _, step := range f.Chain {
+			jf.Chain = append(jf.Chain, jsonChainStep{
+				Hop: step.Hop, Principal: step.Principal, Action: step.Action, Outcome: step.Outcome,
+			})
+		}
+		for _, related := range f.Related {
+			jf.Related = append(jf.Related, toJSONFinding(related))
+		}
+		return jf
 	}
 
 	findings := make([]jsonFinding, 0)
@@ -815,29 +839,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 
 	for _, r := range results {
 		for _, f := range r.Findings {
-			confidence := string(f.EffectiveConfidence())
-			var chain []jsonChainStep
-			for _, s := range f.Chain {
-				chain = append(chain, jsonChainStep{
-					Hop:       s.Hop,
-					Principal: s.Principal,
-					Action:    s.Action,
-					Outcome:   s.Outcome,
-				})
-			}
-			findings = append(findings, jsonFinding{
-				RuleID:   f.RuleID,
-				RuleName: f.RuleName,
-				// Match summary and SARIF spelling without discarding unknown values.
-				Severity:    severity.CanonicalOrRaw(f.Severity),
-				Confidence:  confidence,
-				Title:       f.Title,
-				Description: f.Description,
-				Evidence:    f.Evidence,
-				Remediation: f.Remediation,
-				TargetURL:   f.TargetURL,
-				Chain:       chain,
-			})
+			findings = append(findings, toJSONFinding(f))
 		}
 		if r.Skipped {
 			skipped = append(skipped, map[string]string{
