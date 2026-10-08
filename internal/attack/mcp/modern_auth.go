@@ -22,15 +22,16 @@ func probeModernAuthGate(ctx context.Context, anon *attack.HTTPClient, ep string
 	if err != nil || resp == nil {
 		return modernAuthGate{}
 	}
-	if authRefusal(resp) && hasBearerChallenge(resp) {
+	verdict := classifyAccess(resp, err, 1)
+	if verdict == accessRefused && authRefusal(resp) && hasBearerChallenge(resp) {
 		return modernAuthGate{method: "server/discover", ready: true}
 	}
-	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
+	if verdict != accessGranted || !modernWireAdvertised(resp.Body) {
 		return modernAuthGate{}
 	}
 	for _, method := range modernAuthMethods {
 		resp, err := session.post(ctx, anon, 2, method, nil)
-		if err == nil && authRefusal(resp) {
+		if classifyAccess(resp, err, 2) == accessRefused && authRefusal(resp) {
 			return modernAuthGate{method: method, ready: true}
 		}
 	}
@@ -46,17 +47,16 @@ func probeModernBearer(ctx context.Context, anon *attack.HTTPClient, ep, method,
 	resp, err := session.postShaping(ctx, anon, 3, method, nil, func(headers map[string]string) {
 		headers["Authorization"] = "Bearer " + token
 	})
-	if err != nil || resp == nil {
-		return resp, accessUndetermined
-	}
-	if resp.IsAccepted() {
+	switch classifyAccess(resp, err, 3) {
+	case accessGranted:
 		if method != "server/discover" || modernWireAdvertised(resp.Body) {
 			return resp, accessGranted
 		}
 		return resp, accessUndetermined
-	}
-	if authRefusal(resp) {
-		return resp, accessRefused
+	case accessRefused:
+		if authRefusal(resp) {
+			return resp, accessRefused
+		}
 	}
 	return resp, accessUndetermined
 }
