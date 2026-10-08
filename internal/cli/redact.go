@@ -135,20 +135,29 @@ func (r outputRedactor) results(results []engine.RunResult) []engine.RunResult {
 		}
 		out[i].Findings = append([]attackpkg.Finding(nil), results[i].Findings...)
 		for j := range out[i].Findings {
-			f := &out[i].Findings[j]
-			f.Title = r.text(f.Title)
-			f.Description = r.text(f.Description)
-			f.Evidence = r.text(f.Evidence)
-			f.Remediation = r.text(f.Remediation)
-			f.TargetURL = r.url(f.TargetURL)
-			f.Chain = append([]attackpkg.ChainStep(nil), f.Chain...)
-			for k := range f.Chain {
-				f.Chain[k].Action = r.text(f.Chain[k].Action)
-				f.Chain[k].Outcome = r.text(f.Chain[k].Outcome)
-			}
+			out[i].Findings[j] = r.finding(out[i].Findings[j])
 		}
 	}
 	return out
+}
+
+func (r outputRedactor) finding(f attackpkg.Finding) attackpkg.Finding {
+	f.Title = r.text(f.Title)
+	f.Description = r.text(f.Description)
+	f.Evidence = r.text(f.Evidence)
+	f.Remediation = r.text(f.Remediation)
+	f.TargetURL = r.url(f.TargetURL)
+	f.Chain = append([]attackpkg.ChainStep(nil), f.Chain...)
+	for i := range f.Chain {
+		f.Chain[i].Principal = r.text(f.Chain[i].Principal)
+		f.Chain[i].Action = r.text(f.Chain[i].Action)
+		f.Chain[i].Outcome = r.text(f.Chain[i].Outcome)
+	}
+	f.Related = append([]attackpkg.Finding(nil), f.Related...)
+	for i := range f.Related {
+		f.Related[i] = r.finding(f.Related[i])
+	}
+	return f
 }
 
 func (r outputRedactor) value(v any) any {

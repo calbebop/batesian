@@ -40,6 +40,52 @@ func TestCoalesce_SameClassSameTarget(t *testing.T) {
 	}
 }
 
+func TestCoalesceRetainsRelatedFindings(t *testing.T) {
+	chain := []attackpkg.ChainStep{{Hop: 1, Principal: "caller", Action: "send token", Outcome: "accepted"}}
+	results := []RunResult{
+		mkResult("mcp-token-replay-001", attackpkg.Finding{
+			Severity: "high", Confidence: attackpkg.RiskIndicator, Title: "signature bypass",
+			TargetURL: "https://srv/mcp", Evidence: "unsigned token accepted",
+			Remediation: "Verify token signatures.", Chain: chain,
+		}),
+		mkResult("mcp-oauth-audience-002", attackpkg.Finding{
+			Severity: "high", Confidence: attackpkg.ConfirmedExploit, Title: "audience bypass",
+			TargetURL: "https://srv/mcp", Evidence: "wrong audience accepted",
+			Remediation: "Validate token audience.",
+		}),
+		mkResult("mcp-token-replay-001", attackpkg.Finding{
+			Severity: "medium", Confidence: attackpkg.RiskIndicator, Title: "another token bypass",
+			TargetURL: "https://srv/mcp", Evidence: "second token accepted",
+			Remediation: "Reject invalid tokens.",
+		}),
+	}
+	out := Coalesce(results)
+	if TotalFindings(out) != 1 || len(out[1].Findings) != 1 {
+		t.Fatalf("unexpected coalesced results: %+v", out)
+	}
+	winner := out[1].Findings[0]
+	if len(winner.Related) != 2 {
+		t.Fatalf("related findings = %+v, want two", winner.Related)
+	}
+	related := winner.Related[0]
+	if related.RuleID != "mcp-token-replay-001" || related.Evidence != "unsigned token accepted" ||
+		related.Remediation != "Verify token signatures." || len(related.Chain) != 1 || related.Chain[0] != chain[0] {
+		t.Errorf("subsumed details lost: %+v", related)
+	}
+	if winner.Related[1].Evidence != "second token accepted" || winner.Related[1].Remediation != "Reject invalid tokens." {
+		t.Errorf("second subsumed finding lost: %+v", winner.Related[1])
+	}
+	if winner.Remediation != "Validate token audience." || winner.Evidence == "" {
+		t.Errorf("winner details changed: %+v", winner)
+	}
+	if len(results[1].Findings[0].Related) != 0 || results[1].Findings[0].Evidence != "wrong audience accepted" {
+		t.Error("coalescing modified input findings")
+	}
+	if again := Coalesce(out); len(again[1].Findings[0].Related) != 2 {
+		t.Errorf("repeated coalescing duplicated related findings: %+v", again)
+	}
+}
+
 // TestCoalesce_DifferentTarget: same class but different targets => both kept.
 func TestCoalesce_DifferentTarget(t *testing.T) {
 	results := []RunResult{

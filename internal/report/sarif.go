@@ -88,7 +88,7 @@ type sarifResult struct {
 	Message             sarifMessage      `json:"message"`
 	Locations           []sarifLocation   `json:"locations"`
 	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
-	Properties          map[string]string `json:"properties,omitempty"`
+	Properties          map[string]any    `json:"properties,omitempty"`
 }
 
 type sarifMessage struct {
@@ -218,12 +218,15 @@ func newSARIFNotification(result engine.RunResult, level, detail string) sarifNo
 // findingToSARIF converts a Finding into a SARIF result.
 func findingToSARIF(f attackpkg.Finding) sarifResult {
 	confidence := string(f.EffectiveConfidence())
-	props := map[string]string{
+	props := map[string]any{
 		"severity":   f.Severity,
 		"confidence": confidence,
 	}
 	if f.Evidence != "" {
 		props["evidence"] = truncate(f.Evidence, 500)
+	}
+	if len(f.Related) > 0 {
+		props["relatedFindings"] = f.Related
 	}
 
 	return sarifResult{

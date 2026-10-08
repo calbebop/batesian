@@ -65,6 +65,86 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 	}
 }
 
+func TestCoalescedDetailsAcrossScanFormats(t *testing.T) {
+	const secret = "related-secret-value"
+	const target = "https://agent.example.com/mcp"
+	r := newOutputRedactor(target)
+	r.addSecret(secret)
+	input := []engine.RunResult{{
+		Rule: &rules.Rule{ID: "mcp-oauth-audience-002"},
+		Findings: []attack.Finding{{
+			RuleID: "mcp-oauth-audience-002", Title: "audience bypass", Severity: "high",
+			Evidence: "wrong audience accepted", TargetURL: target,
+			Related: []attack.Finding{{
+				RuleID: "mcp-token-replay-001", Title: "signature bypass",
+				Evidence: "alternate evidence " + secret, Remediation: "Verify " + secret,
+				TargetURL: target + "?token=" + secret,
+				Chain:     []attack.ChainStep{{Hop: 1, Principal: secret, Action: "send " + secret, Outcome: "accepted"}},
+			}},
+		}},
+	}}
+	safe := r.results(input)
+	if !strings.Contains(input[0].Findings[0].Related[0].Evidence, secret) {
+		t.Fatal("redaction modified input")
+	}
+	var table, sarif bytes.Buffer
+	report.New(&table, true).PrintScanSummary(safe)
+	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
+		t.Fatal(err)
+	}
+	jsonBody, err := json.Marshal(buildScanJSON(target, safe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for format, body := range map[string]string{
+		"table": table.String(), "sarif": sarif.String(), "json": string(jsonBody),
+	} {
+		if strings.Contains(body, secret) {
+			t.Errorf("%s disclosed a secret from a related finding", format)
+		}
+		for _, detail := range []string{"mcp-token-replay-001", "alternate evidence", "Verify", "accepted"} {
+			if !strings.Contains(body, detail) {
+				t.Errorf("%s lost related detail %q", format, detail)
+			}
+		}
+	}
+	if !strings.Contains(string(jsonBody), `"related_findings"`) || !strings.Contains(sarif.String(), `"relatedFindings"`) {
+		t.Error("structured related findings missing from JSON or SARIF")
+	}
+	var jsonDoc struct {
+		Findings []struct {
+			Related []struct {
+				Evidence    string `json:"evidence"`
+				Remediation string `json:"remediation"`
+				Chain       []struct {
+					Principal string `json:"principal"`
+					Outcome   string `json:"outcome"`
+				} `json:"chain"`
+			} `json:"related_findings"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(jsonBody, &jsonDoc); err != nil || len(jsonDoc.Findings) != 1 || len(jsonDoc.Findings[0].Related) != 1 ||
+		len(jsonDoc.Findings[0].Related[0].Chain) != 1 || jsonDoc.Findings[0].Related[0].Chain[0].Outcome != "accepted" ||
+		jsonDoc.Findings[0].Related[0].Remediation != "Verify <redacted>" {
+		t.Fatalf("JSON did not retain the related chain: %s, error: %v", jsonBody, err)
+	}
+	var sarifDoc struct {
+		Runs []struct {
+			Results []struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(sarif.Bytes(), &sarifDoc); err != nil {
+		t.Fatal(err)
+	}
+	var sarifRelated []attack.Finding
+	if err := json.Unmarshal(sarifDoc.Runs[0].Results[0].Properties["relatedFindings"], &sarifRelated); err != nil ||
+		len(sarifRelated) != 1 || sarifRelated[0].Remediation != "Verify <redacted>" || len(sarifRelated[0].Chain) != 1 {
+		t.Fatalf("SARIF did not retain the related finding: %+v, error: %v", sarifRelated, err)
+	}
+}
+
 func TestOutputRedactorConfiguredSecrets(t *testing.T) {
 	const token = "scan-bearer-secret"
 	const principal = "principal-token-secret"

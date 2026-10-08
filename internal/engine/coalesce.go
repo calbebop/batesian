@@ -49,7 +49,7 @@ func Coalesce(results []RunResult) []RunResult {
 	}
 
 	subsumed := map[loc]bool{}
-	notes := map[loc][]string{}
+	related := map[loc][]attackpkg.Finding{}
 	for _, locs := range groups {
 		distinct := map[string]bool{}
 		for _, l := range locs {
@@ -70,7 +70,7 @@ func Coalesce(results []RunResult) []RunResult {
 			}
 			subsumed[l] = true
 			lf := results[l.ri].Findings[l.fi]
-			notes[winner] = append(notes[winner], fmt.Sprintf("%s (%s/%s)", lf.RuleID, lf.Severity, confidenceLabel(lf.Confidence)))
+			related[winner] = append(related[winner], lf)
 		}
 	}
 
@@ -88,7 +88,12 @@ func Coalesce(results []RunResult) []RunResult {
 				continue
 			}
 			f := r.Findings[fi]
-			if ns, ok := notes[l]; ok {
+			if overlaps, ok := related[l]; ok {
+				f.Related = append(append([]attackpkg.Finding(nil), f.Related...), overlaps...)
+				ns := make([]string, 0, len(overlaps))
+				for _, overlap := range overlaps {
+					ns = append(ns, fmt.Sprintf("%s (%s/%s)", overlap.RuleID, overlap.Severity, confidenceLabel(overlap.Confidence)))
+				}
 				note := "Coalesced: subsumes overlapping finding(s) on the same target: " + strings.Join(ns, ", ") + "."
 				if f.Evidence == "" {
 					f.Evidence = note
