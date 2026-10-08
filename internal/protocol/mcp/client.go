@@ -204,34 +204,21 @@ func (c *Client) Connect(ctx context.Context) (*Session, error) {
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
-// ListTools calls tools/list and returns all available tools, following
-// nextCursor pagination up to maxListPages.
+// ListTools returns the complete tool listing or an error.
 func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
 	var tools []Tool
-	cursor := ""
-	for page := 0; page < maxListPages; page++ {
-		params := map[string]interface{}{}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		resp, err := c.post(ctx, s, 10, "tools/list", params)
-		if err != nil {
-			return nil, err
-		}
-
-		result, err := listResult(resp, 10, s.Modern)
-		if err != nil {
-			return nil, err
-		}
-		rawTools, _ := result["tools"].([]interface{})
-
-		for _, t := range rawTools {
+	err := c.listPages(ctx, s, 10, "tools/list", "tools", func(items []interface{}) error {
+		for _, t := range items {
 			tm, ok := t.(map[string]interface{})
 			if !ok {
-				continue
+				return fmt.Errorf("invalid tool entry")
+			}
+			name := strField(tm, "name")
+			if name == "" {
+				return fmt.Errorf("tool entry has no name")
 			}
 			tool := Tool{
-				Name:        strField(tm, "name"),
+				Name:        name,
 				Description: strField(tm, "description"),
 			}
 			if schema, ok := tm["inputSchema"].(map[string]interface{}); ok {
@@ -239,83 +226,57 @@ func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
 			}
 			tools = append(tools, tool)
 		}
-		cursor, _ = result["nextCursor"].(string)
-		if cursor == "" {
-			break
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return tools, nil
 }
 
-// ListResources calls resources/list and returns all available resources,
-// following nextCursor pagination up to maxListPages.
+// ListResources returns the complete resource listing or an error.
 func (c *Client) ListResources(ctx context.Context, s *Session) ([]Resource, error) {
 	var resources []Resource
-	cursor := ""
-	for page := 0; page < maxListPages; page++ {
-		params := map[string]interface{}{}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		resp, err := c.post(ctx, s, 11, "resources/list", params)
-		if err != nil {
-			return nil, err
-		}
-
-		result, err := listResult(resp, 11, s.Modern)
-		if err != nil {
-			return nil, err
-		}
-		rawResources, _ := result["resources"].([]interface{})
-
-		for _, r := range rawResources {
+	err := c.listPages(ctx, s, 11, "resources/list", "resources", func(items []interface{}) error {
+		for _, r := range items {
 			rm, ok := r.(map[string]interface{})
 			if !ok {
-				continue
+				return fmt.Errorf("invalid resource entry")
+			}
+			uri := strField(rm, "uri")
+			if uri == "" {
+				return fmt.Errorf("resource entry has no URI")
 			}
 			resources = append(resources, Resource{
-				URI:         strField(rm, "uri"),
+				URI:         uri,
 				Name:        strField(rm, "name"),
 				MimeType:    strField(rm, "mimeType"),
 				Description: strField(rm, "description"),
 			})
 		}
-		cursor, _ = result["nextCursor"].(string)
-		if cursor == "" {
-			break
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return resources, nil
 }
 
-// ListPrompts calls prompts/list and returns all available prompt templates,
-// following nextCursor pagination up to maxListPages.
+// ListPrompts returns the complete prompt listing or an error.
 func (c *Client) ListPrompts(ctx context.Context, s *Session) ([]Prompt, error) {
 	var prompts []Prompt
-	cursor := ""
-	for page := 0; page < maxListPages; page++ {
-		params := map[string]interface{}{}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		resp, err := c.post(ctx, s, 12, "prompts/list", params)
-		if err != nil {
-			return nil, err
-		}
-
-		result, err := listResult(resp, 12, s.Modern)
-		if err != nil {
-			return nil, err
-		}
-		rawPrompts, _ := result["prompts"].([]interface{})
-
-		for _, p := range rawPrompts {
+	err := c.listPages(ctx, s, 12, "prompts/list", "prompts", func(items []interface{}) error {
+		for _, p := range items {
 			pm, ok := p.(map[string]interface{})
 			if !ok {
-				continue
+				return fmt.Errorf("invalid prompt entry")
+			}
+			name := strField(pm, "name")
+			if name == "" {
+				return fmt.Errorf("prompt entry has no name")
 			}
 			prompt := Prompt{
-				Name:        strField(pm, "name"),
+				Name:        name,
 				Description: strField(pm, "description"),
 			}
 			if args, ok := pm["arguments"].([]interface{}); ok {
@@ -333,10 +294,10 @@ func (c *Client) ListPrompts(ctx context.Context, s *Session) ([]Prompt, error) 
 			}
 			prompts = append(prompts, prompt)
 		}
-		cursor, _ = result["nextCursor"].(string)
-		if cursor == "" {
-			break
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return prompts, nil
 }

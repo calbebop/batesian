@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -507,5 +508,63 @@ func TestProbeMCP_ModernOnlyProtectedServer(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "mcp-resources-unauth-001") {
 		t.Errorf("protected resources flagged as unauthenticated:\n%s", out.String())
+	}
+}
+
+func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
+	for _, tc := range []struct {
+		capability string
+		method     string
+		id         int
+		firstPage  string
+	}{
+		{"tools", "tools/list", 10, `{"tools":[{"name":"first"}],"nextCursor":"more"}`},
+		{"resources", "resources/list", 11, `{"resources":[{"uri":"file:///first"}],"nextCursor":"more"}`},
+		{"prompts", "prompts/list", 12, `{"prompts":[{"name":"first"}],"nextCursor":"more"}`},
+	} {
+		t.Run(tc.capability, func(t *testing.T) {
+			listCalls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				switch req.Method {
+				case "server/discover":
+					w.WriteHeader(http.StatusNotFound)
+				case "initialize":
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"%s":{}}}}`, tc.capability)
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case tc.method:
+					listCalls++
+					if listCalls == 1 {
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, tc.id, tc.firstPage)
+					} else {
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32602,"message":"Invalid cursor"}}`, tc.id)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			var out bytes.Buffer
+			err := probeMCP(t.Context(), srv.URL+"/mcp", "", time.Second, false, "",
+				report.FormatTable, report.New(&out, false))
+			if err == nil || !strings.Contains(err.Error(), tc.method) {
+				t.Fatalf("probe error = %v, want %s failure", err, tc.method)
+			}
+			if listCalls != 2 {
+				t.Errorf("%s calls = %d, want 2", tc.method, listCalls)
+			}
+			if strings.Contains(out.String(), "Server Identity") {
+				t.Errorf("partial inventory was rendered as complete:\n%s", out.String())
+			}
+		})
 	}
 }

@@ -292,37 +292,32 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 	if result.HasTools {
 		printer.Verbose("tools/list")
 		tools, err := client.ListTools(ctx, session)
-		if err == nil {
-			for _, t := range tools {
-				result.Tools = append(result.Tools, report.MCPToolSummary{
-					Name:        t.Name,
-					Description: t.Description,
-				})
-			}
-		} else {
-			// Silence here reads as "no tools", which is the one conclusion a
-			// failed listing can never support - and probe's whole deliverable
-			// is the surface map.
-			printer.Warn(fmt.Sprintf("tools/list failed: %s (tool surface not enumerated)", redactor.text(err.Error())))
+		if err != nil {
+			return fmt.Errorf("tool inventory incomplete: %w", err)
+		}
+		for _, t := range tools {
+			result.Tools = append(result.Tools, report.MCPToolSummary{
+				Name:        t.Name,
+				Description: t.Description,
+			})
 		}
 	}
 
 	if result.HasResources {
 		printer.Verbose("resources/list")
 		resources, err := client.ListResources(ctx, session)
-		if err == nil {
-			for _, r := range resources {
-				result.Resources = append(result.Resources, report.MCPResourceSummary{
-					URI:      r.URI,
-					MimeType: r.MimeType,
-				})
-			}
-		} else {
-			printer.Warn(fmt.Sprintf("resources/list failed: %s (resource surface not enumerated)", redactor.text(err.Error())))
+		if err != nil {
+			return fmt.Errorf("resource inventory incomplete: %w", err)
+		}
+		for _, r := range resources {
+			result.Resources = append(result.Resources, report.MCPResourceSummary{
+				URI:      r.URI,
+				MimeType: r.MimeType,
+			})
 		}
 
 		anonResources := resources
-		anonErr := err
+		var anonErr error
 		if token != "" {
 			printer.Verbose("Checking resources/list without authentication...")
 			anonResources, anonErr = listUnauthMCPResources(ctx, session.Endpoint, timeout, skipTLS, proxy)
@@ -339,23 +334,22 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 	if result.HasPrompts {
 		printer.Verbose("prompts/list")
 		prompts, err := client.ListPrompts(ctx, session)
-		if err == nil {
-			for _, p := range prompts {
-				hasReq := false
-				for _, a := range p.Arguments {
-					if a.Required {
-						hasReq = true
-						break
-					}
+		if err != nil {
+			return fmt.Errorf("prompt inventory incomplete: %w", err)
+		}
+		for _, p := range prompts {
+			hasReq := false
+			for _, a := range p.Arguments {
+				if a.Required {
+					hasReq = true
+					break
 				}
-				result.Prompts = append(result.Prompts, report.MCPPromptSummary{
-					Name:        p.Name,
-					ArgCount:    len(p.Arguments),
-					HasRequired: hasReq,
-				})
 			}
-		} else {
-			printer.Warn(fmt.Sprintf("prompts/list failed: %s (prompt surface not enumerated)", redactor.text(err.Error())))
+			result.Prompts = append(result.Prompts, report.MCPPromptSummary{
+				Name:        p.Name,
+				ArgCount:    len(p.Arguments),
+				HasRequired: hasReq,
+			})
 		}
 	}
 
