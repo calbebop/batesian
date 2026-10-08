@@ -84,6 +84,31 @@ primary mechanism). To fail the build, combine JSON output with `jq`:
 
 This exits non-zero if any critical or high findings are present.
 
+### Check JSON report coverage
+
+Scan JSON has `schema_version: 1`; incompatible schema changes increment it.
+The `scanner` object records the build version,
+commit, and date. The `ruleset` object records the loaded and selected rule counts,
+whether a supplemental rule directory was configured, and a SHA-256 hash of the
+loaded rule descriptors. The hash ignores rule-file ordering and YAML comments.
+
+`rule_outcomes` has one entry per selected rule, in execution order. Status is
+`findings`, `no_findings`, `skipped`, or `error`; each entry includes its finding
+count and any skip reason or error. Outcomes are captured before coalescing, so
+the finding count can exceed the coalesced `summary.total`. The existing
+`findings`, `skipped`, `errors`, and `summary` fields remain available.
+
+To require complete coverage in a JSON pipeline:
+
+```sh
+jq -e '
+  .schema_version == 1 and
+  .ruleset.selected > 0 and
+  (.rule_outcomes | length) == .ruleset.selected and
+  all(.rule_outcomes[]; .status != "skipped" and .status != "error")
+' results.json
+```
+
 ### Scan specific protocols only
 
 ```yaml

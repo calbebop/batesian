@@ -408,6 +408,26 @@ func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 	if _, ok := doc["findings"]; !ok {
 		t.Errorf("payload missing the findings key: %.200s", buf.String())
 	}
+	if doc["schema_version"] != float64(scanJSONSchemaVersion) {
+		t.Errorf("schema version = %v", doc["schema_version"])
+	}
+	scanner, ok := doc["scanner"].(map[string]any)
+	if !ok || scanner["name"] != "batesian" || scanner["version"] == "" {
+		t.Errorf("scanner metadata = %v", doc["scanner"])
+	}
+	ruleset, ok := doc["ruleset"].(map[string]any)
+	if !ok {
+		t.Fatalf("ruleset metadata = %v", doc["ruleset"])
+	}
+	loaded, loadedOK := ruleset["loaded"].(float64)
+	selected, selectedOK := ruleset["selected"].(float64)
+	if !loadedOK || !selectedOK || loaded < selected || ruleset["sha256"] == "" {
+		t.Errorf("ruleset metadata = %v", doc["ruleset"])
+	}
+	outcomes, ok := doc["rule_outcomes"].([]any)
+	if !ok || len(outcomes) != int(selected) {
+		t.Errorf("rule outcomes = %v", doc["rule_outcomes"])
+	}
 }
 
 func TestScan_ConfigLoadErrorStopsScan(t *testing.T) {

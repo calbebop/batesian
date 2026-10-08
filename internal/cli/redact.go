@@ -141,6 +141,15 @@ func (r outputRedactor) results(results []engine.RunResult) []engine.RunResult {
 	return out
 }
 
+func (r outputRedactor) ruleOutcomes(results []engine.RunResult) []scanJSONRuleOutcome {
+	out := buildRuleOutcomes(results)
+	for i := range out {
+		out[i].Reason = r.text(out[i].Reason)
+		out[i].Error = r.text(out[i].Error)
+	}
+	return out
+}
+
 func (r outputRedactor) finding(f attackpkg.Finding) attackpkg.Finding {
 	f.Title = r.text(f.Title)
 	f.Description = r.text(f.Description)

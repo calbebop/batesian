@@ -10,12 +10,21 @@ import (
 	"github.com/calbebop/batesian/internal/rules"
 )
 
+func testScanJSON(t *testing.T, target string, results []engine.RunResult) map[string]any {
+	t.Helper()
+	doc, err := buildScanJSON(scanJSONInput{Target: target, Reported: results, Outcomes: buildRuleOutcomes(results)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
 // TestBuildScanJSON_ErroredRulesAppear: a rule whose RunResult carries an error
 // must appear in the JSON output's "errors" array, not vanish. Before this fix,
 // errored rules produced no finding and no skip entry, so they were entirely
 // absent from the machine-readable output.
 func TestBuildScanJSON_ErroredRulesAppear(t *testing.T) {
-	doc := buildScanJSON("https://target.example.com", []engine.RunResult{
+	doc := testScanJSON(t, "https://target.example.com", []engine.RunResult{
 		{Rule: &rules.Rule{ID: "mcp-x"}, Err: errors.New("executor panicked: nil pointer dereference")},
 	})
 	errs, ok := doc["errors"].([]map[string]string)
@@ -34,7 +43,7 @@ func TestBuildScanJSON_ErroredRulesAppear(t *testing.T) {
 }
 
 func TestBuildScanJSON_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
-	doc := buildScanJSON("https://target.example.com", []engine.RunResult{{
+	doc := testScanJSON(t, "https://target.example.com", []engine.RunResult{{
 		Rule: &rules.Rule{ID: "a2a-test"},
 		Findings: []attack.Finding{
 			{RuleID: "a2a-test", Confidence: attack.ConfirmedExploit, Title: "Unproven finding"},
