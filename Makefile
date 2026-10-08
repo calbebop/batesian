@@ -7,7 +7,7 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Keep container versions aligned with ci.yml and go.mod.
-GO_IMAGE := golang:1.25.13
+GO_IMAGE := golang:1.26.9-bookworm
 LINT_IMAGE := golangci/golangci-lint:v2.11.4
 
 # Reuse module and build caches across container runs.
