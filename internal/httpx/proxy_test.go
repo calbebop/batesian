@@ -3,6 +3,7 @@ package httpx
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,26 @@ func TestProxyFunc_RejectsUnusableValues(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			if _, err := ProxyFunc(raw); err == nil {
 				t.Errorf("ProxyFunc(%q) should fail rather than fall back to a direct connection", raw)
+			}
+		})
+	}
+}
+
+func TestProxyFunc_ErrorsHideCredentials(t *testing.T) {
+	const secret = "proxy-secret-value"
+	for _, raw := range []string{
+		"http://user:" + secret + "@",
+		"http://user:" + secret + "@proxy.example/%zz",
+		"ftp://user:" + secret + "@proxy.example:21",
+		"http://user:" + secret + "@proxy.example:badport",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := ProxyFunc(raw)
+			if err == nil {
+				t.Fatal("expected invalid proxy error")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "user:") {
+				t.Fatalf("proxy error disclosed credentials: %s", err)
 			}
 		})
 	}
