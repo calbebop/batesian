@@ -51,6 +51,9 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
 
+      - name: Test CI documentation
+        run: python3 -m unittest discover -s .github/scripts -p test_ci_docs.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

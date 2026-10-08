@@ -4,7 +4,10 @@ Batesian outputs SARIF, consumed by SARIF tooling (DAST viewers, dashboards) and
 uploadable to GitHub Code Scanning. Note that Batesian findings are network
 targets, not files in the repository, so GitHub surfaces them as alerts without
 source-line annotations (it resolves SARIF locations as repository paths).
-Integrating into CI takes two lines on top of the scan command.
+The examples below use the unreleased `main` branch because their coverage gates
+depend on JSON rule outcomes and SARIF invocation metadata. These fields are not
+in v1.7.0. Replace `@main` with a reviewed commit SHA in real CI, then use a
+release tag once the fields ship.
 
 SARIF alert messages include a short evidence excerpt. Full evidence and attack
 chain steps are in result properties. When a finding differs from its rule's
@@ -35,22 +38,29 @@ jobs:
     name: Batesian adversarial scan
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write   # Required to upload SARIF to Code Scanning
 
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+
       - name: Install Batesian
-        run: go install github.com/calbebop/batesian/cmd/batesian@latest
+        run: go install github.com/calbebop/batesian/cmd/batesian@main
 
       - name: Run scan (SARIF output)
         run: |
           batesian scan \
-            --target ${{ vars.AGENT_TARGET_URL }} \
+            --target "$AGENT_TARGET_URL" \
+            --protocol a2a \
             --output sarif \
             --timeout 30 \
             > results.sarif
         env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
           # Optional: bearer token for authenticated targets
           BATESIAN_TOKEN: ${{ secrets.AGENT_TOKEN }}
 
@@ -64,12 +74,24 @@ jobs:
         if: always()
 
       - name: Require complete rule coverage
-        run: jq -e 'all(.runs[].invocations[]; .executionSuccessful)' results.sarif
+        run: |
+          jq -e '
+            (.runs | length) == 1 and
+            (.runs[0].invocations | length) == 1 and
+            (.runs[0].invocations[0] |
+              .executionSuccessful == true and
+              .properties.rulesSelected > 0 and
+              .properties.rulesCompleted == .properties.rulesSelected and
+              .properties.rulesSkipped == 0 and
+              .properties.rulesErrored == 0)
+          ' results.sarif
 ```
 
 Skipped and errored rules are stored as SARIF invocation notifications, not
 alerts. GitHub accepts these fields but does not display them, so the explicit
-coverage check prevents a partial scan from passing unnoticed.
+coverage check prevents a partial scan from passing unnoticed. Select only rules
+whose identity, authentication, and callback prerequisites the job can meet.
+The gate checks selected rules, not every rule in the catalog.
 
 ### Fail the build on findings above a severity threshold
 
@@ -113,9 +135,12 @@ jq -e '
   .schema_version == 1 and
   .ruleset.selected > 0 and
   (.rule_outcomes | length) == .ruleset.selected and
-  all(.rule_outcomes[]; .status != "skipped" and .status != "error")
+  all(.rule_outcomes[]; .status == "findings" or .status == "no_findings")
 ' results.json
 ```
+
+Pin the expected rule IDs or count in your pipeline if a catalog change must not
+silently reduce the selected set.
 
 ### Scan specific protocols only
 
@@ -175,14 +200,20 @@ pre-configured, externally reachable listener instead.
 ```yaml
 # .gitlab-ci.yml
 batesian-scan:
-  image: golang:1.25
+  image: golang:1.25-bookworm
   stage: test
   script:
-    - go install github.com/calbebop/batesian/cmd/batesian@latest
+    - apt-get update && apt-get install -y --no-install-recommends jq
+    - go install github.com/calbebop/batesian/cmd/batesian@main
     - batesian scan --target $AGENT_TARGET_URL --output json > batesian-results.json
     - |
-      jq -e '(.findings // []) | map(select(.severity == "critical")) | length == 0' \
-        batesian-results.json
+      jq -e '
+        .schema_version == 1 and
+        .ruleset.selected > 0 and
+        (.rule_outcomes | length) == .ruleset.selected and
+        all(.rule_outcomes[]; .status == "findings" or .status == "no_findings") and
+        ([.findings[] | select(.severity == "critical")] | length) == 0
+      ' batesian-results.json
   artifacts:
     paths:
       - batesian-results.json
@@ -196,13 +227,25 @@ batesian-scan:
 ```groovy
 stage('Agent Security Scan') {
     steps {
-        sh 'go install github.com/calbebop/batesian/cmd/batesian@latest'
+        sh 'go install github.com/calbebop/batesian/cmd/batesian@main'
         sh '''
             batesian scan \
               --target ${AGENT_TARGET_URL} \
               --output sarif \
               --timeout 30 \
               > batesian-results.sarif
+        '''
+        sh '''
+            jq -e '
+              (.runs | length) == 1 and
+              (.runs[0].invocations | length) == 1 and
+              (.runs[0].invocations[0] |
+                .executionSuccessful == true and
+                .properties.rulesSelected > 0 and
+                .properties.rulesCompleted == .properties.rulesSelected and
+                .properties.rulesSkipped == 0 and
+                .properties.rulesErrored == 0)
+            ' batesian-results.sarif
         '''
     }
     post {
@@ -212,3 +255,5 @@ stage('Agent Security Scan') {
     }
 }
 ```
+
+The Jenkins agent needs Go 1.25 or newer and `jq` installed.
