@@ -18,9 +18,22 @@ var vulnClass = map[string]string{
 }
 
 // Coalesce keeps the strongest finding for each class and target when distinct
-// rules overlap. It rebuilds affected results without mutating input findings.
+// rules overlap. It does not mutate input findings.
 func Coalesce(results []RunResult) []RunResult {
 	type loc struct{ ri, fi int }
+	normalized := make([]RunResult, len(results))
+	for ri, result := range results {
+		normalized[ri] = result
+		if len(result.Findings) == 0 {
+			continue
+		}
+		normalized[ri].Findings = append([]attackpkg.Finding(nil), result.Findings...)
+		for fi := range normalized[ri].Findings {
+			f := &normalized[ri].Findings[fi]
+			f.Confidence = f.EffectiveConfidence()
+		}
+	}
+	results = normalized
 
 	groups := map[string][]loc{}
 	for ri := range results {
@@ -102,7 +115,7 @@ func stronger(a, b attackpkg.Finding) bool {
 
 func confidenceRank(c attackpkg.Confidence) int {
 	switch c {
-	case attackpkg.ConfirmedExploit, "":
+	case attackpkg.ConfirmedExploit:
 		return 2
 	case attackpkg.RiskIndicator:
 		return 1
@@ -113,7 +126,7 @@ func confidenceRank(c attackpkg.Confidence) int {
 
 func confidenceLabel(c attackpkg.Confidence) string {
 	if c == "" {
-		return string(attackpkg.ConfirmedExploit)
+		return string(attackpkg.RiskIndicator)
 	}
 	return string(c)
 }

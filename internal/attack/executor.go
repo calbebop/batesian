@@ -117,13 +117,12 @@ type Principal struct {
 
 // Confidence describes how certain the finding is.
 // "confirmed" means the attack demonstrably succeeded (e.g., unauthenticated data returned).
-// "indicator" means a suspicious pattern was detected but exploitability is not proven (e.g., heuristic scan).
+// "indicator" means exploitability is not proven.
 type Confidence string
 
 const (
-	ConfirmedExploit  Confidence = "confirmed"
-	RiskIndicator     Confidence = "indicator"
-	ConfidenceDefault Confidence = "confirmed" // legacy - callers that don't set Confidence get confirmed
+	ConfirmedExploit Confidence = "confirmed"
+	RiskIndicator    Confidence = "indicator"
 )
 
 // Finding represents a confirmed vulnerability or notable observation.
@@ -133,7 +132,7 @@ type Finding struct {
 	Severity string
 	// Confidence describes whether the finding is a confirmed exploit or a risk indicator.
 	// Confirmed findings: the attack demonstrably succeeded (auth bypass proven, data returned).
-	// Indicator findings: a suspicious pattern was detected; manual verification recommended.
+	// Indicator findings require manual verification.
 	Confidence  Confidence
 	Title       string
 	Description string
@@ -143,6 +142,14 @@ type Finding struct {
 	// Chain is the optional provenance trail for findings produced by a
 	// multi-step chained rule. Nil/empty for single-shot rules.
 	Chain []ChainStep
+}
+
+// EffectiveConfidence requires explicit confirmation and nonempty evidence.
+func (f Finding) EffectiveConfidence() Confidence {
+	if f.Confidence == ConfirmedExploit && strings.TrimSpace(f.Evidence) != "" {
+		return ConfirmedExploit
+	}
+	return RiskIndicator
 }
 
 // Vars holds template variable substitutions for a single attack execution.

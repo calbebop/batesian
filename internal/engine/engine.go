@@ -128,6 +128,9 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 			SkipMsg: msg,
 		}
 	}
+	for i := range findings {
+		findings[i].Confidence = findings[i].EffectiveConfidence()
+	}
 	return RunResult{
 		Rule:     r,
 		Findings: findings,

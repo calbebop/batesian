@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
+	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/rules"
 )
@@ -28,5 +30,35 @@ func TestBuildScanJSON_ErroredRulesAppear(t *testing.T) {
 	}
 	if errs[0]["error"] == "" {
 		t.Error("error message should not be empty")
+	}
+}
+
+func TestBuildScanJSON_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
+	doc := buildScanJSON("https://target.example.com", []engine.RunResult{{
+		Rule: &rules.Rule{ID: "a2a-test"},
+		Findings: []attack.Finding{
+			{RuleID: "a2a-test", Confidence: attack.ConfirmedExploit, Title: "Unproven finding"},
+			{RuleID: "a2a-test", Evidence: "Observed suspicious response", Title: "Unset confidence"},
+		},
+	}})
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("encode report: %v", err)
+	}
+	var report struct {
+		Findings []struct {
+			Confidence string `json:"confidence"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(encoded, &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if len(report.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(report.Findings))
+	}
+	for i, finding := range report.Findings {
+		if finding.Confidence != "indicator" {
+			t.Errorf("finding %d confidence = %q, want indicator", i, finding.Confidence)
+		}
 	}
 }

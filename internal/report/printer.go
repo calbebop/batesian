@@ -407,17 +407,17 @@ func (p *Printer) printSkipsAndErrors(results []engine.RunResult) {
 func (p *Printer) printFinding(f attackpkg.Finding) {
 	icon, label := severityDisplay(f.Severity)
 
-	// Append an [indicator] tag for heuristic findings that are not confirmed exploits.
+	confidence := f.EffectiveConfidence()
 	confidenceTag := ""
-	if f.Confidence == attackpkg.RiskIndicator {
+	if confidence == attackpkg.RiskIndicator {
 		confidenceTag = " " + Dim("[indicator]")
 	}
 
 	fmt.Fprintf(p.w, "%s %s  %s%s\n", icon, label, Bold(f.Title), confidenceTag)
 	fmt.Fprintf(p.w, "   %s %s\n", Dim("rule:"), f.RuleID)
 	fmt.Fprintf(p.w, "   %s %s\n", Dim("target:"), f.TargetURL)
-	if f.Confidence == attackpkg.RiskIndicator {
-		fmt.Fprintf(p.w, "   %s %s\n", Dim("note:"), Dim("pattern match only - manual verification recommended"))
+	if confidence == attackpkg.RiskIndicator {
+		fmt.Fprintf(p.w, "   %s %s\n", Dim("note:"), Dim("not confirmed - manual verification recommended"))
 	}
 	if p.verbose && f.Evidence != "" {
 		fmt.Fprintf(p.w, "   %s\n", Dim("evidence:"))
