@@ -22,6 +22,48 @@ func TestLoad_EmptyPath_NoFile(t *testing.T) {
 	if cfg.Target != "" {
 		t.Errorf("expected empty target, got %q", cfg.Target)
 	}
+	_, source, err := config.LoadWithSource("")
+	if err != nil || source != "" {
+		t.Fatalf("missing config source = %q, error = %v", source, err)
+	}
+}
+
+func TestLoadWithSource_ReportsDiscoveredParent(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "batesian.yaml")
+	if err := os.WriteFile(path, []byte("protocol: mcp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, child)
+
+	cfg, source, err := config.LoadWithSource("")
+	if err != nil {
+		t.Fatalf("LoadWithSource: %v", err)
+	}
+	if cfg.Protocol != "mcp" || source != path {
+		t.Fatalf("config = %+v, source = %q, want %q", cfg, source, path)
+	}
+}
+
+func TestLoadWithSource_ReportsExplicitRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scan.yaml")
+	if err := os.WriteFile(path, []byte("protocol: a2a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, dir)
+
+	cfg, source, err := config.LoadWithSource("scan.yaml")
+	if err != nil {
+		t.Fatalf("LoadWithSource: %v", err)
+	}
+	if cfg.Protocol != "a2a" || source != path {
+		t.Fatalf("config = %+v, source = %q, want %q", cfg, source, path)
+	}
 }
 
 func TestLoad_AutoDiscoveredMalformed(t *testing.T) {

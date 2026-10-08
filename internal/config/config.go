@@ -99,34 +99,44 @@ type PrincipalConfig struct {
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
-// A missing discovered config returns defaults; all other errors are returned.
 func Load(path string) (*Config, error) {
+	cfg, _, err := LoadWithSource(path)
+	return cfg, err
+}
+
+// LoadWithSource also returns the absolute path of the loaded file.
+// A missing discovered config returns defaults and an empty path.
+func LoadWithSource(path string) (*Config, string, error) {
 	if path == "" {
 		var err error
 		path, err = findConfigFile()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if path == "" {
-			return &Config{}, nil
+			return &Config{}, "", nil
 		}
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolving config file %s: %w", path, err)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config file %s: %w", path, err)
+		return nil, "", fmt.Errorf("reading config file %s: %w", path, err)
 	}
 
 	var cfg Config
 	if err := decodeConfig(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file %s: %w", path, err)
+		return nil, "", fmt.Errorf("parsing config file %s: %w", path, err)
 	}
 
 	if err := cfg.validate(path); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return &cfg, nil
+	return &cfg, path, nil
 }
 
 func decodeConfig(data []byte, cfg *Config) error {
