@@ -57,6 +57,7 @@ func TestPrintScanSummary_ConfirmedExploit(t *testing.T) {
 		Severity:   "high",
 		Confidence: attack.ConfirmedExploit,
 		Title:      "Test confirmed finding",
+		Evidence:   "Observed unauthorized task read",
 		TargetURL:  "https://example.com",
 	}
 
@@ -69,6 +70,19 @@ func TestPrintScanSummary_ConfirmedExploit(t *testing.T) {
 
 	if strings.Contains(out, "[indicator]") {
 		t.Errorf("ConfirmedExploit finding should not have [indicator] tag, got:\n%s", out)
+	}
+}
+
+func TestPrintScanSummary_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
+	var buf bytes.Buffer
+	p := report.New(&buf, false)
+	r := &rules.Rule{ID: "a2a-test-001"}
+	p.PrintScanSummary([]engine.RunResult{{Rule: r, Findings: []attack.Finding{{
+		RuleID: "a2a-test-001", Severity: "high", Confidence: attack.ConfirmedExploit,
+		Title: "Unproven finding", TargetURL: "https://example.com",
+	}}}})
+	if !strings.Contains(buf.String(), "[indicator]") {
+		t.Errorf("evidence-free finding was presented as confirmed:\n%s", buf.String())
 	}
 }
 

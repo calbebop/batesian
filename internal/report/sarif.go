@@ -217,10 +217,7 @@ func newSARIFNotification(result engine.RunResult, level, detail string) sarifNo
 
 // findingToSARIF converts a Finding into a SARIF result.
 func findingToSARIF(f attackpkg.Finding) sarifResult {
-	confidence := string(f.Confidence)
-	if confidence == "" {
-		confidence = "confirmed"
-	}
+	confidence := string(f.EffectiveConfidence())
 	props := map[string]string{
 		"severity":   f.Severity,
 		"confidence": confidence,

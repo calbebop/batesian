@@ -815,10 +815,7 @@ func buildScanJSON(target string, results []engine.RunResult) map[string]interfa
 
 	for _, r := range results {
 		for _, f := range r.Findings {
-			confidence := string(f.Confidence)
-			if confidence == "" {
-				confidence = "confirmed"
-			}
+			confidence := string(f.EffectiveConfidence())
 			var chain []jsonChainStep
 			for _, s := range f.Chain {
 				chain = append(chain, jsonChainStep{

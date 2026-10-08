@@ -27,9 +27,32 @@ func sarifFixture() []engine.RunResult {
 			Confidence:  attack.ConfirmedExploit,
 			Title:       "Test finding",
 			Description: "Test description",
+			Evidence:    "Observed unauthorized task read",
 			TargetURL:   "https://agent.example.com/mcp",
 		}},
 	}}
+}
+
+func TestWriteSARIF_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
+	results := sarifFixture()
+	results[0].Findings[0].Evidence = ""
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				Properties map[string]string `json:"properties"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("decode SARIF: %v", err)
+	}
+	if got := doc.Runs[0].Results[0].Properties["confidence"]; got != "indicator" {
+		t.Errorf("evidence-free finding confidence = %q, want indicator", got)
+	}
 }
 
 type sarifDoc struct {
