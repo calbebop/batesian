@@ -107,7 +107,8 @@ func outputRulesTable(w io.Writer, rs []*rules.Rule) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  ID\tPROTOCOL\tSEVERITY\tNAME")
 	for _, r := range rs {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.ID, r.Attack.Protocol, r.Info.Severity, r.Info.Name)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", report.EscapeTerminal(r.ID),
+			report.EscapeTerminal(r.Attack.Protocol), report.EscapeTerminal(r.Info.Severity), report.EscapeTerminal(r.Info.Name))
 	}
 	tw.Flush()
 	fmt.Fprintf(w, "\n%d rule(s)\n", len(rs))
@@ -142,22 +143,22 @@ func describeRule(w io.Writer, rs []*rules.Rule, id string, format report.Format
 			if format == report.FormatJSON {
 				return outputRuleJSON(w, r)
 			}
-			fmt.Fprintf(w, "ID:          %s\n", r.ID)
-			fmt.Fprintf(w, "Name:        %s\n", r.Info.Name)
-			fmt.Fprintf(w, "Protocol:    %s\n", r.Attack.Protocol)
-			fmt.Fprintf(w, "Severity:    %s\n", r.Info.Severity)
+			fmt.Fprintf(w, "ID:          %s\n", report.EscapeTerminal(r.ID))
+			fmt.Fprintf(w, "Name:        %s\n", report.EscapeTerminal(r.Info.Name))
+			fmt.Fprintf(w, "Protocol:    %s\n", report.EscapeTerminal(r.Attack.Protocol))
+			fmt.Fprintf(w, "Severity:    %s\n", report.EscapeTerminal(r.Info.Severity))
 			if len(r.Info.Tags) > 0 {
-				fmt.Fprintf(w, "Tags:        %s\n", strings.Join(r.Info.Tags, ", "))
+				fmt.Fprintf(w, "Tags:        %s\n", report.EscapeTerminal(strings.Join(r.Info.Tags, ", ")))
 			}
-			fmt.Fprintf(w, "\n%s\n", r.Info.Description)
+			fmt.Fprintf(w, "\n%s\n", report.EscapeTerminal(r.Info.Description))
 			if len(r.Info.References) > 0 {
 				fmt.Fprintln(w, "\nReferences:")
 				for _, ref := range r.Info.References {
-					fmt.Fprintf(w, "  - %s\n", ref)
+					fmt.Fprintf(w, "  - %s\n", report.EscapeTerminal(ref))
 				}
 			}
 			if r.Remediation != "" {
-				fmt.Fprintf(w, "\nRemediation:\n  %s\n", r.Remediation)
+				fmt.Fprintf(w, "\nRemediation:\n  %s\n", report.EscapeTerminal(r.Remediation))
 			}
 			return nil
 		}

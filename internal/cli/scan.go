@@ -674,7 +674,7 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 		RedirectPort: redirectPort,
 		OpenBrowser:  openBrowser,
 		Logger: func(format string, args ...interface{}) {
-			fmt.Fprintf(os.Stderr, format+"\n", args...)
+			fmt.Fprintln(os.Stderr, report.EscapeTerminal(fmt.Sprintf(format, args...)))
 		},
 	})
 	if err != nil {
@@ -687,7 +687,7 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder, redactor outputRedactor) {
 	reqs := rec.Requests()
 	fmt.Fprintf(out, "\nDry run: nothing was sent. Planned requests against %s (%d recorded, see the notes below):\n\n",
-		redactor.url(target), len(reqs))
+		report.EscapeTerminal(redactor.url(target)), len(reqs))
 
 	candidates := endpointCandidateProbes(reqs)
 
@@ -697,7 +697,7 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder, reda
 	lastRule := "\x00" // sentinel so the first rule (even "") prints a header
 	for i, r := range reqs {
 		if r.RuleID != lastRule {
-			fmt.Fprintf(out, "[%s]\n", dryRunRuleLabel(r.RuleID))
+			fmt.Fprintf(out, "[%s]\n", report.EscapeTerminal(dryRunRuleLabel(r.RuleID)))
 			lastRule = r.RuleID
 		}
 		rulesSeen[r.RuleID] = true
@@ -706,15 +706,15 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder, reda
 			suffix = "   [fallback endpoint]"
 			marked++
 		}
-		fmt.Fprintf(out, "  %s %s%s\n", r.Method, redactor.text(r.URL), suffix)
+		fmt.Fprintf(out, "  %s %s%s\n", report.EscapeTerminal(r.Method), report.EscapeTerminal(redactor.text(r.URL)), suffix)
 		if u, err := url.Parse(r.URL); err == nil && u.Host != "" {
 			hosts[u.Host] = true
 		}
 		for _, k := range significantHeaderKeys(r.Headers) {
-			fmt.Fprintf(out, "      %s: %s\n", k, redactor.text(r.Headers[k]))
+			fmt.Fprintf(out, "      %s: %s\n", report.EscapeTerminal(k), report.EscapeTerminal(redactor.text(r.Headers[k])))
 		}
 		if r.Body != "" {
-			fmt.Fprintf(out, "      body: %s\n", redactor.text(oneLine(r.Body, 300)))
+			fmt.Fprintf(out, "      body: %s\n", report.EscapeTerminal(redactor.text(oneLine(r.Body, 300))))
 		}
 	}
 

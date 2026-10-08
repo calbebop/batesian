@@ -78,9 +78,9 @@ func (p *Printer) ProbeHeader(target, protocol string) {
 	fmt.Fprintf(p.w, "%s %s  %s\n",
 		Cyan(">>"),
 		Bold("Probing"),
-		target,
+		EscapeTerminal(target),
 	)
-	fmt.Fprintf(p.w, "   %s %s\n\n", Dim("protocol:"), protocol)
+	fmt.Fprintf(p.w, "   %s %s\n\n", Dim("protocol:"), EscapeTerminal(protocol))
 }
 
 // ProbeResult holds the structured data for a probe result display.
@@ -155,9 +155,9 @@ func (p *Printer) PrintProbeTable(r *ProbeResult) {
 	fmt.Fprintln(p.w)
 	p.section("Capabilities")
 	tw = tabwriter.NewWriter(p.w, 0, 0, 2, ' ', 0)
-	p.kvRow(tw, "Streaming", boolDisplay(r.Streaming))
-	p.kvRow(tw, "Push notifications", boolDisplay(r.PushNotifications))
-	p.kvRow(tw, "Extended agent card", boolDisplay(r.ExtendedCardAvailable))
+	p.kvRowStyled(tw, "Streaming", boolDisplay(r.Streaming))
+	p.kvRowStyled(tw, "Push notifications", boolDisplay(r.PushNotifications))
+	p.kvRowStyled(tw, "Extended agent card", boolDisplay(r.ExtendedCardAvailable))
 	tw.Flush()
 
 	// Authentication
@@ -165,12 +165,12 @@ func (p *Printer) PrintProbeTable(r *ProbeResult) {
 	p.section("Authentication")
 	tw = tabwriter.NewWriter(p.w, 0, 0, 2, ' ', 0)
 	if r.AuthRequired {
-		p.kvRow(tw, "Auth required", Yellow("yes"))
+		p.kvRowStyled(tw, "Auth required", Yellow("yes"))
 		if len(r.SecuritySchemes) > 0 {
 			p.kvRow(tw, "Schemes", strings.Join(r.SecuritySchemes, ", "))
 		}
 	} else {
-		p.kvRow(tw, "Auth required", Green("no (unauthenticated access)"))
+		p.kvRowStyled(tw, "Auth required", Green("no (unauthenticated access)"))
 	}
 	tw.Flush()
 
@@ -182,11 +182,11 @@ func (p *Printer) PrintProbeTable(r *ProbeResult) {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", Dim("ID"), Dim("Name"), Dim("Tags"))
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", Dim("--"), Dim("----"), Dim("----"))
 		for _, sk := range r.Skills {
-			tags := strings.Join(sk.Tags, ", ")
+			tags := EscapeTerminal(strings.Join(sk.Tags, ", "))
 			if tags == "" {
 				tags = Dim("none")
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\n", sk.ID, sk.Name, tags)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", EscapeTerminal(sk.ID), EscapeTerminal(sk.Name), tags)
 		}
 		tw.Flush()
 	}
@@ -200,8 +200,8 @@ func (p *Printer) PrintProbeTable(r *ProbeResult) {
 			fmt.Fprintf(p.w, "  %s %s  %s  %s\n",
 				icon,
 				label,
-				Dim(f.RuleID),
-				f.Message,
+				Dim(EscapeTerminal(f.RuleID)),
+				EscapeTerminal(f.Message),
 			)
 		}
 	}
@@ -218,36 +218,40 @@ func (p *Printer) PrintJSON(v any) error {
 
 // Success prints a success message.
 func (p *Printer) Success(msg string) {
-	fmt.Fprintf(p.w, "%s %s\n", Green("[+]"), msg)
+	fmt.Fprintf(p.w, "%s %s\n", Green("[+]"), EscapeTerminal(msg))
 }
 
 // Info prints an informational message.
 func (p *Printer) Info(msg string) {
-	fmt.Fprintf(p.w, "%s %s\n", Cyan("[*]"), msg)
+	fmt.Fprintf(p.w, "%s %s\n", Cyan("[*]"), EscapeTerminal(msg))
 }
 
 // Warn prints a warning message.
 func (p *Printer) Warn(msg string) {
-	fmt.Fprintf(p.w, "%s %s\n", Yellow("[!]"), msg)
+	fmt.Fprintf(p.w, "%s %s\n", Yellow("[!]"), EscapeTerminal(msg))
 }
 
 // Error prints an error message.
 func (p *Printer) Error(msg string) {
-	fmt.Fprintf(p.w, "%s %s\n", Red("[x]"), msg)
+	fmt.Fprintf(p.w, "%s %s\n", Red("[x]"), EscapeTerminal(msg))
 }
 
 // Verbose prints msg only when verbose mode is enabled.
 func (p *Printer) Verbose(msg string) {
 	if p.verbose {
-		fmt.Fprintf(p.w, "%s %s\n", Dim("[~]"), Dim(msg))
+		fmt.Fprintf(p.w, "%s %s\n", Dim("[~]"), Dim(EscapeTerminal(msg)))
 	}
 }
 
 func (p *Printer) section(title string) {
-	fmt.Fprintf(p.w, "%s\n", Bold(title))
+	fmt.Fprintf(p.w, "%s\n", Bold(EscapeTerminal(title)))
 }
 
 func (p *Printer) kvRow(tw *tabwriter.Writer, key, value string) {
+	fmt.Fprintf(tw, "  %s\t%s\n", Dim(key), EscapeTerminal(value))
+}
+
+func (p *Printer) kvRowStyled(tw *tabwriter.Writer, key, value string) {
 	fmt.Fprintf(tw, "  %s\t%s\n", Dim(key), value)
 }
 
@@ -279,7 +283,7 @@ func severityDisplay(sev string) (icon, label string) {
 	if shown == "" {
 		shown = "UNSPECIFIED"
 	}
-	return Yellow("[?]"), Yellow(shown)
+	return Yellow("[?]"), Yellow(EscapeTerminal(shown))
 }
 
 // PrintScanSummary renders the scan results as a terminal table.
@@ -413,15 +417,15 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 		confidenceTag = " " + Dim("[indicator]")
 	}
 
-	fmt.Fprintf(p.w, "%s %s  %s%s\n", icon, label, Bold(f.Title), confidenceTag)
-	fmt.Fprintf(p.w, "   %s %s\n", Dim("rule:"), f.RuleID)
-	fmt.Fprintf(p.w, "   %s %s\n", Dim("target:"), f.TargetURL)
+	fmt.Fprintf(p.w, "%s %s  %s%s\n", icon, label, Bold(EscapeTerminal(f.Title)), confidenceTag)
+	fmt.Fprintf(p.w, "   %s %s\n", Dim("rule:"), EscapeTerminal(f.RuleID))
+	fmt.Fprintf(p.w, "   %s %s\n", Dim("target:"), EscapeTerminal(f.TargetURL))
 	if len(f.Related) > 0 {
 		ids := make([]string, 0, len(f.Related))
 		for _, related := range f.Related {
 			ids = append(ids, related.RuleID)
 		}
-		fmt.Fprintf(p.w, "   %s %s\n", Dim("related rules:"), strings.Join(ids, ", "))
+		fmt.Fprintf(p.w, "   %s %s\n", Dim("related rules:"), EscapeTerminal(strings.Join(ids, ", ")))
 	}
 	if confidence == attackpkg.RiskIndicator {
 		fmt.Fprintf(p.w, "   %s %s\n", Dim("note:"), Dim("not confirmed - manual verification recommended"))
@@ -429,12 +433,12 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 	if p.verbose && f.Evidence != "" {
 		fmt.Fprintf(p.w, "   %s\n", Dim("evidence:"))
 		for _, line := range strings.Split(f.Evidence, "\n") {
-			fmt.Fprintf(p.w, "     %s\n", Dim(line))
+			fmt.Fprintf(p.w, "     %s\n", Dim(EscapeTerminal(line)))
 		}
 	}
 	if p.verbose {
 		for _, related := range f.Related {
-			fmt.Fprintf(p.w, "   %s %s\n", Dim("related finding:"), related.RuleID)
+			fmt.Fprintf(p.w, "   %s %s\n", Dim("related finding:"), EscapeTerminal(related.RuleID))
 			for _, field := range []struct{ name, value string }{
 				{"evidence", related.Evidence}, {"remediation", related.Remediation},
 			} {
@@ -443,7 +447,7 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 				}
 				fmt.Fprintf(p.w, "     %s\n", Dim(field.name+":"))
 				for _, line := range strings.Split(field.value, "\n") {
-					fmt.Fprintf(p.w, "       %s\n", Dim(line))
+					fmt.Fprintf(p.w, "       %s\n", Dim(EscapeTerminal(line)))
 				}
 			}
 			for _, step := range related.Chain {
@@ -451,7 +455,8 @@ func (p *Printer) printFinding(f attackpkg.Finding) {
 				if step.Principal != "" {
 					principal = " (" + step.Principal + ")"
 				}
-				fmt.Fprintf(p.w, "     %s %d%s: %s -> %s\n", Dim("chain"), step.Hop, Dim(principal), Dim(step.Action), Dim(step.Outcome))
+				fmt.Fprintf(p.w, "     %s %d%s: %s -> %s\n", Dim("chain"), step.Hop,
+					Dim(EscapeTerminal(principal)), Dim(EscapeTerminal(step.Action)), Dim(EscapeTerminal(step.Outcome)))
 			}
 		}
 	}
@@ -520,11 +525,11 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 	fmt.Fprintln(p.w)
 	p.section("Capabilities")
 	tw = tabwriter.NewWriter(p.w, 0, 0, 2, ' ', 0)
-	p.kvRow(tw, "Tools", boolDisplay(r.HasTools))
-	p.kvRow(tw, "Resources", boolDisplay(r.HasResources))
-	p.kvRow(tw, "Prompts", boolDisplay(r.HasPrompts))
-	p.kvRow(tw, "Sampling", boolDisplay(r.HasSampling))
-	p.kvRow(tw, "Logging", boolDisplay(r.HasLogging))
+	p.kvRowStyled(tw, "Tools", boolDisplay(r.HasTools))
+	p.kvRowStyled(tw, "Resources", boolDisplay(r.HasResources))
+	p.kvRowStyled(tw, "Prompts", boolDisplay(r.HasPrompts))
+	p.kvRowStyled(tw, "Sampling", boolDisplay(r.HasSampling))
+	p.kvRowStyled(tw, "Logging", boolDisplay(r.HasLogging))
 	tw.Flush()
 
 	if len(r.Tools) > 0 {
@@ -534,7 +539,7 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 		fmt.Fprintf(tw, "  %s\t%s\n", Dim("Name"), Dim("Description"))
 		fmt.Fprintf(tw, "  %s\t%s\n", Dim("----"), Dim("-----------"))
 		for _, t := range r.Tools {
-			fmt.Fprintf(tw, "  %s\t%s\n", t.Name, truncate(t.Description, 70))
+			fmt.Fprintf(tw, "  %s\t%s\n", EscapeTerminal(t.Name), truncate(t.Description, 70))
 		}
 		tw.Flush()
 	}
@@ -546,7 +551,7 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 		fmt.Fprintf(tw, "  %s\t%s\n", Dim("URI"), Dim("MIME"))
 		fmt.Fprintf(tw, "  %s\t%s\n", Dim("---"), Dim("----"))
 		for _, r := range r.Resources {
-			fmt.Fprintf(tw, "  %s\t%s\n", r.URI, r.MimeType)
+			fmt.Fprintf(tw, "  %s\t%s\n", EscapeTerminal(r.URI), EscapeTerminal(r.MimeType))
 		}
 		tw.Flush()
 	}
@@ -562,7 +567,7 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 			if pr.HasRequired {
 				req = " (required)"
 			}
-			fmt.Fprintf(tw, "  %s\t%d%s\n", pr.Name, pr.ArgCount, req)
+			fmt.Fprintf(tw, "  %s\t%d%s\n", EscapeTerminal(pr.Name), pr.ArgCount, req)
 		}
 		tw.Flush()
 	}
@@ -573,7 +578,7 @@ func (p *Printer) PrintMCPProbeTable(r *MCPProbeResult) {
 		for _, f := range r.Flags {
 			icon, label := severityDisplay(f.Severity)
 			fmt.Fprintf(p.w, "  %s %s  %s  %s\n",
-				icon, label, Dim(f.RuleID), f.Message,
+				icon, label, Dim(EscapeTerminal(f.RuleID)), EscapeTerminal(f.Message),
 			)
 		}
 	}
@@ -611,5 +616,5 @@ func truncateRunes(s string, max int) string {
 // rune-safely shortens s to at most max bytes.
 func truncate(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	return truncateRunes(s, max)
+	return truncateRunes(EscapeTerminal(s), max)
 }

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/calbebop/batesian/internal/cli"
+	"github.com/calbebop/batesian/internal/report"
 )
 
 // Release builds inject version metadata with -ldflags.
@@ -26,7 +27,7 @@ func main() {
 	defer stop()
 
 	if err := cli.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %s\n", report.EscapeTerminal(err.Error()))
 		stop()
 		os.Exit(1)
 	}

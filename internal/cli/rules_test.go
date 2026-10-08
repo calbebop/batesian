@@ -5,7 +5,33 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/calbebop/batesian/internal/rules"
 )
+
+func TestRulesTerminalOutputEscapesControls(t *testing.T) {
+	r := &rules.Rule{ID: "rule\x1b[2J"}
+	r.Attack.Protocol = "mcp\tspoof"
+	r.Info.Name = "name\rspoof"
+	r.Info.Description = "first\nsecond"
+	r.Remediation = "fix\u202E"
+
+	var table bytes.Buffer
+	outputRulesTable(&table, []*rules.Rule{r})
+	if strings.Contains(table.String(), "\x1b[2J") || strings.Contains(table.String(), "\r") ||
+		!strings.Contains(table.String(), "rule\\u001B[2J") || !strings.Contains(table.String(), "mcp\\u0009spoof") {
+		t.Fatalf("unsafe rules table: %q", table.String())
+	}
+
+	var detail bytes.Buffer
+	if err := describeRule(&detail, []*rules.Rule{r}, r.ID, "table"); err != nil {
+		t.Fatalf("describeRule: %v", err)
+	}
+	if strings.Contains(detail.String(), "\u202E") || !strings.Contains(detail.String(), "first\\u000Asecond") ||
+		!strings.Contains(detail.String(), "fix\\u202E") {
+		t.Fatalf("unsafe rule detail: %q", detail.String())
+	}
+}
 
 func TestRulesRejectsUnsupportedOutput(t *testing.T) {
 	tests := []struct {
