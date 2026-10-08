@@ -68,7 +68,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		}
 		return nil, false // not a responsive MCP endpoint
 	}
-	if sessionA == "" {
+	if sessionA.SessionID == "" {
 		// Responsive MCP server that mints no session ids: no resumable surface
 		// to test, but the endpoint was reached.
 		return nil, true
@@ -84,7 +84,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	}
 
 	sessionB, ok, _ := e.initialize(ctx, client, ep, tokenB)
-	if !ok || sessionB == "" || sessionB == sessionA {
+	if !ok || sessionB.SessionID == "" || sessionB.SessionID == sessionA.SessionID {
 		return nil, true // need a second, distinct server-minted session
 	}
 
@@ -111,7 +111,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 				Evidence: fmt.Sprintf(
 					"endpoint: %s\nsession A: %s (checkpoint event id %s)\nsession B: %s\n"+
 						"B resumed Last-Event-ID: %s\nA's event marker delivered to B: %s",
-					ep, sessionA, checkpointID, sessionB, checkpointID, marker),
+					ep, sessionA.SessionID, checkpointID, sessionB.SessionID, checkpointID, marker),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
 			}}, true
@@ -125,7 +125,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 // The failing response is returned alongside the verdict so a walk that never
 // established a session can say why. It is nil when nothing answered, which is the
 // one case there is nothing to explain.
-func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (string, bool, *attack.Response) {
+func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (mcpSession, bool, *attack.Response) {
 	headers := map[string]string{}
 	if token != "" {
 		headers["Authorization"] = "Bearer " + token
@@ -141,26 +141,27 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 		},
 	})
 	if err != nil {
-		return "", false, nil
+		return mcpSession{}, false, nil
 	}
 	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-		return "", false, resp
+		return mcpSession{}, false, resp
 	}
-	sid := resp.Headers.Get("Mcp-Session-Id")
-	inited := map[string]string{"Mcp-Protocol-Version": latestStable}
+	session := mcpSession{
+		Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersion(resp.Body),
+	}
+	inited := session.header()
 	if token != "" {
 		inited["Authorization"] = "Bearer " + token
 	}
-	if sid != "" {
-		inited["Mcp-Session-Id"] = sid
-	}
 	_, _ = client.POST(ctx, ep, inited, map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	return sid, true, resp
+	return session, true, resp
 }
 
 // sseCollect issues a GET for an SSE stream and returns the events read within
 // the window. It uses a raw client so it can read the per-event `id:` lines.
-func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.Client, url, token, sessionID, lastEventID string, window time.Duration) []sseEvent {
+func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.Client, url, token string,
+	session mcpSession, lastEventID string, window time.Duration) []sseEvent {
 	cctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
@@ -172,8 +173,8 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+	for name, value := range session.header() {
+		req.Header.Set(name, value)
 	}
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)

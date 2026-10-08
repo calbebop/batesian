@@ -125,6 +125,15 @@ type Session struct {
 	Modern          bool
 }
 
+func (s *Session) setRequestHeaders(req *http.Request) {
+	if !s.Modern && s.ProtocolVersion != "" {
+		req.Header.Set("Mcp-Protocol-Version", s.ProtocolVersion)
+	}
+	if s.SessionID != "" {
+		req.Header.Set("Mcp-Session-Id", s.SessionID)
+	}
+}
+
 // ServerInfo holds the server's advertised identity.
 type ServerInfo struct {
 	Name    string
@@ -399,9 +408,7 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		"method":  "notifications/initialized",
 	})
 	notifReq, _ := c.newRequest(ctx, ep, notif)
-	if sessionID != "" {
-		notifReq.Header.Set("Mcp-Session-Id", sessionID)
-	}
+	session.setRequestHeaders(notifReq)
 	resp2, _ := c.http.Do(notifReq)
 	if resp2 != nil {
 		resp2.Body.Close()
@@ -416,9 +423,7 @@ func (c *Client) post(ctx context.Context, s *Session, id int, method string, pa
 	if err != nil {
 		return nil, err
 	}
-	if s.SessionID != "" {
-		req.Header.Set("Mcp-Session-Id", s.SessionID)
-	}
+	s.setRequestHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err

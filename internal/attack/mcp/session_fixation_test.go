@@ -44,7 +44,8 @@ func writeToolsResult(w http.ResponseWriter, id interface{}) {
 //   - "rejects-seeded": refuses an initialize that carries a client-chosen id,
 //     which is what the reference implementation does and what this rule tests
 //     for. A plain initialize on the same endpoint still succeeds.
-func fixationServer(mode string) *httptest.Server {
+func fixationServer(t *testing.T, mode string) *httptest.Server {
+	t.Helper()
 	var mu sync.Mutex
 	valid := map[string]bool{}
 	counter := 0
@@ -97,8 +98,15 @@ func fixationServer(mode string) *httptest.Server {
 			}
 			writeInitResult(w, id)
 		case "notifications/initialized":
+			if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-03-26" {
+				t.Errorf("initialized version = %q, want 2025-03-26", got)
+			}
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			if r.Header.Get("Mcp-Protocol-Version") != "2025-03-26" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			if mode == "sessionless" {
 				writeToolsResult(w, id) // accepts regardless of session
 				return
@@ -121,7 +129,7 @@ func fixationServer(mode string) *httptest.Server {
 // rejects an un-initialized id. The rule MUST fire (confirmed, high) with a
 // 3-hop provenance chain.
 func TestSessionFixation_Confirmed(t *testing.T) {
-	srv := fixationServer("fixable")
+	srv := fixationServer(t, "fixable")
 	defer srv.Close()
 
 	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
@@ -144,7 +152,7 @@ func TestSessionFixation_Confirmed(t *testing.T) {
 // TestSessionFixation_ServerMinted: the server mints its own session id and
 // ignores the client-supplied one. The rule MUST stay silent.
 func TestSessionFixation_ServerMinted(t *testing.T) {
-	srv := fixationServer("server-minted")
+	srv := fixationServer(t, "server-minted")
 	defer srv.Close()
 
 	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
@@ -161,7 +169,7 @@ func TestSessionFixation_ServerMinted(t *testing.T) {
 // all (accepts any id). That is a different posture, not fixation. The rule MUST
 // stay silent (the control discriminator suppresses it).
 func TestSessionFixation_SessionlessIsNotFixation(t *testing.T) {
-	srv := fixationServer("sessionless")
+	srv := fixationServer(t, "sessionless")
 	defer srv.Close()
 
 	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
@@ -195,7 +203,7 @@ func TestSessionFixation_NotMCPServer(t *testing.T) {
 // against every server that implements the defence. The reference
 // implementation is one of them.
 func TestSessionFixation_RejectsSeededSessionIsClean(t *testing.T) {
-	srv := fixationServer("rejects-seeded")
+	srv := fixationServer(t, "rejects-seeded")
 	defer srv.Close()
 
 	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
@@ -212,7 +220,7 @@ func TestSessionFixation_RejectsSeededSessionIsClean(t *testing.T) {
 // rule adds a 4th provenance hop proving the pre-seeded session is borrowable
 // across principals.
 func TestSessionFixation_CrossPrincipal(t *testing.T) {
-	srv := fixationServer("fixable")
+	srv := fixationServer(t, "fixable")
 	defer srv.Close()
 
 	opts := testOpts()

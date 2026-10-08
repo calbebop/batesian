@@ -81,7 +81,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	ep := session.Endpoint
 
 	// Step 1: initialize again, this time presenting a client-chosen session id.
-	assigned, ok := e.initWithSession(ctx, client, ep, fixed)
+	seeded, ok := e.initWithSession(ctx, client, ep, fixed)
 	if !ok {
 		// The endpoint is a working MCP server, so this is a rejection of the
 		// seeded id rather than an unreachable target. That is secure.
@@ -89,18 +89,19 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	}
 	// Discriminator: the server returned its OWN session id, ignoring the
 	// supplied one. That is the correct, secure behavior - no finding.
-	if assigned != "" && assigned != fixed {
+	if seeded.SessionID != "" && seeded.SessionID != fixed {
 		return nil, nil
 	}
+	seeded.SessionID = fixed
 
 	// Best-effort: complete the handshake for the pre-seeded session.
-	_, _ = client.POST(ctx, ep, map[string]string{"Mcp-Session-Id": fixed, "Mcp-Protocol-Version": latestStable}, map[string]interface{}{
+	_, _ = client.POST(ctx, ep, seeded.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
 
 	// Step 2: present the attacker-chosen id on a follow-up call.
-	switch e.sessionAccepted(ctx, client, ep, fixed, nil) {
+	switch e.sessionAccepted(ctx, client, seeded, nil) {
 	case accessRefused:
 		return nil, nil // server did not adopt the pre-seeded id - secure
 	case accessUndetermined:
@@ -112,7 +113,9 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 3 (control): a never-initialized random id. A spec-compliant server
 	// rejects it (404). If it is ALSO accepted, the server tracks no sessions at
 	// all - not fixation - so suppress.
-	switch e.sessionAccepted(ctx, client, ep, unseeded, nil) {
+	unissued := seeded
+	unissued.SessionID = unseeded
+	switch e.sessionAccepted(ctx, client, unissued, nil) {
 	case accessGranted:
 		return nil, nil
 	case accessUndetermined:
@@ -137,7 +140,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 		o := opts
 		o.Token = p.Token
 		pClient := attack.NewHTTPClient(o, vars)
-		if e.sessionAccepted(ctx, pClient, ep, fixed, p.Headers) == accessGranted {
+		if e.sessionAccepted(ctx, pClient, seeded, p.Headers) == accessGranted {
 			crossPrincipal = p.Name
 			chain = append(chain, attack.ChainStep{
 				Hop:       4,
@@ -159,7 +162,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 // ok is false only when the server refused this handshake. The endpoint is
 // already known to speak MCP, so a refusal here means the seeded id was
 // rejected, which is the secure behaviour rather than an unreachable target.
-func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, endpoint, supplied string) (assigned string, ok bool) {
+func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, endpoint, supplied string) (mcpSession, bool) {
 	resp, err := client.POST(ctx, endpoint, map[string]string{"Mcp-Session-Id": supplied}, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -171,9 +174,12 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 		},
 	})
 	if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-		return "", false
+		return mcpSession{}, false
 	}
-	return resp.Headers.Get("Mcp-Session-Id"), true
+	return mcpSession{
+		Endpoint: endpoint, SessionID: resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersion(resp.Body),
+	}, true
 }
 
 // sessionAccepted reports whether a follow-up call presenting sessionID is
@@ -182,12 +188,12 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 // UNLESS it carries a JSON-RPC error that references the session (e.g. "session
 // not found"); a method-not-found error still means the session passed
 // validation and reached method dispatch.
-func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, ep, sessionID string, extraHeaders map[string]string) accessVerdict {
-	headers := map[string]string{"Mcp-Session-Id": sessionID, "Mcp-Protocol-Version": latestStable}
+func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, session mcpSession, extraHeaders map[string]string) accessVerdict {
+	headers := session.header()
 	for k, v := range extraHeaders {
 		headers[k] = v
 	}
-	resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
+	resp, err := client.POST(ctx, session.Endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      2,
 		"method":  "tools/list",

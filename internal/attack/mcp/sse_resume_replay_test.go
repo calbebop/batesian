@@ -29,7 +29,8 @@ type sseLogEntry struct {
 //   - "vulnerable": replays ALL buffered events after the id, any session
 //   - "secure":     replays only the requesting session's own events
 //   - "ignore":     never replays (no resumption support)
-func resumeServer(mode string) *httptest.Server {
+func resumeServer(t *testing.T, mode string) *httptest.Server {
+	t.Helper()
 	var mu sync.Mutex
 	var sessionCounter, eventCounter int
 	var log []sseLogEntry
@@ -56,6 +57,11 @@ func resumeServer(mode string) *httptest.Server {
 						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 					},
 				})
+			case "notifications/initialized":
+				if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-06-18" {
+					t.Errorf("initialized version = %q, want 2025-06-18", got)
+				}
+				w.WriteHeader(http.StatusAccepted)
 			default:
 				w.WriteHeader(http.StatusAccepted)
 			}
@@ -63,6 +69,10 @@ func resumeServer(mode string) *httptest.Server {
 		}
 
 		// GET => SSE stream.
+		if r.Header.Get("Mcp-Protocol-Version") != "2025-06-18" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		sid := r.Header.Get("Mcp-Session-Id")
 		leid := r.Header.Get("Last-Event-ID")
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -132,7 +142,7 @@ func runResume(t *testing.T, ts *httptest.Server) []attack.Finding {
 
 // TestResume_Vulnerable: cross-session replay => confirmed.
 func TestResume_Vulnerable(t *testing.T) {
-	ts := resumeServer("vulnerable")
+	ts := resumeServer(t, "vulnerable")
 	defer ts.Close()
 
 	findings := runResume(t, ts)
@@ -153,7 +163,7 @@ func TestResume_Vulnerable(t *testing.T) {
 // opaque-id server does not recognise, so the cross-session replay went
 // undetected (false negative). This test fails against that old behaviour.
 func TestResume_OpaqueEventIDs(t *testing.T) {
-	ts := resumeServer("vulnerable")
+	ts := resumeServer(t, "vulnerable")
 	defer ts.Close()
 
 	findings := runResume(t, ts)
@@ -172,7 +182,7 @@ func TestResume_OpaqueEventIDs(t *testing.T) {
 
 // TestResume_Secure: session-scoped replay => no finding.
 func TestResume_Secure(t *testing.T) {
-	ts := resumeServer("secure")
+	ts := resumeServer(t, "secure")
 	defer ts.Close()
 
 	if findings := runResume(t, ts); len(findings) != 0 {
@@ -182,7 +192,7 @@ func TestResume_Secure(t *testing.T) {
 
 // TestResume_Ignore: no resumption support => no finding.
 func TestResume_Ignore(t *testing.T) {
-	ts := resumeServer("ignore")
+	ts := resumeServer(t, "ignore")
 	defer ts.Close()
 
 	if findings := runResume(t, ts); len(findings) != 0 {

@@ -74,7 +74,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			}
 			return nil, false // not a reachable MCP endpoint
 		}
-		if session == "" {
+		if session.SessionID == "" {
 			// Stateless, or a 2026-07-28 server, which removed protocol-level
 			// sessions. There is no session id to misuse.
 			return nil, true
@@ -118,10 +118,10 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// reading an open handshake as "no authorization" would suppress exactly the
 		// servers this rule exists to find. What answers the question is whether the
 		// session the anonymous caller was given can then call tools/list.
-		var anonSession string
+		var anonSession mcpSession
 		if s, anonOK, _ := e.initialize(ctx, client, ep, nil); anonOK {
 			anonSession = s
-			if anonSession == "" {
+			if anonSession.SessionID == "" {
 				// It handshakes anonymously but issues this caller no session, so there
 				// is no anonymous session to compare against, and a refusal below cannot
 				// be attributed to the missing credential rather than the missing
@@ -149,7 +149,9 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// Step 4: control. No session, no credential. A server that answers this is
 		// open on the surface under test, so a later success cannot be attributed to
 		// the session id.
-		switch e.toolsList(ctx, client, ep, "", nil) {
+		noSession := session
+		noSession.SessionID = ""
+		switch e.toolsList(ctx, client, ep, noSession, nil) {
 		case accessGranted:
 			return nil, true
 		case accessUndetermined:
@@ -164,7 +166,9 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// that accepts this treats the presence of the header as authorization, so the
 		// issued id was not what decided it.
 		bogus := "batesian-never-issued-" + vars.RandID
-		switch e.toolsList(ctx, client, ep, bogus, nil) {
+		bogusSession := session
+		bogusSession.SessionID = bogus
+		switch e.toolsList(ctx, client, ep, bogusSession, nil) {
 		case accessGranted:
 			return nil, true
 		case accessUndetermined:
@@ -186,7 +190,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			return nil, false
 		}
 
-		return []attack.Finding{e.finding(ep, session, bogus, anonSession)}, true
+		return []attack.Finding{e.finding(ep, session.SessionID, bogus, anonSession.SessionID)}, true
 	})
 	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
 		return nil, inconclusive(handshakeRefusal{observed.reason})
@@ -210,7 +214,7 @@ func credentialFor(opts attack.Options) string {
 // The response is returned alongside the verdict so a walk that established no
 // session can say why. It is nil when nothing answered.
 func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *attack.HTTPClient,
-	endpoint string, headers map[string]string) (session string, ok bool, resp *attack.Response) {
+	endpoint string, headers map[string]string) (session mcpSession, ok bool, resp *attack.Response) {
 	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -222,12 +226,14 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 		},
 	})
 	if err != nil {
-		return "", false, nil
+		return mcpSession{}, false, nil
 	}
 	if classifyAccess(resp, nil, 1) != accessGranted {
-		return "", false, resp
+		return mcpSession{}, false, resp
 	}
-	return resp.Headers.Get("Mcp-Session-Id"), true, resp
+	return mcpSession{
+		SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body),
+	}, true, resp
 }
 
 // toolsList reports whether tools/list was answered with a result under the given
@@ -237,13 +243,13 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 // a JSON-RPC error at HTTP 200 has refused it, and reading that as success is the
 // mistake that produced fabricated findings elsewhere in this package.
 func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *attack.HTTPClient,
-	endpoint, session string, headers map[string]string) accessVerdict {
-	h := map[string]string{"Mcp-Protocol-Version": latestStable}
+	endpoint string, session mcpSession, headers map[string]string) accessVerdict {
+	h := session.header()
+	if h == nil {
+		h = map[string]string{}
+	}
 	for k, v := range headers {
 		h[k] = v
-	}
-	if session != "" {
-		h["Mcp-Session-Id"] = session
 	}
 	resp, err := client.POST(ctx, endpoint, h, map[string]interface{}{
 		"jsonrpc": "2.0",
