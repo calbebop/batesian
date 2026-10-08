@@ -85,7 +85,8 @@ def scan():
     doc = json.loads(out.stdout)
     fired = {f["rule_id"] for f in doc.get("findings", [])}
     skipped = {s["rule_id"] for s in doc.get("skipped", [])}
-    return fired, skipped
+    errors = {e["rule_id"] for e in doc.get("errors", [])}
+    return fired, skipped, errors
 
 
 def check(name, ok, detail):
@@ -99,26 +100,24 @@ def main():
     for posture, expect in [("unsigned", "fire"), ("signed", "silent")]:
         proc, log = start_fixture(posture)
         try:
-            fired, skipped = scan()
+            fired, skipped, errors = scan()
         finally:
             stop_fixture(proc, log)
-        # "Ran and found nothing" must be distinguishable from "never ran": a
-        # skip here means the fixture was not exercised, which would make the
-        # signed pass vacuous.
-        ran = RULE in fired or RULE not in skipped
+        ran = RULE not in skipped and RULE not in errors
         fires = RULE in fired
         ok_all &= check(f"{posture} (must {expect})", ran and fires == (expect == "fire"),
-                        f"{RULE} {'fired' if fires else ('skipped' if not ran else 'silent')}")
+                        f"{RULE} {'fired' if fires else ('incomplete' if not ran else 'silent')}; "
+                        f"skipped={RULE in skipped}; errors={RULE in errors}")
 
     proc, log = start_fixture("nocallback")
     try:
-        fired, skipped = scan()
+        fired, skipped, errors = scan()
     finally:
         stop_fixture(proc, log)
     not_tested = RULE in skipped
     ok_all &= check("nocallback (not tested, never clean)",
-                    not_tested and RULE not in fired,
-                    f"fired {RULE in fired}; skipped {RULE in skipped}")
+                    not_tested and RULE not in fired and RULE not in errors,
+                    f"fired {RULE in fired}; skipped {RULE in skipped}; errors {RULE in errors}")
 
     print()
     print(f"[{'PASS' if ok_all else 'FAIL'}] push-callback-auth")
