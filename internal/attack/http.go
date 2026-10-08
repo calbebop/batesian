@@ -141,13 +141,11 @@ func originOf(rawURL string) string {
 	return scheme + "://" + host
 }
 
-// ValidateOAuthOrigins verifies that each configured value is an origin rather
-// than a URL with a path, query, credentials, or fragment. Callers should reject
-// invalid configuration before a scan starts instead of silently ignoring it.
+// ValidateOAuthOrigins checks configured origins before a scan starts.
 func ValidateOAuthOrigins(origins []string) error {
-	for _, raw := range origins {
+	for i, raw := range origins {
 		if _, err := normalizeOAuthOrigin(raw); err != nil {
-			return fmt.Errorf("invalid OAuth origin %q: %w", raw, err)
+			return fmt.Errorf("invalid OAuth origin at index %d: %w", i, err)
 		}
 	}
 	return nil
@@ -156,7 +154,7 @@ func ValidateOAuthOrigins(origins []string) error {
 func normalizeOAuthOrigin(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", err
+		return "", errors.New("malformed URL")
 	}
 	if !u.IsAbs() || u.Hostname() == "" {
 		return "", errors.New("must be an absolute HTTP(S) origin")

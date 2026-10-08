@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,24 @@ type TokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 	Scope       string `json:"scope"`
 }
+
+type safeRequestError struct {
+	action string
+	cause  error
+}
+
+func (e safeRequestError) Error() string {
+	switch {
+	case errors.Is(e.cause, context.DeadlineExceeded):
+		return e.action + " timed out"
+	case errors.Is(e.cause, context.Canceled):
+		return e.action + " canceled"
+	default:
+		return e.action + " failed"
+	}
+}
+
+func (e safeRequestError) Unwrap() error { return e.cause }
 
 // ClientCredentialsConfig holds the parameters for a client credentials grant.
 type ClientCredentialsConfig struct {
@@ -93,14 +112,14 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("building token request: %w", err)
+		return nil, safeRequestError{action: "building token request", cause: err}
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token request to %s: %w", cfg.TokenURL, err)
+		return nil, safeRequestError{action: "token request", cause: err}
 	}
 	defer resp.Body.Close()
 
@@ -205,14 +224,14 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("building auth code exchange request: %w", err)
+		return nil, safeRequestError{action: "building auth code exchange request", cause: err}
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("auth code exchange to %s: %w", cfg.TokenURL, err)
+		return nil, safeRequestError{action: "auth code exchange", cause: err}
 	}
 	defer resp.Body.Close()
 

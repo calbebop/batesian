@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -42,6 +44,45 @@ func TestParseOAuthEndpoint(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseOAuthEndpointErrorsHideCredentials(t *testing.T) {
+	const secret = "oauth-url-secret"
+	for _, raw := range []string{
+		"http://user:" + secret + "@auth.example/token",
+		"https://user:" + secret + "@/token",
+		"https://auth.example/token?key=" + secret + "#fragment",
+		"https://auth.example/%zz?key=" + secret,
+	} {
+		_, err := parseOAuthEndpoint(raw, "token URL")
+		if err == nil || strings.Contains(err.Error(), secret) {
+			t.Fatalf("OAuth endpoint error disclosed credentials: %v", err)
+		}
+	}
+}
+
+func TestOAuthRequestErrorsHideEndpointCredentials(t *testing.T) {
+	const secret = "oauth-request-secret"
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	endpoint := strings.Replace(server.URL, "https://", "https://user:"+secret+"@", 1) + "/token?key=" + secret
+	for name, request := range map[string]func() error{
+		"client credentials": func() error {
+			_, err := FetchClientCredentialsToken(context.Background(), ClientCredentialsConfig{TokenURL: endpoint})
+			return err
+		},
+		"authorization code": func() error {
+			_, err := ExchangeAuthCode(context.Background(), AuthCodeConfig{TokenURL: endpoint})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := request()
+			if err == nil || strings.Contains(err.Error(), secret) {
+				t.Fatalf("OAuth request error disclosed endpoint credentials: %v", err)
 			}
 		})
 	}

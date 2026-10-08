@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -290,7 +291,7 @@ func TestPerformPKCEFlowUsesRequestTimeoutAfterCallback(t *testing.T) {
 
 	select {
 	case err := <-resultCh:
-		if err == nil || (!strings.Contains(err.Error(), "Client.Timeout") && !strings.Contains(err.Error(), "context deadline exceeded")) {
+		if err == nil || !strings.Contains(err.Error(), "auth code exchange timed out") || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected token request timeout, got %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):

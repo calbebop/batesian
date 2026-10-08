@@ -124,6 +124,16 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		target = cfg.Target
 	}
 	redactor := newOutputRedactor(target)
+	for _, raw := range []string{authURL, tokenURL, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
+		redactor.addURL(raw)
+	}
+	for _, raw := range oauthOrigins {
+		redactor.addURL(raw)
+	}
+	for _, raw := range cfg.OAuthOrigins {
+		redactor.addURL(raw)
+	}
+	redactor.addSecret(clientSecret)
 	defer func() { runErr = redactor.err(runErr) }()
 	// Cobra's default cannot distinguish an omitted flag from explicit "table".
 	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
@@ -149,6 +159,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if token == "" {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
+	redactor.addSecret(token)
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
 	timeout, err := requestTimeout(timeoutSecs)
 	if err != nil {
@@ -179,6 +190,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	principals, perr := buildPrincipals(cfg.Principals, principalFlags)
 	if perr != nil {
 		return perr
+	}
+	for _, principal := range principals {
+		redactor.addSecret(principal.Token)
+		for name, value := range principal.Headers {
+			if credentialHeader(name) {
+				redactor.addSecret(value)
+			}
+		}
 	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
@@ -220,12 +239,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 				return fmt.Errorf("OAuth PKCE flow failed: %w", err)
 			}
 			token = tok
+			redactor.addSecret(token)
 		case clientID != "" && tokenURL != "":
 			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience, timeout, proxy, skipTLS)
 			if err != nil {
 				return fmt.Errorf("OAuth token acquisition failed: %w", err)
 			}
 			token = tok
+			redactor.addSecret(token)
 		}
 	}
 
@@ -233,7 +254,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if format == report.FormatJSON || format == report.FormatSARIF {
 		statusOut = os.Stderr
 	}
-	displayTarget := redactor.display
+	displayTarget := redactor.displayTarget()
 	printer := report.New(statusOut, verbose)
 	printer.Banner()
 	printer.ProbeHeader(displayTarget, coalesceProtocol(protocol))
@@ -272,7 +293,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 
 	if dryRun {
 		// No traffic was sent; report the recorded request plan instead of findings.
-		printDryRunPlan(os.Stdout, target, recorder)
+		printDryRunPlan(os.Stdout, target, recorder, redactor)
 		return nil
 	}
 
@@ -651,13 +672,11 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string
 	return tok.AccessToken, nil
 }
 
-// printDryRunPlan writes requests grouped by rule. Hosts are exact, but request
-// counts are approximate: discovery records fallback paths while response-driven
-// follow-ups cannot be expanded. Keeping all candidate paths avoids hiding traffic.
-func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
+// printDryRunPlan writes the redacted request plan grouped by rule.
+func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder, redactor outputRedactor) {
 	reqs := rec.Requests()
 	fmt.Fprintf(out, "\nDry run: nothing was sent. Planned requests against %s (%d recorded, see the notes below):\n\n",
-		attackpkg.RedactURL(target), len(reqs))
+		redactor.url(target), len(reqs))
 
 	candidates := endpointCandidateProbes(reqs)
 
@@ -676,15 +695,15 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder) {
 			suffix = "   [fallback endpoint]"
 			marked++
 		}
-		fmt.Fprintf(out, "  %s %s%s\n", r.Method, r.URL, suffix)
+		fmt.Fprintf(out, "  %s %s%s\n", r.Method, redactor.text(r.URL), suffix)
 		if u, err := url.Parse(r.URL); err == nil && u.Host != "" {
 			hosts[u.Host] = true
 		}
 		for _, k := range significantHeaderKeys(r.Headers) {
-			fmt.Fprintf(out, "      %s: %s\n", k, r.Headers[k])
+			fmt.Fprintf(out, "      %s: %s\n", k, redactor.text(r.Headers[k]))
 		}
 		if r.Body != "" {
-			fmt.Fprintf(out, "      body: %s\n", oneLine(r.Body, 300))
+			fmt.Fprintf(out, "      body: %s\n", redactor.text(oneLine(r.Body, 300)))
 		}
 	}
 

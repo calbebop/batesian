@@ -45,7 +45,7 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
 		t.Fatal(err)
 	}
-	jsonBody, err := json.Marshal(buildScanJSON(r.display, safe))
+	jsonBody, err := json.Marshal(buildScanJSON(r.displayTarget(), safe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,69 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 		if !strings.Contains(body, "REDACTED") {
 			t.Errorf("%s output lost the redacted target", format)
 		}
+	}
+}
+
+func TestOutputRedactorConfiguredSecrets(t *testing.T) {
+	const token = "scan-bearer-secret"
+	const principal = "principal-token-secret"
+	const endpoint = "https://oauth-user:oauth-password@auth.example/token?key=oauth-query-secret"
+	r := newOutputRedactor("https://target.example/mcp")
+	r.addURL(endpoint)
+	r.addSecret(token)
+	r.addSecret(principal)
+	results := r.results([]engine.RunResult{{
+		Rule: &rules.Rule{ID: "mcp-test-001"},
+		Findings: []attack.Finding{{
+			RuleID:    "mcp-test-001",
+			Title:     token,
+			Evidence:  "tokens " + principal + " and " + endpoint,
+			TargetURL: "https://target.example/" + token + "?key=" + principal,
+		}},
+		Err: errors.New("request failed: " + endpoint),
+	}})
+	var table, sarif bytes.Buffer
+	report.New(&table, true).PrintScanSummary(results)
+	if err := report.WriteSARIF(&sarif, results, "test"); err != nil {
+		t.Fatal(err)
+	}
+	jsonBody, err := json.Marshal(buildScanJSON(r.displayTarget(), results))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for format, body := range map[string]string{
+		"table": table.String(), "sarif": sarif.String(), "json": string(jsonBody),
+	} {
+		for _, secret := range []string{token, principal, "oauth-user", "oauth-password", "oauth-query-secret"} {
+			if strings.Contains(body, secret) {
+				t.Errorf("%s output disclosed %q", format, secret)
+			}
+		}
+	}
+}
+
+func TestCredentialHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Authorization": true,
+		"X-API-Key":     true,
+		"Cookie":        true,
+		"X-Secret":      true,
+		"X-Tenant-Id":   false,
+		"X-Env":         false,
+		"X-Monkey":      false,
+	} {
+		if got := credentialHeader(name); got != want {
+			t.Errorf("credentialHeader(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestOutputRedactorOverlappingSecrets(t *testing.T) {
+	r := newOutputRedactor("https://target.example/short-long-secret")
+	r.addSecret("short")
+	r.addSecret("short-long-secret")
+	if got := r.displayTarget(); strings.Contains(got, "short") || strings.Contains(got, "long-secret") {
+		t.Fatalf("target display disclosed part of an overlapping secret: %s", got)
 	}
 }
 
@@ -148,6 +211,109 @@ func TestCLIInvalidProxyHidesCredentials(t *testing.T) {
 			t.Fatalf("scan config error exposed proxy credentials: %v", err)
 		}
 	})
+}
+
+func TestScanErrorsHideConfiguredURLCredentials(t *testing.T) {
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	const secret = "configured-url-secret"
+	for _, tc := range []struct {
+		name string
+		set  func(*testing.T)
+	}{
+		{"OAuth origin", func(t *testing.T) {
+			setScanSliceFlag(t, "oauth-origin", []string{"https://user:" + secret + "@example.com"})
+		}},
+		{"token URL", func(t *testing.T) {
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "token-url", "http://user:"+secret+"@example.com/token?key="+secret)
+		}},
+		{"token request", func(t *testing.T) {
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "token-url", "https://user:"+secret+"@127.0.0.1:1/token?key="+secret)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			setScanFlag(t, "config", configPath)
+			setScanFlag(t, "target", "http://127.0.0.1:1")
+			setScanFlag(t, "token", "")
+			setScanFlag(t, "proxy", "")
+			setScanFlag(t, "dry-run", "false")
+			setScanSliceFlag(t, "rule-ids", []string{"mcp-tools-unauth-001"})
+			t.Setenv("BATESIAN_TOKEN", "")
+			tc.set(t)
+			out, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+			if err == nil {
+				t.Fatal("expected configuration error")
+			}
+			if strings.Contains(out+err.Error(), secret) {
+				t.Fatalf("scan output disclosed configured URL credentials: %v", err)
+			}
+		})
+	}
+}
+
+func TestProbeOutputHidesBearerToken(t *testing.T) {
+	const secret = "probe-bearer-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"name":"Agent","description":"`+secret+`","url":"`+"http://"+r.Host+`","version":"1.0","skills":[]}`)
+	}))
+	defer server.Close()
+	if probeCmd.Flags().Lookup("target") == nil {
+		probeCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	previousContext := probeCmd.Context()
+	probeCmd.SetContext(context.Background())
+	t.Cleanup(func() { probeCmd.SetContext(previousContext) })
+	for _, format := range []string{"table", "json"} {
+		t.Run(format, func(t *testing.T) {
+			setProbeFlag(t, "target", server.URL)
+			setProbeFlag(t, "protocol", "a2a")
+			setProbeFlag(t, "output", format)
+			setProbeFlag(t, "token", secret)
+			setProbeFlag(t, "proxy", "")
+			out, err := captureCLIOutput(t, func() error { return runProbe(probeCmd, nil) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out, secret) {
+				t.Fatal("probe output disclosed the bearer token")
+			}
+		})
+	}
+}
+
+func TestScanDryRunHidesConfiguredTokenInPath(t *testing.T) {
+	const secret = "scan-path-secret"
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	previousContext := scanCmd.Context()
+	scanCmd.SetContext(context.Background())
+	t.Cleanup(func() { scanCmd.SetContext(previousContext) })
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", "https://example.com/mcp/"+secret)
+	setScanFlag(t, "token", secret)
+	setScanFlag(t, "dry-run", "true")
+	setScanFlag(t, "proxy", "")
+	setScanSliceFlag(t, "rule-ids", []string{"mcp-tools-unauth-001"})
+	out, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, secret) {
+		t.Fatal("dry run disclosed the configured token")
+	}
 }
 
 func TestOutputRedactorProbeCard(t *testing.T) {
