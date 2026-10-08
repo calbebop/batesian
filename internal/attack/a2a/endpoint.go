@@ -166,9 +166,25 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 		if err := json.Unmarshal(resp.Body, &card); err != nil {
 			continue
 		}
-		return card, true
+		if hasRoutableHTTPInterface(card) {
+			return card, true
+		}
 	}
 	return a2aDiscoveryCard{}, false
+}
+
+func hasRoutableHTTPInterface(card a2aDiscoveryCard) bool {
+	if len(jsonRPCInterfaces(card)) > 0 {
+		return true
+	}
+	for _, group := range [][]a2aDiscoveryInterface{card.SupportedInterfaces, card.AdditionalInterfaces} {
+		for _, iface := range group {
+			if iface.isHTTPJSON() && hasHTTPScheme(iface.URL) {
+				return true
+			}
+		}
+	}
+	return strings.EqualFold(card.PreferredTransport, "HTTP+JSON") && hasHTTPScheme(card.URL)
 }
 
 func cardVersionHeaders(cardURL string) map[string]string {
