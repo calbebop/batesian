@@ -359,15 +359,19 @@ func (e *HeaderBodySplitExecutor) nameVerdict(ctx context.Context, client *attac
 	if err != nil || resp == nil {
 		return nameUndetermined
 	}
-	if resp.IsAccepted() {
+	body, ok := parseResponseBody(resp.Body)
+	if !ok || !matchesRPCID(body, 3) {
+		return nameUndetermined
+	}
+	if resp.IsSuccess() && validRPCResult(body) {
 		// A result for a subject that does not exist is odd, but it is still the
 		// server acting on the body rather than rejecting the header.
 		return nameDispatched
 	}
-	code, hasErr := jsonRPCErrorCode(resp.Body)
-	if !hasErr {
+	if !validRPCError(body) {
 		return nameUndetermined
 	}
+	code := rpcErrorCode(body["error"].(map[string]interface{})["code"])
 	switch code {
 	case headerMismatchCode:
 		return nameRejected
