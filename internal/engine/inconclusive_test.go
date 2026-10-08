@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,45 @@ import (
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/rules"
 )
+
+func TestRun_A2APushCallbackNotObservedIsSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			ID     string `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		result := map[string]interface{}{"ok": true}
+		if request.Method == "SendMessage" {
+			result = map[string]interface{}{"id": "task-1", "contextId": "ctx-1"}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": request.ID, "result": result})
+	}))
+	defer srv.Close()
+
+	rule := &rules.Rule{
+		ID:     "a2a-push-ssrf-001",
+		Info:   rules.RuleInfo{Name: "A2A Push Notification SSRF", Severity: "high"},
+		Attack: rules.AttackBlock{Protocol: "a2a", Type: "push-notification-ssrf"},
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	result := engine.New(attack.Options{TimeoutSeconds: 5}).Run(ctx, srv.URL, []*rules.Rule{rule})[0]
+	if !result.Skipped || result.Err != nil || len(result.Findings) != 0 {
+		t.Fatalf("unobserved callback must be skipped: %+v", result)
+	}
+	if !strings.Contains(result.SkipMsg, "no push callback observed") {
+		t.Errorf("missing callback reason: %q", result.SkipMsg)
+	}
+}
 
 func TestRun_MCPMetadataCallbackNotObservedIsSkipped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

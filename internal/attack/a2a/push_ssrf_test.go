@@ -283,22 +283,33 @@ func TestPushSSRF_NoRESTInterfaceIsNotProbed(t *testing.T) {
 	}
 }
 
-// TestPushSSRF_AcceptedNoCallback: the server accepts the push config but never
-// calls back (normal A2A behaviour). No SSRF is demonstrated, so the rule MUST
-// stay silent rather than flag the by-design feature.
-func TestPushSSRF_AcceptedNoCallback(t *testing.T) {
+func TestPushSSRF_AcceptedNoCallbackIsIncomplete(t *testing.T) {
 	ts := pushSSRFServer(t, false)
 	defer ts.Close()
 
-	// Short context so the listener wait returns quickly instead of blocking 10s.
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unobserved callback must be incomplete, got findings=%+v err=%v", findings, err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings when no callback is made, got %d: %+v", len(findings), findings)
+	if !strings.Contains(err.Error(), "callback") {
+		t.Errorf("skip reason should identify the missing callback: %v", err)
+	}
+}
+
+func TestPushSSRF_ExternalOOBNeedsVerification(t *testing.T) {
+	ts := pushSSRFServer(t, false)
+	defer ts.Close()
+
+	opts := testOpts()
+	opts.OOBListenerURL = "http://oob.batesian.invalid"
+	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, opts)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("external callback needs manual verification, got findings=%+v err=%v", findings, err)
+	}
+	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
 	}
 }
 

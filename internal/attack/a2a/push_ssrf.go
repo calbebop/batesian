@@ -218,7 +218,11 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	var findings []attack.Finding
 	if listener != nil {
 		cb, received := listener.WaitForMarker(ctx, 10*time.Second, token)
-		if received && privatePushCallbackURL(callbackURL) {
+		if !received {
+			return nil, fmt.Errorf("%w: no push callback observed after registration; the listener may be unreachable or delivery delayed",
+				attack.ErrInconclusive)
+		}
+		if privatePushCallbackURL(callbackURL) {
 			evidence := fmt.Sprintf(
 				"Target accepted task with pushNotificationConfig.url=%q (binding: %s)\n"+
 					"OOB callback received: %s %s",
@@ -238,7 +242,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				TargetURL:   target,
 			})
 		}
-		// Public webhook delivery and registration without delivery are expected.
+		// A public callback does not prove private reachability.
 	} else {
 		// Using external OOB - report task accepted, user must check their OOB server.
 		findings = append(findings, attack.Finding{
