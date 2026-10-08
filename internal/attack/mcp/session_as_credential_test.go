@@ -93,8 +93,15 @@ func sessionCredServer(t *testing.T, mode string) *httptest.Server {
 				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			})
 		case "notifications/initialized":
+			if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-06-18" {
+				t.Errorf("initialized version = %q, want 2025-06-18", got)
+			}
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			if r.Header.Get("Mcp-Protocol-Version") != "2025-06-18" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			ok := false
 			switch mode {
 			case "no-auth":
