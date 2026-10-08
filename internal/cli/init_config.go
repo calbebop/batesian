@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,7 +17,9 @@ var initConfigCmd = &cobra.Command{
 Edit the file to set your target, protocol, auth token, and rule preferences.
 All fields are optional; CLI flags always override config file values.`,
 	Example: `  batesian init
-  batesian init > /path/to/project/batesian.yaml`,
+
+  cd /path/to/project
+  batesian init`,
 	RunE: runInitConfig,
 }
 
@@ -27,12 +30,19 @@ func init() {
 func runInitConfig(cmd *cobra.Command, args []string) error {
 	const filename = "batesian.yaml"
 
-	if _, err := os.Stat(filename); err == nil {
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s already exists in the current directory; delete it first or edit it manually", filename)
 	}
-
-	if err := os.WriteFile(filename, []byte(config.Example()), 0600); err != nil {
+	if err != nil {
 		return fmt.Errorf("writing %s: %w", filename, err)
+	}
+	if _, err := file.WriteString(config.Example()); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("writing %s: %w", filename, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", filename, err)
 	}
 
 	fmt.Printf("Created %s -- edit it to configure your scan targets and rules.\n", filename)

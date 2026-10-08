@@ -204,7 +204,7 @@ Generate an annotated configuration file with:
 batesian init
 ```
 
-This writes `batesian.yaml` in the current directory and will not overwrite an existing file. Explicit or discovered configuration must be readable, contain one YAML document, and use known keys.
+Run `init` from the project directory. It creates `batesian.yaml` there and will not overwrite an existing file; it does not print the YAML to stdout. Explicit or discovered configuration must be readable, contain one YAML document, and use known keys.
 
 `scan` searches the current directory and its parents for a config file and reports the loaded path in its status output (stderr for JSON and SARIF). Use `--config path` to select a file or `--no-config` to use only flags and environment variables. The two flags cannot be combined. `--no-config` affects file discovery, not protocol discovery.
 
