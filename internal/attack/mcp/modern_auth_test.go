@@ -20,6 +20,10 @@ func modernAuthServer(t *testing.T, accept func(string) bool) *httptest.Server {
 }
 
 func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openDiscovery bool) *httptest.Server {
+	return modernAuthServerWithResponseID(t, accept, openDiscovery, "")
+}
+
+func modernAuthServerWithResponseID(t *testing.T, accept func(string) bool, openDiscovery bool, staleIDOn string) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +41,7 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 			return
 		}
 		var call struct {
+			ID     int    `json:"id"`
 			Method string `json:"method"`
 			Params struct {
 				Meta map[string]interface{} `json:"_meta"`
@@ -47,7 +52,7 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 			r.Header.Get("Mcp-Method") != call.Method ||
 			call.Params.Meta["io.modelcontextprotocol/protocolVersion"] != modernVersion {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": 1,
+				"jsonrpc": "2.0", "id": call.ID,
 				"error": map[string]interface{}{"code": -32602, "message": "invalid protocol request"},
 			})
 			return
@@ -57,9 +62,14 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		responseID := call.ID
+		if (staleIDOn == "bearer" && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")) ||
+			(staleIDOn == "discovery" && call.Method == "server/discover" && r.Header.Get("Authorization") == "") {
+			responseID = 99
+		}
 		if openDiscovery && call.Method == "tools/list" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": 1, "result": map[string]interface{}{"tools": []interface{}{}},
+				"jsonrpc": "2.0", "id": responseID, "result": map[string]interface{}{"tools": []interface{}{}},
 			})
 			return
 		}
@@ -68,7 +78,7 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
+			"jsonrpc": "2.0", "id": responseID,
 			"result": map[string]interface{}{
 				"resultType": "complete", "supportedVersions": []string{modernVersion},
 				"capabilities": map[string]interface{}{},
@@ -98,6 +108,28 @@ func TestTokenReplay_ModernOnlySecure(t *testing.T) {
 	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("secure modern server: findings=%d, err=%v", len(findings), err)
+	}
+}
+
+func TestTokenReplay_ModernUnrelatedResponsesAreInconclusive(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		openDiscovery bool
+	}{
+		{"bearer", false},
+		{"discovery", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := modernAuthServerWithResponseID(t, func(auth string) bool {
+				return strings.HasPrefix(auth, "Bearer ")
+			}, tc.openDiscovery, tc.name)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unrelated response: findings=%d, err=%v", len(findings), err)
+			}
+		})
 	}
 }
 
@@ -134,6 +166,18 @@ func TestOAuthAudience_ModernOnlySecure(t *testing.T) {
 	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("secure modern audience: findings=%d, err=%v", len(findings), err)
+	}
+}
+
+func TestOAuthAudience_ModernUnrelatedSuccessIsInconclusive(t *testing.T) {
+	srv := modernAuthServerWithResponseID(t, func(auth string) bool {
+		return strings.HasPrefix(auth, "Bearer ")
+	}, false, "bearer")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unrelated bearer response: findings=%d, err=%v", len(findings), err)
 	}
 }
 
