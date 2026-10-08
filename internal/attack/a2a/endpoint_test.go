@@ -141,6 +141,36 @@ func TestResolveHTTPJSONBases_PreferenceAndPinning(t *testing.T) {
 	}
 }
 
+func TestFetchDiscoveryCard_VersionHeaderByPath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cardPath   string
+		wantHeader string
+	}{
+		{"v1", cardPathPrimary, "1.0"},
+		{"legacy", cardPathLegacy, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.cardPath {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Header.Get("A2A-Version") != tc.wantHeader {
+					http.Error(w, "wrong A2A version", http.StatusBadRequest)
+					return
+				}
+				_, _ = io.WriteString(w, `{"url":"http://agent.example/rpc"}`)
+			}))
+			defer server.Close()
+			card, found := fetchDiscoveryCard(t.Context(), newClient(server.URL), server.URL)
+			if !found || card.URL != "http://agent.example/rpc" {
+				t.Fatalf("card=%+v found=%v", card, found)
+			}
+		})
+	}
+}
+
 func TestResolveHTTPJSONBases_CapsResults(t *testing.T) {
 	interfaces := make([]map[string]string, 18)
 	for i := range interfaces {
@@ -729,5 +759,56 @@ func TestResolveA2AEndpoint_UnrelatedTaskResponse(t *testing.T) {
 
 	if ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
 		t.Errorf("resolved %q from a response to another request", ep)
+	}
+}
+
+func TestFetchCard_VersionHeaderByPath(t *testing.T) {
+	for _, tc := range []struct {
+		path       string
+		wantHeader string
+	}{
+		{cardPathPrimary, "1.0"},
+		{cardPathLegacy, ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Header.Get("A2A-Version") != tc.wantHeader {
+					http.Error(w, "wrong A2A version", http.StatusBadRequest)
+					return
+				}
+				_, _ = io.WriteString(w, `{"name":"Versioned Agent"}`)
+			}))
+			defer server.Close()
+			if _, _, ok := fetchCard(t.Context(), newClient(server.URL), server.URL+tc.path); !ok {
+				t.Fatal("card not fetched")
+			}
+		})
+	}
+}
+
+func TestVersionedCardRuleReaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != cardPathPrimary {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("A2A-Version") != "1.0" {
+			http.Error(w, "wrong A2A version", http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"Versioned Agent","capabilities":{"extensions":[{"uri":"urn:test:required","required":true}]}}`)
+	}))
+	defer server.Close()
+
+	extensions, served := (&ExtensionDowngradeExecutor{}).requiredExtensions(t.Context(), newClient(server.URL), server.URL)
+	if !served || !slices.Equal(extensions, []string{"urn:test:required"}) {
+		t.Fatalf("extensions=%q served=%v", extensions, served)
+	}
+	opts := attack.Options{TimeoutSeconds: 5}
+	if _, err := NewJWSAlgConfExecutor(attack.RuleContext{}).Execute(t.Context(), server.URL, opts); err != nil {
+		t.Fatalf("JWS card read: %v", err)
+	}
+	if _, err := NewWellKnownHostInjectExecutor(attack.RuleContext{}).Execute(t.Context(), server.URL, opts); err != nil {
+		t.Fatalf("host-injection card read: %v", err)
 	}
 }

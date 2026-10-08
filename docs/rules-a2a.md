@@ -21,6 +21,8 @@ on either revision is exercised. In practice that means sending the v1.0
 PascalCase methods with the `A2A-Version: 1.0` header first and retrying with the
 v0.3 slash methods, and reading both the v1.0 `securityRequirements` and the v0.3
 `security` field from an agent card.
+The v1.0 Agent Card and extended-card reads also send `A2A-Version: 1.0`;
+legacy v0.3 card reads leave the header unset.
 
 Unlike MCP, A2A has had no restructuring revision: v1.0.1 is a patch that fixed
 specification inconsistencies rather than changing the protocol. Two of its

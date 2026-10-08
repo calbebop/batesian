@@ -246,7 +246,7 @@ func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) [
 
 // fetchCard GETs an agent card and returns its body and freshness headers.
 func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool) {
-	resp, err := client.GET(ctx, url, nil)
+	resp, err := client.GET(ctx, url, cardVersionHeaders(url))
 	if err != nil || !resp.IsSuccess() {
 		return nil, cardCacheHeaders{}, false
 	}

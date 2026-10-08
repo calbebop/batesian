@@ -143,7 +143,7 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 	var lastResult *ProbeResult
 	for _, path := range paths {
 		target := endpoint.AppendPath(c.baseURL, path)
-		result, body, err := c.get(ctx, target)
+		result, body, err := c.get(ctx, target, path == WellKnownPath)
 		lastResult = result
 
 		if err != nil {
@@ -176,6 +176,7 @@ func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	defaultV1Version(req)
 	req.Header.Del("Authorization")
 	return c.do(req)
 }
@@ -187,21 +188,31 @@ func (c *Client) ProbeExtendedCardWithInvalidToken(ctx context.Context, token st
 	if err != nil {
 		return nil, err
 	}
+	defaultV1Version(req)
 	req.Header.Set("Authorization", "Bearer "+token)
 	return c.do(req)
 }
 
 // get performs a GET request and returns the ProbeResult and body bytes.
-func (c *Client) get(ctx context.Context, target string) (*ProbeResult, []byte, error) {
+func (c *Client) get(ctx context.Context, target string, v1 bool) (*ProbeResult, []byte, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, target)
 	if err != nil {
 		return nil, nil, err
+	}
+	if v1 {
+		defaultV1Version(req)
 	}
 	result, err := c.do(req)
 	if err != nil {
 		return result, nil, err
 	}
 	return result, result.Body, nil
+}
+
+func defaultV1Version(req *http.Request) {
+	if req.Header.Get("A2A-Version") == "" {
+		req.Header.Set("A2A-Version", "1.0")
+	}
 }
 
 // newRequest builds an http.Request with standard headers applied.

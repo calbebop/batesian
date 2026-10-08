@@ -49,7 +49,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 	client := attack.NewHTTPClient(opts, vars)
 
 	cardURL := endpoint.AppendPath(vars.BaseURL, "/.well-known/agent-card.json")
-	resp, err := client.GET(ctx, cardURL, nil)
+	resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
 	if err != nil || !resp.IsSuccess() {
 		// The rule analyses signatures on the card. Without one it was not
 		// exercised, and reporting clean would read as "the signatures are
