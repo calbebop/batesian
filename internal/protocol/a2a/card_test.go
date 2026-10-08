@@ -836,6 +836,64 @@ func TestFetchAgentCard_V1Path(t *testing.T) {
 	}
 }
 
+func TestFetchAgentCard_VersionHeaderByPath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cardPath   string
+		cardJSON   string
+		wantHeader string
+	}{
+		{"v1", WellKnownPath, minimalV1CardJSON, "1.0"},
+		{"legacy", WellKnownPathLegacy, legacyV03CardJSON, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.cardPath {
+					http.NotFound(w, r)
+					return
+				}
+				if got := r.Header.Get("A2A-Version"); got != tc.wantHeader {
+					http.Error(w, "wrong A2A version", http.StatusBadRequest)
+					return
+				}
+				_, _ = w.Write([]byte(tc.cardJSON))
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := client.FetchAgentCard(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestProbeExtendedCard_SendsV1Version(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != ExtendedCardPath || r.Header.Get("A2A-Version") != "1.0" {
+			http.Error(w, "wrong A2A version", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"name":"Extended"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, probe := range []func(context.Context) (*ProbeResult, error){client.ProbeExtendedCard,
+		func(ctx context.Context) (*ProbeResult, error) {
+			return client.ProbeExtendedCardWithInvalidToken(ctx, "invalid")
+		}} {
+		result, err := probe(t.Context())
+		if err != nil || result.StatusCode != http.StatusOK {
+			t.Fatalf("extended card status=%v err=%v", result, err)
+		}
+	}
+}
+
 func TestFetchAgentCardRejectsIncompleteCard(t *testing.T) {
 	legacyCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

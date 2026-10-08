@@ -103,7 +103,8 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 // coverage the scan does not have.
 func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) (uris []string, cardServed bool) {
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
-		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, path), nil)
+		cardURL := endpoint.AppendPath(baseURL, path)
+		resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}

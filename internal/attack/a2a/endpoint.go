@@ -157,7 +157,8 @@ func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, b
 // well-known path then the v0.3 legacy path.
 func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL string) (a2aDiscoveryCard, bool) {
 	for _, path := range []string{"/.well-known/agent-card.json", "/.well-known/agent.json"} {
-		resp, err := client.GET(ctx, endpointpkg.AppendPath(baseURL, path), nil)
+		cardURL := endpointpkg.AppendPath(baseURL, path)
+		resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}
@@ -168,6 +169,14 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 		return card, true
 	}
 	return a2aDiscoveryCard{}, false
+}
+
+func cardVersionHeaders(cardURL string) map[string]string {
+	parsed, err := url.Parse(cardURL)
+	if err != nil || !strings.HasSuffix(parsed.Path, cardPathPrimary) {
+		return nil
+	}
+	return map[string]string{"A2A-Version": "1.0"}
 }
 
 // jsonRPCURLs lists advertised JSON-RPC URLs in preference order.

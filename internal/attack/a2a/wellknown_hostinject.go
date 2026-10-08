@@ -64,9 +64,13 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 
 	for _, path := range cardPaths {
 		for _, probe := range probes {
-			resp, err := client.GET(ctx, endpoint.AppendPath(vars.BaseURL, path), map[string]string{
-				probe.header: probe.value,
-			})
+			cardURL := endpoint.AppendPath(vars.BaseURL, path)
+			headers := cardVersionHeaders(cardURL)
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			headers[probe.header] = probe.value
+			resp, err := client.GET(ctx, cardURL, headers)
 			if err != nil || !resp.IsSuccess() {
 				continue
 			}
