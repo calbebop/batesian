@@ -370,7 +370,8 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 			})
 		case "/mcp":
 			var req struct {
-				Method string `json:"method"`
+				Method string          `json:"method"`
+				ID     json.RawMessage `json:"id"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 
@@ -379,7 +380,7 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      1,
+					"id":      req.ID,
 					"result": map[string]interface{}{
 						"protocolVersion": "2025-11-25",
 						"serverInfo":      map[string]interface{}{"name": "ungated-init", "version": "1.0"},
@@ -403,7 +404,7 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      2,
+					"id":      req.ID,
 					"result":  map[string]interface{}{"tools": []interface{}{}},
 				})
 				return

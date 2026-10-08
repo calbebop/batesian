@@ -30,8 +30,7 @@ func classifyProbe(resp *attack.Response, err error, expectedID int) (probeVerdi
 
 	body, parsed := parseResponseBody(resp.Body)
 	if parsed {
-		id, ok := body["id"].(json.Number)
-		parsed = ok && id.String() == strconv.Itoa(expectedID)
+		parsed = matchesRPCID(body, expectedID)
 	}
 
 	if resp.IsSuccess() {
@@ -62,6 +61,11 @@ func parseResponseBody(raw []byte) (map[string]interface{}, bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+func matchesRPCID(body map[string]interface{}, expectedID int) bool {
+	id, ok := body["id"].(json.Number)
+	return ok && id.String() == strconv.Itoa(expectedID)
 }
 
 func validRPCResult(body map[string]interface{}) bool {
@@ -177,35 +181,20 @@ func rpcErrorCode(value interface{}) int {
 	}
 }
 
-// accessVerdict is what an unauthenticated probe established about a surface.
+// accessVerdict records an unauthenticated probe's outcome.
 type accessVerdict int
 
 const (
-	// accessUndetermined: the server did not say. A transport failure, a bare 202,
-	// a 429, a 502, an unparseable body. Nothing about authorization follows.
+	// accessUndetermined means authorization could not be assessed.
 	accessUndetermined accessVerdict = iota
-	// accessGranted: answered with a JSON-RPC result, so no gate stopped the call.
+	// accessGranted means a matching JSON-RPC result was returned.
 	accessGranted
-	// accessRefused: an auth status, or a JSON-RPC error envelope. The server said no.
+	// accessRefused means an auth status or matching JSON-RPC error was returned.
 	accessRefused
 )
 
-// classifyAccess grades an unauthenticated probe as granted, refused, or neither.
-//
-// The rules that compare two probes to each other need this three-way split, and
-// deriving "refused" from the absence of acceptance is what made them fabricate
-// findings. era_downgrade set granted = resp.IsAccepted() and treated everything
-// else as a refusal, so a dual-era server that delivers POST responses over the GET
-// stream and answers with a bare 202 Accepted on the legacy wire, which the
-// transport permits, looked like a wire that refused an unauthenticated call while
-// the stateless wire answered inline. That is a critical/ConfirmedExploit
-// "authorization enforced on the legacy wire but not the modern wire" against a
-// server enforcing nothing, and a 429 from a rate limiter or a one-off 502
-// produced the same report.
-//
-// A comparison rule must treat accessUndetermined as "no comparison available"
-// rather than folding it into either side.
-func classifyAccess(resp *attack.Response, err error) accessVerdict {
+// classifyAccess requires a matching response ID, except for HTTP 401/403.
+func classifyAccess(resp *attack.Response, err error, expectedID int) accessVerdict {
 	if err != nil || resp == nil {
 		return accessUndetermined
 	}
@@ -213,7 +202,7 @@ func classifyAccess(resp *attack.Response, err error) accessVerdict {
 		return accessRefused
 	}
 	body, ok := parseResponseBody(resp.Body)
-	if !ok {
+	if !ok || !matchesRPCID(body, expectedID) {
 		return accessUndetermined
 	}
 	if resp.IsSuccess() && validRPCResult(body) {

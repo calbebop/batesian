@@ -224,7 +224,7 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 	if err != nil {
 		return "", false, nil
 	}
-	if !resp.IsAccepted() {
+	if classifyAccess(resp, nil, 1) != accessGranted {
 		return "", false, resp
 	}
 	return resp.Headers.Get("Mcp-Session-Id"), true, resp
@@ -255,7 +255,7 @@ func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *att
 	// so "refused" is the direction that lets the finding through: a transport failure
 	// or a 429 on either of them used to read as "this server does gate the surface",
 	// and the rule then attributed a step-6 success to the session id.
-	verdict := classifyAccess(resp, err)
+	verdict := classifyAccess(resp, err, 2)
 	// One session-specific amendment. HTTP 404 is the shape the transport prescribes
 	// for a missing or unknown session id, and it commonly carries no JSON-RPC body, so
 	// classifyAccess grades it undetermined. Here it is a real refusal: every call this
