@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -73,7 +74,12 @@ type sarifRule struct {
 	ShortDescription sarifMessage        `json:"shortDescription"`
 	FullDescription  sarifMessage        `json:"fullDescription,omitempty"`
 	HelpURI          string              `json:"helpUri,omitempty"`
+	DefaultConfig    sarifRuleConfig     `json:"defaultConfiguration"`
 	Properties       sarifRuleProperties `json:"properties,omitempty"`
+}
+
+type sarifRuleConfig struct {
+	Level string `json:"level"`
 }
 
 type sarifRuleProperties struct {
@@ -81,7 +87,13 @@ type sarifRuleProperties struct {
 	Severity string   `json:"security-severity,omitempty"`
 }
 
-// sarifResult includes a stable fingerprint for alert correlation.
+type sarifChainStep struct {
+	Hop       int    `json:"hop"`
+	Principal string `json:"principal,omitempty"`
+	Action    string `json:"action"`
+	Outcome   string `json:"outcome"`
+}
+
 type sarifResult struct {
 	RuleID              string            `json:"ruleId"`
 	Level               string            `json:"level"` // error, warning, note, none
@@ -135,14 +147,33 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 				ShortDescription: sarifMessage{Text: r.Rule.Info.Name},
 				FullDescription:  sarifMessage{Text: truncateRunes(r.Rule.Info.Description, 500)},
 				HelpURI:          firstHTTPReference(r.Rule.Info.References),
+				DefaultConfig:    sarifRuleConfig{Level: severityLevel(r.Rule.Info.Severity)},
 				Properties: sarifRuleProperties{
 					Tags:     tags,
 					Severity: severityScore(r.Rule.Info.Severity),
 				},
 			}
 		}
+	}
+	for _, r := range results {
 		for _, f := range r.Findings {
-			sarifResults = append(sarifResults, findingToSARIF(f))
+			result := findingToSARIF(f)
+			if base, ok := ruleMap[f.RuleID]; ok &&
+				(severity.Canonical(f.Severity) == "" || base.Properties.Severity != severityScore(f.Severity)) {
+				variant := base
+				variantSeverity := severity.Canonical(f.Severity)
+				if variantSeverity == "" {
+					variantSeverity = "unknown"
+					variant.Properties.Severity = ""
+				} else {
+					variant.Properties.Severity = severityScore(f.Severity)
+				}
+				variant.ID = f.RuleID + "/" + variantSeverity
+				variant.DefaultConfig.Level = severityLevel(f.Severity)
+				ruleMap[variant.ID] = variant
+				result.RuleID = variant.ID
+			}
+			sarifResults = append(sarifResults, result)
 		}
 	}
 
@@ -219,22 +250,30 @@ func newSARIFNotification(result engine.RunResult, level, detail string) sarifNo
 func findingToSARIF(f attackpkg.Finding) sarifResult {
 	confidence := string(f.EffectiveConfidence())
 	props := map[string]any{
-		"severity":   f.Severity,
-		"confidence": confidence,
+		"severity":     severity.CanonicalOrRaw(f.Severity),
+		"confidence":   confidence,
+		"sourceRuleId": f.RuleID,
 	}
 	if f.Evidence != "" {
-		props["evidence"] = truncate(f.Evidence, 500)
+		props["evidence"] = f.Evidence
+	}
+	if len(f.Chain) > 0 {
+		chain := make([]sarifChainStep, 0, len(f.Chain))
+		for _, step := range f.Chain {
+			chain = append(chain, sarifChainStep{
+				Hop: step.Hop, Principal: step.Principal, Action: step.Action, Outcome: step.Outcome,
+			})
+		}
+		props["chain"] = chain
 	}
 	if len(f.Related) > 0 {
 		props["relatedFindings"] = f.Related
 	}
 
 	return sarifResult{
-		RuleID: f.RuleID,
-		Level:  severityLevel(f.Severity),
-		Message: sarifMessage{
-			Text: fmt.Sprintf("%s\n\nRemediation: %s", f.Description, f.Remediation),
-		},
+		RuleID:  f.RuleID,
+		Level:   severityLevel(f.Severity),
+		Message: sarifMessage{Text: findingMessage(f)},
 		Locations: []sarifLocation{
 			{
 				PhysicalLocation: sarifPhysicalLocation{
@@ -246,16 +285,40 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 			},
 		},
 		PartialFingerprints: map[string]string{
-			"primaryLocationLineHash": fingerprint(f),
+			"findingIdentity/v1": fingerprint(f),
 		},
 		Properties: props,
 	}
 }
 
-// fingerprint remains stable when only the endpoint changes.
 func fingerprint(f attackpkg.Finding) string {
-	sum := sha256.Sum256([]byte(f.RuleID + "\x00" + f.Title))
+	sum := sha256.Sum256([]byte(strings.Join([]string{f.RuleID, f.Title, fingerprintTarget(f.TargetURL)}, "\x00")))
 	return hex.EncodeToString(sum[:])
+}
+
+func fingerprintTarget(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + u.EscapedPath()
+}
+
+func findingMessage(f attackpkg.Finding) string {
+	parts := make([]string, 0, 4)
+	if f.Title != "" {
+		parts = append(parts, f.Title)
+	}
+	if f.Description != "" {
+		parts = append(parts, f.Description)
+	}
+	if f.Evidence != "" {
+		parts = append(parts, "Evidence: "+truncateRunes(f.Evidence, 1000))
+	}
+	if f.Remediation != "" {
+		parts = append(parts, "Remediation: "+f.Remediation)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // firstHTTPReference selects the alert help link.

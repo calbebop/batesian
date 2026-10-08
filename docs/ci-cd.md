@@ -6,6 +6,14 @@ targets, not files in the repository, so GitHub surfaces them as alerts without
 source-line annotations (it resolves SARIF locations as repository paths).
 Integrating into CI takes two lines on top of the scan command.
 
+SARIF alert messages include a short evidence excerpt. Full evidence and attack
+chain steps are in result properties. When a finding differs from its rule's
+default severity, its SARIF rule ID gains a severity suffix, such as
+`mcp-example-001/medium`. The original ID remains in `sourceRuleId`. This keeps
+GitHub's rule-level security score aligned with each result. Fingerprints use
+the rule, finding text, and target path; query strings do not affect identity.
+The revised fingerprints may cause existing alerts to appear new once.
+
 ## GitHub Actions
 
 ### Basic scan (upload SARIF to Code Scanning)

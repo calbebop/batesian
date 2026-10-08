@@ -197,15 +197,16 @@ func TestSARIF_HelpURIFromReferences(t *testing.T) {
 	}
 }
 
-func TestSARIF_PartialFingerprintStableAcrossTargetDrift(t *testing.T) {
-	fp := func(ruleID, title, target string) string {
+func TestSARIF_FingerprintDistinguishesFindingsAndIgnoresQuery(t *testing.T) {
+	fp := func(ruleID, title, description, target string) string {
 		results := []engine.RunResult{{
 			Rule: &rules.Rule{ID: ruleID},
 			Findings: []attack.Finding{{
-				RuleID:    ruleID,
-				Severity:  "high",
-				Title:     title,
-				TargetURL: target,
+				RuleID:      ruleID,
+				Severity:    "high",
+				Title:       title,
+				Description: description,
+				TargetURL:   target,
 			}},
 		}}
 		var buf bytes.Buffer
@@ -222,16 +223,142 @@ func TestSARIF_PartialFingerprintStableAcrossTargetDrift(t *testing.T) {
 		if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
 			t.Fatalf("invalid JSON: %v", err)
 		}
-		return doc.Runs[0].Results[0].PartialFingerprints["primaryLocationLineHash"]
+		fingerprints := doc.Runs[0].Results[0].PartialFingerprints
+		if _, ok := fingerprints["primaryLocationLineHash"]; ok {
+			t.Fatal("network result must not claim to have a source line hash")
+		}
+		return fingerprints["findingIdentity/v1"]
 	}
 
-	a := fp("mcp-x-001", "Same vulnerability", "https://host.example/mcp")
-	b := fp("mcp-x-001", "Same vulnerability", "https://host.example/mcp/deep/path")
+	a := fp("mcp-x-001", "Same vulnerability", "A", "https://host.example/mcp?nonce=one")
+	b := fp("mcp-x-001", "Same vulnerability", "A", "https://HOST.example/mcp?nonce=two#fragment")
 	if a == "" || a != b {
-		t.Fatalf("endpoint drift must keep one fingerprint: %q vs %q", a, b)
+		t.Fatalf("query and host case must not change identity: %q vs %q", a, b)
 	}
-	if c := fp("mcp-x-001", "Different finding", "https://host.example/mcp"); c == a {
-		t.Fatalf("different titles must hash differently, got %q for both", a)
+	if c := fp("mcp-x-001", "Same vulnerability", "Reworded", "https://host.example/mcp"); c != a {
+		t.Fatalf("description edits must not change identity: %q vs %q", a, c)
+	}
+	for _, tc := range []struct {
+		name, ruleID, title, description, target string
+	}{
+		{"rule", "mcp-x-002", "Same vulnerability", "A", "https://host.example/mcp"},
+		{"title", "mcp-x-001", "Different finding", "A", "https://host.example/mcp"},
+		{"host", "mcp-x-001", "Same vulnerability", "A", "https://other.example/mcp"},
+		{"path", "mcp-x-001", "Same vulnerability", "A", "https://host.example/other"},
+		{"port", "mcp-x-001", "Same vulnerability", "A", "https://host.example:8443/mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fp(tc.ruleID, tc.title, tc.description, tc.target); got == a {
+				t.Fatalf("distinct findings shared fingerprint %q", got)
+			}
+		})
+	}
+}
+
+func TestWriteSARIF_PreservesEvidenceAndChain(t *testing.T) {
+	results := sarifFixture()
+	finding := &results[0].Findings[0]
+	finding.Evidence = strings.Repeat("é", 600)
+	finding.Remediation = "Require authorization."
+	finding.Chain = []attack.ChainStep{{Hop: 1, Principal: "tenant-a", Action: "request", Outcome: "accepted"}}
+
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+				Properties struct {
+					Evidence string `json:"evidence"`
+					Chain    []struct {
+						Hop       int    `json:"hop"`
+						Principal string `json:"principal"`
+						Action    string `json:"action"`
+						Outcome   string `json:"outcome"`
+					} `json:"chain"`
+				} `json:"properties"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("decode SARIF: %v", err)
+	}
+	result := doc.Runs[0].Results[0]
+	if result.Properties.Evidence != finding.Evidence {
+		t.Fatal("full evidence was not preserved")
+	}
+	if !strings.Contains(result.Message.Text, "Test finding") ||
+		!strings.Contains(result.Message.Text, "Evidence: ") ||
+		!strings.Contains(result.Message.Text, "Remediation: Require authorization.") {
+		t.Fatalf("alert message lacks triage details: %q", result.Message.Text)
+	}
+	if len(result.Properties.Chain) != 1 || result.Properties.Chain[0].Principal != "tenant-a" ||
+		result.Properties.Chain[0].Action != "request" {
+		t.Fatalf("chain missing from SARIF: %+v", result.Properties.Chain)
+	}
+}
+
+func TestWriteSARIF_SeverityMatchesReferencedRule(t *testing.T) {
+	results := sarifFixture()
+	results[0].Findings = append(results[0].Findings,
+		attack.Finding{RuleID: "mcp-test-001", Severity: "medium", Title: "Medium finding", TargetURL: "https://agent.example.com/mcp"},
+		attack.Finding{RuleID: "mcp-test-001", Severity: "info", Title: "Info finding", TargetURL: "https://agent.example.com/mcp"},
+		attack.Finding{RuleID: "mcp-test-001", Severity: "sev1", Title: "Unknown finding", TargetURL: "https://agent.example.com/mcp"},
+	)
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+	var doc struct {
+		Runs []struct {
+			Tool struct {
+				Driver struct {
+					Rules []struct {
+						ID            string `json:"id"`
+						DefaultConfig struct {
+							Level string `json:"level"`
+						} `json:"defaultConfiguration"`
+						Properties struct {
+							Score string `json:"security-severity"`
+						} `json:"properties"`
+					} `json:"rules"`
+				} `json:"driver"`
+			} `json:"tool"`
+			Results []struct {
+				RuleID     string `json:"ruleId"`
+				Level      string `json:"level"`
+				Properties struct {
+					Severity     string `json:"severity"`
+					SourceRuleID string `json:"sourceRuleId"`
+				} `json:"properties"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("decode SARIF: %v", err)
+	}
+	rulesByID := make(map[string]struct{ score, level string })
+	for _, rule := range doc.Runs[0].Tool.Driver.Rules {
+		rulesByID[rule.ID] = struct{ score, level string }{rule.Properties.Score, rule.DefaultConfig.Level}
+	}
+	if got := len(doc.Runs[0].Results); got != 4 {
+		t.Fatalf("results = %d, want 4", got)
+	}
+	for i, result := range doc.Runs[0].Results {
+		wantID := []string{"mcp-test-001", "mcp-test-001/medium", "mcp-test-001/info", "mcp-test-001/unknown"}[i]
+		wantScore := []string{"7.5", "5.0", "1.0", ""}[i]
+		wantSeverity := []string{"high", "medium", "info", "sev1"}[i]
+		if result.RuleID != wantID || result.Properties.SourceRuleID != "mcp-test-001" || result.Properties.Severity != wantSeverity {
+			t.Errorf("result %d rule identity: %+v", i, result)
+		}
+		rule, ok := rulesByID[result.RuleID]
+		if !ok || rule.score != wantScore || rule.level != result.Level {
+			t.Errorf("result %d severity differs from rule: rule=%+v result=%+v", i, rule, result)
+		}
 	}
 }
 
