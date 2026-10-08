@@ -199,6 +199,7 @@ func TestResponse_IsAccepted(t *testing.T) {
 		want bool
 	}{
 		{"valid result object", 200, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, true},
+		{"large result number", 200, `{"jsonrpc":"2.0","id":1,"result":{"value":1e400}}`, true},
 		{"null result is a valid success", 200, `{"result":null}`, true},
 		{"empty-object result is a valid success", 200, `{"result":{}}`, true},
 		{"error envelope is rejection", 200, `{"jsonrpc":"2.0","error":{"code":-32600}}`, false},
@@ -207,6 +208,7 @@ func TestResponse_IsAccepted(t *testing.T) {
 		{"bare object with no result is rejection", 200, `{"jsonrpc":"2.0"}`, false},
 		{"non-2xx is rejection", 401, `{"result":{}}`, false},
 		{"both result and error is rejection", 200, `{"result":{},"error":{"code":-1}}`, false},
+		{"trailing JSON is rejection", 200, `{"result":{}}{"result":{}}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,12 +230,14 @@ func TestResponse_IsJSON(t *testing.T) {
 		want bool
 	}{
 		{"object", `{"name":"agent","url":"https://x"}`, true},
+		{"object with large number", `{"name":"agent","capacity":1e400}`, true},
 		{"empty object", `{}`, true},
 		{"html", `<html>`, false},
 		{"empty", ``, false},
 		{"array is not an object", `[1,2,3]`, false},
 		{"null is not an object", `null`, false},
 		{"bare scalar", `"hello"`, false},
+		{"trailing JSON", `{} {}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,6 +246,16 @@ func TestResponse_IsJSON(t *testing.T) {
 				t.Errorf("IsJSON() = %v, want %v (body=%q)", got, tc.want, tc.body)
 			}
 		})
+	}
+}
+
+func TestResponse_JSONFieldLargeNumber(t *testing.T) {
+	r := &attack.Response{Body: []byte(`{"registration_endpoint":"https://example.test/register","size":1e400,"nested":{"count":9007199254740993}}`)}
+	if got := r.JSONField("registration_endpoint"); got != "https://example.test/register" {
+		t.Errorf("registration endpoint = %q", got)
+	}
+	if got := r.JSONField("nested.count"); got != "9007199254740993" {
+		t.Errorf("nested count = %q, want exact integer", got)
 	}
 }
 

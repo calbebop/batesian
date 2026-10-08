@@ -141,3 +141,23 @@ func TestClassifyProbe_TransportFailure(t *testing.T) {
 		t.Errorf("classifyProbe() = %v, want probeInconclusive for a transport failure", got)
 	}
 }
+
+func TestClassifyAccessLargeNumbers(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   accessVerdict
+	}{
+		{"result", 200, `{"jsonrpc":"2.0","result":{"value":1e400}}`, accessGranted},
+		{"error", 500, `{"jsonrpc":"2.0","error":{"code":-32603,"data":{"value":1e400}}}`, accessRefused},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &attack.Response{StatusCode: tc.status, Body: []byte(tc.body)}
+			if got := classifyAccess(resp, nil); got != tc.want {
+				t.Errorf("classifyAccess() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
