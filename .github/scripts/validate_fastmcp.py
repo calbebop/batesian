@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
-"""CI validation harness for the FastMCP secured-server target.
+"""Validate findings and clean rule outcomes against secured FastMCP."""
 
-Companion to validate_secured_agent.py (#195) and validate_mcp_fixtures.py
-(#196). FastMCP is a third-party framework, so this is the validation-results.md
-case the hand-rolled fixtures cannot make: does any MCP rule false-positive
-against a correctly-secured MCP server written by someone else?
-
-Boots fastmcp_secured_server.py (which requires a bearer token) and scans it
-unauthenticated. The false-positive gate: an unauthenticated scan of a server
-that gates initialize on a valid token must fire nothing, because it has nothing
-to fire on, and any finding is a false positive.
-
-Run by .github/workflows/validation.yml.
-"""
 import json
 import os
 import subprocess
@@ -21,6 +9,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+from validation_outcomes import incomplete_rules
 
 HOST = "127.0.0.1"
 PORT = 7805
@@ -97,31 +87,30 @@ def scan(*extra):
 def main():
     proc, log = start()
     try:
-        unauth, _ = scan()
-        cred, _ = scan("--token", TOKEN)
+        unauth, unauth_doc = scan()
+        cred, cred_doc = scan("--token", TOKEN)
     finally:
         stop(proc, log)
 
     ok = True
-    # False-positive gate: an unauthenticated scan of a correctly-secured server
-    # must fire nothing. Any finding is a false positive.
-    fp_ok = len(unauth) == 0
+    # Anonymous MCP rules legitimately skip when FastMCP refuses initialize.
+    fp_ok = not unauth and not unauth_doc["errors"]
     print(f"[{'PASS' if fp_ok else 'FAIL'}] FastMCP unauthenticated (false-positive gate): "
-          f"expected 0 findings, got {sorted(unauth)}")
+          f"findings={sorted(unauth)}; errors={unauth_doc['errors']}")
     ok &= fp_ok
 
-    # Credentialed scan: a valid token gets past initialize, and FastMCP (this
-    # revision) leaves Origin protection off by default, so dns-rebind-origin
-    # fires. That is a TRUE POSITIVE against third-party code: a fixture would
-    # have Origin validation on or off by design, but FastMCP shipping it off is
-    # a real-world default the scanner is right to flag. It is version-sensitive:
-    # if FastMCP changes the default this fails, which is the point of pointing a
-    # nightly gate at third-party code. The full set is printed so an unexpected
-    # additional finding is visible even when this assertion passes.
+    # This tracks FastMCP's current Origin-protection default.
     cred_ok = "mcp-dns-rebind-origin-001" in cred
     print(f"[{'PASS' if cred_ok else 'FAIL'}] FastMCP authenticated (dns-rebind true positive): "
           f"mcp-dns-rebind-origin-001 {'present' if cred_ok else 'ABSENT'}; fired {sorted(cred)}")
     ok &= cred_ok
+
+    clean_rule = "mcp-tool-poisoning-001"
+    skipped, errors = incomplete_rules(cred_doc, {clean_rule})
+    clean_ok = clean_rule not in cred and not skipped and not errors
+    print(f"[{'PASS' if clean_ok else 'FAIL'}] FastMCP authenticated (clean tool manifest): "
+          f"fired={clean_rule in cred}; skipped={skipped}; errors={errors}")
+    ok &= clean_ok
 
     return 0 if ok else 1
 

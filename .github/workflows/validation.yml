@@ -83,6 +83,9 @@ jobs:
       - name: Install fixture dependencies
         run: pip install starlette uvicorn
 
+      - name: Test validation gates
+        run: python -m unittest discover -s .github/scripts -p 'test_validation_gates.py'
+
       - name: Build batesian
         # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian

@@ -1,28 +1,6 @@
 #!/usr/bin/env python3
-"""CI validation harness for testdata/a2a_secured_agent.py.
+"""Validate A2A authorization rules against the secured-agent fixture."""
 
-a2a_secured_agent.py is the only fixture in testdata/ that ENFORCES
-authorization, so it is the false-positive gate the A2A rules have never had in
-CI: every prior validation ran against no-auth servers, where the cross-principal
-rules' discriminators suppress. Pointing the scanner at an agent that enforces
-authorization is what found three shipped A2A false negatives (#175, #176, #177),
-and none of that was reachable from a fixture or the Go harness.
-
-This harness starts the fixture in each of its three postures, runs a real
-`batesian scan` against it, and asserts the documented outcome
-(testdata/README.md). It exits non-zero on any mismatch and prints the fired vs
-expected rule ids so a regression is immediately readable.
-
-  secured     -> 0 findings. Any finding is a false positive.
-  idor        -> the five ownership rules fire:
-                 a2a-multitenant-isolation-001, a2a-delegation-integrity-001,
-                 a2a-task-cancel-idor-001, a2a-push-binding-001,
-                 a2a-task-enumeration-001
-  unauth-read -> a2a-task-idor-001 fires
-
-Run by .github/workflows/validation.yml; not meant for any target other than the
-local fixture.
-"""
 import json
 import os
 import subprocess
@@ -30,6 +8,8 @@ import sys
 import tempfile
 import time
 import urllib.request
+
+from validation_outcomes import incomplete_rules
 
 HOST = "127.0.0.1"
 PORT = 3111
@@ -48,6 +28,7 @@ IDOR_RULES = {
     "a2a-push-binding-001",
     "a2a-task-enumeration-001",
 }
+SECURED_RULES = IDOR_RULES | {"a2a-task-idor-001"}
 
 # Two principals are required by the cross-principal rules; --token drives the
 # rules that read a single credential. Verbatim from the fixture's docstring.
@@ -148,10 +129,11 @@ def main():
 
     rules, doc = scan_posture("secured")
     total = doc.get("summary", {}).get("total", len(rules))
-    ok = total == 0 and len(rules) == 0
+    skipped, errors = incomplete_rules(doc, SECURED_RULES)
+    ok = total == 0 and len(rules) == 0 and not skipped and not errors
     all_ok &= ok
-    check("secured (false-positive gate: no rule may fire)", ok,
-          f"expected 0 findings, got {total}: {sorted(rules)}")
+    check("secured (authorization rules complete cleanly)", ok,
+          f"total={total}; findings={sorted(rules)}; skipped={skipped}; errors={errors}")
 
     rules, _ = scan_posture("idor")
     missing = IDOR_RULES - rules

@@ -29,10 +29,14 @@ import tempfile
 import time
 import urllib.request
 
+from validation_outcomes import incomplete_rules
+
 FIXTURE = os.environ.get("BATESIAN_FIXTURE", "testdata/mcp_oauth_dcr_server.py")
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 # Separate ports per posture: a leaked process from one cannot confound the other.
 PORTS = {"managed": 7788, "unmanaged": 7789}
+DCR_RULES = {"mcp-oauth-dcr-001", "mcp-confused-deputy-001", "mcp-oauth-metadata-ssrf-001"}
+CALLBACK_RULE = "mcp-oauth-metadata-ssrf-001"
 
 
 def _read(log):
@@ -84,15 +88,16 @@ def stop(proc, log=None):
 
 
 def scan_count(base):
-    """Run batesian, then GET /__clients and return (leftover client count, fired rules)."""
+    """Run batesian, then read the fixture's registered-client count."""
     out = subprocess.run([BINARY, "scan", "--target", base, "--output", "json", "--timeout", "20"],
                          capture_output=True, text=True, timeout=180)
     if out.returncode != 0:
         raise RuntimeError(f"batesian exited {out.returncode}:\nstdout:\n{out.stdout}\nstderr:\n{out.stderr}")
-    findings = sorted({f["rule_id"] for f in json.loads(out.stdout).get("findings", [])})
+    scan_doc = json.loads(out.stdout)
+    findings = sorted({f["rule_id"] for f in scan_doc.get("findings", [])})
     with urllib.request.urlopen(f"{base}/__clients", timeout=5) as r:
         doc = json.loads(r.read())
-    return doc.get("count", 0), findings
+    return doc.get("count", 0), findings, scan_doc
 
 
 def check(name, ok, detail):
@@ -105,13 +110,22 @@ def main():
     for posture, expected in [("managed", 0), ("unmanaged", 3)]:
         proc, log, base = start(posture)
         try:
-            count, findings = scan_count(base)
+            count, findings, scan_doc = scan_count(base)
         finally:
             stop(proc, log)
         detail = "scan leaves 0 clients via RFC 7592 cleanup" if posture == "managed" \
             else "3 registered clients left behind (oauth-dcr, confused-deputy, metadata-ssrf)"
-        ok &= check(f"oauth-dcr {posture} ({detail})", count == expected,
-                    f"count={count} (expected {expected}); findings={findings}")
+        skipped, errors = incomplete_rules(scan_doc, DCR_RULES - {CALLBACK_RULE})
+        callback_skips = [item for item in scan_doc["skipped"] if item["rule_id"] == CALLBACK_RULE]
+        callback_pending = (len(callback_skips) == 1 and
+                            "no metadata callback observed" in callback_skips[0].get("reason", ""))
+        required_findings = DCR_RULES - {CALLBACK_RULE}
+        ok &= check(f"oauth-dcr {posture} ({detail})",
+                    count == expected and required_findings <= set(findings) and
+                    not skipped and not errors and not scan_doc["errors"] and callback_pending,
+                    f"count={count} (expected {expected}); findings={findings}; "
+                    f"skipped={skipped}; errors={scan_doc['errors']}; "
+                    f"callback_pending={callback_pending}")
     return 0 if ok else 1
 
 

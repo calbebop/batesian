@@ -53,6 +53,8 @@ import time
 import urllib.error
 import urllib.request
 
+from validation_outcomes import incomplete_rules
+
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 FIXTURE_DIR = os.environ.get("BATESIAN_FIXTURE_DIR", "testdata")
 SCAN_TIMEOUT = "20"
@@ -60,7 +62,7 @@ SCAN_TIMEOUT = "20"
 UNAUTH_FAMILY = {
     "mcp-tools-unauth-001",
     "mcp-resources-unauth-001",
-    "mcp-prompts-unauth-001",
+    "mcp-prompt-unauth-001",
     "mcp-completion-unauth-001",
     "mcp-logging-unauth-001",
 }
@@ -157,6 +159,11 @@ def check(name, ok, detail):
     return ok
 
 
+def clean_rule(doc, rid):
+    skipped, errors = incomplete_rules(doc, {rid})
+    return not skipped and not errors, f"skipped={skipped}; errors={errors}"
+
+
 def transient():
     """ok fires, 401 is clean, 502 is not-tested. They must all differ.
 
@@ -177,14 +184,14 @@ def transient():
 
     p, l = start("mcp_transient_failure_server.py", 7802, "7802", "401")
     try:
-        fired, skipped, _ = scan(7802)
+        fired, _, doc = scan(7802)
     finally:
         stop(p, l)
-    # 401 is auth enforced: the unauth family ran and found nothing (clean) —
-    # neither firing nor skipped.
+    # A 401 is clean only when these rules did not fire, skip, or error.
+    incomplete, errors = incomplete_rules(doc, UNAUTH_FAMILY)
     ok_all &= check("transient 401 (unauth family clean, auth enforced)",
-                    not (fired & UNAUTH_FAMILY) and not (skipped & UNAUTH_FAMILY),
-                    f"unauth fired {sorted(fired & UNAUTH_FAMILY)}; skipped {sorted(skipped & UNAUTH_FAMILY)}")
+                    not (fired & UNAUTH_FAMILY) and not incomplete and not errors,
+                    f"unauth fired {sorted(fired & UNAUTH_FAMILY)}; skipped {incomplete}; errors {errors}")
 
     p, l = start("mcp_transient_failure_server.py", 7802, "7802", "502")
     try:
@@ -208,12 +215,13 @@ def session_as_credential():
                                  ("patched", False), ("session-presence-auth", False)]:
         p, l = start("mcp_session_as_credential_server.py", 7803, posture)
         try:
-            fired, _, _ = scan(7803, "--token", "tok-a")
+            fired, _, doc = scan(7803, "--token", "tok-a")
         finally:
             stop(p, l)
         fires = rid in fired
-        ok_all &= check(f"session-as-credential {posture}", fires == expect_fire,
-                        f"{rid} {'fired' if fires else 'silent'} (expect {'fire' if expect_fire else 'silent'})")
+        complete, detail = clean_rule(doc, rid)
+        ok_all &= check(f"session-as-credential {posture}", fires == expect_fire and complete,
+                        f"{rid} {'fired' if fires else 'silent'}; {detail}")
     return ok_all
 
 
@@ -231,10 +239,12 @@ def log_optin():
 
     p, l = start("mcp_log_optin_server.py", 7804, "on-optin")
     try:
-        fired, _, _ = scan(7804)
+        fired, _, doc = scan(7804)
     finally:
         stop(p, l)
-    ok_all &= check("log-optin on-optin (silent)", rid not in fired, str(sorted(fired)))
+    complete, detail = clean_rule(doc, rid)
+    ok_all &= check("log-optin on-optin (silent)", rid not in fired and complete,
+                    f"fired {sorted(fired)}; {detail}")
 
     p, l = start("mcp_log_optin_server.py", 7804, "never")
     try:
@@ -281,11 +291,12 @@ def traversal():
 
     p, l = start("mcp_tool_param_traversal_server.py", 7805, "patched")
     try:
-        fired, _, _ = scan(7805, "--mcp-invoke-tool", "read_note")
+        fired, _, doc = scan(7805, "--mcp-invoke-tool", "read_note")
     finally:
         stop(p, l)
-    ok_all &= check("traversal patched (silent)", rid not in fired,
-                    f"fired {sorted(fired)}")
+    complete, detail = clean_rule(doc, rid)
+    ok_all &= check("traversal patched (silent)", rid not in fired and complete,
+                    f"fired {sorted(fired)}; {detail}")
     return ok_all
 
 
@@ -309,15 +320,16 @@ def scope_confusion():
     ]:
         p, l = start("mcp_scope_confusion_server.py", 7806, posture)
         try:
-            fired, skipped, _ = scan(7806, *principals)
+            fired, _, doc = scan(7806, *principals)
             if posture == "modern-vulnerable":
                 mapped = probe(7806, "--token", "tok-a")
         finally:
             stop(p, l)
         fires = rid in fired
+        complete, detail = clean_rule(doc, rid)
         ok_all &= check(f"scope-confusion {posture}",
-                        fires == expect_fire and rid not in skipped,
-                        f"{rid} {'fired' if fires else 'silent'}; skipped {rid in skipped}")
+                        fires == expect_fire and complete,
+                        f"{rid} {'fired' if fires else 'silent'}; {detail}")
         if posture == "modern-vulnerable":
             tool_names = {tool["Name"] for tool in mapped.get("Tools", [])}
             ok_all &= check("probe modern-only MCP",
@@ -350,8 +362,9 @@ def shadow_surface():
             stop(p, l)
         sev = severity_for(doc)
         if expect_sev is None:
-            ok_all &= check("shadow none (silent)", rid not in fired,
-                            f"fired {sorted(fired)}")
+            complete, detail = clean_rule(doc, rid)
+            ok_all &= check("shadow none (silent)", rid not in fired and complete,
+                            f"fired {sorted(fired)}; {detail}")
         else:
             ok_all &= check(f"shadow {posture} ({expect_sev})",
                             rid in fired and sev == expect_sev,
@@ -384,11 +397,12 @@ def tool_poisoning():
 
     p, l = start("mcp_tool_poisoning_server.py", 7808, "clean")
     try:
-        fired, _, _ = scan(7808)
+        fired, _, doc = scan(7808)
     finally:
         stop(p, l)
-    ok_all &= check("poisoning clean (silent)", rid not in fired,
-                    f"fired {sorted(fired)}")
+    complete, detail = clean_rule(doc, rid)
+    ok_all &= check("poisoning clean (silent)", rid not in fired and complete,
+                    f"fired {sorted(fired)}; {detail}")
     return ok_all
 
 
@@ -401,12 +415,13 @@ def vulnerable_version():
     for posture, expect_fire in [("vulnerable", True), ("patched", False), ("unknown", False)]:
         p, l = start("mcp_vulnerable_version_server.py", 7809, posture)
         try:
-            fired, _, _ = scan(7809)
+            fired, _, doc = scan(7809)
         finally:
             stop(p, l)
         fires = rid in fired
-        ok_all &= check(f"vulnerable-version {posture}", fires == expect_fire,
-                        f"{rid} {'fired' if fires else 'silent'}")
+        complete, detail = clean_rule(doc, rid)
+        ok_all &= check(f"vulnerable-version {posture}", fires == expect_fire and complete,
+                        f"{rid} {'fired' if fires else 'silent'}; {detail}")
     return ok_all
 
 
@@ -426,11 +441,12 @@ def task_entropy():
 
     p, l = start("mcp_task_entropy_server.py", 7812, "clean")
     try:
-        fired, _, _ = scan(7812, "--mcp-invoke-tool", "wait_a_moment")
+        fired, _, doc = scan(7812, "--mcp-invoke-tool", "wait_a_moment")
     finally:
         stop(p, l)
-    ok_all &= check("task-entropy clean (silent)", rid not in fired,
-                    f"fired {sorted(fired)}")
+    complete, detail = clean_rule(doc, rid)
+    ok_all &= check("task-entropy clean (silent)", rid not in fired and complete,
+                    f"fired {sorted(fired)}; {detail}")
     return ok_all
 
 
@@ -451,11 +467,12 @@ def token_replay():
 
     p, l = start("mcp_token_replay_server.py", 7813, "patched")
     try:
-        fired, _, _ = scan(7813)
+        fired, _, doc = scan(7813)
     finally:
         stop(p, l)
-    ok_all &= check("token-replay patched (silent)", rid not in fired,
-                    f"fired {sorted(fired)}")
+    complete, detail = clean_rule(doc, rid)
+    ok_all &= check("token-replay patched (silent)", rid not in fired and complete,
+                    f"fired {sorted(fired)}; {detail}")
     return ok_all
 
 

@@ -357,7 +357,9 @@ Both postures serve two tools: `read_note`, annotated `readOnlyHint: true` with 
 The scanner dispatches only approved, annotated tools, so `admin_read` staying broken and
 untouched is part of the validation: if a finding ever names it, the safety gate
 is gone. The oracle reads resolution disclosures, not file content - every probe
-names a file that does not exist, in either posture.
+names a file that does not exist, in either posture. The patched baseline still
+discloses its in-root lookup; traversal attempts receive a generic refusal. This
+lets the rule complete instead of skipping for lack of a baseline.
 
 **`mcp_scope_confusion_server.py` takes a posture argument**, defaulting to
 `vulnerable`, and needs `--token tok-a` plus two principals:

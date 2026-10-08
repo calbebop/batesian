@@ -111,7 +111,8 @@ async def jsonrpc(request: Request) -> JSONResponse:
                     })
                 return JSONResponse({
                     "jsonrpc": "2.0", "id": rid,
-                    "result": {"content": [{"type": "text", "text": f"note not found: {joined}"}],
+                    "result": {"content": [{"type": "text", "text":
+                              f"ENOENT: no such file or directory, open '{joined}'"}],
                                "isError": True},
                 })
 
