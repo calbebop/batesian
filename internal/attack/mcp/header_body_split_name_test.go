@@ -92,9 +92,21 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name")
 					return
 				}
-			case "ignores":
+			case "ignores", "stale-control", "stale-error", "stale-result":
 				if hdr == "" { // presence enforced, value ignored
+					if nameMode == "stale-control" {
+						id = 99
+					}
 					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name missing")
+					return
+				}
+				if nameMode == "stale-error" || nameMode == "stale-result" {
+					id = 99
+				}
+				if nameMode == "stale-result" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{},
+					})
 					return
 				}
 			case "absent":
@@ -155,6 +167,23 @@ func TestSplit_McpNameValidatedIsClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestSplit_McpNameIgnoresUnrelatedResponses(t *testing.T) {
+	for _, mode := range []string{"stale-control", "stale-error", "stale-result"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := nameSplitServer(t, mode)
+			defer ts.Close()
+
+			findings, err := runSplitRule(t, ts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != 0 {
+				t.Errorf("unrelated response created a finding: %+v", findings)
+			}
+		})
 	}
 }
 
