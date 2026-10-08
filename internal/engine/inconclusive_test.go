@@ -1,16 +1,51 @@
 package engine_test
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	batesian "github.com/calbebop/batesian"
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/rules"
 )
+
+func TestRun_MCPMetadataCallbackNotObservedIsSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"registration_endpoint":"http://%s/register"}`, r.Host)
+			return
+		}
+		if r.URL.Path == "/register" {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"client_id":"test-client"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	rule := &rules.Rule{
+		ID:     "mcp-oauth-metadata-ssrf-001",
+		Info:   rules.RuleInfo{Name: "MCP OAuth Metadata SSRF", Severity: "high"},
+		Attack: rules.AttackBlock{Protocol: "mcp", Type: "mcp-oauth-metadata-ssrf"},
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	result := engine.New(attack.Options{TimeoutSeconds: 5}).Run(ctx, srv.URL, []*rules.Rule{rule})[0]
+	if !result.Skipped || result.Err != nil || len(result.Findings) != 0 {
+		t.Fatalf("unobserved callback must be skipped: %+v", result)
+	}
+	if !strings.Contains(result.SkipMsg, "no metadata callback observed") {
+		t.Errorf("missing callback reason: %q", result.SkipMsg)
+	}
+}
 
 // TestRun_UnreachableA2ARuleIsInconclusive verifies that an A2A rule run against
 // an unreachable target is recorded as a skipped/inconclusive result (the
