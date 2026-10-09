@@ -9,7 +9,7 @@
 
 Batesian is a single-binary CLI that tests deployed AI agent infrastructure with real protocol traffic. It exercises authorization, identity, discovery, task isolation, callbacks, sessions, and tool boundaries, then reports evidence as a confirmed exploit or a risk indicator. Table, JSON, and SARIF output support local testing and CI.
 
-This README describes the current `main` branch. The latest tagged release is v1.7.0; JSON rule outcomes and SARIF coverage metadata are available on `main` but not in that release. See the [v1.7.0 documentation](https://github.com/calbebop/batesian/tree/v1.7.0) for released behavior.
+This README describes the current `main` branch, which may be ahead of the latest release. Use a release tag for its exact behavior and see the [changelog](CHANGELOG.md) for changes since v1.7.0.
 
 ![Batesian demo](docs/demo.gif)
 
@@ -44,11 +44,11 @@ sudo install -m 0755 batesian /usr/local/bin/batesian
 batesian --version
 ```
 
-Published releases include SHA-256 checksums, a Sigstore bundle for the checksum file, a per-archive SBOM, and SLSA build provenance. Check the SBOM itself for its format; v1.7.0 uses SPDX 2.3.
+Published releases include SHA-256 checksums, a Sigstore bundle for the checksum file, a per-archive SBOM, and SLSA build provenance. Check each release's SBOM for its format; the current release pipeline produces CycloneDX.
 
 ### Go toolchain
 
-Go 1.26.9 or newer is required when installing from source:
+The current `main` branch requires Go 1.26.9 or newer. A release tag's `go.mod` specifies its own minimum:
 
 ```bash
 go install github.com/calbebop/batesian/cmd/batesian@latest
@@ -167,11 +167,11 @@ In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment refe
 
 A finding is marked `confirmed` only when the rule observes exploit evidence. An `indicator` identifies a risky condition without claiming successful exploitation.
 
-`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. On `main`, SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
+`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 
 ## CI integration
 
-The following workflow uses unreleased `main` coverage metadata to upload A2A findings and fail when selected rules do not complete:
+The following workflow uses current `main` coverage metadata to upload A2A findings and fail when selected rules do not complete:
 
 ```yaml
 name: Batesian
@@ -211,7 +211,7 @@ jobs:
           ' results.sarif
 ```
 
-Replace `@main` with a reviewed commit SHA in real CI, then move to a release tag when the coverage metadata ships. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
+Pin a reviewed commit or release tag instead of `@main` in real CI. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
 
 ## Configuration and rule packs
 

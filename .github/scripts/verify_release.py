@@ -72,7 +72,7 @@ def check_archive(path, windows):
     else:
         with tarfile.open(path, "r:gz") as archive:
             names = {Path(name).name for name in archive.getnames()}
-    required = {"README.md", "LICENSE", "CONTRIBUTING.md"}
+    required = {"README.md", "CHANGELOG.md", "LICENSE", "CONTRIBUTING.md"}
     required.add("batesian.exe" if windows else "batesian")
     if not required <= names:
         raise ValueError(f"{path.name} is missing archive entries: {required - names}")

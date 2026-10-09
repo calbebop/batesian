@@ -46,6 +46,7 @@ archives:
         formats: [zip]
     files:
       - README.md
+      - CHANGELOG.md
       - LICENSE
       - CONTRIBUTING.md
 

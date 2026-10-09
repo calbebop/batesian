@@ -32,7 +32,7 @@ class VerifyReleaseTests(unittest.TestCase):
         self.files, self.archives = expected_files(self.version, signed=True)
         for name in self.archives:
             path = self.dist / name
-            entries = ("README.md", "LICENSE", "CONTRIBUTING.md")
+            entries = ("README.md", "CHANGELOG.md", "LICENSE", "CONTRIBUTING.md")
             binary = "batesian.exe" if name.endswith(".zip") else "batesian"
             if name.endswith(".zip"):
                 with zipfile.ZipFile(path, "w") as archive:
@@ -98,6 +98,15 @@ class VerifyReleaseTests(unittest.TestCase):
         with (self.dist / name).open("ab") as output:
             output.write(b"tampered")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            check_dist(self.dist, self.version, signed=True)
+
+    def test_rejects_archive_without_changelog(self):
+        name = next(name for name in self.archives if name.endswith(".zip"))
+        with zipfile.ZipFile(self.dist / name, "w") as archive:
+            for entry in ("README.md", "LICENSE", "CONTRIBUTING.md", "batesian.exe"):
+                archive.writestr(entry, b"test")
+        self.write_checksums()
+        with self.assertRaisesRegex(ValueError, "CHANGELOG.md"):
             check_dist(self.dist, self.version, signed=True)
 
     def test_rejects_missing_draft_asset(self):
