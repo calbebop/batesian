@@ -641,22 +641,25 @@ func TestRunOnEachWire_FindingsSurviveAnUndeterminedWire(t *testing.T) {
 	}
 }
 
-// On a dual-era server one wire establishing something is enough: the other may
-// legitimately not serve the surface.
-func TestRunOnEachWire_OneDeterminedWireIsEnough(t *testing.T) {
+func TestRunOnEachWire_EachServedWireNeedsAVerdict(t *testing.T) {
 	srv, _ := wireServer(t, true, true)
 	defer srv.Close()
 
-	calls := 0
-	_, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
-		func(mcpSession) ([]attack.Finding, bool) {
-			calls++
-			return nil, calls == 1 // legacy determined, modern not
+	for _, missing := range []Era{EraLegacy, EraModern} {
+		t.Run(missing.String(), func(t *testing.T) {
+			calls := 0
+			findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+				func(s mcpSession) ([]attack.Finding, bool) {
+					calls++
+					return nil, s.Era != missing
+				})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), missing.String()) {
+				t.Fatalf("want incomplete %s wire, got findings=%+v err=%v", missing, findings, err)
+			}
+			if calls != 2 {
+				t.Fatalf("both wires should be probed, got %d calls", calls)
+			}
 		})
-	if err != nil {
-		t.Fatalf("one determined wire must be enough, got %v", err)
-	}
-	if calls != 2 {
-		t.Fatalf("both wires should be probed, got %d calls", calls)
 	}
 }

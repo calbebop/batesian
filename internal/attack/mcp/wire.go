@@ -249,12 +249,8 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 // alike, so each is exercised. Findings from the modern wire are labelled; see
 // labelEra.
 //
-// probe reports whether it established anything on that wire, which is separate
-// from whether it found something: a probe whose request failed in transport, or
-// whose answer carried no protocol-level verdict, has tested nothing. When no
-// wire established anything and nothing was found, the result is ErrInconclusive
-// rather than a clean report, because "the scanner could not tell" and "the
-// server is secure" are different claims and the engine records them differently.
+// probe reports whether it established a verdict on that wire. A clean result
+// requires a verdict from every served wire.
 //
 // Findings survive an undetermined wire. A rule that confirmed an open listing
 // and then failed to complete a follow-up probe still found the listing, and the
@@ -266,21 +262,17 @@ func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		return nil, err
 	}
 	var out []attack.Finding
-	anyDetermined := false
+	var undetermined []string
 	for _, s := range sessions {
 		findings, determined := probe(s)
-		if determined {
-			anyDetermined = true
+		if !determined {
+			undetermined = append(undetermined, fmt.Sprintf("%s (%s)", s.Era, s.Endpoint))
 		}
 		out = append(out, labelEra(s, findings)...)
 	}
-	if len(out) == 0 && !anyDetermined {
-		// The handshake succeeded on at least one wire, so this is not a
-		// reachability failure. Every probe either failed in transport or answered
-		// without a protocol-level verdict.
-		return nil, fmt.Errorf("%w: the MCP handshake succeeded on %d wire(s) at %s but no probe "+
-			"returned a protocol-level verdict, so the surface was never actually assessed",
-			attack.ErrInconclusive, len(sessions), baseURL)
+	if len(out) == 0 && len(undetermined) > 0 {
+		return nil, fmt.Errorf("%w: the MCP handshake succeeded at %s, but no protocol-level verdict "+
+			"from %s wire(s)", attack.ErrInconclusive, baseURL, strings.Join(undetermined, ", "))
 	}
 	return out, nil
 }

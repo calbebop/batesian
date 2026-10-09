@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -253,8 +254,13 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// leak the list. Enumeration is the stronger failure because it needs no
 	// prior knowledge of the task id at all.
 	if tasksSupportsList(sessA.RawInit) {
-		if ids, ok := e.listTasks(ctx, client, sessB, princB); ok && containsTaskID(ids, taskID) {
+		ids, verdict := e.listTasks(ctx, client, sessB, princB)
+		if containsTaskID(ids, taskID) {
 			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), true, auth))
+		}
+		if verdict == probeInconclusive && len(findings) == 0 {
+			return nil, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
+				attack.ErrInconclusive, princB.name, sessB.Endpoint)
 		}
 	}
 
@@ -364,39 +370,51 @@ func tasksSupportsList(rawInit []byte) bool {
 	return ok
 }
 
-// listTasks enumerates the tasks visible to the given principal, returning the
-// task ids from the first page. ok is false when the server refuses the call.
-func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal) ([]string, bool) {
+// listTasks returns the first page's task IDs and whether the read was judged.
+func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal) ([]string, probeVerdict) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      6,
 		"method":  "tasks/list",
 		"params":  map[string]interface{}{},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return nil, false
+	if resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
+		return nil, probeInconclusive
 	}
-	var body struct {
-		Result *struct {
-			Tasks []struct {
-				TaskID string `json:"taskId"`
-			} `json:"tasks"`
-		} `json:"result"`
-		Error map[string]interface{} `json:"error"`
+	verdict, body := classifyProbe(resp, err, 6)
+	if verdict != probeAnswered {
+		return nil, verdict
 	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return nil, false
+	if _, hasError := body["error"]; hasError {
+		return nil, probeRejected
 	}
-	if body.Error != nil || body.Result == nil {
-		return nil, false
+	result, ok := body["result"].(map[string]interface{})
+	if !ok {
+		return nil, probeInconclusive
 	}
-	ids := make([]string, 0, len(body.Result.Tasks))
-	for _, t := range body.Result.Tasks {
-		if t.TaskID != "" {
-			ids = append(ids, t.TaskID)
+	tasks, ok := result["tasks"].([]interface{})
+	if !ok {
+		return nil, probeInconclusive
+	}
+	ids := make([]string, 0, len(tasks))
+	for _, item := range tasks {
+		task, ok := item.(map[string]interface{})
+		if !ok {
+			return ids, probeInconclusive
+		}
+		id, ok := task["taskId"].(string)
+		if !ok || id == "" {
+			return ids, probeInconclusive
+		}
+		ids = append(ids, id)
+	}
+	if next, present := result["nextCursor"]; present {
+		cursor, ok := next.(string)
+		if !ok || cursor != "" {
+			return ids, probeInconclusive
 		}
 	}
-	return ids, true
+	return ids, probeAnswered
 }
 
 // containsTaskID reports whether the enumerated list includes the target task.

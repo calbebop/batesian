@@ -57,7 +57,7 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 
 	var findings []attack.Finding
 	capabilityKnown := false
-	var lastReason string
+	var incomplete []string
 
 	for _, sessA := range sessions {
 		if !sessA.ServerSupports("tools") {
@@ -71,10 +71,11 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 
 		fs, reason, determined := e.probeSession(ctx, client, sessA, princA, princB, vars.RandID, opts.MCPScopeTools)
 		findings = append(findings, labelEra(sessA, fs)...)
-		if determined {
-			lastReason = ""
-		} else if reason != "" {
-			lastReason = reason
+		if !determined {
+			if reason == "" {
+				reason = "probe returned no verdict"
+			}
+			incomplete = append(incomplete, fmt.Sprintf("%s wire at %s: %s", sessA.Era, sessA.Endpoint, reason))
 		}
 	}
 
@@ -82,8 +83,8 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 		return nil, fmt.Errorf("%w: no served wire advertises the tools capability at %s",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
-	if len(findings) == 0 && lastReason != "" {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, lastReason)
+	if len(findings) == 0 && len(incomplete) > 0 {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 	}
 	return findings, nil
 }

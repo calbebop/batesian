@@ -41,6 +41,8 @@ type scopeServer struct {
 	enforceWriteScope       bool
 	extraTool               bool
 	modernOnly              bool
+	dual                    bool
+	modernLimitedListStatus int
 	headerParam             bool
 	headerMismatchStatus    int
 	headerMismatchToken     string
@@ -197,8 +199,9 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			}, status)
 		}
 
-		if s.modernOnly {
-			if req.Method == "initialize" {
+		modern := s.modernOnly || (s.dual && r.Header.Get("MCP-Protocol-Version") == "2026-07-28")
+		if modern {
+			if s.modernOnly && req.Method == "initialize" {
 				rpcErr(-32601, "Method not found", http.StatusOK)
 				return
 			}
@@ -313,7 +316,7 @@ func (s *scopeServer) handler() http.HandlerFunc {
 
 		switch req.Method {
 		case "server/discover":
-			if !s.modernOnly {
+			if !modern {
 				rpcErr(-32601, "Method not found", http.StatusOK)
 				return
 			}
@@ -327,6 +330,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				},
 			}, http.StatusOK)
 		case "tools/list":
+			if modern && token == "tok-lim-b" && s.modernLimitedListStatus != 0 {
+				w.WriteHeader(s.modernLimitedListStatus)
+				return
+			}
 			if token == "tok-lim-b" && s.limitedListError != "" {
 				rpcErr(-32001, s.limitedListError, http.StatusOK)
 				return
@@ -761,6 +768,19 @@ func TestScope_ModernOnly(t *testing.T) {
 				t.Errorf("expected modern wire evidence, got: %q", findings[0].Evidence)
 			}
 		})
+	}
+}
+
+func TestScope_DualWireReadFailureIsInconclusive(t *testing.T) {
+	s := &scopeServer{dual: true, auth: true, enforceWriteScope: true,
+		modernLimitedListStatus: http.StatusServiceUnavailable}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "modern wire") {
+		t.Fatalf("want incomplete modern comparison, got findings=%+v err=%v", findings, err)
 	}
 }
 
