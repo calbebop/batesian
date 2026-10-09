@@ -165,7 +165,7 @@ func ctxScopedServer(t *testing.T, cfg ctxScopedConfig) *httptest.Server {
 			}
 			if method == "tasks/list" {
 				mu.Lock()
-				var mine []interface{}
+				mine := []interface{}{}
 				for tid, o := range owner {
 					if o == who {
 						mine = append(mine, map[string]interface{}{"taskId": tid, "status": "working"})

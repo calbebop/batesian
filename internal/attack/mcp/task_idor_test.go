@@ -165,7 +165,7 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
-			if !exists || ((mode == "secure" || mode == "list-only") && own != sid) {
+			if !exists || ((mode == "secure" || mode == "list-only" || mode == "list-failed" || mode == "list-rpc-failed" || mode == "list-denied" || mode == "list-incomplete" || mode == "list-malformed") && own != sid) {
 				rpcErr(-32602, "Task not found")
 				return
 			}
@@ -195,12 +195,33 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			})
 
 		case "tasks/list":
+			if mode == "list-failed" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "list-rpc-failed" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				rpcErr(-32603, "server overloaded")
+				return
+			}
+			if mode == "list-denied" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if mode == "list-incomplete" {
+				result(map[string]interface{}{"tasks": []interface{}{}, "nextCursor": "next-page"})
+				return
+			}
+			if mode == "list-malformed" {
+				result(map[string]interface{}{"nextCursor": ""})
+				return
+			}
 			if mode == "create-open" && !authed {
 				rpcErr(-32001, "Unauthorized")
 				return
 			}
 			mu.Lock()
-			var listed []interface{}
+			listed := []interface{}{}
 			for tid, own := range owner {
 				// A correctly-scoped server returns only the caller's own tasks.
 				if (mode == "secure" || mode == "metadata-only") && own != sid {
@@ -232,6 +253,37 @@ func runTaskIDOR(t *testing.T, srv *httptest.Server) []attack.Finding {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	return findings
+}
+
+func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		inconclusive bool
+	}{
+		{mode: "list-failed", inconclusive: true},
+		{mode: "list-rpc-failed", inconclusive: true},
+		{mode: "list-incomplete", inconclusive: true},
+		{mode: "list-malformed", inconclusive: true},
+		{mode: "list-denied"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := taskIDORServer(tc.mode)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{
+					TimeoutSeconds: 5,
+					MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"},
+						{Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("want incomplete=%t, got findings=%+v err=%v", tc.inconclusive, findings, err)
+			}
+		})
+	}
 }
 
 // TestTaskIDOR_HiddenAnonInitializeIsNotTested: the anonymous initialize

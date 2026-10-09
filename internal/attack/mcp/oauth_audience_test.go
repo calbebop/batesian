@@ -470,6 +470,29 @@ func TestOAuthAudience_RateLimitedEverythingIsNotTested(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_OneUnjudgedProbeIsInconclusive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		if aud, ok := decodeJWTAud(t, r.Header.Get("Authorization")).(string); ok &&
+			strings.HasPrefix(aud, testExpectedAud) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		challenge401(w)
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).
+		Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "429") {
+		t.Fatalf("want incomplete audience probe, got findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestOAuthAudience_InvalidRequestIsNotAnAuthVerdict(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

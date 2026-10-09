@@ -136,16 +136,13 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 		return nil, attack.ErrInconclusive
 	}
 
-	// Nothing was accepted. Before calling that a clean result, check that the
-	// probes were actually judged. A reply carrying no verdict used to read as
-	// a rejection, so a rate-limited scan reported audience matching sound;
-	// classifyResponse now grades those inconclusive, and "every probe
-	// inconclusive" is a scan that never happened, not a server that enforced
-	// its gate. This runs before the premise check below: that one explains
-	// refusals, and a rate limiter refused nothing.
-	if (endpoint == "" || everyProbeInconclusive(outcomes)) &&
-		(modernEndpoint == "" || everyProbeInconclusive(modernOutcomes)) {
-		return nil, fmt.Errorf("%w: no credential-gated MCP request judged an audience probe (legacy HTTP %s; modern HTTP %s)",
+	// A clean result needs every probe judged on each established wire. An
+	// entirely unjudged legacy attempt does not establish a legacy wire when a
+	// modern wire answered.
+	legacyIncomplete := endpoint != "" && anyProbeInconclusive(outcomes) &&
+		(modernEndpoint == "" || !allProbeInconclusive(outcomes))
+	if legacyIncomplete || (modernEndpoint != "" && anyProbeInconclusive(modernOutcomes)) {
+		return nil, fmt.Errorf("%w: one or more credential-gated MCP requests did not judge an audience probe (legacy HTTP %s; modern HTTP %s)",
 			attack.ErrInconclusive, outcomeStatuses(outcomes), outcomeStatuses(modernOutcomes))
 	}
 
@@ -205,9 +202,7 @@ func runModernAudienceProbes(ctx context.Context, anon *attack.HTTPClient, baseU
 			}
 			outcomes = append(outcomes, outcome)
 		}
-		if !everyProbeInconclusive(outcomes) {
-			return ep, outcomes, nil
-		}
+		return ep, outcomes, nil
 	}
 	return "", nil, nil
 }
@@ -723,18 +718,25 @@ func coalesceOutcomes(rc attack.RuleContext, endpoint, expected string, outcomes
 	}
 }
 
-// everyProbeInconclusive reports whether no probe produced a verdict: nothing
-// was accepted, and nothing was clearly refused either. A clean result claims
-// the audience check is sound, which needs at least one probe the server
-// actually judged; a scan where every probe was rate-limited or otherwise
-// unanswered judged nothing, and is not tested instead.
-func everyProbeInconclusive(outcomes []probeOutcome) bool {
+func anyProbeInconclusive(outcomes []probeOutcome) bool {
+	for _, o := range outcomes {
+		if o.verdict == verdictInconclusive {
+			return true
+		}
+	}
+	return false
+}
+
+func allProbeInconclusive(outcomes []probeOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
 	for _, o := range outcomes {
 		if o.verdict != verdictInconclusive {
 			return false
 		}
 	}
-	return len(outcomes) > 0
+	return true
 }
 
 // outcomeStatuses renders the distinct HTTP statuses the probes received, for
