@@ -12,9 +12,7 @@ import (
 	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
-const (
-	extCardHTTPPath = "/extendedAgentCard"
-)
+const extCardHTTPPath = "/extendedAgentCard"
 
 // ExtCardExecutor checks whether an extended A2A card is disclosed without a
 // valid credential over JSON-RPC or HTTP GET.
@@ -40,70 +38,65 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	unauthClient := attack.NewUnauthHTTPClient(opts, vars)
 
 	invalidToken := "batesian-invalid-" + vars.RandID
-	var findings []attack.Finding
+	var best *attack.Finding
+	record := func(transport, target, token string, resp *attack.Response) bool {
+		finding := e.finding(transport, target, token, resp)
+		if best == nil || token != "" {
+			best = &finding
+		}
+		return token != ""
+	}
 
-	// JSON-RPC transport - the primary path in the current SDK. Both / and
-	// /v1/message:send are tried since the endpoint varies by binding type. One
-	// finding max, preferring the invalid-token (critical) signal.
+	// Prefer a fabricated-token disclosure over an anonymous one.
 	reached := false
 	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
 	for _, ep := range []string{jsonrpcEP, endpoint.AppendPath(vars.BaseURL, "/v1/message:send")} {
-		resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, invalidToken, vars.RandID)
-		if resp != nil && resp.StatusCode != 404 {
-			reached = true
-		}
-		if usable {
-			findings = append(findings, e.finding("JSON-RPC", ep, invalidToken, resp))
-			break
-		}
-		resp, usable = e.probeJSONRPC(ctx, unauthClient, ep, "", vars.RandID)
-		if resp != nil && resp.StatusCode != 404 {
-			reached = true
-		}
-		if usable {
-			findings = append(findings, e.finding("JSON-RPC", ep, "", resp))
-			break
+		for _, version := range []string{"1.0", "0.3.0"} {
+			for _, token := range []string{invalidToken, ""} {
+				resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, token, vars.RandID, version)
+				if resp != nil && resp.StatusCode != 404 {
+					reached = true
+				}
+				if usable && record("JSON-RPC", ep, token, resp) {
+					return []attack.Finding{*best}, nil
+				}
+			}
 		}
 	}
 
-	// HTTP+JSON transport uses GET /extendedAgentCard.
 	restBases := resolveHTTPJSONBases(ctx, unauthClient, vars.BaseURL)
 	if len(restBases) == 0 {
 		restBases = []string{vars.BaseURL}
 	}
 	for _, base := range restBases {
-		extURL := endpoint.AppendPath(base, extCardHTTPPath)
-		respA, errA := unauthClient.GET(ctx, extURL, map[string]string{
-			"A2A-Version": "1.0", "Authorization": "Bearer " + invalidToken,
-		})
-		if errA == nil && respA.StatusCode != 404 {
-			reached = true
-		}
-		if errA == nil && extCardDisclosed(respA) {
-			findings = append(findings, e.finding("HTTP GET", extURL, invalidToken, respA))
-			break
-		}
-		respB, errB := unauthClient.GET(ctx, extURL, map[string]string{"A2A-Version": "1.0"})
-		if errB == nil && extCardDisclosed(respB) {
-			findings = append(findings, e.finding("HTTP GET", extURL, "", respB))
-			break
-		}
-		if errB == nil && respB.StatusCode != 404 {
-			reached = true
+		for _, route := range []struct{ path, version string }{
+			{extCardHTTPPath, "1.0"},
+			{"/v1/card", "0.3.0"},
+		} {
+			extURL := endpoint.AppendPath(base, route.path)
+			for _, token := range []string{invalidToken, ""} {
+				headers := restVersionHeaders(route.version, nil)
+				if token != "" {
+					headers["Authorization"] = "Bearer " + token
+				}
+				resp, err := unauthClient.GET(ctx, extURL, headers)
+				if err == nil && resp.StatusCode != 404 {
+					reached = true
+				}
+				if err == nil && extCardDisclosed(resp) && record("HTTP GET", extURL, token, resp) {
+					return []attack.Finding{*best}, nil
+				}
+			}
 		}
 	}
 
-	// No disclosure found. If nothing was even reachable, the rule could not be
-	// exercised against a testable endpoint.
-	if len(findings) == 0 {
-		if !reached {
-			return nil, attack.ErrInconclusive
-		}
-		// reached only records a response that was not a 404. Confirm the target
-		// is an A2A agent before reporting no disclosure as a clean result.
-		return nil, notTestableGiven(ctx, unauthClient, vars.BaseURL, endpointOK)
+	if best != nil {
+		return []attack.Finding{*best}, nil
 	}
-	return findings, nil
+	if !reached {
+		return nil, attack.ErrInconclusive
+	}
+	return nil, notTestableGiven(ctx, unauthClient, vars.BaseURL, endpointOK)
 }
 
 // finding builds an extended-card disclosure finding. A non-empty token means a
@@ -143,16 +136,20 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 }
 
 // probeJSONRPC accepts only a matching reply containing a complete Agent Card.
-func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPClient, endpoint, token, randID string) (*attack.Response, bool) {
+func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPClient, endpoint, token, randID, version string) (*attack.Response, bool) {
 	requestID := "batesian-" + randID
-	headers := map[string]string{"A2A-Version": "1.0"}
+	headers := restVersionHeaders(version, nil)
+	method := "GetExtendedAgentCard"
+	if version != "1.0" {
+		method = "agent/getAuthenticatedExtendedCard"
+	}
 	if token != "" {
 		headers["Authorization"] = "Bearer " + token
 	}
 	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
-		"method":  "GetExtendedAgentCard",
+		"method":  method,
 		"params":  map[string]interface{}{},
 	})
 	if err != nil {
