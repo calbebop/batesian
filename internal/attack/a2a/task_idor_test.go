@@ -144,6 +144,35 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_EmptyTaskResultIsInconclusive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		method, id := decodeRPC(r)
+		switch method {
+		case "SendMessage", "message/send":
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required")
+				return
+			}
+			taskResult(w, id, "task-owner", "ctx-owner")
+		case "GetTask":
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{}})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete task read, got findings=%+v err=%v", findings, err)
+	}
+}
+
 // TestTaskIDOR_Vulnerable_V03Only verifies the rule still fires against a server
 // that speaks only the v0.3 slash-method binding: it rejects the v1.0 PascalCase
 // methods (SendMessage, GetTask) with a JSON-RPC error over HTTP 200 and accepts

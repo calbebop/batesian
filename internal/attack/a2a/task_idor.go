@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -39,8 +40,12 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	if restErr != nil {
 		return nil, restErr
 	}
-	if tested && jsonErr == attack.ErrInconclusive {
-		return nil, nil
+	if tested && errors.Is(jsonErr, attack.ErrInconclusive) {
+		vars := attack.NewVars(target, opts.OOBListenerURL)
+		card, found := fetchDiscoveryCard(ctx, attack.NewHTTPClient(opts, vars), vars.BaseURL)
+		if found && len(jsonRPCInterfaces(card)) == 0 {
+			return nil, nil
+		}
 	}
 	return nil, jsonErr
 }
@@ -147,6 +152,8 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		method   string
 		location string
 		matched  bool
+		denied   bool
+		unknown  bool
 	}
 	readTask := func(method string, headers map[string]string) readProbe {
 		probe := readProbe{method: method}
@@ -156,20 +163,53 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			"method":  method,
 			"params":  getParams,
 		})
-		if err != nil || resp == nil || !resp.IsAccepted() {
+		if err != nil || resp == nil {
+			probe.unknown = true
 			return probe
 		}
 		probe.response = resp
+		if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
+			probe.denied = true
+			return probe
+		}
+		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
+			if code == -32001 {
+				probe.denied = true
+			} else if code != jsonRPCMethodNotFound {
+				probe.unknown = true
+			}
+			return probe
+		}
+		if !resp.IsAccepted() {
+			probe.unknown = true
+			return probe
+		}
+		var envelope struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(resp.Body, &envelope) == nil && strings.TrimSpace(string(envelope.Result)) == "null" {
+			probe.denied = true
+			return probe
+		}
 		probe.location, probe.matched = taskReadMarkerLocation(resp.Body, taskID, marker)
+		if probe.location == "" {
+			if !probe.matched && redactedTaskStub(envelope.Result, taskID, marker) {
+				probe.denied = true
+			} else {
+				probe.unknown = true
+			}
+		}
 		return probe
 	}
 	read := readTask("GetTask", map[string]string{"A2A-Version": "1.0"})
-	readMatched := read.matched
 	if read.location == "" {
 		legacy := readTask("tasks/get", nil)
-		readMatched = readMatched || legacy.matched
 		if legacy.location != "" {
 			read = legacy
+		} else {
+			read.matched = read.matched || legacy.matched
+			read.denied = read.denied || legacy.denied
+			read.unknown = read.unknown || legacy.unknown
 		}
 	}
 	if ownerProtected && read.location != "" {
@@ -193,11 +233,29 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if len(findings) == 0 && list.unverified {
 		return nil, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
 	}
-	if len(findings) == 0 && ownerProtected && readMatched {
-		return nil, fmt.Errorf("%w: the anonymous task read returned task %s without its owner probe content",
+	if len(findings) == 0 && ownerProtected && (read.unknown || !read.denied) {
+		return nil, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
 			attack.ErrInconclusive, taskID)
 	}
 	return findings, nil
+}
+
+func redactedTaskStub(result json.RawMessage, taskID, marker string) bool {
+	var task struct {
+		ID        *string           `json:"id"`
+		TaskID    *string           `json:"taskId"`
+		ContextID *string           `json:"contextId"`
+		History   []json.RawMessage `json:"history"`
+		Artifacts []json.RawMessage `json:"artifacts"`
+	}
+	if json.Unmarshal(result, &task) != nil || (task.ID == nil && task.TaskID == nil) ||
+		strings.Contains(string(result), taskID) || strings.Contains(string(result), marker) {
+		return false
+	}
+	return (task.ID == nil || *task.ID == "") &&
+		(task.TaskID == nil || *task.TaskID == "") &&
+		(task.ContextID == nil || *task.ContextID == "") &&
+		len(task.History) == 0 && len(task.Artifacts) == 0
 }
 
 // taskReadMarkerLocation checks content within the requested Task, not response metadata.

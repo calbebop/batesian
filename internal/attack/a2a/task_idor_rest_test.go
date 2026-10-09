@@ -58,6 +58,10 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					rpcErr(w, id, -32600, "authentication required")
 				}
 			case "GetTask", "tasks/get":
+				if mode == "dual-rpc-read-error" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
 				rpcErr(w, id, -32001, "Task not found")
 			default:
 				rpcErr(w, id, -32601, "Method not found")
@@ -129,7 +133,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			}
 			if !hasOwnerAuth(r) {
 				switch mode {
-				case "scoped":
+				case "scoped", "dual-rpc-read-error":
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				case "redacted":
@@ -178,14 +182,15 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 		{"REST-only leak", "leak", false, false, true, false},
 		{"legacy REST-only leak", "leak", true, false, true, false},
 		{"legacy REST redacted", "redacted", true, false, false, true},
-		{"legacy REST unrelated", "unrelated", true, false, false, false},
+		{"legacy REST unrelated", "unrelated", true, false, false, true},
 		{"dual binding REST leak", "leak", false, true, true, false},
+		{"dual binding RPC read failed", "dual-rpc-read-error", false, true, false, true},
 		{"off-origin card pinned", "off-origin", false, false, true, false},
 		{"task ID escaped", "escaped-id", false, false, true, false},
 		{"anonymous read denied", "scoped", false, false, false, false},
 		{"open creation", "open", false, false, false, false},
 		{"redacted task", "redacted", false, false, false, true},
-		{"unrelated task", "unrelated", false, false, false, false},
+		{"unrelated task", "unrelated", false, false, false, true},
 		{"owner cannot see marker", "owner-blind", false, false, false, true},
 		{"anonymous read failed", "failed-read", false, false, false, true},
 		{"anonymous read is not JSON", "non-json", false, false, false, true},
