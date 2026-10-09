@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // TokenReplayExecutor tests forged and unsigned bearer tokens on credential-gated
@@ -43,7 +42,11 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	// only RFC 9728 protected-resource-metadata (its authorization server may be a
 	// separate host), and OIDC deployments expose openid-configuration. Skip when
 	// none is present.
-	if !oauthMetadataPresent(ctx, client, vars.BaseURL) {
+	metadataPresent, err := oauthMetadataPresent(ctx, client, vars.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if !metadataPresent {
 		return nil, oauthNotApplicable(ctx, client, vars.BaseURL)
 	}
 
@@ -307,17 +310,19 @@ var oauthWellKnownPaths = []string{
 // oauthMetadataPresent reports whether the target exposes any recognized OAuth /
 // OIDC discovery document. This is only a gate to avoid forging tokens against
 // servers that plainly do not use OAuth; the document contents are not used.
-func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) bool {
+func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) (bool, error) {
+	var incomplete []string
 	for _, p := range oauthWellKnownPaths {
-		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, p), nil)
-		if err != nil {
+		resp, reason := readOAuthMetadata(ctx, client, baseURL, p)
+		if reason != "" {
+			incomplete = append(incomplete, reason)
 			continue
 		}
-		if resp.IsSuccess() {
-			return true
+		if resp != nil {
+			return true, nil
 		}
 	}
-	return false
+	return false, oauthDiscoveryIncomplete(incomplete)
 }
 
 // forgeHS256JWT creates a signed JWT using a random HMAC-SHA256 secret.
