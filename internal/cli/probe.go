@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/calbebop/batesian/internal/attack"
+	attacka2a "github.com/calbebop/batesian/internal/attack/a2a"
 	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/protocol/a2a"
 	"github.com/calbebop/batesian/internal/protocol/mcp"
@@ -29,7 +31,7 @@ For MCP targets, probe connects using the available protocol wire and enumerates
 all tools, resources, and prompt templates exposed by the server.
 
 Inline checks performed during probe:
-  A2A: extendedAgentCard unauthenticated access (a2a-extcard-unauth-001)
+  A2A: extended Agent Card unauthenticated access (a2a-extcard-unauth-001)
        push notification capability presence (a2a-push-ssrf-001)
   MCP: unauthenticated resources/list access (mcp-resources-unauth-001)
        no-auth session flag for OAuth follow-up (mcp-oauth-dcr-001)`,
@@ -156,25 +158,20 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 	}
 
 	if card.SupportsExtendedCard() {
-		printer.Verbose("Probing extended agent card (unauthenticated)...")
-		extResult, err := client.ProbeExtendedCard(ctx)
-		if err == nil && extResult.IsSuccess() && a2a.IsCompleteAgentCard(extResult.Body) {
+		printer.Verbose("Probing extended Agent Card without valid credentials...")
+		findings, err := attacka2a.NewExtCardExecutor(attack.RuleContext{
+			ID:   "a2a-extcard-unauth-001",
+			Name: "A2A Extended Card Disclosure",
+		}).Execute(ctx, target, attack.Options{
+			TimeoutSeconds: int(timeout.Seconds()),
+			SkipTLS:        skipTLS,
+			Proxy:          proxy,
+		})
+		if err == nil && len(findings) > 0 {
 			result.Flags = append(result.Flags, report.AttackFlag{
-				Severity: "high",
-				RuleID:   "a2a-extcard-unauth-001",
-				Message:  fmt.Sprintf("/extendedAgentCard returned HTTP %d without authentication", extResult.StatusCode),
-			})
-		} else if err == nil {
-			printer.Verbose(fmt.Sprintf("/extendedAgentCard returned HTTP %d (no card disclosed)", extResult.StatusCode))
-		}
-
-		printer.Verbose("Probing extended agent card with invalid token...")
-		extInvalidResult, err := client.ProbeExtendedCardWithInvalidToken(ctx, "batesian-invalid-probe-token")
-		if err == nil && extInvalidResult.IsSuccess() && a2a.IsCompleteAgentCard(extInvalidResult.Body) {
-			result.Flags = append(result.Flags, report.AttackFlag{
-				Severity: "critical",
-				RuleID:   "a2a-extcard-unauth-001",
-				Message:  fmt.Sprintf("/extendedAgentCard returned HTTP %d with a fabricated invalid Bearer token", extInvalidResult.StatusCode),
+				Severity: findings[0].Severity,
+				RuleID:   findings[0].RuleID,
+				Message:  findings[0].Title,
 			})
 		}
 	}

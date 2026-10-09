@@ -169,7 +169,7 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 		endpoint.AppendPath(c.baseURL, WellKnownPath), endpoint.AppendPath(c.baseURL, WellKnownPathLegacy), lastResult.StatusCode)
 }
 
-// ProbeExtendedCard fetches /extendedAgentCard without authentication.
+// ProbeExtendedCard fetches the v1.0 /extendedAgentCard path without authentication.
 func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
 	target := endpoint.AppendPath(c.baseURL, ExtendedCardPath)
 	req, err := c.newRequest(ctx, http.MethodGet, target)
@@ -181,7 +181,7 @@ func (c *Client) ProbeExtendedCard(ctx context.Context) (*ProbeResult, error) {
 	return c.do(req)
 }
 
-// ProbeExtendedCardWithInvalidToken fetches /extendedAgentCard with an invalid token.
+// ProbeExtendedCardWithInvalidToken fetches the v1.0 path with an invalid token.
 func (c *Client) ProbeExtendedCardWithInvalidToken(ctx context.Context, token string) (*ProbeResult, error) {
 	target := endpoint.AppendPath(c.baseURL, ExtendedCardPath)
 	req, err := c.newRequest(ctx, http.MethodGet, target)
