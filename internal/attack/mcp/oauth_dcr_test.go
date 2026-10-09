@@ -173,6 +173,12 @@ func TestOAuthDCR_VulnerableScopeEscalation(t *testing.T) {
 	if f.RuleID != oauthRC().ID {
 		t.Errorf("RuleID = %q, want %q", f.RuleID, oauthRC().ID)
 	}
+	if strings.Contains(f.Evidence, "secret-") || strings.Contains(f.Evidence, "client_secret") {
+		t.Fatalf("registration credential in evidence: %s", f.Evidence)
+	}
+	if !strings.Contains(f.Evidence, "Registration response omitted") || !strings.Contains(f.Evidence, "Granted:") {
+		t.Fatalf("registration evidence lost its scope verdict: %s", f.Evidence)
+	}
 }
 
 // TestOAuthDCR_ScopeRestrictingServer: open registration is allowed (spec-OK)

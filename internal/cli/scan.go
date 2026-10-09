@@ -206,9 +206,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	for _, principal := range principals {
 		redactor.addSecret(principal.Token)
 		for name, value := range principal.Headers {
-			if credentialHeader(name) {
-				redactor.addSecret(value)
-			}
+			redactor.addCredentialHeader(name, value)
 		}
 	}
 
