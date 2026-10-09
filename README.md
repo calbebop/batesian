@@ -126,6 +126,8 @@ batesian scan --target https://mcp.example.com \
 
 ### Authorization code with PKCE
 
+Batesian prints the authorization URL to stderr for manual sign-in. It contains a one-time state value, so keep it private and avoid saving terminal logs during sign-in.
+
 ```bash
 batesian scan --target https://mcp.example.com \
   --auth-url https://auth.example.com/authorize \

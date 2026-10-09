@@ -222,6 +222,62 @@ func TestCredentialHeader(t *testing.T) {
 	}
 }
 
+func TestOutputRedactorIndependentURLs(t *testing.T) {
+	const external = "https://alice:password@other.example/path?access_token=issued-secret"
+	const resource = "resource://bob:pass@storage.example/item?token=resource-secret"
+	r := newOutputRedactor("https://target.example/mcp")
+	safe := r.results([]engine.RunResult{{
+		Rule: &rules.Rule{ID: "mcp-test-001"},
+		Findings: []attack.Finding{{
+			RuleID:   "mcp-test-001",
+			Title:    "Discovered " + external,
+			Evidence: "GET (" + external + "), resource " + resource,
+		}},
+	}})
+	probe := &report.MCPProbeResult{Resources: []report.MCPResourceSummary{{URI: resource}}}
+	r.mcpProbeResult(probe)
+	card, err := json.Marshal(r.value(map[string]any{"provider": "See " + external}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table, sarif bytes.Buffer
+	report.New(&table, true).PrintScanSummary(safe)
+	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
+		t.Fatal(err)
+	}
+	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), safe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"table": table.String(), "sarif": sarif.String(), "json": string(jsonBody),
+		"probe": probe.Resources[0].URI, "card": string(card),
+	} {
+		for _, secret := range []string{"alice", "password", "issued-secret", "bob", "pass@", "resource-secret"} {
+			if strings.Contains(body, secret) {
+				t.Errorf("%s disclosed %q: %s", name, secret, body)
+			}
+		}
+	}
+	if got := r.text("GET (" + external + ")"); got != "GET (https://other.example/path?REDACTED)" {
+		t.Errorf("embedded URL = %q", got)
+	}
+}
+
+func TestOutputRedactorPrincipalHeaderComponents(t *testing.T) {
+	r := newOutputRedactor("https://target.example/mcp")
+	r.addCredentialHeader("Authorization", "Bearer\tbearer-secret-value")
+	r.addCredentialHeader("Cookie", "session=cookie-secret-value; mode=private")
+	r.addCredentialHeader("X-Tenant-Id", "visible-tenant")
+	got := r.text("bearer-secret-value cookie-secret-value visible-tenant")
+	if strings.Contains(got, "bearer-secret-value") || strings.Contains(got, "cookie-secret-value") {
+		t.Fatalf("credential component disclosed: %q", got)
+	}
+	if !strings.Contains(got, "visible-tenant") {
+		t.Fatalf("non-credential header was redacted: %q", got)
+	}
+}
+
 func TestOutputRedactorOverlappingSecrets(t *testing.T) {
 	r := newOutputRedactor("https://target.example/short-long-secret")
 	r.addSecret("short")

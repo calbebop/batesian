@@ -2,6 +2,7 @@ package cli
 
 import (
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -22,6 +23,8 @@ type redactedURL struct {
 	userinfo string
 	query    string
 }
+
+var embeddedURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s<>"']+`)
 
 func newOutputRedactor(target string) outputRedactor {
 	r := outputRedactor{display: attackpkg.RedactURL(target)}
@@ -81,6 +84,31 @@ func credentialHeader(name string) bool {
 	return false
 }
 
+func (r *outputRedactor) addCredentialHeader(name, value string) {
+	if !credentialHeader(name) {
+		return
+	}
+	r.addSecret(value)
+	if strings.EqualFold(name, "cookie") {
+		for _, part := range strings.Split(value, ";") {
+			if _, cookieValue, ok := strings.Cut(part, "="); ok {
+				cookieValue = strings.Trim(strings.TrimSpace(cookieValue), `"`)
+				if len(cookieValue) >= 4 {
+					r.addSecret(cookieValue)
+				}
+			}
+		}
+		return
+	}
+	parts := strings.Fields(value)
+	if len(parts) == 2 && len(parts[1]) >= 4 {
+		switch strings.ToLower(parts[0]) {
+		case "bearer", "basic", "token", "dpop":
+			r.addSecret(parts[1])
+		}
+	}
+}
+
 func (r outputRedactor) url(raw string) string {
 	if raw == "" {
 		return ""
@@ -92,6 +120,10 @@ func (r outputRedactor) text(s string) string {
 	for _, entry := range r.urls {
 		s = strings.ReplaceAll(s, entry.raw, entry.display)
 	}
+	s = embeddedURL.ReplaceAllStringFunc(s, func(raw string) string {
+		uri := strings.TrimRight(raw, ".,;)]}`")
+		return attackpkg.RedactURL(uri) + raw[len(uri):]
+	})
 	for _, entry := range r.urls {
 		if entry.userinfo != "" {
 			s = strings.ReplaceAll(s, entry.userinfo, "")
@@ -227,7 +259,7 @@ func (r outputRedactor) mcpProbeResult(p *report.MCPProbeResult) {
 		p.Tools[i].Description = r.text(p.Tools[i].Description)
 	}
 	for i := range p.Resources {
-		p.Resources[i].URI = r.text(p.Resources[i].URI)
+		p.Resources[i].URI = r.url(p.Resources[i].URI)
 		p.Resources[i].MimeType = r.text(p.Resources[i].MimeType)
 	}
 	for i := range p.Prompts {

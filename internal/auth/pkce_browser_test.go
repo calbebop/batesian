@@ -155,8 +155,12 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	port := pickFreePort(t)
 
 	urlCh := make(chan string, 1)
+	warningCh := make(chan string, 1)
 	logger := func(format string, args ...interface{}) {
 		msg := fmt.Sprintf(format, args...)
+		if strings.Contains(msg, "one-time state value") {
+			warningCh <- msg
+		}
 		if strings.Contains(msg, "https://") && strings.Contains(msg, "code_challenge") {
 			urlCh <- strings.TrimSpace(msg)
 		}
@@ -186,6 +190,11 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	case authURL = <-urlCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("flow did not print authorization URL within 5s")
+	}
+	select {
+	case <-warningCh:
+	default:
+		t.Fatal("flow printed the authorization URL without a privacy warning")
 	}
 
 	parsed, err := url.Parse(authURL)

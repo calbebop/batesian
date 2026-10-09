@@ -246,6 +246,7 @@ func waitForCallback(
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
+	logger("The URL contains a one-time state value; keep it private.")
 	logger("Open this URL to authorize Batesian:")
 	logger("  %s", authURL)
 	if openBrowser {

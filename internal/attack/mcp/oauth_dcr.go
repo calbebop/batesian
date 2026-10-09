@@ -131,9 +131,9 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 			"actually issued depends on the grant/consent step, so manually verify whether the authorization "+
 			"server issues a token with these scopes to the anonymous client.",
 			registrationEndpoint, granted),
-		Evidence: fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\n%s\n%s",
+		Evidence: fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\nRegistration response omitted (may contain credentials)\n%s",
 			escalatedScope, grantedScope, granted, escalatedResp.StatusCode, registrationEndpoint,
-			snippetMCP(escalatedResp.Body), cleanup.evidenceLine()),
+			cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
 	}}, nil
