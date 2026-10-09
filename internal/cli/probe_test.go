@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -255,13 +256,13 @@ const validProbeA2ACard = `{"name":"Agent","description":"Test agent","version":
 
 func TestProbeA2A_TokenDoesNotTurnExtendedCardCheckIntoAuthenticatedRequest(t *testing.T) {
 	var mu sync.Mutex
-	var cardAuth string
+	var cardAuth []string
 	var extAuth []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case a2a.WellKnownPath:
 			mu.Lock()
-			cardAuth = r.Header.Get("Authorization")
+			cardAuth = append(cardAuth, r.Header.Get("Authorization"))
 			mu.Unlock()
 			if r.Header.Get("Authorization") != "Bearer valid" {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -288,10 +289,10 @@ func TestProbeA2A_TokenDoesNotTurnExtendedCardCheckIntoAuthenticatedRequest(t *t
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if cardAuth != "Bearer valid" {
+	if !slices.Contains(cardAuth, "Bearer valid") {
 		t.Errorf("card fetch Authorization = %q", cardAuth)
 	}
-	if len(extAuth) != 2 || extAuth[0] != "" || extAuth[1] != "Bearer batesian-invalid-probe-token" {
+	if len(extAuth) != 2 || !strings.HasPrefix(extAuth[0], "Bearer batesian-invalid-") || extAuth[1] != "" {
 		t.Errorf("extended card Authorization headers = %q", extAuth)
 	}
 }
@@ -350,6 +351,112 @@ func TestProbeA2A_GenericExtendedCardResponseNotFlagged(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProbeA2A_V03ExtendedCardBindings(t *testing.T) {
+	for _, tc := range []struct {
+		binding string
+		mode    string
+		want    string
+	}{
+		{"JSONRPC", "invalid", "CRITICAL"},
+		{"JSONRPC", "anonymous", "HIGH"},
+		{"JSONRPC", "protected", ""},
+		{"JSONRPC", "partial", ""},
+		{"HTTP+JSON", "invalid", "CRITICAL"},
+		{"HTTP+JSON", "anonymous", "HIGH"},
+		{"HTTP+JSON", "protected", ""},
+		{"HTTP+JSON", "partial", ""},
+	} {
+		t.Run(tc.binding+"/"+tc.mode, func(t *testing.T) {
+			var origin string
+			card := func() string {
+				service := origin + "/rpc"
+				if tc.binding == "HTTP+JSON" {
+					service = origin + "/api"
+				}
+				return fmt.Sprintf(`{"name":"Agent","description":"Test agent","version":"1","url":%q,"protocolVersion":"0.3.0","preferredTransport":%q,"supportsAuthenticatedExtendedCard":true,"capabilities":{},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[{"id":"test","name":"Test","description":"Test skill","tags":["test"]}]}`, service, tc.binding)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case a2a.WellKnownPathLegacy:
+					_, _ = io.WriteString(w, card())
+				case "/rpc":
+					if r.Method != http.MethodPost {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					var request struct {
+						ID     string `json:"id"`
+						Method string `json:"method"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Errorf("decode request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if request.Method == "tasks/get" {
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%q,"error":{"code":-32001,"message":"Task not found"}}`, request.ID)
+						return
+					}
+					if request.Method != "agent/getAuthenticatedExtendedCard" {
+						http.NotFound(w, r)
+						return
+					}
+					if !v03CardProbeAllowed(w, r, tc.mode) {
+						return
+					}
+					body := card()
+					if tc.mode == "partial" {
+						body = `{"name":"Partial"}`
+					}
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%q,"result":%s}`, request.ID, body)
+				case "/api/v1/card":
+					if r.Method != http.MethodGet {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					if !v03CardProbeAllowed(w, r, tc.mode) {
+						return
+					}
+					if tc.mode == "partial" {
+						_, _ = io.WriteString(w, `{"name":"Partial"}`)
+						return
+					}
+					_, _ = io.WriteString(w, card())
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			origin = server.URL
+
+			var out bytes.Buffer
+			if err := probeA2A(t.Context(), origin, "", time.Second, false, "", report.FormatTable, report.New(&out, false)); err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			if tc.want == "" {
+				if strings.Contains(got, "a2a-extcard-unauth-001") {
+					t.Fatalf("false positive:\n%s", got)
+				}
+				return
+			}
+			if strings.Count(got, "a2a-extcard-unauth-001") != 1 || !strings.Contains(got, tc.want) {
+				t.Fatalf("want one %s finding:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+func v03CardProbeAllowed(w http.ResponseWriter, r *http.Request, mode string) bool {
+	if r.Header.Get("A2A-Version") != "" || mode == "protected" ||
+		mode == "anonymous" && r.Header.Get("Authorization") != "" ||
+		mode == "invalid" && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer batesian-invalid-") {
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
