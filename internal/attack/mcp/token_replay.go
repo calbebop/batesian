@@ -129,23 +129,27 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	gates := map[string]gateProbe{}
 	notTestedReason := ""
 	anyEndpoint := false
-	judged := false
+	legacyEstablished := false
+	legacyJudged := make([]bool, len(probes))
+	modernReady := false
+	modernJudged := make([]bool, len(probes))
 	var findings []attack.Finding
-	for _, p := range probes {
+	for i, p := range probes {
 		headers := map[string]string{
 			"Authorization": "Bearer " + p.token,
 			"Content-Type":  "application/json",
 		}
 		for _, ep := range endpointCandidates(vars.BaseURL) {
 			resp, err := client.POST(ctx, ep, headers, json.RawMessage(mcpInitBody))
-			if err != nil {
-				continue // Network error is not a finding.
+			if err != nil || resp == nil {
+				continue
 			}
 			if !endpointAbsent(resp) {
 				anyEndpoint = true
 			}
 			if authRefusal(resp) {
-				judged = true
+				legacyEstablished = true
+				legacyJudged[i] = true
 			}
 			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
 			// carries a JSON-RPC error is a protocol-layer rejection of the
@@ -153,6 +157,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			if !resp.IsAccepted() {
 				continue
 			}
+			legacyEstablished = true
 
 			// The probe was accepted at initialize. Before that says anything
 			// about tokens, establish where this server actually examines them
@@ -165,7 +170,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			}
 			switch gp.gate {
 			case gateOnInit:
-				judged = true
+				legacyJudged[i] = true
 				findings = append(findings, attack.Finding{
 					RuleID:      e.rule.ID,
 					RuleName:    e.rule.Name,
@@ -184,9 +189,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 				// Initialize does not authenticate; the advertised listing does.
 				// The acceptance above proves nothing, so judge the token there.
 				mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, p.token)
-				if verdict != accessUndetermined {
-					judged = true
-				}
+				legacyJudged[i] = verdict != accessUndetermined
 				if verdict == accessGranted {
 					findings = append(findings, attack.Finding{
 						RuleID:      e.rule.ID,
@@ -209,6 +212,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			default:
 				// gateNowhere / gateUnknown: nothing on this endpoint can be
 				// said about token validation. Record why, once.
+				legacyJudged[i] = false
 				if notTestedReason == "" {
 					notTestedReason = gp.reason
 				}
@@ -221,12 +225,11 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		if !gate.ready {
 			continue
 		}
-		modernJudged := false
-		for _, p := range probes {
+		modernReady = true
+		for i, p := range probes {
 			resp, verdict := probeModernBearer(ctx, anon, ep, gate.method, p.token)
 			if verdict != accessUndetermined {
-				judged = true
-				modernJudged = true
+				modernJudged[i] = true
 			}
 			if verdict != accessGranted {
 				continue
@@ -244,23 +247,40 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 				TargetURL:   ep,
 			})
 		}
-		if modernJudged {
-			break
-		}
+		break
 	}
 
-	if len(findings) == 0 && !judged && notTestedReason != "" {
+	if len(findings) > 0 {
+		return findings, nil
+	}
+	var missing []string
+	for i, p := range probes {
+		if legacyEstablished && !legacyJudged[i] {
+			missing = append(missing, "legacy "+p.name)
+		}
+		if modernReady && !modernJudged[i] {
+			missing = append(missing, "modern "+p.name)
+		}
+	}
+	if len(missing) > 0 {
+		reason := strings.Join(missing, ", ")
+		if notTestedReason != "" {
+			reason += "; " + notTestedReason
+		}
+		return nil, fmt.Errorf("%w: no token verdict for %s", attack.ErrInconclusive, reason)
+	}
+	if !legacyEstablished && !modernReady && notTestedReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, notTestedReason)
 	}
-	if len(findings) == 0 && !anyEndpoint && !judged {
+	if !anyEndpoint && !modernReady {
 		return nil, fmt.Errorf("%w: %s publishes OAuth metadata but no MCP endpoint answered at "+
 			"any candidate path, so no forged token was ever examined",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
-	if len(findings) == 0 && !judged {
+	if !legacyEstablished && !modernReady {
 		return nil, fmt.Errorf("%w: no credential-gated MCP request judged a forged token", attack.ErrInconclusive)
 	}
-	return findings, nil
+	return nil, nil
 }
 
 // evidenceSnippet renders a method-probe response for a finding's evidence,
