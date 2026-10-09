@@ -130,7 +130,8 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 			return nil, fmt.Errorf("%w: anonymous REST task %s omitted its owner probe content",
 				attack.ErrInconclusive, taskID), true
 		}
-		return nil, nil, true
+		return nil, fmt.Errorf("%w: anonymous REST task read returned no matching task %s",
+			attack.ErrInconclusive, taskID), true
 	}
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,

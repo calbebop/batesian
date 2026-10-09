@@ -77,6 +77,22 @@ func tenantServer(mode string) *httptest.Server {
 				rpcErr(w, id, -32001, "Task not found")
 				return
 			}
+			if mode == "anon-read-error" && tenant == "" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "one-read-error" {
+				if tenant == "" {
+					rpcErr(w, id, -32600, "authentication required")
+				} else if tenant == "B" && own == "A" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+				} else if tenant != own {
+					rpcErr(w, id, -32001, "task not found")
+				} else {
+					taskWithHistory(w, id, taskID, "ctx-"+own, text)
+				}
+				return
+			}
 			switch mode {
 			case "open":
 				taskWithHistory(w, id, taskID, "ctx-"+own, text)
@@ -176,7 +192,7 @@ func TestMultiTenant_HeaderScopedPrincipals(t *testing.T) {
 }
 
 func TestMultiTenant_RedactedReadsAreInconclusive(t *testing.T) {
-	for _, mode := range []string{"redacted", "unrelated"} {
+	for _, mode := range []string{"redacted", "unrelated", "one-read-error", "anon-read-error"} {
 		t.Run(mode, func(t *testing.T) {
 			ts := tenantServer(mode)
 			defer ts.Close()

@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -79,15 +80,32 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	// Check both directions for the owner's probe content.
 	var findings []attack.Finding
 	readA := e.readTask(ctx, clientB, endpoint, b.Headers, taskA, markerA, vars.RandID)
-	if readA.location != "" && anonA.location == "" {
+	if readA.location != "" && anonA.location == "" && !anonA.unknown && (anonA.denied || anonA.matched) {
 		findings = append(findings, e.finding(endpoint, b, a, taskA, markerA, readA))
 	}
 	readB := e.readTask(ctx, clientA, endpoint, a.Headers, taskB, markerB, vars.RandID)
-	if readB.location != "" && anonB.location == "" {
+	if readB.location != "" && anonB.location == "" && !anonB.unknown && (anonB.denied || anonB.matched) {
 		findings = append(findings, e.finding(endpoint, a, b, taskB, markerB, readB))
 	}
-	if len(findings) == 0 && ((readA.matched && anonA.location == "") || (readB.matched && anonB.location == "")) {
-		return nil, fmt.Errorf("%w: a cross-tenant task read returned a task identifier without its owner's probe content", attack.ErrInconclusive)
+	if len(findings) == 0 {
+		var missing []string
+		for _, check := range []struct {
+			name  string
+			read  tenantRead
+			cross bool
+		}{
+			{"anonymous read of A", anonA, false}, {"anonymous read of B", anonB, false},
+			{"B reading A", readA, true}, {"A reading B", readB, true},
+		} {
+			if check.read.unknown || (check.cross && check.read.matched && check.read.location == "") ||
+				(!check.read.denied && !check.read.matched && check.read.location == "") {
+				missing = append(missing, check.name)
+			}
+		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
+				attack.ErrInconclusive, strings.Join(missing, ", "))
+		}
 	}
 	return findings, nil
 }
@@ -150,6 +168,8 @@ type tenantRead struct {
 	location string
 	response string
 	matched  bool
+	denied   bool
+	unknown  bool
 }
 
 // readTask checks both method names until owner content is found.
@@ -172,13 +192,33 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			"method":  shape.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
 		})
-		if err != nil || resp == nil || !resp.IsAccepted() {
+		if err != nil || resp == nil {
+			result.unknown = true
+			continue
+		}
+		if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
+			result.denied = true
+			continue
+		}
+		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
+			if code == -32001 {
+				result.denied = true
+			} else if code != jsonRPCMethodNotFound {
+				result.unknown = true
+			}
+			continue
+		}
+		if !resp.IsAccepted() {
+			result.unknown = true
 			continue
 		}
 		location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
 		result.matched = result.matched || matched
 		if location != "" {
 			return tenantRead{method: shape.method, location: location, response: snippet(resp.Body, 500), matched: true}
+		}
+		if !matched {
+			result.unknown = true
 		}
 	}
 	return result
