@@ -4,10 +4,9 @@ Batesian outputs SARIF, consumed by SARIF tooling (DAST viewers, dashboards) and
 uploadable to GitHub Code Scanning. Note that Batesian findings are network
 targets, not files in the repository, so GitHub surfaces them as alerts without
 source-line annotations (it resolves SARIF locations as repository paths).
-The examples below use the unreleased `main` branch because their coverage gates
-depend on JSON rule outcomes and SARIF invocation metadata. These fields are not
-in v1.7.0. Replace `@main` with a reviewed commit SHA in real CI, then use a
-release tag once the fields ship.
+The examples below use the current `main` branch because their coverage gates
+depend on JSON rule outcomes and SARIF invocation metadata. Older releases may
+not include these fields. Pin a reviewed commit or release tag in real CI.
 
 SARIF alert messages include a short evidence excerpt. Full evidence and attack
 chain steps are in result properties. When a finding differs from its rule's
