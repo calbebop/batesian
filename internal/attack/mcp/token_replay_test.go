@@ -142,6 +142,64 @@ func TestTokenReplay_SecureServer(t *testing.T) {
 	}
 }
 
+func TestTokenReplay_PartialProbeIsInconclusive(t *testing.T) {
+	for _, tc := range []struct {
+		name, wire  string
+		acceptNoAud bool
+	}{
+		{name: "legacy incomplete", wire: "legacy"},
+		{name: "modern incomplete", wire: "modern"},
+		{name: "finding survives incomplete probe", wire: "legacy", acceptNoAud: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/oauth-authorization-server" {
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"issuer": srv.URL, "token_endpoint": srv.URL + "/token",
+					})
+					return
+				}
+				if r.URL.Path != "/mcp" {
+					http.NotFound(w, r)
+					return
+				}
+				modern := r.Header.Get("MCP-Protocol-Version") == modernVersion
+				if modern && tc.wire == "modern" && r.Header.Get("Authorization") == "" {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if tc.acceptNoAud && !modern && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") &&
+					decodeJWTAud(t, r.Header.Get("Authorization")) == nil {
+					initializeOK(w)
+					return
+				}
+				if modern == (tc.wire == "modern") &&
+					decodeJWTAud(t, r.Header.Get("Authorization")) == "https://wrong-server.example.com" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).
+				Execute(context.Background(), srv.URL, testOpts())
+			if tc.acceptNoAud {
+				if err != nil || len(findings) != 1 {
+					t.Fatalf("want confirmed finding despite incomplete probe, got findings=%+v err=%v", findings, err)
+				}
+				return
+			}
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), tc.wire+" wrong-aud") {
+				t.Fatalf("want incomplete %s probe, got findings=%+v err=%v", tc.wire, findings, err)
+			}
+		})
+	}
+}
+
 // jsonRPCRejectTokenServer advertises OAuth metadata and returns HTTP 200 with a
 // JSON-RPC error envelope for forged tokens - a protocol-layer rejection. The
 // rule MUST treat this as a rejection and stay silent (the false-positive guard
