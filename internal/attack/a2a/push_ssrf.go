@@ -170,22 +170,26 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// Attempt 3: try the card's REST bases in preference order.
 	if !taskAccepted {
 		for _, restBase := range resolveHTTPJSONBases(ctx, client, vars.BaseURL) {
-			sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, "/message:send"), map[string]string{"A2A-Version": "1.0"},
-				buildRESTSendRequest(vars.RandID))
-			if err3 == nil && sendResp3.StatusCode != 404 {
-				reached = true
-			}
-			// REST returns a task, not a JSON-RPC envelope.
-			if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
-				// Register the callback against the returned task.
-				if taskID := restTaskID(sendResp3.Body); taskID != "" {
-					cfgResp, cfgErr := client.POST(ctx, endpointpkg.AppendPath(restBase, "/tasks/"+taskID+"/pushNotificationConfigs"),
-						map[string]string{"A2A-Version": "1.0"},
-						map[string]interface{}{"url": callbackURL, "token": token})
-					if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
-						taskAccepted = true
-						acceptedBinding = "HTTP+JSON/pushNotificationConfigs"
+			for _, route := range restPushRoutes {
+				headers := restVersionHeaders(route.version, nil)
+				sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, route.sendPath), headers,
+					restTaskSendRequest(vars.RandID, "ping", route.version))
+				if err3 == nil && sendResp3.StatusCode != 404 {
+					reached = true
+				}
+				if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
+					if taskID := restTaskID(sendResp3.Body); taskID != "" {
+						cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
+						cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
+							restPushConfigRequest(taskID, callbackURL, token, "", vars.RandID, route.version))
+						if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+							taskAccepted = true
+							acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
+						}
 					}
+				}
+				if taskAccepted {
+					break
 				}
 			}
 			if taskAccepted {
@@ -326,18 +330,40 @@ func restTaskID(body []byte) string {
 	return id
 }
 
-// buildRESTSendRequest creates the body for a REST message:send. It is a
-// SendMessageRequest, so the message sits under `message` and carries no push
-// config; the callback is registered separately against the returned task.
-func buildRESTSendRequest(randID string) map[string]interface{} {
+type restPushRoute struct {
+	version  string
+	sendPath string
+	taskPath string
+}
+
+var restPushRoutes = []restPushRoute{
+	{version: "1.0", sendPath: "/message:send", taskPath: "/tasks"},
+	{version: "0.3.0", sendPath: "/v1/message:send", taskPath: "/v1/tasks"},
+}
+
+func (r restPushRoute) configPath(taskID string) string {
+	return r.taskPath + "/" + url.PathEscape(taskID) + "/pushNotificationConfigs"
+}
+
+func restPushConfigRequest(taskID, callbackURL, token, credential, randID, version string) map[string]interface{} {
+	if version == "1.0" {
+		config := map[string]interface{}{"url": callbackURL, "token": token}
+		if credential != "" {
+			config["authentication"] = map[string]string{"scheme": "Bearer", "credentials": credential}
+		}
+		return config
+	}
+	push := map[string]interface{}{"id": "batesian-" + randID, "url": callbackURL, "token": token}
+	if credential != "" {
+		push["authentication"] = map[string]interface{}{"schemes": []string{"Bearer"}, "credentials": credential}
+	}
+	configID := "batesian-" + randID
 	return map[string]interface{}{
-		"configuration": map[string]interface{}{"returnImmediately": true},
-		"message": map[string]interface{}{
-			"messageId": "batesian-" + randID,
-			"role":      "ROLE_USER",
-			"parts": []interface{}{
-				map[string]string{"text": "ping"},
-			},
+		"parent":   "tasks/" + taskID,
+		"configId": configID,
+		"config": map[string]interface{}{
+			"name":                   "tasks/" + taskID + "/pushNotificationConfigs/" + configID,
+			"pushNotificationConfig": push,
 		},
 	}
 }
