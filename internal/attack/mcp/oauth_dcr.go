@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // OAuthDCRExecutor tests whether an MCP server's OAuth 2.1 dynamic client
@@ -143,24 +142,8 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 // registration_endpoint. Tries /.well-known/oauth-authorization-server first,
 // then /.well-known/openid-configuration.
 func (e *OAuthDCRExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, error) {
-	endpoints := []string{
-		endpoint.AppendPath(baseURL, "/.well-known/oauth-authorization-server"),
-		endpoint.AppendPath(baseURL, "/.well-known/openid-configuration"),
-	}
-	for _, ep := range endpoints {
-		resp, err := client.GET(ctx, ep, nil)
-		if err != nil || !resp.IsSuccess() {
-			continue
-		}
-		regEP := resp.JSONField("registration_endpoint")
-		if regEP != "" {
-			if err := client.ValidateOAuthEndpoint(regEP); err != nil {
-				return "", err
-			}
-			return regEP, nil
-		}
-	}
-	return "", nil
+	fields, err := discoverOAuthFields(ctx, client, baseURL, "registration_endpoint")
+	return fields["registration_endpoint"], err
 }
 
 // privilegedScopesIn returns the privileged scope tokens present in a granted

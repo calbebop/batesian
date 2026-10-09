@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // ConfusedDeputyExecutor tests whether an MCP server's OAuth authorization
@@ -164,26 +163,8 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 // registration_endpoint and authorization_endpoint. It tries the RFC 8414
 // authorization-server document first, then the OIDC openid-configuration.
 func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, baseURL string) (registrationEndpoint, authorizationEndpoint string, err error) {
-	for _, p := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
-		resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, p), nil)
-		if err != nil || !resp.IsSuccess() {
-			continue
-		}
-		reg := resp.JSONField("registration_endpoint")
-		authz := resp.JSONField("authorization_endpoint")
-		if authz != "" {
-			if err := client.ValidateOAuthEndpoint(authz); err != nil {
-				return "", "", err
-			}
-			if reg != "" {
-				if err := client.ValidateOAuthEndpoint(reg); err != nil {
-					return "", "", err
-				}
-			}
-			return reg, authz, nil
-		}
-	}
-	return "", "", nil
+	fields, err := discoverOAuthFields(ctx, client, baseURL, "registration_endpoint", "authorization_endpoint")
+	return fields["registration_endpoint"], fields["authorization_endpoint"], err
 }
 
 // registerDCRClient registers a client via DCR with the given redirect_uri and
