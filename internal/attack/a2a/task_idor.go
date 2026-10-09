@@ -213,7 +213,8 @@ func taskReadMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 
 func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 	type content struct {
-		Parts json.RawMessage `json:"parts"`
+		Parts   json.RawMessage `json:"parts"`
+		Content json.RawMessage `json:"content"`
 	}
 	type task struct {
 		ID        string          `json:"id"`
@@ -233,6 +234,9 @@ func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 	if envelope.Task != nil {
 		candidates = append(candidates, *envelope.Task)
 	}
+	hasMarker := func(item content) bool {
+		return strings.Contains(storedText(item.Parts), marker) || strings.Contains(storedText(item.Content), marker)
+	}
 	matched := false
 	for _, candidate := range candidates {
 		if candidate.ID != taskID && candidate.TaskID != taskID {
@@ -240,12 +244,12 @@ func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 		}
 		matched = true
 		for _, message := range candidate.History {
-			if strings.Contains(storedText(message.Parts), marker) {
+			if hasMarker(message) {
 				return "history", true
 			}
 		}
 		for _, artifact := range candidate.Artifacts {
-			if strings.Contains(storedText(artifact.Parts), marker) {
+			if hasMarker(artifact) {
 				return "artifact", true
 			}
 		}
@@ -253,7 +257,7 @@ func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 			Message content `json:"message"`
 		}
 		if json.Unmarshal(candidate.Status, &status) == nil &&
-			strings.Contains(storedText(status.Message.Parts), marker) {
+			hasMarker(status.Message) {
 			return "status message", true
 		}
 	}

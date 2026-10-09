@@ -67,11 +67,15 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 					ReturnImmediately bool `json:"returnImmediately"`
 				} `json:"configuration"`
 				Message struct {
-					Role string `json:"role"`
+					Role    string          `json:"role"`
+					Parts   json.RawMessage `json:"parts"`
+					Content json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
 			if json.NewDecoder(r.Body).Decode(&body) != nil ||
-				(legacy && body.Message.Role != "user") || (!legacy && body.Message.Role != "ROLE_USER") ||
+				body.Message.Role != "ROLE_USER" ||
+				(legacy && (len(body.Message.Content) == 0 || len(body.Message.Parts) != 0)) ||
+				(!legacy && (len(body.Message.Parts) == 0 || len(body.Message.Content) != 0)) ||
 				(len(requireImmediate) != 0 && requireImmediate[0] && !body.Configuration.ReturnImmediately) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -182,6 +186,7 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 		{"dual binding REST leak", "unscoped", false, true, true, false},
 		{"off-origin card is pinned", "off-origin", false, false, true, false},
 		{"scoped", "scoped", false, false, false, false},
+		{"legacy scoped", "scoped", true, false, false, false},
 		{"anonymous list open", "open", false, false, false, false},
 		{"list absent", "no-list", false, false, false, false},
 		{"task creation absent", "no-send", false, false, false, true},

@@ -48,7 +48,7 @@ Published releases include SHA-256 checksums, a Sigstore bundle for the checksum
 
 ### Go toolchain
 
-Go 1.25 or newer is required when installing from source:
+Go 1.26.9 or newer is required when installing from source:
 
 ```bash
 go install github.com/calbebop/batesian/cmd/batesian@latest
@@ -187,7 +187,7 @@ jobs:
     steps:
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.9'
       - run: go install github.com/calbebop/batesian/cmd/batesian@main
       - name: Scan
         env:

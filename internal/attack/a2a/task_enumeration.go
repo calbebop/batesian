@@ -96,14 +96,7 @@ func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listUR
 		headers["Content-Type"] = "application/a2a+json"
 	}
 	messageID := randID + "-" + version
-	body := buildRESTSendRequest(messageID)
-	if version != "1.0" {
-		body = map[string]interface{}{"message": map[string]interface{}{
-			"messageId": "batesian-" + messageID,
-			"role":      "user",
-			"parts":     []interface{}{map[string]string{"kind": "text", "text": "ping"}},
-		}}
-	}
+	body := restTaskSendRequest(messageID, "ping", version)
 	resp, err := clientA.POST(ctx, sendURL, headers, body)
 	if err != nil || resp == nil {
 		return nil, fmt.Errorf("%w: REST task creation at %s did not answer", attack.ErrInconclusive, sendURL), false

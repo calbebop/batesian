@@ -75,12 +75,22 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					Parts []struct {
 						Text string `json:"text"`
 					} `json:"parts"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
 				} `json:"message"`
 			}
-			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.Message.Parts) == 0 ||
-				(legacy && body.Message.Role != "user") || (!legacy && body.Message.Role != "ROLE_USER") {
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body.Message.Role != "ROLE_USER" ||
+				(legacy && (len(body.Message.Content) == 0 || len(body.Message.Parts) != 0)) ||
+				(!legacy && (len(body.Message.Parts) == 0 || len(body.Message.Content) != 0)) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
+			}
+			text := ""
+			if legacy {
+				text = body.Message.Content[0].Text
+			} else {
+				text = body.Message.Parts[0].Text
 			}
 			if !hasOwnerAuth(r) {
 				if mode != "open" {
@@ -91,7 +101,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				return
 			}
 			mu.Lock()
-			marker = body.Message.Parts[0].Text
+			marker = text
 			mu.Unlock()
 			if mode == "message-only" {
 				writeJSON(w, map[string]interface{}{"message": map[string]string{"messageId": "reply"}})
@@ -101,6 +111,10 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), taskPath) {
+			field := "parts"
+			if legacy {
+				field = "content"
+			}
 			mu.Lock()
 			reads = append(reads, r.Header.Get("Authorization"))
 			text := marker
@@ -123,7 +137,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					return
 				case "unrelated":
 					writeJSON(w, map[string]interface{}{"id": "other-task", "history": []interface{}{
-						map[string]interface{}{"parts": []interface{}{map[string]string{"text": text}}},
+						map[string]interface{}{field: []interface{}{map[string]string{"text": text}}},
 					}})
 					return
 				case "failed-read":
@@ -145,7 +159,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				return
 			}
 			writeJSON(w, map[string]interface{}{"id": taskID, "history": []interface{}{
-				map[string]interface{}{"parts": []interface{}{map[string]string{"text": text}}},
+				map[string]interface{}{field: []interface{}{map[string]string{"text": text}}},
 			}})
 			return
 		}
@@ -163,6 +177,8 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 	}{
 		{"REST-only leak", "leak", false, false, true, false},
 		{"legacy REST-only leak", "leak", true, false, true, false},
+		{"legacy REST redacted", "redacted", true, false, false, true},
+		{"legacy REST unrelated", "unrelated", true, false, false, false},
 		{"dual binding REST leak", "leak", false, true, true, false},
 		{"off-origin card pinned", "off-origin", false, false, true, false},
 		{"task ID escaped", "escaped-id", false, false, true, false},

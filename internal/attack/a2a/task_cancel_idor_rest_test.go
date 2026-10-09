@@ -89,11 +89,14 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 			}
 			var body struct {
 				Message struct {
-					Role string `json:"role"`
+					Role    string          `json:"role"`
+					Parts   json.RawMessage `json:"parts"`
+					Content json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
-			if json.NewDecoder(r.Body).Decode(&body) != nil ||
-				(legacy && body.Message.Role != "user") || (!legacy && body.Message.Role != "ROLE_USER") {
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body.Message.Role != "ROLE_USER" ||
+				(legacy && (len(body.Message.Content) == 0 || len(body.Message.Parts) != 0)) ||
+				(!legacy && (len(body.Message.Parts) == 0 || len(body.Message.Content) != 0)) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -187,6 +190,7 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 		{"anonymous response denied after mutation", "anon-mutate-403", false, false, "without authentication", false},
 		{"other response denied after mutation", "cross-mutate-403", false, false, "non-owning", false},
 		{"owner-bound cancel", "secure", false, false, "", false},
+		{"legacy owner-bound cancel", "secure", true, false, "", false},
 		{"cancel surface absent", "no-cancel", false, false, "", false},
 		{"unpersisted response", "unpersisted", false, false, "", true},
 		{"non-owner response not persisted", "cross-unpersisted", false, false, "", true},
