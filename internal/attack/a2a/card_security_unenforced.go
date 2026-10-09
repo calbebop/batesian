@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -96,11 +97,11 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 
 	// Step 2 (definitive): unauthenticated create. A returned task proves a core
 	// write executed with no credentials despite the card requiring them.
-	createOutcome, createdTaskID := e.createProbe(ctx, client, endpoint, vars.RandID)
-	if createOutcome != probeProcessedResult {
-		// No unauthenticated request was processed into a success result: either the
-		// server enforces auth (rejected) or only returned application errors. Do not
-		// claim a violation without a positive, unambiguous result envelope.
+	createdTaskID, err := e.createProbe(ctx, client, endpoint, vars.RandID)
+	if err != nil {
+		return nil, err
+	}
+	if createdTaskID == "" {
 		return nil, nil
 	}
 
@@ -141,7 +142,7 @@ func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack
 
 // createProbe issues an unauthenticated message/send (v1.0 SendMessage then v0.3
 // message/send) and reports whether a task was created without credentials.
-func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *attack.HTTPClient, endpoint, randID string) (probeOutcome, string) {
+func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *attack.HTTPClient, endpoint, randID string) (string, error) {
 	shapes := []struct {
 		method  string
 		headers map[string]string
@@ -158,7 +159,7 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 			"messageId": "batesian-cardsec-" + randID,
 		}},
 	}
-	outcome := probeAuthRejected
+	var incomplete []string
 	for _, s := range shapes {
 		params := map[string]interface{}{"message": s.message}
 		if s.method == "SendMessage" {
@@ -170,25 +171,37 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 			"method":  s.method,
 			"params":  params,
 		})
-		if err != nil {
+		if err != nil || resp == nil {
+			incomplete = append(incomplete, s.method+" did not answer")
 			continue
 		}
-		o := classifyProbe(resp)
-		if o == probeProcessedResult {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+			(resp.IsSuccess() && errMessageIsAuth(resp.Body)) {
+			continue
+		}
+		if resp.IsAccepted() {
 			taskID, _ := extractTaskContext(resp.Body)
-			if taskID == "" {
-				// A result envelope with no task id does not confirm a task was
-				// actually created; do not promote to a confirmed processed result.
-				o = probeProcessedError
-			} else {
-				return probeProcessedResult, taskID
+			if taskID != "" {
+				return taskID, nil
+			}
+			incomplete = append(incomplete, s.method+" returned no task ID")
+			continue
+		}
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			continue
+		}
+		if resp.IsSuccess() {
+			if code, ok := jsonRPCErrorCode(resp.Body); ok &&
+				(code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation) {
+				continue
 			}
 		}
-		if o > outcome {
-			outcome = o
-		}
+		incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d without a task or auth verdict", s.method, resp.StatusCode))
 	}
-	return outcome, ""
+	if len(incomplete) > 0 {
+		return "", fmt.Errorf("%w: anonymous task creation was not judged: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+	}
+	return "", nil
 }
 
 // classifyProbe maps an unauthenticated response to a probeOutcome. An auth
