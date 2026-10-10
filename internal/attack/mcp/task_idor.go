@@ -122,6 +122,9 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	// Session A, which also discovers the endpoint.
 	sessA, initErr := e.initSession(ctx, client, vars.BaseURL, discovery)
 	if initErr != nil {
+		if errors.Is(initErr, attack.ErrInconclusive) {
+			return nil, initErr
+		}
 		return nil, inconclusive(initErr) // not an MCP server, and why
 	}
 
@@ -304,10 +307,14 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			ProtocolVersion: negotiatedVersion(resp.Body),
 			RawInit:         resp.Body,
 		}
-		_, _ = client.POST(ctx, ep, e.headers(session, p), map[string]interface{}{
+		initialized, initErr := client.POST(ctx, ep, e.headers(session, p), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
+		if !initializedNotificationOK(initialized, initErr) {
+			return mcpSession{}, fmt.Errorf("%w: notifications/initialized for principal %s at %s did not complete",
+				attack.ErrInconclusive, p.name, ep)
+		}
 		return session, nil
 	}
 	if observed.rank > rankNothing {
