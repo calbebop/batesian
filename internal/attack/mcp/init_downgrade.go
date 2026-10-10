@@ -10,24 +10,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// InitDowngradeExecutor probes whether advertising the pre-auth MCP protocol
-// version "2024-11-05" lets a caller bypass authorization that the server
-// enforces under a modern (post-auth-spec) version (rule mcp-init-downgrade-001).
-//
-// Accepting/negotiating an older protocol version is itself SPEC-COMPLIANT - the
-// MCP version-negotiation rules allow a server to honour a supported older
-// version - so it is NOT reported as a finding on its own. The vulnerability is
-// specifically a DOWNGRADE AUTH BYPASS, which requires a discriminator:
-//
-//   - Initialize with a MODERN version (post-auth-spec) and call resources/list:
-//     observe it is REJECTED (auth enforced) - this is the baseline.
-//   - Initialize with the LEGACY version and call resources/list: observe it
-//     SUCCEEDS.
-//
-// Only modern-rejected + legacy-accepted is a confirmed downgrade bypass. If both
-// succeed the server simply has no auth at all (that is mcp-resources-unauth's
-// job, not a downgrade), and if both are rejected the server is secure - neither
-// produces a finding here.
+// InitDowngradeExecutor compares unauthenticated access across two handshake
+// versions. Accepting an older version alone is not a downgrade bypass.
 type InitDowngradeExecutor struct {
 	rule attack.RuleContext
 }
@@ -49,48 +33,44 @@ const (
 
 func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	// Probe without credentials so modern rejection and legacy acceptance remain
-	// distinguishable.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	// Why no candidate could be compared, so an undetermined probe does not surface as
-	// the generic "could not reach a testable endpoint". The endpoint WAS reached; it
-	// answered one of the two baselines with something that refuses nothing.
-	var observed initObservation
+	var reachedReason, walkReason string
 	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probeEndpoint(ctx, client, ep, &observed)
+		found, reached, reason := e.probeEndpoint(ctx, client, ep)
+		if reached {
+			reachedReason = reason
+		} else if reason != "" && walkReason == "" {
+			walkReason = reason
+		}
+		return found, reached
 	})
-	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
-		return nil, inconclusive(handshakeRefusal{observed.reason})
+	if reachedReason != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, reachedReason)
+	}
+	if errors.Is(err, attack.ErrInconclusive) && walkReason != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, walkReason)
 	}
 	return findings, err
 }
 
-func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string,
-	observed *initObservation) ([]attack.Finding, bool) {
-	// Legacy path: initialize with the pre-auth version. The probe method is
-	// chosen below from the server's advertised capabilities, not hardcoded.
-	legacyOK, legacySession := e.handshake(ctx, client, ep, legacyVersion)
-	if !legacyOK {
-		// The legacy initialize did not succeed. Distinguish "not an MCP
-		// endpoint" from "a server that speaks MCP but rejects this version" by
-		// probing whether the endpoint answers initialize with a JSON-RPC
-		// response at all. A version-rejection error still counts as reached:
-		// the endpoint is testable, it just declined the offered version.
-		if !responsiveMCP(ctx, client, ep) {
-			return nil, false // not a responsive MCP endpoint
-		}
-		return nil, true // reached, but the offered version was rejected - nothing to confirm
+func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool, string) {
+	legacySession, legacyState, legacyReason := e.handshake(ctx, client, ep, legacyVersion)
+	switch legacyState {
+	case downgradeHandshakeAbsent:
+		return nil, false, legacyReason
+	case downgradeHandshakeUnsupported:
+		return nil, true, ""
+	case downgradeHandshakeIncomplete:
+		return nil, true, legacyReason
 	}
 
-	// Modern baseline: does the server enforce auth under the post-auth version?
-	// A server that does not speak the modern revision has no modern baseline to
-	// compare against; an old server that only supports the legacy version is not a
-	// downgrade bypass. The rule requires the modern path to exist and be rejected
-	// while the legacy path is granted.
-	modernOK, modernSession := e.handshake(ctx, client, ep, modernVersion)
-	if !modernOK {
-		return nil, true
+	modernSession, modernState, modernReason := e.handshake(ctx, client, ep, modernVersion)
+	switch modernState {
+	case downgradeHandshakeUnsupported:
+		return nil, true, ""
+	case downgradeHandshakeAbsent, downgradeHandshakeIncomplete:
+		return nil, true, modernReason
 	}
 
 	// ONE list method, advertised by BOTH versions, so the comparison measures the
@@ -108,14 +88,13 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 			// Nothing listable is advertised under either version, so the downgrade
 			// concept (a listing gated under one version, open under the other) does
 			// not apply here.
-			return nil, true
+			return nil, true, ""
 		}
-		observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+		return nil, true, fmt.Sprintf(
 			"the legacy (%s) and modern (%s) versions at %s advertise no listable method in common "+
 				"(legacy: %s; modern: %s), so any difference between them would be a capability "+
 				"difference rather than an authorization gate",
-			legacyVersion, modernVersion, ep, strings.Join(legacyMethods, ", "), strings.Join(modernMethods, ", "))})
-		return nil, false
+			legacyVersion, modernVersion, ep, strings.Join(legacyMethods, ", "), strings.Join(modernMethods, ", "))
 	}
 
 	legacyAccess, legacyCount := e.probeList(ctx, client, legacySession, method)
@@ -135,11 +114,10 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 		if legacyAccess != accessUndetermined {
 			version = modernVersion
 		}
-		observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+		return nil, true, fmt.Sprintf(
 			"%s on the session opened at %s with protocol version %s returned neither a "+
 				"result nor a refusal, so the two versions' authorization could not be compared",
-			method, ep, version)})
-		return nil, false
+			method, ep, version)
 	}
 
 	modernEnforced := modernAccess == accessRefused ||
@@ -171,10 +149,10 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 				ep, modernVersion, method, modernEvidence, legacyVersion, method, legacyCount, noun),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
-		}}, true
+		}}, true, ""
 	}
 
-	return nil, true
+	return nil, true, ""
 }
 
 // responsiveMCP accepts negotiated initialization or an MCP-specific, auth, or
@@ -258,12 +236,33 @@ func jsonRPCErrorMessage(body []byte) string {
 	return envelope.Error.Message
 }
 
-// handshake opens an MCP session at ep with the given protocol version and
-// returns it with the server's advertised capabilities captured in RawInit, so
-// the probe method can be chosen from what the server actually implements.
-// initOK is false when the initialize was rejected (version unsupported) or did
-// not yield a valid MCP response.
-func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HTTPClient, ep, version string) (bool, mcpSession) {
+type downgradeHandshakeState int
+
+const (
+	downgradeHandshakeComplete downgradeHandshakeState = iota
+	downgradeHandshakeUnsupported
+	downgradeHandshakeAbsent
+	downgradeHandshakeIncomplete
+)
+
+func unsupportedHandshakeVersion(resp *attack.Response) bool {
+	if resp == nil {
+		return false
+	}
+	code, ok := jsonRPCErrorCode(resp.Body)
+	if !ok {
+		return false
+	}
+	if code == -32022 {
+		return true
+	}
+	message := strings.ToLower(jsonRPCErrorMessage(resp.Body))
+	return strings.Contains(message, "version") &&
+		(strings.Contains(message, "unsupported") || strings.Contains(message, "not supported"))
+}
+
+// handshake opens a session and reports whether the comparison can use it.
+func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HTTPClient, ep, version string) (mcpSession, downgradeHandshakeState, string) {
 	initResp, err := client.POST(ctx, ep, nil, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -274,15 +273,29 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || !initResp.IsSuccess() {
-		return false, mcpSession{}
+	if err != nil || initResp == nil {
+		return mcpSession{}, downgradeHandshakeAbsent, fmt.Sprintf(
+			"initialize at %s with protocol version %s did not answer", ep, version)
 	}
-	// A version rejection, or any other error envelope, means the handshake did
-	// not complete, which is initOK=false either way per the contract above.
-	// initializeSucceeded reads result.protocolVersion, so an error whose message
-	// quotes the field names no longer passes the way a substring gate let it.
-	if !initializeSucceeded(initResp.Body) {
-		return false, mcpSession{}
+	if endpointAbsent(initResp) {
+		return mcpSession{}, downgradeHandshakeAbsent, ""
+	}
+	if unsupportedHandshakeVersion(initResp) {
+		return mcpSession{}, downgradeHandshakeUnsupported, ""
+	}
+	if initResp.StatusCode == 401 || initResp.StatusCode == 403 {
+		return mcpSession{}, downgradeHandshakeIncomplete, fmt.Sprintf(
+			"initialize at %s with protocol version %s was refused (HTTP %d)",
+			ep, version, initResp.StatusCode)
+	}
+	if !initResp.IsSuccess() || !initializeSucceeded(initResp.Body) {
+		state := downgradeHandshakeIncomplete
+		if !answersMCPInitialize(initResp.Body) {
+			state = downgradeHandshakeAbsent
+		}
+		return mcpSession{}, state, fmt.Sprintf(
+			"initialize at %s with protocol version %s did not complete (HTTP %d)",
+			ep, version, initResp.StatusCode)
 	}
 	session := mcpSession{
 		Endpoint:        ep,
@@ -290,11 +303,19 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 		ProtocolVersion: negotiatedVersion(initResp.Body),
 		RawInit:         initResp.Body,
 	}
-	_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
+	initialized, initErr := client.POST(ctx, ep, session.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
-	return true, session
+	if initErr != nil || initialized == nil || !initialized.IsSuccess() {
+		return mcpSession{}, downgradeHandshakeIncomplete, fmt.Sprintf(
+			"notifications/initialized at %s with protocol version %s did not complete", ep, version)
+	}
+	if _, rejected := jsonRPCErrorCode(initialized.Body); rejected {
+		return mcpSession{}, downgradeHandshakeIncomplete, fmt.Sprintf(
+			"notifications/initialized at %s with protocol version %s returned a JSON-RPC error", ep, version)
+	}
+	return session, downgradeHandshakeComplete, ""
 }
 
 // probeList calls a read-only listing on session and reports its access verdict
