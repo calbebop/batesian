@@ -3,9 +3,11 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -313,6 +315,91 @@ func TestInitDowngrade_OldServerRejectingModernIsNotABypass(t *testing.T) {
 	if len(findings) != 0 {
 		t.Errorf("a server that simply does not support the offered revision is not a "+
 			"downgrade bypass; got %d finding(s): %v", len(findings), findings)
+	}
+}
+
+func TestInitDowngrade_IncompleteHandshake(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		method  string
+		status  int
+		rpcErr  bool
+	}{
+		{"legacy initialize error", legacyVer, "initialize", http.StatusBadGateway, false},
+		{"legacy initialize auth refusal", legacyVer, "initialize", http.StatusUnauthorized, false},
+		{"modern initialize error", "2025-11-25", "initialize", http.StatusBadGateway, false},
+		{"modern initialize auth refusal", "2025-11-25", "initialize", http.StatusUnauthorized, false},
+		{"legacy notification error", legacyVer, "notifications/initialized", http.StatusServiceUnavailable, false},
+		{"modern notification RPC error", "2025-11-25", "notifications/initialized", http.StatusOK, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					ID     interface{} `json:"id"`
+					Method string      `json:"method"`
+					Params struct {
+						ProtocolVersion string `json:"protocolVersion"`
+					} `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode request: %v", err)
+					return
+				}
+				version := req.Params.ProtocolVersion
+				if req.Method == "notifications/initialized" {
+					version = r.Header.Get("Mcp-Protocol-Version")
+				}
+				if req.Method == tt.method && version == tt.version {
+					w.WriteHeader(tt.status)
+					if tt.rpcErr {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "error": map[string]interface{}{"code": -32603, "message": "not ready"},
+						})
+					}
+					return
+				}
+				switch req.Method {
+				case "initialize":
+					w.Header().Set("Mcp-Session-Id", "session-"+version)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"protocolVersion": version,
+							"serverInfo":      map[string]string{"name": "fixture", "version": "1"},
+							"capabilities":    map[string]interface{}{"resources": map[string]interface{}{}},
+						},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "resources/list":
+					if r.Header.Get("Mcp-Protocol-Version") == legacyVer {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": req.ID,
+							"result": map[string]interface{}{"resources": []interface{}{map[string]string{"uri": "file:///secret"}}},
+						})
+					} else {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": req.ID,
+							"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"},
+						})
+					}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			exec := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), tt.method) || !strings.Contains(err.Error(), tt.version) {
+				t.Fatalf("missing failed handshake step: %v", err)
+			}
+		})
 	}
 }
 
