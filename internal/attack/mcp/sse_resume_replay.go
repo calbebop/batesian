@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -12,11 +13,8 @@ import (
 	"github.com/calbebop/batesian/internal/sse"
 )
 
-// SSEResumeReplayExecutor tests whether an MCP Streamable HTTP server replays one
-// session's buffered SSE events to a DIFFERENT session on resumption (rule
-// mcp-sse-resume-replay-001). It uses a raw HTTP client for the SSE GET because
-// the shared client only surfaces the first data event, not the event ids this
-// rule must read.
+// SSEResumeReplayExecutor checks whether SSE resumption leaks events across
+// MCP sessions. It reads event IDs through a raw HTTP client.
 type SSEResumeReplayExecutor struct {
 	rule attack.RuleContext
 }
@@ -45,53 +43,71 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
 	}
 
-	// Why no candidate could be exercised, classified from the handshake responses
-	// the probe already has, so this reports what happened rather than blaming the
-	// network. The closure captures it, which keeps probeCandidates unchanged for
-	// the five other rules that share it.
 	var observed initObservation
+	var incomplete string
 	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probe(ctx, client, raw, ep, tokenA, tokenB, &observed)
+		result, reached, reason := e.probe(ctx, client, raw, ep, tokenA, tokenB, &observed)
+		if reached {
+			incomplete = reason
+		}
+		return result, reached
 	})
 	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
 		return nil, inconclusive(handshakeRefusal{observed.reason})
 	}
-	return findings, err
+	if len(findings) != 0 || err != nil {
+		return findings, err
+	}
+	if incomplete != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, incomplete)
+	}
+	return nil, nil
 }
 
 func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string,
-	observed *initObservation) ([]attack.Finding, bool) {
-	sessionA, ok, resp := e.initialize(ctx, client, ep, tokenA)
+	observed *initObservation) ([]attack.Finding, bool, string) {
+	sessionA, ok, resp, setupReason := e.initialize(ctx, client, ep, tokenA)
+	if setupReason != "" {
+		return nil, true, "session A " + setupReason
+	}
 	if !ok {
 		if resp != nil {
 			observed.observe(classifyInitFailure(ep, tokenA != "" || client.PresentsCredential(ep), resp))
 		}
-		return nil, false // not a responsive MCP endpoint
+		return nil, false, "" // not a responsive MCP endpoint
 	}
 	if sessionA.SessionID == "" {
-		// Responsive MCP server that mints no session ids: no resumable surface
-		// to test, but the endpoint was reached.
-		return nil, true
+		return nil, true, "the server issued no session ID for the replay comparison"
 	}
 
 	// A's checkpoint: open A's stream and capture an id-bearing event plus the
 	// data of the events that follow it (the session-A-specific markers a resume
 	// from the checkpoint would replay).
-	aEvents := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
+	aEvents, aStatus, aErr := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
+	if aStatus == http.StatusNotFound || aStatus == http.StatusMethodNotAllowed ||
+		aStatus == http.StatusNotAcceptable || aStatus == http.StatusNotImplemented {
+		return nil, true, "the server exposed no SSE stream for session A"
+	}
+	if (aErr != nil && !errors.Is(aErr, context.DeadlineExceeded)) || aStatus < 200 || aStatus >= 300 {
+		return nil, true, "session A SSE stream could not be read"
+	}
 	checkpointID, markers := resumeCheckpoint(aEvents)
 	if checkpointID == "" || len(markers) == 0 {
-		return nil, true // no resumable event surface to test
+		return nil, true, "session A stream supplied no checkpoint and later event to compare"
 	}
 
-	sessionB, ok, _ := e.initialize(ctx, client, ep, tokenB)
+	sessionB, ok, _, setupReason := e.initialize(ctx, client, ep, tokenB)
+	if setupReason != "" {
+		return nil, true, "session B " + setupReason
+	}
 	if !ok || sessionB.SessionID == "" || sessionB.SessionID == sessionA.SessionID {
-		return nil, true // need a second, distinct server-minted session
+		return nil, true, "a second distinct session was not established"
 	}
 
 	// As B, resume from A's checkpoint id and see whether A's later events are
 	// replayed into B's session. MCP event ids are opaque (spec: Streamable HTTP
 	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
-	bEvents := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
+	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
 	for _, ev := range bEvents {
 		if markers[ev.data] {
 			marker := ev.data
@@ -114,18 +130,21 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 					ep, sessionA.SessionID, checkpointID, sessionB.SessionID, checkpointID, marker),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
-			}}, true
+			}}, true, ""
 		}
 	}
-	return nil, true
+	if bStatus == http.StatusNotImplemented || (bStatus >= 400 && bStatus < 500 &&
+		bStatus != http.StatusRequestTimeout && bStatus != http.StatusTooManyRequests) {
+		return nil, true, "" // the cross-session resume was refused
+	}
+	if bErr != nil || bStatus < 200 || bStatus >= 300 {
+		return nil, true, "session B SSE resume response could not be read"
+	}
+	return nil, true, ""
 }
 
-// initialize performs an MCP initialize as the given token and returns the
-// server-minted session id.
-// The failing response is returned alongside the verdict so a walk that never
-// established a session can say why. It is nil when nothing answered, which is the
-// one case there is nothing to explain.
-func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (mcpSession, bool, *attack.Response) {
+// initialize opens a session and reports incomplete notification setup separately.
+func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (mcpSession, bool, *attack.Response, string) {
 	headers := map[string]string{}
 	if token != "" {
 		headers["Authorization"] = "Bearer " + token
@@ -141,32 +160,44 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 		},
 	})
 	if err != nil {
-		return mcpSession{}, false, nil
+		return mcpSession{}, false, nil, ""
+	}
+	if resp == nil {
+		return mcpSession{}, false, nil, ""
 	}
 	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-		return mcpSession{}, false, resp
+		return mcpSession{}, false, resp, ""
 	}
 	session := mcpSession{
 		Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"),
 		ProtocolVersion: negotiatedVersion(resp.Body),
 	}
+	if session.SessionID == "" {
+		return session, true, resp, ""
+	}
 	inited := session.header()
 	if token != "" {
 		inited["Authorization"] = "Bearer " + token
 	}
-	_, _ = client.POST(ctx, ep, inited, map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	return session, true, resp
+	initialized, initErr := client.POST(ctx, ep, inited, map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	if initErr != nil || initialized == nil || !initialized.IsSuccess() {
+		return mcpSession{}, false, resp, "initialized notification failed"
+	}
+	if _, rejected := jsonRPCErrorCode(initialized.Body); rejected {
+		return mcpSession{}, false, resp, "initialized notification failed"
+	}
+	return session, true, resp, ""
 }
 
 // sseCollect issues a GET for an SSE stream and returns the events read within
 // the window. It uses a raw client so it can read the per-event `id:` lines.
 func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.Client, url, token string,
-	session mcpSession, lastEventID string, window time.Duration) []sseEvent {
+	session mcpSession, lastEventID string, window time.Duration) ([]sseEvent, int, error) {
 	cctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return nil, 0, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
@@ -180,15 +211,18 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode/100 != 2 {
+	if err != nil {
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
-		return nil
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, resp.StatusCode, nil
+	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return nil
+		return nil, resp.StatusCode, fmt.Errorf("unexpected SSE content type")
 	}
 	// Read events for the window via the shared parser, which joins a payload
 	// split across several "data:" lines so a marker or checkpoint id is not
@@ -199,11 +233,20 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 	for {
 		ev, err := rd.Next()
 		if err != nil {
-			break
+			if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+				return events, resp.StatusCode, context.DeadlineExceeded
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return events, resp.StatusCode, err
+		}
+		if ctx.Err() != nil {
+			return events, resp.StatusCode, ctx.Err()
 		}
 		events = append(events, sseEvent{id: ev.ID, data: ev.Data})
 	}
-	return events
+	return events, resp.StatusCode, nil
 }
 
 func rawSSEClient(opts attack.Options) *http.Client {

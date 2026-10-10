@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,10 +46,20 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 			switch method {
 			case "initialize":
 				mu.Lock()
+				if mode == "second-init-error" && sessionCounter > 0 {
+					mu.Unlock()
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
 				sessionCounter++
 				sid := fmt.Sprintf("sess-%d", sessionCounter)
+				if mode == "same-session" {
+					sid = "sess-1"
+				}
 				mu.Unlock()
-				w.Header().Set("Mcp-Session-Id", sid)
+				if mode != "no-session" {
+					w.Header().Set("Mcp-Session-Id", sid)
+				}
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
 					"result": map[string]interface{}{
@@ -58,6 +69,17 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 					},
 				})
 			case "notifications/initialized":
+				if mode == "notification-error" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				if mode == "notification-rpc-error" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": nil,
+						"error": map[string]interface{}{"code": -32600, "message": "Not initialized"},
+					})
+					return
+				}
 				if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-06-18" {
 					t.Errorf("initialized version = %q, want 2025-06-18", got)
 				}
@@ -75,6 +97,45 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 		}
 		sid := r.Header.Get("Mcp-Session-Id")
 		leid := r.Header.Get("Last-Event-ID")
+		if leid == "" {
+			switch mode {
+			case "stream-error":
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			case "stream-unavailable":
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			case "empty-stream":
+				w.Header().Set("Content-Type", "text/event-stream")
+				return
+			case "stream-wrong-type":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+		} else {
+			switch mode {
+			case "resume-error":
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			case "resume-drop":
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			case "resume-refused":
+				w.WriteHeader(http.StatusForbidden)
+				return
+			case "resume-timeout":
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		writeEvent := func(eid, data string) {
@@ -206,6 +267,49 @@ func TestResume_NotMCP(t *testing.T) {
 	defer ts.Close()
 
 	assertInconclusive(t, mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func TestResume_IncompleteSetupAndStreams(t *testing.T) {
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{"notification-error", "initialized notification"},
+		{"notification-rpc-error", "initialized notification"},
+		{"no-session", "no session ID"},
+		{"stream-error", "session A SSE stream"},
+		{"stream-unavailable", "no SSE stream"},
+		{"stream-wrong-type", "session A SSE stream"},
+		{"empty-stream", "no checkpoint"},
+		{"second-init-error", "second distinct session"},
+		{"same-session", "second distinct session"},
+		{"resume-error", "session B SSE resume"},
+		{"resume-drop", "session B SSE resume"},
+		{"resume-timeout", "session B SSE resume"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := resumeServer(t, tc.mode)
+			defer ts.Close()
+			findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unobserved replay check: findings=%+v, err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestResume_ExplicitlyRefused(t *testing.T) {
+	for _, mode := range []string{"resume-refused"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := resumeServer(t, mode)
+			defer ts.Close()
+			if findings := runResume(t, ts); len(findings) != 0 {
+				t.Fatalf("explicit refusal: findings=%+v", findings)
+			}
+		})
+	}
 }
 
 // resumeServerMultiline is a vulnerable replay server whose SSE events carry a
