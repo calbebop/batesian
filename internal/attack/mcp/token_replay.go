@@ -191,8 +191,11 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 			case gateAfterInit:
 				// Initialize does not authenticate; the advertised listing does.
 				// The acceptance above proves nothing, so judge the token there.
-				mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, p.token)
+				mresp, verdict, reason := probeForgedAtMethod(ctx, anon, ep, gp.method, p.token)
 				legacyJudged[i] = verdict != accessUndetermined
+				if reason != "" && notTestedReason == "" {
+					notTestedReason = p.name + ": " + reason
+				}
 				if verdict == accessGranted {
 					findings = append(findings, attack.Finding{
 						RuleID:      e.rule.ID,

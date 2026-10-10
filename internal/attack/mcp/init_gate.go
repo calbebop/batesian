@@ -57,7 +57,7 @@ type gateProbe struct {
 // for a caller who presents nothing.
 func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gateProbe {
 	resp, err := anon.POST(ctx, ep, nil, json.RawMessage(mcpInitBody))
-	if err != nil {
+	if err != nil || resp == nil {
 		return gateProbe{gate: gateUnknown, reason: fmt.Sprintf(
 			"the anonymous initialize control at %s did not answer, so acceptance of a forged token at initialize could not be attributed", ep)}
 	}
@@ -91,13 +91,14 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 		method = methods[0]
 	}
 
-	// Complete the handshake the same way initializeMCP does, so a stateful
-	// server does not refuse the listing for missing-session reasons that have
-	// nothing to do with the credential.
-	_, _ = anon.POST(ctx, ep, session.header(), map[string]interface{}{
+	initialized, initErr := anon.POST(ctx, ep, session.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
+	if !initializedNotificationOK(initialized, initErr) {
+		return gateProbe{gate: gateUnknown, reason: fmt.Sprintf(
+			"the anonymous notifications/initialized control at %s did not complete, so the method gate could not be tested", ep)}
+	}
 
 	listResp, err := session.post(ctx, anon, 9, method, map[string]interface{}{})
 	switch classifyAccess(listResp, err, 9) {
@@ -120,19 +121,19 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 // and either way an accepted listing after that handshake is the forged token
 // being honoured - and then calls method carrying the same token.
 //
-// Returns the method response (nil on a transport failure) and its verdict.
-func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, method, token string) (*attack.Response, accessVerdict) {
+// Returns the method verdict and why it could not be judged, if applicable.
+func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, method, token string) (*attack.Response, accessVerdict, string) {
 	authHeaders := map[string]string{"Authorization": "Bearer " + token}
 	initResp, err := anon.POST(ctx, ep, authHeaders, json.RawMessage(mcpInitBody))
 	if err != nil {
-		return nil, accessUndetermined
+		return nil, accessUndetermined, fmt.Sprintf("forged initialize at %s did not answer", ep)
 	}
 	initVerdict := classifyAccess(initResp, nil, 1)
 	if initVerdict != accessGranted {
-		// Initialize was open for an anonymous caller moments ago; this reply
-		// differs only in the forged Authorization header, so whatever it says
-		// was said to that token.
-		return initResp, initVerdict
+		if initVerdict == accessUndetermined {
+			return initResp, initVerdict, fmt.Sprintf("forged initialize at %s returned neither a result nor a refusal", ep)
+		}
+		return initResp, initVerdict, ""
 	}
 
 	session := mcpSession{
@@ -141,15 +142,28 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 		ProtocolVersion: negotiatedVersion(initResp.Body),
 		RawInit:         initResp.Body,
 	}
-	_, _ = anon.POST(ctx, ep, session.header(), map[string]interface{}{
+	notifyHeaders := session.header()
+	notifyHeaders["Authorization"] = "Bearer " + token
+	initialized, initErr := anon.POST(ctx, ep, notifyHeaders, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
+	if !initializedNotificationOK(initialized, initErr) {
+		return nil, accessUndetermined, fmt.Sprintf("forged notifications/initialized at %s did not complete", ep)
+	}
 
 	resp, err := session.postShaping(ctx, anon, 10, method, map[string]interface{}{}, func(h map[string]string) {
 		h["Authorization"] = "Bearer " + token
 	})
-	return resp, classifyAccess(resp, err, 10)
+	verdict := classifyAccess(resp, err, 10)
+	if verdict == accessUndetermined {
+		return resp, verdict, fmt.Sprintf("forged %s at %s returned neither a result nor a refusal", method, ep)
+	}
+	return resp, verdict, ""
+}
+
+func initializedNotificationOK(resp *attack.Response, err error) bool {
+	return err == nil && resp != nil && resp.IsSuccess() && !isJSONRPCError(resp.BodyString())
 }
 
 // judgedAtLabel names the surface a probe's verdict came from, for evidence.
