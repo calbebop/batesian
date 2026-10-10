@@ -107,6 +107,16 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			})
 
 		case "notifications/initialized":
+			authz := r.Header.Get("Authorization")
+			if (mode == "a-notify-503" && authz == "Bearer tok-a") ||
+				(mode == "b-notify-503" && authz == "Bearer tok-b") {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "anon-notify-rpc-error" && authz == "" {
+				rpcErr(-32603, "not ready")
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
 
 		case "tools/list":
@@ -253,6 +263,36 @@ func runTaskIDOR(t *testing.T, srv *httptest.Server) []attack.Finding {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	return findings
+}
+
+func TestTaskIDOR_IncompleteInitializedNotification(t *testing.T) {
+	for _, tc := range []struct {
+		mode      string
+		principal string
+	}{
+		{mode: "a-notify-503", principal: "tenant-a"},
+		{mode: "anon-notify-rpc-error", principal: "anonymous"},
+		{mode: "b-notify-503", principal: "tenant-b"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := taskIDORServer(tc.mode)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{
+					TimeoutSeconds: 5,
+					MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"},
+						{Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "notifications/initialized") ||
+				!strings.Contains(err.Error(), tc.principal) {
+				t.Fatalf("want incomplete %s handshake, got findings=%+v err=%v", tc.principal, findings, err)
+			}
+		})
+	}
 }
 
 func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
