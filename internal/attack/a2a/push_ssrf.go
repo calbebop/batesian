@@ -68,6 +68,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// task acceptance. IsAccepted requires a real result envelope, which excludes
 	// both error envelopes and non-JSON 2xx bodies (login pages, empty acks).
 	var taskAccepted bool
+	var registrationConfirmed bool
 	var acceptedBinding string
 
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
@@ -86,7 +87,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			},
 		},
 	})
-	if err == nil && sendResp.StatusCode != 404 {
+	if err == nil && sendResp != nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
 	// Why no binding accepted a push registration. Classified from the responses the
@@ -94,10 +95,10 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// agent does not fetch attacker-controlled callbacks".
 	var obs setupObservation
 	credentialed := client.PresentsCredential(endpoint)
-	if err != nil || !sendResp.IsAccepted() {
+	if err != nil || sendResp == nil || !sendResp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
 	}
-	if err == nil && sendResp.IsAccepted() {
+	if err == nil && sendResp != nil && sendResp.IsAccepted() {
 		// Got a task - try to register push notification config for it
 		taskID, _ := extractTaskContext(sendResp.Body)
 		if taskID != "" {
@@ -116,9 +117,12 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 					"token":  token,
 				},
 			})
-			if pushErr == nil && pushResp.IsAccepted() {
+			if pushErr == nil && pushResp != nil && pushResp.IsAccepted() {
 				taskAccepted = true
+				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
+			} else {
+				obs.observe(classifyPushRegistration("CreateTaskPushNotificationConfig", pushResp))
 			}
 		}
 	}
@@ -133,13 +137,13 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// current server.
 	if !taskAccepted {
 		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03SendRequest(callbackURL, token, vars.RandID))
-		if err2 == nil && sendResp2.StatusCode != 404 {
+		if err2 == nil && sendResp2 != nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 != nil || !sendResp2.IsAccepted() {
+		if err2 != nil || sendResp2 == nil || !sendResp2.IsAccepted() {
 			obs.observe(classifyTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
 		}
-		if err2 == nil && sendResp2.IsAccepted() {
+		if err2 == nil && sendResp2 != nil && sendResp2.IsAccepted() {
 			// A task id is what makes this a registration rather than a plain
 			// echo: an agent that answers with a Message has nothing to attach a
 			// push config to, and claiming otherwise would have the rule wait
@@ -160,8 +164,11 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 						},
 					},
 				})
-				if setErr == nil && setResp.IsAccepted() {
+				if setErr == nil && setResp != nil && setResp.IsAccepted() {
+					registrationConfirmed = true
 					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+				} else {
+					obs.observe(classifyPushRegistration("tasks/pushNotificationConfig/set", setResp))
 				}
 			}
 		}
@@ -174,17 +181,20 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				headers := restVersionHeaders(route.version, nil)
 				sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, route.sendPath), headers,
 					restTaskSendRequest(vars.RandID, "ping", route.version))
-				if err3 == nil && sendResp3.StatusCode != 404 {
+				if err3 == nil && sendResp3 != nil && sendResp3.StatusCode != 404 {
 					reached = true
 				}
-				if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
+				if err3 == nil && sendResp3 != nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
 					if taskID := restTaskID(sendResp3.Body); taskID != "" {
 						cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
 						cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
 							restPushConfigRequest(taskID, callbackURL, token, "", vars.RandID, route.version))
-						if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+						if cfgErr == nil && cfgResp != nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
 							taskAccepted = true
+							registrationConfirmed = true
 							acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
+						} else {
+							obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
 						}
 					}
 				}
@@ -248,6 +258,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 		// A public callback does not prove private reachability.
 	} else {
+		if !registrationConfirmed && !opts.DryRun {
+			return nil, fmt.Errorf("%w: push config was sent inline, but registration was not confirmed by tasks/pushNotificationConfig/set", attack.ErrInconclusive)
+		}
 		// Using external OOB - report task accepted, user must check their OOB server.
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,

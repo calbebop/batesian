@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -14,7 +15,7 @@ import (
 // message/send is refused as unauthorized. The most explanatory observation wins,
 // so the answer does not depend on which wire happened to be tried first.
 const (
-	// setupNothing is the zero value: no answer was obtained at all.
+	// setupNothing is the zero value before any setup attempt is classified.
 	setupNothing = iota
 	// setupFeatureAbsent means the agent does not implement this surface. It is the
 	// one outcome that is genuinely not applicable rather than untested, and the
@@ -93,7 +94,7 @@ const jsonRPCMethodNotFound = -32601
 // resp is nil when the request got no answer at all.
 func classifyTaskSetup(what, endpoint string, credentialed bool, resp *attack.Response) setupObservation {
 	if resp == nil {
-		return setupObservation{}
+		return setupObservation{setupOtherRefusal, what + " did not answer, so no task existed to test with"}
 	}
 
 	// An auth refusal can arrive as an HTTP status or as a JSON-RPC error at HTTP
@@ -132,4 +133,29 @@ func classifyTaskSetup(what, endpoint string, credentialed bool, resp *attack.Re
 	return setupObservation{setupOtherRefusal, fmt.Sprintf(
 		"%s at %s was accepted but the reply carried no task id, so no task existed to "+
 			"test with", what, endpoint)}
+}
+
+// classifyPushRegistration keeps a failed config write distinct from unsupported push.
+func classifyPushRegistration(method string, resp *attack.Response) setupObservation {
+	if resp == nil {
+		return setupObservation{setupOtherRefusal, method + " push registration did not answer"}
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return setupObservation{setupAuthRefused, fmt.Sprintf("%s push registration was refused with HTTP %d", method, resp.StatusCode)}
+	}
+	if resp.IsSuccess() {
+		if attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body)) {
+			return setupObservation{setupAuthRefused, method + " push registration was refused as unauthorized"}
+		}
+		if code, ok := jsonRPCErrorCode(resp.Body); ok {
+			switch code {
+			case jsonRPCMethodNotFound, a2aPushNotSupported, a2aUnsupportedOperation:
+				return setupObservation{setupFeatureAbsent, ""}
+			}
+		}
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return setupObservation{setupFeatureAbsent, ""}
+	}
+	return setupObservation{setupOtherRefusal, fmt.Sprintf("%s push registration returned HTTP %d without an accepted config", method, resp.StatusCode)}
 }
