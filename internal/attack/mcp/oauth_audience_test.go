@@ -778,6 +778,24 @@ func TestOAuthAudience_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_IncompleteGateHandshake(t *testing.T) {
+	for _, mode := range []string{"anon-notify-503", "forged-notify-rpc-error"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := ungatedInitServer(t, mode)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).
+				Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), "notifications/initialized") {
+				t.Fatalf("missing failed handshake step: %v", err)
+			}
+		})
+	}
+}
+
 // No gate anywhere: the unauth rules own the surface, this rule reports not
 // tested instead of blanket forged-token acceptance.
 func TestOAuthAudience_FullyOpenServerIsNotTested(t *testing.T) {

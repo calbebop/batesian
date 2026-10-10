@@ -129,10 +129,10 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	if len(findings) > 0 {
 		return findings, nil
 	}
+	if legacyErr != nil {
+		return nil, legacyErr
+	}
 	if endpoint == "" && modernEndpoint == "" {
-		if legacyErr != nil {
-			return nil, legacyErr
-		}
 		return nil, attack.ErrInconclusive
 	}
 
@@ -536,12 +536,16 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 			case gateAfterInit:
 				// Initialize does not authenticate; the advertised listing
 				// does. Re-judge every probe there.
+				var incomplete []string
 				for i := range outcomes {
 					tok, err := forge(outcomes[i].probe)
 					if err != nil {
 						return "", nil, fmt.Errorf("forging token for probe %s: %w", outcomes[i].probe.name, err)
 					}
-					mresp, verdict := probeForgedAtMethod(ctx, anon, ep, gp.method, tok)
+					mresp, verdict, reason := probeForgedAtMethod(ctx, anon, ep, gp.method, tok)
+					if reason != "" {
+						incomplete = append(incomplete, outcomes[i].probe.name+": "+reason)
+					}
 					outcomes[i].tokenHP = jwtHeaderPayload(tok)
 					outcomes[i].judgedAt = judgedAtLabel(gp.method)
 					outcomes[i].verdict = verdictInconclusive
@@ -557,6 +561,9 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 					case accessRefused:
 						outcomes[i].verdict = verdictRejected
 					}
+				}
+				if len(incomplete) > 0 {
+					return ep, outcomes, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 				}
 			default:
 				// gateNowhere / gateUnknown: nothing here can be attributed to

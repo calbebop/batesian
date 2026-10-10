@@ -397,22 +397,8 @@ func TestTokenReplay_CurrentVersionNotRejected(t *testing.T) {
 	}
 }
 
-// ungatedInitServer models the posture that broke both forged-token rules:
-// initialize answers anyone, and what happens on the calls that follow is what
-// mode selects.
-//
-//   - validate: the follow-up gate accepts only the sentinel bearer - a server
-//     that validates tokens and leaves initialize open. The rules must stay
-//     silent here; before the anonymous-initialize control they fired three
-//     findings claiming absent signature validation.
-//   - presence: the gate accepts any bearer - presence-only validation. The
-//     findings must fire, judged at the gated method.
-//   - open: no gate anywhere. The unauth rules own that surface, and the token
-//     rules must report not tested rather than "accepted a forged token".
-//
-// The initialize result advertises the tools capability so the control probes
-// the real listing rather than the ping fallback. Shared with
-// oauth_audience_test.go (same package).
+// ungatedInitServer leaves initialize open and varies the method gate or
+// initialized notification. It is shared with oauth_audience_test.go.
 func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
@@ -449,11 +435,25 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 			}
 
 			authz := r.Header.Get("Authorization")
+			if req.Method == "notifications/initialized" {
+				if mode == "anon-notify-503" && authz == "" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				if mode == "forged-notify-rpc-error" && strings.HasPrefix(authz, "Bearer ") {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "error": map[string]interface{}{"code": -32603, "message": "not ready"},
+					})
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
 			accepted := false
 			switch mode {
 			case "open":
 				accepted = true
-			case "presence":
+			case "presence", "anon-notify-503", "forged-notify-rpc-error":
 				accepted = strings.HasPrefix(authz, "Bearer ")
 			case "validate":
 				accepted = authz == "Bearer good-token"
@@ -512,6 +512,24 @@ func TestTokenReplay_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
 		if !strings.Contains(f.Evidence, "judged at tools/list") {
 			t.Errorf("evidence must name the gated method the token was judged at: %s", f.Evidence)
 		}
+	}
+}
+
+func TestTokenReplay_IncompleteGateHandshake(t *testing.T) {
+	for _, mode := range []string{"anon-notify-503", "forged-notify-rpc-error"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := ungatedInitServer(t, mode)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).
+				Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), "notifications/initialized") {
+				t.Fatalf("missing failed handshake step: %v", err)
+			}
+		})
 	}
 }
 
