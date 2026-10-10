@@ -81,11 +81,13 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	ep := session.Endpoint
 
 	// Step 1: initialize again, this time presenting a client-chosen session id.
-	seeded, ok := e.initWithSession(ctx, client, ep, fixed)
-	if !ok {
-		// The endpoint is a working MCP server, so this is a rejection of the
-		// seeded id rather than an unreachable target. That is secure.
+	seeded, verdict := e.initWithSession(ctx, client, ep, fixed)
+	switch verdict {
+	case accessRefused:
 		return nil, nil
+	case accessUndetermined:
+		return nil, fmt.Errorf("%w: initialize with a client-chosen session id at %s returned neither a session nor a session refusal",
+			attack.ErrInconclusive, ep)
 	}
 	// Discriminator: the server returned its OWN session id, ignoring the
 	// supplied one. That is the correct, secure behavior - no finding.
@@ -94,11 +96,18 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	}
 	seeded.SessionID = fixed
 
-	// Best-effort: complete the handshake for the pre-seeded session.
-	_, _ = client.POST(ctx, ep, seeded.header(), map[string]interface{}{
+	initialized, initErr := client.POST(ctx, ep, seeded.header(), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
+	if initErr != nil || initialized == nil || !initialized.IsSuccess() {
+		return nil, fmt.Errorf("%w: notifications/initialized for the client-chosen session at %s did not complete",
+			attack.ErrInconclusive, ep)
+	}
+	if isJSONRPCError(initialized.BodyString()) {
+		return nil, fmt.Errorf("%w: notifications/initialized for the client-chosen session at %s returned a JSON-RPC error",
+			attack.ErrInconclusive, ep)
+	}
 
 	// Step 2: present the attacker-chosen id on a follow-up call.
 	switch e.sessionAccepted(ctx, client, seeded, nil) {
@@ -154,15 +163,8 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	return []attack.Finding{e.finding(ep, fixed, crossPrincipal, chain)}, nil
 }
 
-// initWithSession sends an initialize request to a known endpoint carrying a
-// client-chosen Mcp-Session-Id header. It returns the session id the server
-// assigned (its response header, possibly empty) and whether the handshake was
-// accepted at all.
-//
-// ok is false only when the server refused this handshake. The endpoint is
-// already known to speak MCP, so a refusal here means the seeded id was
-// rejected, which is the secure behaviour rather than an unreachable target.
-func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, endpoint, supplied string) (mcpSession, bool) {
+// initWithSession distinguishes an explicit session refusal from an unknown outcome.
+func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *attack.HTTPClient, endpoint, supplied string) (mcpSession, accessVerdict) {
 	resp, err := client.POST(ctx, endpoint, map[string]string{"Mcp-Session-Id": supplied}, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -173,13 +175,30 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-		return mcpSession{}, false
+	if err != nil || resp == nil {
+		return mcpSession{}, accessUndetermined
+	}
+	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized ||
+			resp.StatusCode == http.StatusForbidden || sessionRefusalError(resp.Body) {
+			return mcpSession{}, accessRefused
+		}
+		return mcpSession{}, accessUndetermined
 	}
 	return mcpSession{
 		Endpoint: endpoint, SessionID: resp.Headers.Get("Mcp-Session-Id"),
 		ProtocolVersion: negotiatedVersion(resp.Body),
-	}, true
+	}, accessGranted
+}
+
+func sessionRefusalError(body []byte) bool {
+	if _, ok := jsonRPCErrorCode(body); !ok {
+		return false
+	}
+	message := strings.ToLower(jsonRPCErrorMessage(body))
+	return strings.Contains(message, "invalid session") || strings.Contains(message, "unknown session") ||
+		strings.Contains(message, "unrecognized session") || strings.Contains(message, "session not found") ||
+		strings.Contains(message, "no valid session") || strings.Contains(message, "not initialized")
 }
 
 // sessionAccepted reports whether a follow-up call presenting sessionID is
