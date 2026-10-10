@@ -3,9 +3,11 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -60,6 +62,21 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 
 		switch method {
 		case "initialize":
+			if supplied != "" && mode == "seeded-502" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if supplied != "" && (mode == "seeded-rpc-error" || mode == "seeded-session-backend-error") {
+				message := "temporary failure"
+				if mode == "seeded-session-backend-error" {
+					message = "session store unavailable"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32603, "message": message},
+				})
+				return
+			}
 			sid := ""
 			switch mode {
 			case "rejects-seeded":
@@ -77,7 +94,7 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 				}
 				counter++
 				sid = fmt.Sprintf("srv-%d", counter)
-			case "fixable":
+			case "fixable", "notify-502", "notify-rpc-error":
 				if supplied != "" {
 					sid = supplied // VULNERABLE: trusts the client-chosen id
 				} else {
@@ -98,6 +115,18 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 			}
 			writeInitResult(w, id)
 		case "notifications/initialized":
+			if strings.HasPrefix(supplied, "batesian-fixed-") {
+				if mode == "notify-502" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				if mode == "notify-rpc-error" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "error": map[string]interface{}{"code": -32603, "message": "not initialized"},
+					})
+					return
+				}
+			}
 			if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-03-26" {
 				t.Errorf("initialized version = %q, want 2025-03-26", got)
 			}
@@ -213,6 +242,33 @@ func TestSessionFixation_RejectsSeededSessionIsClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings against a server that rejects the seeded id, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestSessionFixation_IncompleteSeededHandshake(t *testing.T) {
+	for _, tt := range []struct {
+		mode   string
+		reason string
+	}{
+		{"seeded-502", "initialize with a client-chosen session id"},
+		{"seeded-rpc-error", "initialize with a client-chosen session id"},
+		{"seeded-session-backend-error", "initialize with a client-chosen session id"},
+		{"notify-502", "notifications/initialized"},
+		{"notify-rpc-error", "notifications/initialized"},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			srv := fixationServer(t, tt.mode)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
+				Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), tt.reason) {
+				t.Fatalf("missing failed step %q in %v", tt.reason, err)
+			}
+		})
 	}
 }
 
