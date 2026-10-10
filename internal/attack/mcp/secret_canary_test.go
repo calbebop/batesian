@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -228,4 +229,99 @@ func TestCanary_GenericJSONEchoIsNotMCP(t *testing.T) {
 	}))
 	defer ts.Close()
 	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func TestCanary_FailedReadIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"server error", "connection drop"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := canaryFailedReadServer(t, mode)
+			defer ts.Close()
+
+			findings, err := mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "legacy tools/list") {
+				t.Fatalf("failed canary read: findings=%+v, err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCanary_ReflectionSurvivesFailedRead(t *testing.T) {
+	ts := canaryFailedReadServer(t, "reflect")
+	defer ts.Close()
+
+	findings := runCanary(t, ts)
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "modern tools/list") {
+		t.Fatalf("expected the observed reflection, got %+v", findings)
+	}
+}
+
+func TestCanary_ModernReadFailureIsIncomplete(t *testing.T) {
+	modern := modernCanaryHandler(false, false)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Mcp-Method") == "tools/list" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		modern.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "modern tools/list") {
+		t.Fatalf("failed modern read: findings=%+v, err=%v", findings, err)
+	}
+}
+
+func canaryFailedReadServer(t *testing.T, mode string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "tools/list" && r.Header.Get("MCP-Protocol-Version") != modernVersion {
+			if mode == "connection drop" {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18",
+					"serverInfo":      map[string]string{"name": "fixture", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+			return
+		}
+		message := "method not found"
+		code := -32601
+		if mode == "reflect" && req.Method == "tools/list" && r.Header.Get("MCP-Protocol-Version") == modernVersion {
+			message = "invalid token: " + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			code = -32000
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{"code": code, "message": message},
+		})
+	}))
 }
