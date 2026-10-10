@@ -4,32 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// BatchBypassExecutor tests whether an A2A server's authentication can be bypassed
-// by wrapping a request in a JSON-RPC batch array (rule a2a-jsonrpc-batch-bypass-001).
-//
-// The classic JSON-RPC batch bypass: an auth gate inspects the top-level request
-// object, but a JSON-RPC batch is an array with no top-level method, so the gate's
-// check does not fire and the array is handed to the dispatcher, which runs each
-// element. A2A enforces authentication at the HTTP layer (a rejected request
-// returns HTTP 401/403), so the bypass shows up as a single request being rejected
-// at the transport while the identical request, batch-wrapped, reaches HTTP 200 and
-// is dispatched.
-//
-// Detection sends the IDENTICAL request twice, differing only in batch wrapping,
-// for each protocol shape (A2A v1.0 GetTask, then the v0.3 tasks/get fallback):
-//   - Control: a plain JSON-RPC object, unauthenticated. It must be rejected with
-//     HTTP 401/403 for there to be an auth gate to bypass.
-//   - Test: the same object as a one-element batch array, unauthenticated. A
-//     CONFIRMED finding is raised only when it reaches HTTP 200 and the dispatcher
-//     ran (the batch response carries a result or a non-auth application error such
-//     as TaskNotFound).
-//
-// SAFETY: the probe is a read-only GetTask for a guaranteed non-existent task id.
-// It never sends a message, creates, or mutates a task.
+// BatchBypassExecutor compares unauthenticated GetTask requests with the same
+// requests wrapped in a batch. A finding requires an auth refusal followed by a
+// correlated task response. The probes only read a nonexistent task ID.
 type BatchBypassExecutor struct {
 	rule attack.RuleContext
 }
@@ -87,26 +69,98 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 		},
 	}
 
+	var incomplete []string
 	for _, s := range shapes {
 		ctrl, err := client.POST(ctx, endpoint, s.headers, s.obj)
-		if err != nil {
+		if err != nil || ctrl == nil {
+			incomplete = append(incomplete, s.label+" control request failed")
+			continue
+		}
+		requestID, _ := s.obj["id"].(string)
+		if ctrl.StatusCode == 429 || ctrl.StatusCode >= 500 {
+			incomplete = append(incomplete, s.label+" control response was not judged")
 			continue
 		}
 		// An HTTP auth gate must reject the single request, otherwise there is no
 		// authentication to bypass for this shape.
 		if !isA2AAuthRejection(ctrl) {
+			if ambiguousBatchResponse(ctrl, requestID, false) {
+				incomplete = append(incomplete, s.label+" control response was not judged")
+			}
 			continue
 		}
 		test, err := client.POST(ctx, endpoint, s.headers, []interface{}{s.obj})
-		if err != nil {
+		if err != nil || test == nil {
+			incomplete = append(incomplete, s.label+" batch request failed")
 			continue
 		}
-		requestID, _ := s.obj["id"].(string)
 		if test.IsSuccess() && a2aBatchDispatched(test.Body, requestID) {
 			return e.finding(endpoint, s.label, ctrl, test), nil
 		}
+		if ambiguousBatchResponse(test, requestID, true) {
+			incomplete = append(incomplete, s.label+" batch response was not judged")
+		}
+	}
+	if len(incomplete) != 0 {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 	}
 	return nil, nil
+}
+
+func ambiguousBatchResponse(resp *attack.Response, requestID string, batch bool) bool {
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return true
+	}
+	if !resp.IsSuccess() {
+		return false
+	}
+	if batch {
+		return !a2aBatchRejected(resp.Body, requestID)
+	}
+	return !a2aSingleAnswered(resp.Body, requestID)
+}
+
+func a2aSingleAnswered(body []byte, requestID string) bool {
+	var response struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      string          `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	return json.Unmarshal(body, &response) == nil && response.JSONRPC == "2.0" &&
+		response.ID == requestID && (len(response.Result) != 0 || len(response.Error) != 0)
+}
+
+func a2aBatchRejected(body []byte, requestID string) bool {
+	type rpcResponse struct {
+		ID    json.RawMessage `json:"id"`
+		Error json.RawMessage `json:"error"`
+	}
+	var responses []rpcResponse
+	if json.Unmarshal(body, &responses) != nil {
+		var response rpcResponse
+		return json.Unmarshal(body, &response) == nil && a2aRejectedError(response.ID, response.Error, requestID)
+	}
+	for _, response := range responses {
+		if a2aRejectedError(response.ID, response.Error, requestID) {
+			return true
+		}
+	}
+	return false
+}
+
+func a2aRejectedError(rawID, rawError json.RawMessage, requestID string) bool {
+	if string(rawID) != "null" {
+		var id string
+		if json.Unmarshal(rawID, &id) != nil || id != requestID {
+			return false
+		}
+	}
+	var rpcErr struct {
+		Code int `json:"code"`
+	}
+	return json.Unmarshal(rawError, &rpcErr) == nil &&
+		(errMessageIsAuthRaw(rawError) || rpcErr.Code >= -32700 && rpcErr.Code <= -32600)
 }
 
 func (e *BatchBypassExecutor) finding(endpoint, shape string, ctrl, test *attack.Response) []attack.Finding {

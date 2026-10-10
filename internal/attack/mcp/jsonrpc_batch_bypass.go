@@ -4,32 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// BatchBypassExecutor tests whether an MCP server's authentication can be bypassed
-// by wrapping a request in a JSON-RPC batch array (rule mcp-jsonrpc-batch-bypass-001).
-//
-// The classic JSON-RPC batch bypass: an auth/method gate inspects the top-level
-// request object (e.g. "allow initialize, require auth for everything else" keyed
-// on body.method). A JSON-RPC batch is an array, so it has no top-level method;
-// the gate's check does not fire, and the array is handed to the dispatcher, which
-// executes each element. An attacker reaches a gated method by array-wrapping it.
-//
-// Detection sends the IDENTICAL request twice, differing only in batch wrapping:
-//   - Control: the request as a plain JSON-RPC object, unauthenticated.
-//   - Test:    the same request as a one-element batch array, unauthenticated.
-//
-// A CONFIRMED finding is raised only when the control is rejected (the gate holds
-// for a single object) but the batch is processed and returns a result (the gate
-// is bypassed). If both are rejected, or the server rejects the array outright
-// (the compliant behaviour: batching was removed in MCP revision 2025-06-18), no
-// finding is raised. Two gate shapes are probed: an HTTP/auth gate on initialize,
-// and a per-method gate on tools/resources/prompts list when initialize is open.
-//
-// SAFETY: the rule only sends initialize and *list (enumeration) methods. It never
-// invokes a tool, sends a message, or mutates state.
+// BatchBypassExecutor compares unauthenticated single and batch requests for MCP
+// initialize and advertised list methods. It never invokes tools or mutates state.
 type BatchBypassExecutor struct {
 	rule attack.RuleContext
 }
@@ -50,13 +31,22 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 	// server's auth gate. Injecting opts.Token would mask the bypass.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probeEndpoint(ctx, client, ep)
+	var incomplete error
+	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		result, reached, probeErr := e.probeEndpoint(ctx, client, ep)
+		if reached {
+			incomplete = probeErr
+		}
+		return result, reached
 	})
+	if len(findings) != 0 || err != nil {
+		return findings, err
+	}
+	return nil, incomplete
 }
 
 // probeEndpoint runs the bypass check against a single candidate endpoint.
-func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool) {
+func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool, error) {
 	initObj := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -71,49 +61,60 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 	}
 
 	ctrl, err := client.POST(ctx, ep, nil, initObj)
-	if err != nil {
-		return nil, false // endpoint unreachable
+	if err != nil || ctrl == nil {
+		return nil, false, nil // endpoint unreachable
+	}
+	if ctrl.StatusCode == 429 || ctrl.StatusCode >= 500 {
+		return nil, false, nil
 	}
 
 	switch {
 	case isAuthRejection(ctrl):
 		// The server gates initialize itself. Does a one-element batch slip past?
 		test, err := client.POST(ctx, ep, nil, []interface{}{initObj})
-		if err != nil {
-			return nil, true
+		if err != nil || test == nil {
+			return nil, true, fmt.Errorf("%w: initialize batch request failed", attack.ErrInconclusive)
 		}
 		if test.IsSuccess() && batchInitializeSucceeded(test.Body, 1) {
 			detail := fmt.Sprintf(
 				"single initialize: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [initialize]: HTTP %d (processed, returned an MCP initialize result)",
 				ctrl.StatusCode, test.StatusCode)
-			return e.finding(ep, "initialize", detail), true
+			return e.finding(ep, "initialize", detail), true, nil
 		}
-		return nil, true
+		if ambiguousMCPBatchResponse(test, 1) {
+			return nil, true, fmt.Errorf("%w: initialize batch response was not judged", attack.ErrInconclusive)
+		}
+		return nil, true, nil
 
 	case isMCPInitialize(ctrl):
 		// initialize is open; look for a per-method gate that the batch bypasses.
 		session := mcpSession{Endpoint: ep, SessionID: ctrl.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(ctrl.Body), RawInit: ctrl.Body}
-		_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
+		initialized, err := client.POST(ctx, ep, session.header(), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
-		return e.probeMethodGate(ctx, client, session), true
+		if err != nil || initialized == nil || !initialized.IsSuccess() {
+			return nil, true, fmt.Errorf("%w: initialized notification failed", attack.ErrInconclusive)
+		}
+		findings, err := e.probeMethodGate(ctx, client, session)
+		return findings, true, err
 
 	default:
-		return nil, false // not an MCP endpoint
+		return nil, false, nil // not an MCP endpoint
 	}
 }
 
 // probeMethodGate looks for a list method that is auth-gated for a single request
 // but reachable when batch-wrapped. It only tests capabilities the server actually
 // advertised, so it never probes methods the server does not implement.
-func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attack.HTTPClient, session mcpSession) []attack.Finding {
+func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]attack.Finding, error) {
 	candidates := []struct{ capability, method string }{
 		{"tools", "tools/list"},
 		{"resources", "resources/list"},
 		{"prompts", "prompts/list"},
 	}
+	var incomplete []string
 	for _, c := range candidates {
 		if !session.ServerSupports(c.capability) {
 			continue
@@ -125,7 +126,12 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 			"params":  map[string]interface{}{},
 		}
 		ctrl, err := client.POST(ctx, session.Endpoint, session.header(), obj)
-		if err != nil {
+		if err != nil || ctrl == nil {
+			incomplete = append(incomplete, c.method+" control request failed")
+			continue
+		}
+		if ambiguousMCPSingleResponse(ctrl, 2) {
+			incomplete = append(incomplete, c.method+" control response was not judged")
 			continue
 		}
 		// Only a gated method is a bypass target: if the single request already
@@ -134,7 +140,8 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 			continue
 		}
 		test, err := client.POST(ctx, session.Endpoint, session.header(), []interface{}{obj})
-		if err != nil {
+		if err != nil || test == nil {
+			incomplete = append(incomplete, c.method+" batch request failed")
 			continue
 		}
 		if test.IsSuccess() && batchListSucceeded(test.Body, 2, c.capability) {
@@ -142,10 +149,73 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 				"single %s: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [%s]: HTTP %d (processed, returned a result)",
 				c.method, ctrl.StatusCode, c.method, test.StatusCode)
-			return e.finding(session.Endpoint, c.method, detail)
+			return e.finding(session.Endpoint, c.method, detail), nil
+		}
+		if ambiguousMCPBatchResponse(test, 2) {
+			incomplete = append(incomplete, c.method+" batch response was not judged")
 		}
 	}
-	return nil
+	if len(incomplete) != 0 {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+	}
+	return nil, nil
+}
+
+func ambiguousMCPSingleResponse(resp *attack.Response, requestID int) bool {
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return true
+	}
+	if !resp.IsSuccess() || isAuthRejection(resp) {
+		return false
+	}
+	var response struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      int             `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	return json.Unmarshal(resp.Body, &response) != nil || response.JSONRPC != "2.0" ||
+		response.ID != requestID || len(response.Result) == 0 && len(response.Error) == 0
+}
+
+func ambiguousMCPBatchResponse(resp *attack.Response, requestID int) bool {
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return true
+	}
+	if !resp.IsSuccess() {
+		return false
+	}
+	type rpcResponse struct {
+		ID    json.RawMessage `json:"id"`
+		Error json.RawMessage `json:"error"`
+	}
+	var responses []rpcResponse
+	if json.Unmarshal(resp.Body, &responses) != nil {
+		var response rpcResponse
+		return json.Unmarshal(resp.Body, &response) != nil ||
+			!mcpBatchRejectedError(response.ID, response.Error, requestID)
+	}
+	for _, response := range responses {
+		if mcpBatchRejectedError(response.ID, response.Error, requestID) {
+			return false
+		}
+	}
+	return true
+}
+
+func mcpBatchRejectedError(rawID, rawError json.RawMessage, requestID int) bool {
+	if string(rawID) != "null" {
+		var id int
+		if json.Unmarshal(rawID, &id) != nil || id != requestID {
+			return false
+		}
+	}
+	var rpcErr struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	return json.Unmarshal(rawError, &rpcErr) == nil &&
+		(authFlavoredError(rpcErr.Code, rpcErr.Message) || rpcErr.Code >= -32700 && rpcErr.Code <= -32600)
 }
 
 func (e *BatchBypassExecutor) finding(ep, method, detail string) []attack.Finding {
