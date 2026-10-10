@@ -71,6 +71,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	var obs setupObservation
 	credentialed := client.PresentsCredential(endpoint)
 	taskAccepted := false
+	registrationConfirmed := false
 	acceptedBinding := ""
 	acceptedTaskID := ""
 
@@ -88,13 +89,13 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			},
 		},
 	})
-	if err == nil && sendResp.StatusCode != 404 {
+	if err == nil && sendResp != nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
-	if err != nil || !sendResp.IsAccepted() {
+	if err != nil || sendResp == nil || !sendResp.IsAccepted() {
 		obs.observe(classifyTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
 	}
-	if err == nil && sendResp.IsAccepted() {
+	if err == nil && sendResp != nil && sendResp.IsAccepted() {
 		if taskID, _ := extractTaskContext(sendResp.Body); taskID != "" {
 			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -109,10 +110,13 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					},
 				},
 			})
-			if pushErr == nil && pushResp.IsAccepted() {
+			if pushErr == nil && pushResp != nil && pushResp.IsAccepted() {
 				taskAccepted = true
+				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
 				acceptedTaskID = taskID
+			} else {
+				obs.observe(classifyPushRegistration("CreateTaskPushNotificationConfig", pushResp))
 			}
 		}
 	}
@@ -121,13 +125,13 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	// explicit set call for servers that ignore the inline form.
 	if !taskAccepted {
 		sendResp2, err2 := client.POST(ctx, endpoint, map[string]string{}, buildV03AuthSendRequest(callbackURL, token, credential, vars.RandID))
-		if err2 == nil && sendResp2.StatusCode != 404 {
+		if err2 == nil && sendResp2 != nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 != nil || !sendResp2.IsAccepted() {
+		if err2 != nil || sendResp2 == nil || !sendResp2.IsAccepted() {
 			obs.observe(classifyTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
 		}
-		if err2 == nil && sendResp2.IsAccepted() {
+		if err2 == nil && sendResp2 != nil && sendResp2.IsAccepted() {
 			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v0.3-message-send"
@@ -147,8 +151,11 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 						},
 					},
 				})
-				if setErr == nil && setResp.IsAccepted() {
+				if setErr == nil && setResp != nil && setResp.IsAccepted() {
+					registrationConfirmed = true
 					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+				} else {
+					obs.observe(classifyPushRegistration("tasks/pushNotificationConfig/set", setResp))
 				}
 			}
 		}
@@ -161,18 +168,21 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 				headers := restVersionHeaders(route.version, nil)
 				sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, route.sendPath), headers,
 					restTaskSendRequest(vars.RandID, "ping", route.version))
-				if err3 == nil && sendResp3.StatusCode != 404 {
+				if err3 == nil && sendResp3 != nil && sendResp3.StatusCode != 404 {
 					reached = true
 				}
-				if err3 == nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
+				if err3 == nil && sendResp3 != nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
 					if taskID := restTaskID(sendResp3.Body); taskID != "" {
 						cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
 						cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
 							restPushConfigRequest(taskID, callbackURL, token, credential, vars.RandID, route.version))
-						if cfgErr == nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+						if cfgErr == nil && cfgResp != nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
 							taskAccepted = true
+							registrationConfirmed = true
 							acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
 							acceptedTaskID = taskID
+						} else {
+							obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
 						}
 					}
 				}
@@ -203,6 +213,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			// A dry run sends nothing and observes nothing; the recorded plan
 			// already shows the callback request.
 			return nil, nil
+		}
+		if !registrationConfirmed {
+			return nil, fmt.Errorf("%w: push config was sent inline, but registration was not confirmed by tasks/pushNotificationConfig/set", attack.ErrInconclusive)
 		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
