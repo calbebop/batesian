@@ -161,8 +161,9 @@ func TestBatchBypass_AuthRefusalWordingIsRecognized(t *testing.T) {
 
 func TestBatchBypass_RequiresCorrelatedTaskResponse(t *testing.T) {
 	tests := []struct {
-		name     string
-		response func(interface{}) map[string]interface{}
+		name         string
+		inconclusive bool
+		response     func(interface{}) map[string]interface{}
 	}{
 		{
 			name: "null id invalid batch",
@@ -174,7 +175,8 @@ func TestBatchBypass_RequiresCorrelatedTaskResponse(t *testing.T) {
 			},
 		},
 		{
-			name: "unrelated task response",
+			name:         "unrelated task response",
+			inconclusive: true,
 			response: func(interface{}) map[string]interface{} {
 				return map[string]interface{}{
 					"jsonrpc": "2.0", "id": "unrelated",
@@ -212,9 +214,69 @@ func TestBatchBypass_RequiresCorrelatedTaskResponse(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			if findings := runBatchBypass(t, srv); len(findings) != 0 {
-				t.Fatalf("expected no finding for an unproven dispatch, got %+v", findings)
+			exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tt.inconclusive {
+				t.Fatalf("unproven dispatch: findings=%+v, err=%v", findings, err)
 			}
 		})
+	}
+}
+
+func TestBatchBypass_FailedBatchIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"server error", "connection drop"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if mode == "connection drop" {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Errorf("hijack: %v", err)
+						return
+					}
+					_ = conn.Close()
+					return
+				}
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "batch") {
+				t.Fatalf("failed batch: findings=%+v, err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestBatchBypass_ExplicitProtocolRejectionIsClean(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": nil,
+			"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+		})
+	}))
+	defer srv.Close()
+
+	if findings := runBatchBypass(t, srv); len(findings) != 0 {
+		t.Fatalf("rejected batch: findings=%+v", findings)
 	}
 }

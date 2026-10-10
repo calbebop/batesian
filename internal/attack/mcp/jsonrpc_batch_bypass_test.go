@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -194,8 +196,10 @@ func TestBatchBypass_RequiresCorrelatedResult(t *testing.T) {
 			srv := batchServer(mode)
 			defer srv.Close()
 
-			if findings := runBatchBypass(t, srv); len(findings) != 0 {
-				t.Fatalf("expected no finding for an unrelated response, got %+v", findings)
+			exec := mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unrelated response: findings=%+v, err=%v", findings, err)
 			}
 		})
 	}
@@ -207,9 +211,81 @@ func TestBatchBypass_RequiresExpectedResultShape(t *testing.T) {
 			srv := batchServer(mode)
 			defer srv.Close()
 
-			if findings := runBatchBypass(t, srv); len(findings) != 0 {
-				t.Fatalf("expected no finding for a malformed result, got %+v", findings)
+			exec := mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("malformed response: findings=%+v, err=%v", findings, err)
 			}
 		})
+	}
+}
+
+func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"initialize batch error", "method batch error", "notification error"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/mcp" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				isBatch := strings.HasPrefix(strings.TrimSpace(string(body)), "[")
+				switch {
+				case isBatch:
+					w.WriteHeader(http.StatusBadGateway)
+				case strings.Contains(string(body), "notifications/initialized"):
+					if mode == "notification error" {
+						w.WriteHeader(http.StatusBadGateway)
+					} else {
+						w.WriteHeader(http.StatusAccepted)
+					}
+				case strings.Contains(string(body), "initialize") && mode == "initialize batch error":
+					w.WriteHeader(http.StatusUnauthorized)
+				case strings.Contains(string(body), "initialize"):
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": 1,
+						"result": map[string]interface{}{
+							"protocolVersion": "2025-03-26",
+							"serverInfo":      map[string]interface{}{"name": "fixture", "version": "1"},
+							"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+						},
+					})
+				case strings.Contains(string(body), "tools/list"):
+					w.WriteHeader(http.StatusUnauthorized)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			exec := mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("failed check: findings=%+v, err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestBatchBypass_ExplicitProtocolRejectionIsClean(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": nil,
+			"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+		})
+	}))
+	defer srv.Close()
+
+	if findings := runBatchBypass(t, srv); len(findings) != 0 {
+		t.Fatalf("rejected batch: findings=%+v", findings)
 	}
 }
