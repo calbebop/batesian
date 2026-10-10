@@ -42,24 +42,42 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 	canaryOpts.Token = canary
 	client := attack.NewHTTPClient(canaryOpts, vars)
 
-	return probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		return e.probe(ctx, client, ep, canary)
+	var incomplete string
+	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
+		result, reached, reason := e.probe(ctx, client, ep, canary)
+		if reached {
+			incomplete = reason
+		}
+		return result, reached
 	})
+	if len(findings) != 0 || err != nil {
+		return findings, err
+	}
+	if incomplete != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, incomplete)
+	}
+	return nil, nil
 }
 
-func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool) {
+func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool, string) {
 	applicable := false
 	reflectedIn := ""
 	reflectedAt := ""
+	var incomplete []string
 
-	record := func(resp *attack.Response, at string) {
-		if resp == nil {
+	record := func(resp *attack.Response, err error, at string) {
+		if err != nil || resp == nil {
+			incomplete = append(incomplete, at)
 			return
 		}
 		body := resp.BodyString()
 		if reflectedIn == "" && strings.Contains(body, canary) {
 			reflectedIn = body
 			reflectedAt = at
+		}
+		if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 ||
+			resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			incomplete = append(incomplete, at)
 		}
 	}
 
@@ -74,32 +92,32 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
+	record(initResp, err, "legacy initialize")
 	if err == nil && initResp != nil {
-		record(initResp, "legacy initialize")
 		if isMCPInitialize(initResp) {
 			applicable = true
 			session := mcpSession{Endpoint: ep, Era: EraLegacy, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
-			initialized, _ := client.POST(ctx, ep, session.header(), map[string]interface{}{
+			initialized, initErr := client.POST(ctx, ep, session.header(), map[string]interface{}{
 				"jsonrpc": "2.0", "method": "notifications/initialized",
 			})
-			record(initialized, "legacy notifications/initialized")
+			record(initialized, initErr, "legacy notifications/initialized")
 			for i, method := range []string{"tools/list", "resources/list"} {
-				resp, _ := session.post(ctx, client, i+2, method, nil)
-				record(resp, "legacy "+method)
+				resp, listErr := session.post(ctx, client, i+2, method, nil)
+				record(resp, listErr, "legacy "+method)
 			}
 		}
 	}
 
 	modern := mcpSession{Endpoint: ep, Era: EraModern}
-	discover, _ := modern.post(ctx, client, 4, "server/discover", nil)
-	record(discover, "modern server/discover")
+	discover, discoverErr := modern.post(ctx, client, 4, "server/discover", nil)
+	record(discover, discoverErr, "modern server/discover")
 	if discover != nil && ((discover.IsAccepted() && modernWireAdvertised(discover.Body)) ||
 		(authRefusal(discover) && hasBearerChallenge(discover))) {
 		applicable = true
 	}
 	for i, method := range []string{"tools/list", "resources/list"} {
-		resp, _ := modern.post(ctx, client, i+5, method, nil)
-		record(resp, "modern "+method)
+		resp, listErr := modern.post(ctx, client, i+5, method, nil)
+		record(resp, listErr, "modern "+method)
 	}
 
 	if !applicable && reflectedIn != "" && looksJSONRPC(reflectedIn) {
@@ -107,7 +125,10 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	}
 
 	if !applicable || reflectedIn == "" {
-		return nil, applicable
+		if applicable && len(incomplete) != 0 {
+			return nil, true, "credential-canary responses were not observed: " + strings.Join(incomplete, ", ")
+		}
+		return nil, applicable, ""
 	}
 
 	return []attack.Finding{{
@@ -125,7 +146,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			ep, reflectedAt, canary, snippetAround(reflectedIn, canary)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
-	}}, true
+	}}, true, ""
 }
 
 // looksJSONRPC rejects generic JSON errors that only resemble MCP replies.
