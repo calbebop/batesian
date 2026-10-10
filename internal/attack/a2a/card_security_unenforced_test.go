@@ -112,6 +112,51 @@ func cardSecServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			switch mode {
+			case "setup-drop":
+				if method == "SendMessage" {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						_ = conn.Close()
+					}
+					return
+				}
+				rpcErr(-32601, "Method not found")
+				return
+			case "setup-gateway", "setup-fallback-success":
+				if method == "SendMessage" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				if mode == "setup-gateway" {
+					rpcErr(-32601, "Method not found")
+					return
+				}
+			case "setup-malformed":
+				if method == "SendMessage" {
+					_, _ = io.WriteString(w, "not JSON")
+				} else {
+					rpcErr(-32601, "Method not found")
+				}
+				return
+			case "setup-invalid-params":
+				if method == "SendMessage" {
+					rpcErr(-32602, "Invalid params")
+				} else {
+					rpcErr(-32601, "Method not found")
+				}
+				return
+			case "setup-auth-gateway":
+				if method == "SendMessage" {
+					w.WriteHeader(http.StatusUnauthorized)
+				} else {
+					w.WriteHeader(http.StatusBadGateway)
+				}
+				return
+			case "setup-unsupported":
+				rpcErr(-32601, "Method not found")
+				return
+			}
 			if mode == "result-no-taskid" {
 				// A result envelope that carries no task id: not a confirmable
 				// task creation, so the rule must not fire.
@@ -283,10 +328,51 @@ func TestCardSecurity_ResultWithoutTaskID(t *testing.T) {
 	defer srv.Close()
 
 	findings, err := runCardSec(t, srv)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("missing task ID must be incomplete: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for a result with no task id, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestCardSecurity_IncompleteCreateProbeOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode   string
+		method string
+	}{
+		{"setup-drop", "SendMessage"},
+		{"setup-gateway", "SendMessage"},
+		{"setup-malformed", "SendMessage"},
+		{"setup-invalid-params", "SendMessage"},
+		{"setup-auth-gateway", "message/send"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := cardSecServer(tc.mode)
+			defer srv.Close()
+			findings, err := runCardSec(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), tc.method) {
+				t.Fatalf("unjudged create must be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCardSecurity_UnsupportedCreateIsNotApplicable(t *testing.T) {
+	srv := cardSecServer("setup-unsupported")
+	defer srv.Close()
+	findings, err := runCardSec(t, srv)
+	if len(findings) != 0 || err != nil {
+		t.Fatalf("explicitly unsupported methods are not applicable: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestCardSecurity_FindingSurvivesFailedFirstMethod(t *testing.T) {
+	srv := cardSecServer("setup-fallback-success")
+	defer srv.Close()
+	findings, err := runCardSec(t, srv)
+	if len(findings) != 1 || err != nil {
+		t.Fatalf("v0.3 task creation should retain the finding: findings=%+v err=%v", findings, err)
 	}
 }
