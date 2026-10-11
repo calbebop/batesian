@@ -2,8 +2,9 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -61,9 +62,10 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 			blockedReason = blocked
 		}
 
-		// Mcp-Name is a separate required header on the name-bearing methods, with the
-		// same MUST behind it, and a server can validate Mcp-Method while ignoring it.
-		// It is probed independently so one dimension passing does not hide the other.
+		if session.ProtocolVersion < headerValidationVersion {
+			continue
+		}
+		// Check Mcp-Name independently of Mcp-Method.
 		nf, nameTested, nameBlocked := e.probeName(ctx, client, session)
 		findings = append(findings, labelEra(session, nf)...)
 		if nameTested {
@@ -76,45 +78,18 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	if len(findings) > 0 {
 		return findings, nil
 	}
-	// A wire that got past the presence probe exercised the rule, so a clean result
-	// is a real one even when another wire had no such requirement. Without this a
-	// dual-era server whose modern wire validates the header correctly would still
-	// be reported as not tested, on the strength of its legacy wire.
-	if anyTested {
-		return nil, nil
-	}
-
-	// Nothing found. Whether that is a clean result depends on the wires available.
-	//
-	// Mcp-Method mirroring and its -32020 HeaderMismatch rejection were introduced
-	// by SEP-2243 in 2026-07-28. On an earlier wire there is no requirement to
-	// violate, so probe 1 is always accepted and nothing is tested. Reporting that
-	// as clean asserted header/body consistency about a server that was never
-	// asked. A server on 2026-07-28 or later that ignores the header is a different
-	// matter and reports clean, because this rule's subject is the mismatch, not
-	// the absence.
-	//
-	// The dated revisions sort lexicographically, which is what makes the compare
-	// safe.
-	if unawareAt != "" && unawareAt < headerValidationVersion {
-		return nil, fmt.Errorf("%w: no SEP-2243 surface at MCP %s; Mcp-Method validation was introduced in %s",
-			attack.ErrInconclusive, unawareAt, headerValidationVersion)
-	}
-	// A run that could not reach the mismatch probe has not shown the header/body
-	// surface to be sound. This used to fall through to clean, so any server whose
-	// tools/list is credential-gated, or which answers -32601 because it exposes no
-	// tools, had its SEP-2243 handling reported as fine without a single mismatch
-	// being sent.
 	if blockedReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason)
 	}
-	// Last resort, and the guard on unawareAt is the point: a wire that carries the
-	// requirement and ignores the header is a REASONED clean result (the observation
-	// was made, it is simply not this rule's subject), so the name dimension failing to
-	// decide must not convert it into "not tested". Only when the Mcp-Method dimension
-	// reached no conclusion whatsoever does the name dimension get to explain the run.
-	if nameBlockedReason != "" && unawareAt == "" {
+	if nameBlockedReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, nameBlockedReason)
+	}
+	if anyTested {
+		return nil, nil
+	}
+	if unawareAt != "" && unawareAt < headerValidationVersion {
+		return nil, fmt.Errorf("%w: no SEP-2243 surface at MCP %s; Mcp-Method validation was introduced in %s",
+			attack.ErrInconclusive, unawareAt, headerValidationVersion)
 	}
 	return nil, nil
 }
@@ -171,12 +146,12 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 			"returned neither a result nor a refusal, so whether the server validates the header " +
 			"VALUE could not be established"
 	case accessRefused:
-		// The value IS validated. One narrower way to get it wrong remains: comparing
-		// case-insensitively. This runs only here, because a server that ignores the
-		// value outright already reports above and a second finding would say the same
-		// thing twice.
-		if e.toolsList(ctx, client, session, caseFoldedMethodHeader) == accessGranted {
+		// Check whether the server compares header values case-insensitively.
+		switch e.toolsList(ctx, client, session, caseFoldedMethodHeader) {
+		case accessGranted:
 			return []attack.Finding{e.caseFoldedFinding(session)}, "", true, ""
+		case accessUndetermined:
+			return nil, "", true, "the case-folded Mcp-Method probe returned neither a tools/list result nor a header-mismatch rejection"
 		}
 		return nil, "", true, ""
 	}
@@ -220,38 +195,30 @@ func omitMethodHeader(h map[string]string) { delete(h, "Mcp-Method") }
 func matchMethodHeader(h map[string]string)    { h["Mcp-Method"] = "tools/list" }
 func mismatchMethodHeader(h map[string]string) { h["Mcp-Method"] = "tools/call" }
 
-// toolsList sends a tools/list body. methodHeader controls the Mcp-Method header:
-// nil omits it; otherwise it is set to the given (possibly mismatched) value. It
-// reports whether the server EXECUTED tools/list (returned a result.tools array).
-// toolsList grades one shaped tools/list call.
-//
-// This returned a bool, so a transport failure, a 502, a 429 and an unparseable
-// body were all indistinguishable from the server REFUSING the call. Probe 1's
-// failure is read as "the server enforces Mcp-Method presence", so one transient
-// failure on a legacy server carried the rule into probes 2 and 3, which succeed by
-// construction there because the header means nothing, and it emitted a
-// high/ConfirmedExploit finding asserting presence was enforced on a server with no
-// such requirement.
+// toolsList accepts only a matching listing or an explicit header-mismatch rejection.
 func (e *HeaderBodySplitExecutor) toolsList(ctx context.Context, client *attack.HTTPClient, session mcpSession, shape func(map[string]string)) accessVerdict {
 	resp, err := session.postShaping(ctx, client, 2, "tools/list", nil, shape)
-	v := classifyAccess(resp, err, 2)
-	if v != accessGranted {
-		return v
-	}
-	// A result envelope that is not a tools listing is not an execution of
-	// tools/list, and nothing follows from it either way.
-	var b map[string]interface{}
-	if json.Unmarshal(resp.Body, &b) != nil {
+	if err != nil || resp == nil {
 		return accessUndetermined
 	}
-	result, ok := b["result"].(map[string]interface{})
-	if !ok {
+	b, ok := parseResponseBody(resp.Body)
+	if !ok || !matchesRPCID(b, 2) {
 		return accessUndetermined
 	}
-	if _, hasTools := result["tools"]; !hasTools {
-		return accessUndetermined
+	if resp.StatusCode == http.StatusBadRequest && validRPCError(b) {
+		if rpcErrorCode(b["error"].(map[string]interface{})["code"]) == headerMismatchCode {
+			return accessRefused
+		}
 	}
-	return accessGranted
+	if resp.IsSuccess() && validRPCResult(b) {
+		result, ok := b["result"].(map[string]interface{})
+		if ok {
+			if _, ok := result["tools"].([]interface{}); ok {
+				return accessGranted
+			}
+		}
+	}
+	return accessUndetermined
 }
 
 // nameProbeSubject is the resource URI and prompt name the Mcp-Name probes ask for.
@@ -269,13 +236,14 @@ const nameProbeSubject = "batesian-nonexistent-subject"
 // scanner must not invoke a tool to find out. resources/read and prompts/get are
 // reads, and with a subject that does not exist there is nothing to read.
 type nameBearingProbe struct {
-	method string
-	field  string
+	method     string
+	field      string
+	capability string
 }
 
 var nameBearingProbes = []nameBearingProbe{
-	{"resources/read", "uri"},
-	{"prompts/get", "name"},
+	{"resources/read", "uri", "resources"},
+	{"prompts/get", "name", "prompts"},
 }
 
 // probeName tests the Mcp-Name header on one wire.
@@ -288,6 +256,9 @@ var nameBearingProbes = []nameBearingProbe{
 func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.HTTPClient,
 	session mcpSession) (findings []attack.Finding, tested bool, blocked string) {
 	for _, np := range nameBearingProbes {
+		if !session.ServerSupports(np.capability) {
+			continue
+		}
 		params := map[string]interface{}{np.field: nameProbeSubject}
 
 		// Control: omit Mcp-Name. A dispatch here means presence is not enforced.
@@ -296,7 +267,8 @@ func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.
 		})
 		switch omitted {
 		case nameNotImplemented:
-			continue // this server does not offer the method; try the next one
+			blocked = "the server advertised " + np.capability + " but " + np.method + " returned method not found"
+			continue
 		case nameUndetermined:
 			blocked = "the " + np.method + " probe with no Mcp-Name header returned neither a " +
 				"header-mismatch error nor a dispatched answer, so whether the server enforces " +
@@ -325,7 +297,7 @@ func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.
 		})
 		switch mismatched {
 		case nameRejected:
-			return nil, true, "" // validated: the mismatch was refused with -32020
+			tested = true
 		case nameDispatched:
 			return []attack.Finding{e.nameMismatchFinding(session, np)}, true, ""
 		default:
@@ -334,7 +306,7 @@ func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.
 				"could not be established"
 		}
 	}
-	return nil, false, blocked
+	return nil, tested, blocked
 }
 
 // nameVerdict grades one shaped name-bearing call by which error came back.
@@ -372,15 +344,20 @@ func (e *HeaderBodySplitExecutor) nameVerdict(ctx context.Context, client *attac
 		return nameUndetermined
 	}
 	code := rpcErrorCode(body["error"].(map[string]interface{})["code"])
-	switch code {
-	case headerMismatchCode:
+	if resp.StatusCode == http.StatusBadRequest && code == headerMismatchCode {
 		return nameRejected
-	case mcpMethodNotFound:
+	}
+	if !resp.IsSuccess() {
+		return nameUndetermined
+	}
+	if code == mcpMethodNotFound {
 		return nameNotImplemented
 	}
-	// Any other error is the server having dispatched far enough to complain about
-	// the subject, the params or authorization, none of which is a header rejection.
-	return nameDispatched
+	message, _ := body["error"].(map[string]interface{})["message"].(string)
+	if strings.Contains(strings.ToLower(message), "not found") && strings.Contains(message, nameProbeSubject) {
+		return nameDispatched
+	}
+	return nameUndetermined
 }
 
 // caseFoldedMethodHeader spells the body's method in upper case. Header VALUES are

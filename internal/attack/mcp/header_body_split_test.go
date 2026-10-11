@@ -72,6 +72,22 @@ func splitServerAt(mode, version string) *httptest.Server {
 					return
 				}
 				writeTools()
+			case "gateway":
+				if hdr == "" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				writeTools()
+			case "generic-error":
+				if hdr == "" {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+					})
+					return
+				}
+				writeTools()
 			default: // split: enforce presence, ignore value
 				if hdr == "" {
 					reject()
@@ -118,6 +134,21 @@ func TestSplit_Strict(t *testing.T) {
 
 	if findings := runSplit(t, ts); len(findings) != 0 {
 		t.Errorf("expected zero findings against a strict server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestSplit_MethodPresenceWithoutHeaderVerdictIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"gateway", "generic-error"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := splitServerAt(mode, "2026-07-28")
+			defer ts.Close()
+
+			findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
+				Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("no header verdict: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
