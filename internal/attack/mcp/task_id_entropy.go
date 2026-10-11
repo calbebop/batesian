@@ -137,7 +137,8 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 				return nil, fmt.Sprintf("task-augmented tools/call against %q was %s on this wire, so "+
 					"no handle could be minted", safeTool.name, scopeVerdictName(verdict)), false, nil
 			}
-			break // mid-collection refusal: judge what was collected
+			stopReason = "the next tools/call was " + scopeVerdictName(verdict)
+			break
 		}
 		id := teTaskID(resp.Body, requestID)
 		if id == "" {
@@ -145,13 +146,14 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 				return nil, fmt.Sprintf("tools/call against %q answered but carried no task handle, so "+
 					"the handles-per-call premise was never established", safeTool.name), false, nil
 			}
+			stopReason = "the next tools/call returned no task handle"
 			break
 		}
 		ids = append(ids, id)
 	}
-	if len(ids) < 2 {
-		return nil, fmt.Sprintf("only %d task handle(s) were minted by %q on this wire, so no pattern "+
-			"could be distinguished from coincidence", len(ids), safeTool.name), false, nil
+	if len(ids) < entropySampleTarget {
+		return nil, fmt.Sprintf("only %d of %d task handles were sampled from %q; %s",
+			len(ids), entropySampleTarget, safeTool.name, stopReason), false, nil
 	}
 	return e.teGradeHandles(session.Endpoint, safeTool.name, ids), "", true, nil
 }
