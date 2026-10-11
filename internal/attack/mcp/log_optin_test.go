@@ -50,6 +50,10 @@ const (
 	// held; a probe that produced no stream is not silence, it is no observation. Both
 	// used to fall through to the same clean verdict.
 	logProbeUnreadable
+	logProbeTruncated
+	logProbeFlooded
+	logProbeWrongID
+	logProbeRPCError
 )
 
 // logOptInServer serves the 2026-07-28 wire only, so the rule's era gate is exercised
@@ -125,7 +129,8 @@ func logOptInServer(t *testing.T, mode logMode, sawOptIn *[]bool) *httptest.Serv
 		}
 
 		emitLog := mode == logAlways || mode == logAlwaysUndeclared ||
-			(mode == logOnOptIn && optedIn) || (mode == logProbeUnreadable && optedIn)
+			((mode == logOnOptIn || mode == logProbeUnreadable || mode == logProbeTruncated ||
+				mode == logProbeFlooded || mode == logProbeWrongID || mode == logProbeRPCError) && optedIn)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -154,6 +159,27 @@ func logOptInServer(t *testing.T, mode logMode, sawOptIn *[]bool) *httptest.Serv
 			fmt.Fprintf(w, "data: %s\n\n", note)
 			if flusher != nil {
 				flusher.Flush()
+			}
+		}
+		if !optedIn {
+			progress := "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n"
+			switch mode {
+			case logProbeTruncated:
+				_, _ = fmt.Fprint(w, progress)
+				return
+			case logProbeFlooded:
+				for i := 0; i < 65; i++ {
+					_, _ = fmt.Fprint(w, progress)
+				}
+			case logProbeWrongID:
+				id = 999
+			case logProbeRPCError:
+				reply, _ := json.Marshal(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32001, "message": "not authorized"},
+				})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", reply)
+				return
 			}
 		}
 		reply, _ := json.Marshal(map[string]interface{}{
@@ -380,5 +406,28 @@ func TestLogOptIn_UnreadableProbeIsNotClean(t *testing.T) {
 	// server that simply does not log.
 	if !strings.Contains(err.Error(), "no readable response stream") {
 		t.Errorf("the skip reason should name the unreadable probe; got: %v", err)
+	}
+}
+
+func TestLogOptIn_IncompleteProbeStreamIsNotClean(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode logMode
+	}{
+		{"truncated", logProbeTruncated},
+		{"event limit", logProbeFlooded},
+		{"unrelated response", logProbeWrongID},
+		{"RPC error", logProbeRPCError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := logOptInServer(t, tc.mode, nil)
+			defer ts.Close()
+
+			findings, err := runLogOptIn(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "no readable response stream") {
+				t.Fatalf("incomplete probe stream was graded clean: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
