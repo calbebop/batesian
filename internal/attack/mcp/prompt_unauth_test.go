@@ -61,28 +61,33 @@ func TestPromptUnauth_GetRequiresContent(t *testing.T) {
 	}
 	textResult := map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": "private prompt"})}}
 	cases := []struct {
-		name     string
-		result   map[string]interface{}
-		wrongID  bool
-		findings int
+		name        string
+		result      map[string]interface{}
+		wrongID     bool
+		findings    int
+		wantOutcome string
 	}{
-		{"missing messages", map[string]interface{}{}, false, 1},
-		{"empty messages", map[string]interface{}{"messages": []interface{}{}}, false, 1},
-		{"empty text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": ""})}}, false, 1},
-		{"empty image", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": ""})}}, false, 1},
-		{"invalid blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": "not base64"}})}}, false, 1},
-		{"input required", map[string]interface{}{"resultType": "input_required", "messages": textResult["messages"]}, false, 1},
-		{"wrong response ID", textResult, true, 1},
-		{"text content", textResult, false, 2},
+		{"missing result", nil, false, 1, "incomplete (missing result)"},
+		{"missing messages", map[string]interface{}{}, false, 1, "incomplete (missing prompt messages)"},
+		{"empty messages", map[string]interface{}{"messages": []interface{}{}}, false, 1, "no non-empty content returned"},
+		{"empty text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": ""})}}, false, 1, "no non-empty content returned"},
+		{"empty image", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": ""})}}, false, 1, "no non-empty content returned"},
+		{"invalid blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": "not base64"}})}}, false, 1, "incomplete (invalid prompt content)"},
+		{"unsupported content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "future"})}}, false, 1, "incomplete (invalid prompt content)"},
+		{"malformed messages", map[string]interface{}{"messages": "not an array"}, false, 1, "incomplete (invalid prompt response)"},
+		{"input required", map[string]interface{}{"resultType": "input_required", "messages": textResult["messages"]}, false, 1, "incomplete (input required)"},
+		{"unexpected result type", map[string]interface{}{"resultType": "unknown"}, false, 1, "incomplete (unexpected result type)"},
+		{"wrong response ID", textResult, true, 1, "incomplete (invalid JSON-RPC response)"},
+		{"text content", textResult, false, 2, "content returned"},
 		{"later message", map[string]interface{}{"messages": []interface{}{
 			message(map[string]interface{}{"type": "text", "text": ""}),
 			message(map[string]interface{}{"type": "text", "text": "private prompt"}),
-		}}, false, 2},
-		{"complete result", map[string]interface{}{"resultType": "complete", "messages": textResult["messages"]}, false, 2},
-		{"image content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString([]byte("image"))})}}, false, 2},
-		{"audio content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "audio", "data": base64.StdEncoding.EncodeToString([]byte("audio"))})}}, false, 2},
-		{"embedded text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "text": "embedded prompt"}})}}, false, 2},
-		{"embedded blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": base64.StdEncoding.EncodeToString([]byte("document"))}})}}, false, 2},
+		}}, false, 2, "content returned"},
+		{"complete result", map[string]interface{}{"resultType": "complete", "messages": textResult["messages"]}, false, 2, "content returned"},
+		{"image content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString([]byte("image"))})}}, false, 2, "content returned"},
+		{"audio content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "audio", "data": base64.StdEncoding.EncodeToString([]byte("audio"))})}}, false, 2, "content returned"},
+		{"embedded text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "text": "embedded prompt"}})}}, false, 2, "content returned"},
+		{"embedded blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": base64.StdEncoding.EncodeToString([]byte("document"))}})}}, false, 2, "content returned"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,6 +98,15 @@ func TestPromptUnauth_GetRequiresContent(t *testing.T) {
 			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
 			if err != nil || len(findings) != tc.findings {
 				t.Fatalf("want %d findings, got %+v (err=%v)", tc.findings, findings, err)
+			}
+			if !strings.Contains(findings[0].Evidence, "1: "+tc.wantOutcome) {
+				t.Errorf("missing get outcome %q in listing evidence: %s", tc.wantOutcome, findings[0].Evidence)
+			}
+			if tc.findings == 1 && !strings.Contains(findings[0].Evidence, "prompt content access not confirmed") {
+				t.Errorf("missing unconfirmed get status: %s", findings[0].Evidence)
+			}
+			if !strings.Contains(findings[0].Description, "not access to prompt contents") {
+				t.Errorf("listing description must not claim content access: %s", findings[0].Description)
 			}
 		})
 	}
@@ -141,6 +155,7 @@ func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
 	}{
 		{"rejected", nil, true, 0, false},
 		{"HTTP unauthorized", nil, false, http.StatusUnauthorized, false},
+		{"HTTP unavailable", nil, false, http.StatusServiceUnavailable, false},
 		{"empty", map[string]interface{}{"messages": []interface{}{}}, false, 0, false},
 		{"wrong response ID", map[string]interface{}{"messages": []map[string]interface{}{{
 			"role": "user", "content": map[string]string{"type": "text", "text": "first content"},
@@ -212,6 +227,17 @@ func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
 			if !strings.Contains(findings[1].Title, `"second"`) || !strings.Contains(findings[1].Evidence, "later content") {
 				t.Fatalf("expected second prompt content, got %+v", findings[1])
 			}
+			firstOutcome := map[string]string{
+				"rejected":          "incomplete (JSON-RPC error)",
+				"HTTP unauthorized": "denied (HTTP 401)",
+				"HTTP unavailable":  "incomplete (HTTP 503)",
+				"empty":             "no non-empty content returned",
+				"wrong response ID": "incomplete (invalid JSON-RPC response)",
+			}[tc.name]
+			if !strings.Contains(findings[0].Evidence, "1: "+firstOutcome) ||
+				!strings.Contains(findings[0].Evidence, "2: content returned") {
+				t.Errorf("listing evidence must include both get outcomes: %s", findings[0].Evidence)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if len(fetched) != 2 || fetched[0] != "first" || fetched[1] != "second" {
@@ -272,6 +298,10 @@ func TestPromptUnauth_LimitsPromptReads(t *testing.T) {
 	defer mu.Unlock()
 	if err != nil || len(findings) != 1 || len(fetched) != 10 {
 		t.Fatalf("expected one list finding and ten prompt reads, got findings=%+v fetched=%v err=%v", findings, fetched, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "10: incomplete (JSON-RPC error)") ||
+		strings.Contains(findings[0].Evidence, "11: ") {
+		t.Errorf("listing evidence must cover only attempted gets: %s", findings[0].Evidence)
 	}
 }
 
@@ -503,6 +533,10 @@ func TestPromptUnauth_ListExposedGetRejected(t *testing.T) {
 	}
 	if findings[0].Severity != "medium" {
 		t.Errorf("expected medium list finding, got %q", findings[0].Severity)
+	}
+	if !strings.Contains(findings[0].Evidence, "1: incomplete (JSON-RPC error)") ||
+		!strings.Contains(findings[0].Evidence, "prompt content access not confirmed") {
+		t.Errorf("missing rejected get outcome: %s", findings[0].Evidence)
 	}
 }
 
