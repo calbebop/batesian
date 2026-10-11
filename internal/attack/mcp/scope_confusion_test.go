@@ -48,6 +48,7 @@ type scopeServer struct {
 	headerMismatchToken     string
 	requireInitializedAuth  bool
 	rejectInitialized       bool
+	initRPCErrorToken       string
 	bindSessions            bool
 	hideLimitedTool         bool
 	limitedListError        string
@@ -252,6 +253,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 			case "notifications/initialized":
 				if s.rejectInitialized {
 					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); token != "" && token == s.initRPCErrorToken {
+					rpcErr(-32603, "notification failed", http.StatusOK)
 					return
 				}
 				if s.bindSessions {
@@ -665,6 +670,59 @@ func TestScope_RejectedInitializedIsInconclusive(t *testing.T) {
 	}
 	if len(findings) != 0 || s.toolCalls.Load() != 0 {
 		t.Fatalf("rejected initialization must not be probed: findings=%+v calls=%d", findings, s.toolCalls.Load())
+	}
+}
+
+func TestScope_InitializedRPCErrorIsInconclusive(t *testing.T) {
+	for _, token := range []string{"tok-full-a", "tok-lim-b"} {
+		t.Run(token, func(t *testing.T) {
+			s := &scopeServer{auth: true, initRPCErrorToken: token}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "initialized notification") || s.toolCalls.Load() != 0 {
+				t.Fatalf("want incomplete %s handshake without tool calls, got findings=%+v err=%v calls=%d",
+					token, findings, err, s.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_DualWireInitializedFailureIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server *scopeServer
+	}{
+		{name: "HTTP refusal", server: &scopeServer{dual: true, auth: true, enforceWriteScope: true, rejectInitialized: true}},
+		{name: "JSON-RPC error", server: &scopeServer{dual: true, auth: true, enforceWriteScope: true, initRPCErrorToken: "tok-full-a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.server
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "legacy wire") || s.toolCalls.Load() != 2 {
+				t.Fatalf("want incomplete legacy handshake after modern comparison, got findings=%+v err=%v calls=%d",
+					findings, err, s.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_DualWireFindingKeepsIncompleteHandshake(t *testing.T) {
+	s := &scopeServer{dual: true, auth: true, initRPCErrorToken: "tok-full-a"}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 1 ||
+		!strings.Contains(findings[0].Evidence, "additional probe incomplete: legacy wire") ||
+		!strings.Contains(findings[0].Evidence, "initialized notification") {
+		t.Fatalf("want modern finding with incomplete legacy evidence, got findings=%+v err=%v", findings, err)
 	}
 }
 
