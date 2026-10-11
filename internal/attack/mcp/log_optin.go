@@ -69,6 +69,8 @@ const metaLogLevel = "io.modelcontextprotocol/logLevel"
 // something at or above it.
 const logProbeLevel = "debug"
 
+const logProbeRequestID = 4
+
 func (e *LogOptInExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
@@ -171,7 +173,7 @@ const (
 // particular. Nothing is created, called or modified.
 func (e *LogOptInExecutor) emitsLogFrame(ctx context.Context, raw *http.Client, client *attack.HTTPClient,
 	session mcpSession, opts attack.Options, optIn bool) logOutcome {
-	headers, body := session.request(4, "tools/list", nil)
+	headers, body := session.request(logProbeRequestID, "tools/list", nil)
 	if optIn {
 		addMeta(body, metaLogLevel, logProbeLevel)
 	}
@@ -213,12 +215,23 @@ func (e *LogOptInExecutor) emitsLogFrame(ctx context.Context, raw *http.Client, 
 		return logUnreadable
 	}
 
-	// One matching frame is all the oracle needs: the question is whether ANY log
-	// notification was sent, so the scan stops at the first.
-	if _, found, err := sse.FirstMatching(resp.Body, maxLogStream, isLogNotification); err == nil && found {
+	// A clean probe needs its matching response; silence on an incomplete stream
+	// does not establish that the server withheld log notifications.
+	payload, found, err := sse.FirstMatching(resp.Body, maxLogStream, func(payload []byte) bool {
+		return isLogNotification(payload) || sse.IsJSONRPCResponse(payload)
+	})
+	if err != nil || !found {
+		return logUnreadable
+	}
+	if isLogNotification(payload) {
 		return logEmitted
 	}
-	return logNone
+	if body, ok := parseResponseBody(payload); ok && matchesRPCID(body, logProbeRequestID) && validRPCResult(body) {
+		if _, ok := body["result"].(map[string]interface{}); ok {
+			return logNone
+		}
+	}
+	return logUnreadable
 }
 
 // maxLogStream bounds the stream read. A response stream ends with the response, so

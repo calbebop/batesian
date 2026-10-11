@@ -833,11 +833,11 @@ indistinguishable from one that respects the gate. Two probes, in this order:
 2. Probe: the identical `tools/list` with **no** `logLevel` in `_meta`. Any
    `notifications/message` frame is the finding.
 
-Only positive evidence is reported. A server that stays silent for the control is
-left alone; a server that logs for the control and not for the probe is a genuine
-clean result, because it demonstrably logs here and withheld the frames when they
-were not requested. The probe is a read: `tools/list` creates nothing, calls no
-tool and modifies no state. The evidence also records whether the server declares
+Only positive evidence is reported. A silent control is incomplete. A server
+that logs for the control and sends a matching `tools/list` result without logs
+for the probe is clean. An interrupted, excessive, or uncorrelated probe stream
+is incomplete. The probe is a read: `tools/list` creates nothing, calls no tool
+and modifies no state. The evidence also records whether the server declares
 the `logging` capability, which it MUST when it emits log notifications, so one
 that emits them unasked and undeclared is breaking two requirements.
 

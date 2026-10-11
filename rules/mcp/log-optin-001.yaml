@@ -29,10 +29,9 @@ info:
       2. Probe: the identical tools/list with NO logLevel in _meta. Any
          notifications/message frame is the finding.
 
-    Only positive evidence is ever reported. A server that stays silent for the
-    control is left alone, and a server that logs for the control and not for the
-    probe is a genuine clean result: it demonstrably logs here, and it withheld the
-    frames when they were not requested.
+    Only positive evidence is reported. A silent control is incomplete. A probe
+    is clean only when it returns a matching tools/list result without log frames.
+    Interrupted, excessive, or uncorrelated streams are incomplete.
 
     The probe is a read. tools/list creates nothing, calls no tool and modifies no
     state; the rule needs the server to do a unit of work, not to do anything in
