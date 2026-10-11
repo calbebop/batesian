@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -111,7 +112,21 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 			"registrants could not be judged",
 			attack.ErrInconclusive, registrationEndpoint, escalatedResp.StatusCode)
 	}
-	grantedScope := escalatedResp.JSONField("scope")
+	// A successful DCR response must identify the client and its registered metadata.
+	var registration struct {
+		ClientID string  `json:"client_id"`
+		Scope    *string `json:"scope"`
+	}
+	if err := json.Unmarshal(escalatedResp.Body, &registration); err != nil {
+		return nil, fmt.Errorf("%w: DCR registration returned malformed client metadata", attack.ErrInconclusive)
+	}
+	if registration.ClientID == "" {
+		return nil, fmt.Errorf("%w: DCR registration returned no client_id", attack.ErrInconclusive)
+	}
+	if registration.Scope == nil {
+		return nil, fmt.Errorf("%w: DCR registration returned no granted scope", attack.ErrInconclusive)
+	}
+	grantedScope := *registration.Scope
 	granted := privilegedScopesIn(grantedScope)
 	if len(granted) == 0 {
 		return nil, nil
