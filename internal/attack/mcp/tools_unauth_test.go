@@ -3,8 +3,10 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -265,6 +267,103 @@ func TestToolsUnauth_MalformedList(t *testing.T) {
 	defer srv.Close()
 
 	assertInconclusive(t, mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}), srv.URL, testOpts())
+}
+
+func TestToolsUnauth_ListOutcomes(t *testing.T) {
+	type reply struct {
+		status int
+		code   int
+		result map[string]interface{}
+	}
+	tool := []interface{}{map[string]interface{}{"name": "echo"}}
+	empty := []interface{}{}
+	tests := []struct {
+		name         string
+		first, next  reply
+		inconclusive bool
+		finding      bool
+		incomplete   bool
+		pages        int32
+	}{
+		{"server error", reply{status: 500, code: -32603}, reply{}, true, false, false, 1},
+		{"advertised method missing", reply{code: -32601}, reply{}, true, false, false, 1},
+		{"auth denied", reply{status: 401}, reply{}, false, false, false, 1},
+		{"null cursor", reply{result: map[string]interface{}{"tools": empty, "nextCursor": nil}}, reply{}, false, false, false, 1},
+		{"invalid first cursor", reply{result: map[string]interface{}{"tools": empty, "nextCursor": 1}}, reply{}, true, false, false, 1},
+		{"invalid first cursor with tool", reply{result: map[string]interface{}{"tools": tool, "nextCursor": 1}}, reply{}, false, true, true, 1},
+		{"failed later page", reply{result: map[string]interface{}{"tools": empty, "nextCursor": "next"}}, reply{status: 502, code: -32603}, true, false, false, 2},
+		{"invalid later cursor", reply{result: map[string]interface{}{"tools": tool, "nextCursor": "next"}}, reply{result: map[string]interface{}{"tools": empty, "nextCursor": 1}}, false, true, true, 2},
+		{"completed later page", reply{result: map[string]interface{}{"tools": empty, "nextCursor": "next"}}, reply{result: map[string]interface{}{"tools": tool, "nextCursor": nil}}, false, true, false, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var pages atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					ID     json.RawMessage            `json:"id"`
+					Method string                     `json:"method"`
+					Params map[string]json.RawMessage `json:"params"`
+				}
+				if json.NewDecoder(r.Body).Decode(&req) != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch req.Method {
+				case "initialize":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"protocolVersion": "2025-03-26",
+							"serverInfo":      map[string]string{"name": "tool-outcomes", "version": "1"},
+							"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+						},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "tools/list":
+					pages.Add(1)
+					page := tc.first
+					if _, ok := req.Params["cursor"]; ok {
+						page = tc.next
+					}
+					if page.status != 0 {
+						w.WriteHeader(page.status)
+					}
+					if page.code != 0 {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": req.ID,
+							"error": map[string]interface{}{"code": page.code, "message": "Internal error"},
+						})
+						return
+					}
+					if page.status == http.StatusUnauthorized {
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID, "result": page.result,
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			exec := mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+			wantFindings := 0
+			if tc.finding {
+				wantFindings = 1
+			}
+			if errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) || len(findings) != wantFindings || pages.Load() != tc.pages {
+				t.Fatalf("findings=%+v err=%v pages=%d", findings, err, pages.Load())
+			}
+			if tc.finding && strings.Contains(findings[0].Evidence, "listing incomplete") != tc.incomplete {
+				t.Fatalf("unexpected listing evidence: %s", findings[0].Evidence)
+			}
+		})
+	}
 }
 
 // TestToolsUnauth_NotMCP: a non-MCP server (no reachable endpoint) must report
