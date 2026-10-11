@@ -163,9 +163,8 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		Confidence: attack.ConfirmedExploit,
 		Title:      fmt.Sprintf("MCP resources/list accessible without authentication (%d resources)", len(uris)),
 		Description: fmt.Sprintf(
-			"resources/list at %s returned %d resources without any authentication. "+
-				"An attacker can enumerate all available data sources and then read their contents "+
-				"using resources/read.", session.Endpoint, len(uris)),
+			"resources/list at %s returned %d resource URIs without authentication.",
+			session.Endpoint, len(uris)),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
@@ -177,8 +176,13 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	// of list order: a server that lists a public README ahead of its database
 	// credentials was reported as merely readable. The listing order is the
 	// server's choice, so the rule cannot let it decide the severity.
-	read, examined := e.readResources(ctx, client, session, uris, nextID)
+	read, examined, outcomes := e.readResources(ctx, client, session, uris, nextID)
+	findings[0].Evidence += "\nresources/read attempts:"
+	for i, outcome := range outcomes {
+		findings[0].Evidence += fmt.Sprintf("\n  %d: %s", i+1, outcome)
+	}
 	if read == nil {
+		findings[0].Evidence += "\nresource content access not confirmed"
 		return findings, true
 	}
 
@@ -233,7 +237,7 @@ type resourceRead struct {
 //
 // examined is reported in the finding's evidence, because a run that stopped at
 // the cap has not looked at everything and must not read as though it had.
-func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *attack.HTTPClient, session mcpSession, uris []string, firstID int) (result *resourceRead, examined int) {
+func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *attack.HTTPClient, session mcpSession, uris []string, firstID int) (result *resourceRead, examined int, outcomes []string) {
 	var first *resourceRead
 
 	for i, uri := range uris {
@@ -242,40 +246,45 @@ func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *att
 		}
 		examined++
 
-		read := e.readResource(ctx, client, session, uri, firstID+i)
+		read, outcome := e.readResource(ctx, client, session, uri, firstID+i)
+		outcomes = append(outcomes, outcome)
 		if read == nil {
 			continue
 		}
 		// A credential is the strongest evidence available, so stop as soon as
 		// one turns up rather than spending the remaining budget.
 		if read.credEvidence != "" {
-			return read, examined
+			return read, examined, outcomes
 		}
 		if first == nil {
 			first = read
 		}
 	}
 
-	return first, examined
+	return first, examined, outcomes
 }
 
-// readResource performs one resources/read and classifies its content. It
-// returns nil when the read did not produce content, which covers a transport
-// failure, a non-2xx reply, an unparseable body and a JSON-RPC error.
-func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, id int) *resourceRead {
+// readResource returns the observed outcome even when no content is available.
+func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *attack.HTTPClient, session mcpSession, uri string, id int) (*resourceRead, string) {
 	// Distinct ids per read: reusing one id across requests makes a server's
 	// replies ambiguous to correlate.
 	resp, err := session.post(ctx, client, id, "resources/read", map[string]interface{}{"uri": uri})
-	if err != nil || !resp.IsSuccess() {
-		return nil
+	if err != nil || resp == nil {
+		return nil, "incomplete (transport error)"
+	}
+	if !resp.IsSuccess() {
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			return nil, fmt.Sprintf("denied (HTTP %d)", resp.StatusCode)
+		}
+		return nil, fmt.Sprintf("incomplete (HTTP %d)", resp.StatusCode)
 	}
 
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
-		Result  struct {
+		Result  *struct {
 			ResultType string `json:"resultType"`
-			Contents   []struct {
+			Contents   *[]struct {
 				URI  string  `json:"uri"`
 				Text *string `json:"text"`
 				Blob *string `json:"blob"`
@@ -284,13 +293,29 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 		Error json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
-		string(body.ID) != strconv.Itoa(id) || len(body.Error) != 0 ||
-		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
-		return nil
+		string(body.ID) != strconv.Itoa(id) {
+		return nil, "incomplete (invalid JSON-RPC response)"
+	}
+	if len(body.Error) != 0 {
+		return nil, "incomplete (JSON-RPC error)"
+	}
+	if body.Result == nil {
+		return nil, "incomplete (missing result)"
+	}
+	if body.Result.ResultType == "input_required" {
+		return nil, "incomplete (input required)"
+	}
+	if body.Result.ResultType != "" && body.Result.ResultType != "complete" {
+		return nil, "incomplete (unexpected result type)"
+	}
+	if body.Result.Contents == nil {
+		return nil, "incomplete (missing resource contents)"
 	}
 	read := &resourceRead{uri: uri, statusCode: resp.StatusCode}
-	for _, item := range body.Result.Contents {
+	invalidContent := false
+	for _, item := range *body.Result.Contents {
 		if item.URI == "" {
+			invalidContent = true
 			continue
 		}
 		var payload []byte
@@ -300,7 +325,11 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 			snippet = *item.Text
 		} else if item.Blob != nil {
 			decoded, err := base64.StdEncoding.DecodeString(*item.Blob)
-			if err != nil || len(decoded) == 0 {
+			if err != nil {
+				invalidContent = true
+				continue
+			}
+			if len(decoded) == 0 {
 				continue
 			}
 			payload = decoded
@@ -315,14 +344,17 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 			if loc := re.FindIndex(payload); loc != nil {
 				read.credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
 				read.content = "[redacted: credential pattern detected]"
-				return read
+				return read, "content returned"
 			}
 		}
 	}
 	if read.content == "" {
-		return nil
+		if invalidContent {
+			return nil, "incomplete (invalid resource content)"
+		}
+		return nil, "no non-empty content returned"
 	}
-	return read
+	return read, "content returned"
 }
 
 // initializeMCP performs the MCP initialize handshake and returns a session

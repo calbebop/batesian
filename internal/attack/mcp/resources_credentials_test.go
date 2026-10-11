@@ -309,6 +309,10 @@ func TestResourcesUnauth_ReadsAreCappedAndTheCapIsReported(t *testing.T) {
 	if !strings.Contains(findings[1].Evidence, want) {
 		t.Errorf("evidence must state the bound, want %q in:\n%s", want, findings[1].Evidence)
 	}
+	if !strings.Contains(findings[0].Evidence, "5: content returned") ||
+		strings.Contains(findings[0].Evidence, "6: content returned") {
+		t.Errorf("listing evidence must cover only attempted reads: %s", findings[0].Evidence)
+	}
 }
 
 // A resource that cannot be read must not stop the search: the leak may be in
@@ -334,5 +338,9 @@ func TestResourcesUnauth_SkipsUnreadableResources(t *testing.T) {
 	}
 	if findings[1].Severity != "critical" || !strings.Contains(findings[1].Title, "config://database") {
 		t.Errorf("want critical finding for config://database, got %q at %q", findings[1].Title, findings[1].Severity)
+	}
+	if !strings.Contains(findings[0].Evidence, "1: incomplete (JSON-RPC error)") ||
+		!strings.Contains(findings[0].Evidence, "2: content returned") {
+		t.Errorf("listing evidence must distinguish failed and successful reads: %s", findings[0].Evidence)
 	}
 }
