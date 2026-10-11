@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -64,7 +65,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 	if err != nil || ctrl == nil {
 		return nil, false, nil // endpoint unreachable
 	}
-	if ctrl.StatusCode == 429 || ctrl.StatusCode >= 500 {
+	if ctrl.StatusCode == http.StatusRequestTimeout || ctrl.StatusCode == http.StatusTooManyRequests || ctrl.StatusCode >= 500 {
 		return nil, false, nil
 	}
 
@@ -162,7 +163,8 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 }
 
 func ambiguousMCPSingleResponse(resp *attack.Response, requestID int) bool {
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return true
 	}
 	if !resp.IsSuccess() || isAuthRejection(resp) {
@@ -179,7 +181,8 @@ func ambiguousMCPSingleResponse(resp *attack.Response, requestID int) bool {
 }
 
 func ambiguousMCPBatchResponse(resp *attack.Response, requestID int) bool {
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return true
 	}
 	if !resp.IsSuccess() {
