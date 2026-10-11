@@ -46,6 +46,8 @@ type entropyServer struct {
 	noExtension          bool
 	headerParam          bool
 	headerMismatchStatus int
+	failAfter            int
+	completeAfter        int
 }
 
 func (s *entropyServer) nextHandle(callIdx int) string {
@@ -188,6 +190,17 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				})
 				return
 			}
+			if s.failAfter > 0 && callCount >= s.failAfter {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			if s.completeAfter > 0 && callCount >= s.completeAfter {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{"resultType": "complete", "content": []interface{}{}},
+				})
+				return
+			}
 			handle := s.nextHandle(callCount)
 			callCount++
 			result := map[string]interface{}{
@@ -303,6 +316,36 @@ func TestEntropy_UUIDCleanSilent(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against uuid-style handles, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestEntropy_PartialSamplesAreIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		style         entropyStyle
+		failAfter     int
+		completeAfter int
+		sampled       int
+	}{
+		{name: "rate limited clean IDs", style: styleUUID, failAfter: 2, sampled: 2},
+		{name: "rate limited sequential IDs", style: styleSequential, failAfter: 2, sampled: 2},
+		{name: "complete reply", style: styleUUID, completeAfter: 3, sampled: 3},
+		{name: "late rate limit", style: styleUUID, failAfter: 4, sampled: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			ts := httptest.NewServer((&entropyServer{
+				style: tc.style, failAfter: tc.failAfter, completeAfter: tc.completeAfter, calls: &calls,
+			}).handler())
+			defer ts.Close()
+
+			findings, err := runEntropy(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), fmt.Sprintf("only %d of 5 task handles", tc.sampled)) ||
+				calls.Load() != int32(tc.sampled+1) {
+				t.Fatalf("partial sample must be inconclusive: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+			}
+		})
 	}
 }
 
