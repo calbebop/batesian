@@ -11,15 +11,6 @@ import (
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// loggingServer builds a mock MCP server whose logging/setLevel behavior depends
-// on mode:
-//   - "reachable":     logging advertised; setLevel answers -32602 for the invalid
-//     probe level (dispatched without auth) => finding.
-//   - "reachable-internal": setLevel answers -32603 for the invalid level (as the
-//     server-everything reference does) => finding.
-//   - "auth-enforced": setLevel answers -32001 Unauthorized => silent.
-//   - "no-cap":        the logging capability is absent => silent.
-//   - "not-mcp":       initialize 404s => silent.
 func loggingServer(mode string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "not-mcp" {
@@ -56,6 +47,27 @@ func loggingServer(mode string) *httptest.Server {
 			switch mode {
 			case "auth-enforced":
 				rpcErr(-32001, "Unauthorized")
+			case "http-auth":
+				w.WriteHeader(http.StatusUnauthorized)
+			case "http-forbidden":
+				w.WriteHeader(http.StatusForbidden)
+			case "http-rpc-auth":
+				w.WriteHeader(http.StatusInternalServerError)
+				rpcErr(-32001, "Unauthorized")
+			case "http-internal":
+				w.WriteHeader(http.StatusInternalServerError)
+				rpcErr(-32603, "Internal error")
+			case "http-invalid":
+				w.WriteHeader(http.StatusBadRequest)
+				rpcErr(-32602, "Invalid params: unknown log level")
+			case "method-missing":
+				rpcErr(-32601, "Method not found")
+			case "http-method-missing":
+				w.WriteHeader(http.StatusNotFound)
+				rpcErr(-32601, "Method not found")
+			case "wrong-id":
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": 999,
+					"error": map[string]interface{}{"code": -32602, "message": "Invalid params"}})
 			case "reachable-internal":
 				// server-everything surfaces an invalid level as -32603 (internal).
 				rpcErr(-32603, "invalid_value: unknown log level")
@@ -80,7 +92,6 @@ func runLoggingUnauth(t *testing.T, srv *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestLoggingUnauth_Reachable: setLevel dispatches an unauthenticated call => finding.
 func TestLoggingUnauth_Reachable(t *testing.T) {
 	srv := loggingServer("reachable")
 	defer srv.Close()
@@ -95,8 +106,6 @@ func TestLoggingUnauth_Reachable(t *testing.T) {
 	}
 }
 
-// TestLoggingUnauth_ReachableInternalError: an invalid level answered with -32603
-// (as server-everything does) still proves dispatch without auth => finding.
 func TestLoggingUnauth_ReachableInternalError(t *testing.T) {
 	srv := loggingServer("reachable-internal")
 	defer srv.Close()
@@ -107,7 +116,6 @@ func TestLoggingUnauth_ReachableInternalError(t *testing.T) {
 	}
 }
 
-// TestLoggingUnauth_AuthEnforced: setLevel requires auth => silent.
 func TestLoggingUnauth_AuthEnforced(t *testing.T) {
 	srv := loggingServer("auth-enforced")
 	defer srv.Close()
@@ -117,7 +125,41 @@ func TestLoggingUnauth_AuthEnforced(t *testing.T) {
 	}
 }
 
-// TestLoggingUnauth_NoCapability: server does not advertise logging => skip.
+func TestLoggingUnauth_HTTPAuthDenial(t *testing.T) {
+	for _, mode := range []string{"http-auth", "http-forbidden", "http-rpc-auth"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := loggingServer(mode)
+			defer srv.Close()
+			if findings := runLoggingUnauth(t, srv); len(findings) != 0 {
+				t.Fatalf("expected no finding after explicit auth denial, got %+v", findings)
+			}
+		})
+	}
+}
+
+func TestLoggingUnauth_UnsupportedMethod(t *testing.T) {
+	for _, mode := range []string{"method-missing", "http-method-missing"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := loggingServer(mode)
+			defer srv.Close()
+			if findings := runLoggingUnauth(t, srv); len(findings) != 0 {
+				t.Fatalf("expected no finding for an unavailable method, got %+v", findings)
+			}
+		})
+	}
+}
+
+func TestLoggingUnauth_IncompleteProbe(t *testing.T) {
+	for _, mode := range []string{"http-internal", "http-invalid", "wrong-id"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := loggingServer(mode)
+			defer srv.Close()
+			assertInconclusive(t, mcpattack.NewLoggingUnauthExecutor(
+				attack.RuleContext{ID: "mcp-logging-unauth-001"}), srv.URL, testOpts())
+		})
+	}
+}
+
 func TestLoggingUnauth_NoCapability(t *testing.T) {
 	srv := loggingServer("no-cap")
 	defer srv.Close()
@@ -127,7 +169,6 @@ func TestLoggingUnauth_NoCapability(t *testing.T) {
 	}
 }
 
-// TestLoggingUnauth_NotMCP: initialize fails => silent.
 func TestLoggingUnauth_NotMCP(t *testing.T) {
 	srv := loggingServer("not-mcp")
 	defer srv.Close()
