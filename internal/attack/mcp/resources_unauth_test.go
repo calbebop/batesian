@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -452,6 +453,117 @@ func TestResourcesUnauth_PartialListingRetainsFinding(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "listing incomplete") {
 		t.Fatalf("expected partial-listing evidence, got %q", findings[0].Evidence)
+	}
+}
+
+func TestResourcesUnauth_ListOutcomes(t *testing.T) {
+	type reply struct {
+		status int
+		code   int
+		result map[string]interface{}
+	}
+	resource := []interface{}{map[string]interface{}{"uri": "config://one", "name": "one"}}
+	empty := []interface{}{}
+	cases := []struct {
+		name          string
+		first, second reply
+		noCapability  bool
+		inconclusive  bool
+		findings      int
+		incomplete    bool
+		pages         int32
+	}{
+		{"server error", reply{status: 503, code: -32603}, reply{}, false, true, 0, false, 1},
+		{"RPC error", reply{code: -32603}, reply{}, false, true, 0, false, 1},
+		{"advertised method missing", reply{code: -32601}, reply{}, false, true, 0, false, 1},
+		{"unadvertised method missing", reply{code: -32601}, reply{}, true, false, 0, false, 1},
+		{"HTTP auth denial", reply{status: 401}, reply{}, false, false, 0, false, 1},
+		{"RPC auth denial", reply{code: -32001}, reply{}, false, false, 0, false, 1},
+		{"unfinished result", reply{result: map[string]interface{}{"resultType": "input_required", "resources": empty}}, reply{}, false, true, 0, false, 1},
+		{"null cursor", reply{result: map[string]interface{}{"resources": empty, "nextCursor": nil}}, reply{}, false, false, 0, false, 1},
+		{"invalid first cursor", reply{result: map[string]interface{}{"resources": empty, "nextCursor": 7}}, reply{}, false, true, 0, false, 1},
+		{"invalid later cursor", reply{result: map[string]interface{}{"resources": empty, "nextCursor": "more"}}, reply{result: map[string]interface{}{"resources": empty, "nextCursor": 7}}, false, true, 0, false, 2},
+		{"unfinished later result", reply{result: map[string]interface{}{"resources": resource, "nextCursor": "more"}}, reply{result: map[string]interface{}{"resultType": "input_required", "resources": empty}}, false, false, 2, true, 2},
+		{"partial list with invalid cursor", reply{result: map[string]interface{}{"resources": resource, "nextCursor": "more"}}, reply{result: map[string]interface{}{"resources": empty, "nextCursor": 7}}, false, false, 2, true, 2},
+		{"mixed malformed entries", reply{result: map[string]interface{}{"resources": append(resource, map[string]interface{}{"name": "missing URI"})}}, reply{}, false, false, 2, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var pages atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string                     `json:"method"`
+					ID     json.RawMessage            `json:"id"`
+					Params map[string]json.RawMessage `json:"params"`
+				}
+				if json.NewDecoder(r.Body).Decode(&req) != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				replyResult := func(result interface{}) {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID, "result": result,
+					})
+				}
+				switch req.Method {
+				case "initialize":
+					caps := map[string]interface{}{}
+					if !tc.noCapability {
+						caps["resources"] = map[string]interface{}{}
+					}
+					replyResult(map[string]interface{}{
+						"protocolVersion": "2025-03-26",
+						"serverInfo":      map[string]string{"name": "resource-outcomes", "version": "1"},
+						"capabilities":    caps,
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "resources/list":
+					pages.Add(1)
+					page := tc.first
+					if _, ok := req.Params["cursor"]; ok {
+						page = tc.second
+					}
+					if page.status != 0 {
+						w.WriteHeader(page.status)
+					}
+					if page.code != 0 {
+						message := "Internal error"
+						switch page.code {
+						case -32601:
+							message = "Method not found"
+						case -32001:
+							message = "Unauthorized"
+						}
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": req.ID,
+							"error": map[string]interface{}{"code": page.code, "message": message},
+						})
+						return
+					}
+					if page.status != http.StatusUnauthorized {
+						replyResult(page.result)
+					}
+				case "resources/read":
+					replyResult(map[string]interface{}{"contents": []map[string]string{{
+						"uri": "config://one", "text": "public data",
+					}}})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
+			if errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) || len(findings) != tc.findings || pages.Load() != tc.pages {
+				t.Fatalf("findings=%+v err=%v pages=%d", findings, err, pages.Load())
+			}
+			if tc.findings > 0 && strings.Contains(findings[0].Evidence, "listing incomplete") != tc.incomplete {
+				t.Fatalf("unexpected listing evidence: %s", findings[0].Evidence)
+			}
+		})
 	}
 }
 
