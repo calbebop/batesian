@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -45,13 +46,14 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	listResp, err := session.post(ctx, client, 3, "tools/list", nil)
 	verdict, listBody := classifyProbe(listResp, err, 3)
 	if verdict != probeAnswered {
-		return nil, verdict == probeRejected
+		return nil, listResp != nil && err == nil &&
+			(listResp.StatusCode == http.StatusUnauthorized || listResp.StatusCode == http.StatusForbidden)
 	}
 
 	if errObj, ok := listBody["error"].(map[string]interface{}); ok {
 		code := rpcErrorCode(errObj["code"])
 		message, _ := errObj["message"].(string)
-		return nil, code == -32601 || authFlavoredError(code, message)
+		return nil, authFlavoredError(code, message)
 	}
 	if _, hasErr := listBody["error"]; hasErr {
 		return nil, false
@@ -65,9 +67,8 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	if !ok {
 		return nil, false
 	}
-	cursor, more := result["nextCursor"].(string)
-	_, hasCursor := result["nextCursor"]
-	complete := !hasCursor
+	cursor, more, validCursor := toolsListCursor(result)
+	complete := validCursor && !more
 	seen := map[string]bool{}
 	for page := 1; page < 10 && more; page++ {
 		if seen[cursor] {
@@ -92,13 +93,12 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 			break
 		}
 		toolsRaw = append(toolsRaw, pageTools...)
-		next, present := pageResult["nextCursor"]
-		if !present {
-			complete = true
+		cursor, more, validCursor = toolsListCursor(pageResult)
+		if !validCursor {
 			break
 		}
-		cursor, more = next.(string)
 		if !more {
+			complete = true
 			break
 		}
 	}
@@ -140,4 +140,16 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	}}
 
 	return findings, true
+}
+
+func toolsListCursor(result map[string]interface{}) (string, bool, bool) {
+	next, present := result["nextCursor"]
+	if !present || next == nil {
+		return "", false, true
+	}
+	cursor, ok := next.(string)
+	if !ok {
+		return "", false, false
+	}
+	return cursor, true, true
 }
