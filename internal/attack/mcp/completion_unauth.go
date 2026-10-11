@@ -2,27 +2,14 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// CompletionUnauthExecutor probes whether the MCP completion/complete method is
-// reachable without authentication (rule mcp-completion-unauth-001).
-//
-// completion/complete returns autocompletion suggestions for prompt arguments
-// and resource-template URIs. The MCP spec requires implementations to "control
-// access to sensitive suggestions" and "prevent completion-based information
-// disclosure". An unauthenticated completion endpoint is therefore an access
-// control failure and, more concretely, an enumeration oracle: an anonymous
-// caller can fuzz argument values or URI-template segments and read back valid
-// completions (usernames, file paths, identifiers) the operator never meant to
-// expose.
-//
-// SAFETY: completion/complete is read-only; it never executes a tool or mutates
-// state. The probe sends a benign empty argument value.
+// CompletionUnauthExecutor checks anonymous completion access without mutating state.
 type CompletionUnauthExecutor struct {
 	rule attack.RuleContext
 }
@@ -41,10 +28,7 @@ func NewCompletionUnauthExecutor(r attack.RuleContext) *CompletionUnauthExecutor
 // probes, so a server with many prompts does not turn one rule into a flood.
 const maxRealRefs = 8
 
-// completionRef is a completion/complete reference paired with the argument name
-// to complete. real marks refs discovered from the live server (prompt or
-// resource template), which can yield an actual disclosure oracle; synthetic
-// refs only establish that the method dispatches without auth.
+// completionRef identifies an argument in a live or synthetic reference.
 type completionRef struct {
 	params  map[string]interface{}
 	argName string
@@ -59,6 +43,14 @@ type completionOutcome struct {
 	reason string
 	values []string
 }
+
+type completionDiscoveryVerdict int
+
+const (
+	completionDiscoveryIncomplete completionDiscoveryVerdict = iota
+	completionDiscoveryAuthGated
+	completionDiscoveryComplete
+)
 
 // templateVar extracts the first RFC 6570 variable name from a URI template,
 // e.g. "file:///{path}" -> "path", "db://{+table}/{id}" -> "table". Returns no
@@ -93,10 +85,16 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 	// actually leaks suggestion values (the disclosure oracle). Track the first
 	// reachable probe so reachability is reported even when no ref discloses.
 	var firstReachable, disclosure *completionOutcome
-	for _, ref := range e.discoverRefs(ctx, client, session) {
+	refs, refsComplete, discovery := e.discoverRefs(ctx, client, session)
+	allProbesDetermined := true
+	var attempts []string
+	for _, ref := range refs {
 		out, probed := e.probe(ctx, client, session, ref)
+		attempts = append(attempts, completionAttemptOutcome(out, probed))
 		if probed {
 			determined = true
+		} else {
+			allProbesDetermined = false
 		}
 		if out == nil {
 			continue
@@ -123,15 +121,16 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		}
 		var probed bool
 		firstReachable, probed = e.probe(ctx, client, session, synth)
+		attempts = append(attempts, completionAttemptOutcome(firstReachable, probed))
 		if probed {
 			determined = true
+		} else {
+			allProbesDetermined = false
 		}
 	}
 
 	if firstReachable == nil {
-		// Nothing was reachable. Whether that means the surface is closed or that
-		// no probe ever got an answer is the difference determined carries.
-		return nil, determined
+		return nil, determined && refsComplete && allProbesDetermined
 	}
 
 	// Base the reachability finding on the disclosure probe when one was found, so
@@ -157,6 +156,19 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}}
+	if len(discovery) > 0 {
+		findings[0].Evidence += "\nreference discovery:"
+		for _, outcome := range discovery {
+			findings[0].Evidence += "\n  " + outcome
+		}
+	}
+	findings[0].Evidence += "\ncompletion attempts:"
+	for i, outcome := range attempts {
+		findings[0].Evidence += fmt.Sprintf("\n  %d: %s", i+1, outcome)
+	}
+	if !refsComplete || !allProbesDetermined {
+		findings[0].Evidence += "\ncompletion assessment incomplete"
+	}
 
 	// Escalate when a real ref returned actual suggestion values: the endpoint is
 	// not just reachable but is leaking valid completions to an anonymous caller.
@@ -181,13 +193,17 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 	return findings, true
 }
 
-// probe sends a single unauthenticated completion/complete request for ref and
-// returns the outcome if the handler was reached, or nil on an HTTP auth gate,
-// transport error, or a non-dispatching JSON-RPC error. Suggestion values are
-// captured only for real refs (synthetic refs never disclose real data).
-// probe returns the outcome for one reference. determined reports whether the
-// server answered at all: a nil outcome with determined false means the probe
-// established nothing, which must not be reported as a closed surface.
+func completionAttemptOutcome(out *completionOutcome, determined bool) string {
+	if out != nil {
+		return "reachable"
+	}
+	if determined {
+		return "not reachable in observed response"
+	}
+	return "incomplete (no verdict)"
+}
+
+// probe returns any reachability evidence and whether the response was conclusive.
 func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTTPClient, session mcpSession, ref completionRef) (out *completionOutcome, determined bool) {
 	// An empty value asks the server to enumerate all suggestions for the
 	// argument. Fuzzy/prefix matchers (the common implementation) return their
@@ -200,8 +216,20 @@ func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTT
 		"argument": map[string]interface{}{"name": ref.argName, "value": ""},
 	})
 	verdict, body := classifyProbe(resp, err, 7)
+	if verdict == probeRejected {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, true
+		}
+		if rpcErr, ok := body["error"].(map[string]interface{}); ok {
+			msg, _ := rpcErr["message"].(string)
+			if attack.AuthFlavoredMessage(msg) {
+				return nil, true
+			}
+		}
+		return nil, false
+	}
 	if verdict != probeAnswered {
-		return nil, verdict == probeRejected
+		return nil, false
 	}
 	reachable, reason := completionDispatchReachable(body)
 	if !reachable {
@@ -217,47 +245,84 @@ func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTT
 // discoverRefs returns real completion references built from the server's live
 // prompts and resource templates (capped at maxRealRefs). Each requires an
 // argument name to complete: a prompt argument, or a URI-template variable.
-func (e *CompletionUnauthExecutor) discoverRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) []completionRef {
+func (e *CompletionUnauthExecutor) discoverRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]completionRef, bool, []string) {
 	var refs []completionRef
+	complete := true
+	var outcomes []string
 
 	if session.ServerSupports("prompts") {
-		refs = append(refs, promptRefs(ctx, client, session)...)
+		found, verdict := promptRefs(ctx, client, session)
+		refs = append(refs, found...)
+		complete = complete && verdict != completionDiscoveryIncomplete
+		outcomes = append(outcomes, fmt.Sprintf("prompts/list: %s", completionDiscoveryOutcome(verdict)))
 	}
 	if session.ServerSupports("resources") {
-		refs = append(refs, resourceTemplateRefs(ctx, client, session)...)
+		found, verdict := resourceTemplateRefs(ctx, client, session)
+		refs = append(refs, found...)
+		complete = complete && verdict != completionDiscoveryIncomplete
+		outcomes = append(outcomes, fmt.Sprintf("resources/templates/list: %s", completionDiscoveryOutcome(verdict)))
 	}
 
 	if len(refs) > maxRealRefs {
+		outcomes = append(outcomes, fmt.Sprintf("reference limit: %d of %d", maxRealRefs, len(refs)))
+		complete = false
 		refs = refs[:maxRealRefs]
 	}
-	return refs
+	return refs, complete, outcomes
+}
+
+func completionDiscoveryOutcome(verdict completionDiscoveryVerdict) string {
+	switch verdict {
+	case completionDiscoveryComplete:
+		return "complete"
+	case completionDiscoveryAuthGated:
+		return "auth-gated"
+	default:
+		return "incomplete"
+	}
 }
 
 // promptRefs lists prompts and builds a completion ref for every prompt argument.
-func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) []completionRef {
-	body, ok := rpcResult(ctx, client, session, "prompts/list")
-	if !ok {
-		return nil
+func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]completionRef, completionDiscoveryVerdict) {
+	body, verdict := rpcResult(ctx, client, session, "prompts/list")
+	if verdict != completionDiscoveryComplete {
+		return nil, verdict
 	}
-	prompts, _ := body["prompts"].([]interface{})
+	prompts, ok := body["prompts"].([]interface{})
+	if !ok {
+		return nil, completionDiscoveryIncomplete
+	}
 	var refs []completionRef
+	complete := body["nextCursor"] == nil
 	for _, p := range prompts {
 		pm, ok := p.(map[string]interface{})
 		if !ok {
+			complete = false
 			continue
 		}
 		name, _ := pm["name"].(string)
 		if name == "" {
+			complete = false
 			continue
 		}
-		args, _ := pm["arguments"].([]interface{})
-		for _, a := range args {
+		args, hasArgs := pm["arguments"]
+		if !hasArgs {
+			continue
+		}
+		arguments, ok := args.([]interface{})
+		if !ok {
+			complete = false
+			continue
+		}
+		for _, a := range arguments {
 			am, ok := a.(map[string]interface{})
 			if !ok {
+				complete = false
 				continue
 			}
 			an, _ := am["name"].(string)
 			if an == "" {
+				complete = false
 				continue
 			}
 			refs = append(refs, completionRef{
@@ -268,24 +333,36 @@ func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSessi
 			})
 		}
 	}
-	return refs
+	if !complete {
+		return refs, completionDiscoveryIncomplete
+	}
+	return refs, completionDiscoveryComplete
 }
 
 // resourceTemplateRefs lists resource templates and builds a completion ref for
 // the first variable of every template that declares one.
-func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) []completionRef {
-	body, ok := rpcResult(ctx, client, session, "resources/templates/list")
-	if !ok {
-		return nil
+func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]completionRef, completionDiscoveryVerdict) {
+	body, verdict := rpcResult(ctx, client, session, "resources/templates/list")
+	if verdict != completionDiscoveryComplete {
+		return nil, verdict
 	}
-	templates, _ := body["resourceTemplates"].([]interface{})
+	templates, ok := body["resourceTemplates"].([]interface{})
+	if !ok {
+		return nil, completionDiscoveryIncomplete
+	}
 	var refs []completionRef
+	complete := body["nextCursor"] == nil
 	for _, t := range templates {
 		tm, ok := t.(map[string]interface{})
 		if !ok {
+			complete = false
 			continue
 		}
 		ut, _ := tm["uriTemplate"].(string)
+		if ut == "" {
+			complete = false
+			continue
+		}
 		m := templateVar.FindStringSubmatch(ut)
 		if m == nil {
 			continue
@@ -297,26 +374,46 @@ func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, sessio
 			label:   fmt.Sprintf("resource template %q variable %q", ut, m[1]),
 		})
 	}
-	return refs
+	if !complete {
+		return refs, completionDiscoveryIncomplete
+	}
+	return refs, completionDiscoveryComplete
 }
 
-// rpcResult issues a paramless JSON-RPC call without auth and returns the
-// result object, or ok=false on any transport failure, non-2xx, or JSON-RPC
-// error (which means the listing itself is gated and yields no usable ref).
-func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSession, method string) (map[string]interface{}, bool) {
+// rpcResult returns a correlated, complete result object from a list call.
+func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSession, method string) (map[string]interface{}, completionDiscoveryVerdict) {
 	resp, err := session.post(ctx, client, 6, method, nil)
-	if err != nil || !resp.IsSuccess() {
-		return nil, false
+	verdict, body := classifyProbe(resp, err, 6)
+	if verdict == probeRejected {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, completionDiscoveryAuthGated
+		}
+		if rpcErr, ok := body["error"].(map[string]interface{}); ok {
+			msg, _ := rpcErr["message"].(string)
+			if attack.AuthFlavoredMessage(msg) {
+				return nil, completionDiscoveryAuthGated
+			}
+		}
+		return nil, completionDiscoveryIncomplete
 	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return nil, false
+	if verdict != probeAnswered {
+		return nil, completionDiscoveryIncomplete
 	}
-	if _, hasErr := body["error"]; hasErr {
-		return nil, false
+	if rpcErr, hasErr := body["error"].(map[string]interface{}); hasErr {
+		msg, _ := rpcErr["message"].(string)
+		if attack.AuthFlavoredMessage(msg) {
+			return nil, completionDiscoveryAuthGated
+		}
+		return nil, completionDiscoveryIncomplete
 	}
 	result, ok := body["result"].(map[string]interface{})
-	return result, ok
+	if !ok {
+		return nil, completionDiscoveryIncomplete
+	}
+	if result["resultType"] != nil && result["resultType"] != "complete" {
+		return nil, completionDiscoveryIncomplete
+	}
+	return result, completionDiscoveryComplete
 }
 
 // completionDispatchReachable reports whether a completion/complete response

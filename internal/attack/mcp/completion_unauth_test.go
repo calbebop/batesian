@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,22 +13,7 @@ import (
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// completionServer builds a mock MCP server whose completion/complete behavior
-// is driven by mode:
-//   - "oracle":          completions+prompts advertised; completion/complete
-//     returns real suggestion values => medium reachability + high disclosure.
-//   - "resource-oracle": completions+prompts+resources advertised; the prompt
-//     arg returns empty but the resource-template variable discloses values =>
-//     medium + high, with the high referencing the resource template.
-//   - "reachable-empty": completions+prompts advertised; completion/complete
-//     returns an empty completion result => medium only (no disclosure).
-//   - "reachable-synth": only completions advertised; completion/complete answers
-//     -32602 for the synthetic probe ref => medium only.
-//   - "reachable-internal": only completions advertised; completion/complete
-//     answers -32603 for the synthetic probe ref => medium only.
-//   - "auth-enforced":   completion/complete answers -32001 Unauthorized => silent.
-//   - "no-cap":          completions capability absent => silent.
-//   - "not-mcp":         initialize 404s => silent.
+// completionServer serves the completion rule fixtures.
 func completionServer(mode string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "not-mcp" {
@@ -57,10 +43,16 @@ func completionServer(mode string) *httptest.Server {
 			if mode != "no-cap" {
 				caps["completions"] = map[string]interface{}{}
 			}
-			if mode == "oracle" || mode == "reachable-empty" || mode == "resource-oracle" {
+			if mode == "oracle" || mode == "reachable-empty" || mode == "resource-oracle" ||
+				mode == "prompt-list-fails" || mode == "prompt-list-malformed" || mode == "prompt-list-paged" ||
+				mode == "real-probe-fails" || mode == "completion-server-error" || mode == "reference-limit" ||
+				mode == "partial-discovery-reachable" || mode == "partial-probe-reachable" ||
+				mode == "prompt-entry-malformed" || mode == "prompt-list-wrong-id" ||
+				mode == "prompt-list-rpc-auth" || mode == "prompt-list-non-auth-error" || mode == "prompt-list-unsupported" {
 				caps["prompts"] = map[string]interface{}{}
 			}
-			if mode == "resource-oracle" {
+			if mode == "resource-oracle" || mode == "template-list-fails" || mode == "partial-discovery-reachable" ||
+				mode == "template-entry-malformed" || mode == "template-list-unsupported" {
 				caps["resources"] = map[string]interface{}{}
 			}
 			enc(map[string]interface{}{
@@ -74,20 +66,70 @@ func completionServer(mode string) *httptest.Server {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "prompts/list":
+			if mode == "prompt-list-rpc-auth" {
+				rpcErr(-32001, "Unauthorized")
+				return
+			}
+			if mode == "prompt-list-non-auth-error" {
+				rpcErr(-32002, "Resource not found")
+				return
+			}
+			if mode == "prompt-list-unsupported" {
+				rpcErr(-32601, "Method not found")
+				return
+			}
+			if mode == "prompt-list-fails" || mode == "partial-discovery-reachable" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "prompt-list-malformed" {
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{}})
+				return
+			}
+			if mode == "prompt-entry-malformed" {
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{
+					"prompts": []interface{}{map[string]interface{}{"name": "code_review", "arguments": "not an array"}},
+				}})
+				return
+			}
+			arguments := []interface{}{map[string]interface{}{"name": "language"}}
+			if mode == "partial-probe-reachable" {
+				arguments = append(arguments, map[string]interface{}{"name": "framework"})
+			}
+			if mode == "reference-limit" {
+				for i := 1; i < 9; i++ {
+					arguments = append(arguments, map[string]interface{}{"name": fmt.Sprintf("argument-%d", i)})
+				}
+			}
+			result := map[string]interface{}{
+				"prompts": []interface{}{map[string]interface{}{"name": "code_review", "arguments": arguments}},
+			}
+			if mode == "prompt-list-paged" {
+				result["nextCursor"] = "next"
+			}
+			id := req["id"]
+			if mode == "prompt-list-wrong-id" {
+				id = 99
+			}
 			enc(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{
-					"prompts": []interface{}{
-						map[string]interface{}{
-							"name": "code_review",
-							"arguments": []interface{}{
-								map[string]interface{}{"name": "language"},
-							},
-						},
-					},
-				},
+				"jsonrpc": "2.0", "id": id,
+				"result": result,
 			})
 		case "resources/templates/list":
+			if mode == "template-list-unsupported" {
+				rpcErr(-32601, "Method not found")
+				return
+			}
+			if mode == "template-list-fails" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "template-entry-malformed" {
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{
+					"resourceTemplates": []interface{}{map[string]interface{}{"name": "missing-uri"}},
+				}})
+				return
+			}
 			enc(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
@@ -99,6 +141,7 @@ func completionServer(mode string) *httptest.Server {
 		case "completion/complete":
 			ref, _ := params["ref"].(map[string]interface{})
 			refType, _ := ref["type"].(string)
+			refName, _ := ref["name"].(string)
 			switch mode {
 			case "auth-enforced":
 				rpcErr(-32001, "Unauthorized")
@@ -109,6 +152,34 @@ func completionServer(mode string) *httptest.Server {
 				rpcErr(-32603, "internal: unknown completion ref")
 			case "reachable-empty":
 				completion([]interface{}{})
+			case "prompt-list-fails", "prompt-list-malformed", "prompt-list-paged", "template-list-fails",
+				"reference-limit", "prompt-entry-malformed", "template-entry-malformed", "prompt-list-wrong-id",
+				"prompt-list-rpc-auth", "prompt-list-non-auth-error", "prompt-list-unsupported", "template-list-unsupported":
+				rpcErr(-32001, "Unauthorized")
+			case "real-probe-fails", "completion-server-error":
+				if refName == "code_review" {
+					if mode == "completion-server-error" {
+						w.WriteHeader(http.StatusInternalServerError)
+						rpcErr(-32603, "Internal error")
+					} else {
+						w.WriteHeader(http.StatusServiceUnavailable)
+					}
+				} else {
+					rpcErr(-32001, "Unauthorized")
+				}
+			case "partial-discovery-reachable":
+				if refType == "ref/resource" {
+					completion([]interface{}{"accounts/admin.py"})
+				} else {
+					rpcErr(-32001, "Unauthorized")
+				}
+			case "partial-probe-reachable":
+				argument, _ := params["argument"].(map[string]interface{})
+				if argument["name"] == "language" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+				} else {
+					completion([]interface{}{"flask"})
+				}
 			case "resource-oracle":
 				// The prompt argument yields nothing; the resource template leaks.
 				if refType == "ref/resource" {
@@ -238,6 +309,68 @@ func TestCompletionUnauth_AuthEnforced(t *testing.T) {
 
 	if findings := runCompletionUnauth(t, srv); len(findings) != 0 {
 		t.Errorf("expected 0 findings when auth is enforced, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestCompletionUnauth_AuthGatedDiscovery(t *testing.T) {
+	srv := completionServer("prompt-list-rpc-auth")
+	defer srv.Close()
+	if findings := runCompletionUnauth(t, srv); len(findings) != 0 {
+		t.Errorf("expected clean result, got %+v", findings)
+	}
+}
+
+func TestCompletionUnauth_IncompletePrerequisites(t *testing.T) {
+	for _, mode := range []string{
+		"prompt-list-fails",
+		"prompt-list-malformed",
+		"prompt-entry-malformed",
+		"prompt-list-wrong-id",
+		"prompt-list-non-auth-error",
+		"prompt-list-unsupported",
+		"prompt-list-paged",
+		"template-list-fails",
+		"template-list-unsupported",
+		"template-entry-malformed",
+		"real-probe-fails",
+		"completion-server-error",
+		"reference-limit",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			srv := completionServer(mode)
+			defer srv.Close()
+			assertInconclusive(t, mcpattack.NewCompletionUnauthExecutor(attack.RuleContext{ID: "mcp-completion-unauth-001"}), srv.URL, testOpts())
+		})
+	}
+}
+
+func TestCompletionUnauth_PartialDiscoveryRetainsFinding(t *testing.T) {
+	srv := completionServer("partial-discovery-reachable")
+	defer srv.Close()
+
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 2 {
+		t.Fatalf("expected reachability and disclosure findings, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "prompts/list: incomplete") ||
+		!strings.Contains(findings[0].Evidence, "resources/templates/list: complete") ||
+		!strings.Contains(findings[0].Evidence, "completion assessment incomplete") {
+		t.Errorf("missing partial-discovery outcome: %s", findings[0].Evidence)
+	}
+}
+
+func TestCompletionUnauth_PartialProbeRetainsFinding(t *testing.T) {
+	srv := completionServer("partial-probe-reachable")
+	defer srv.Close()
+
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 2 {
+		t.Fatalf("expected reachability and disclosure findings, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Evidence, "1: incomplete (no verdict)") ||
+		!strings.Contains(findings[0].Evidence, "2: reachable") ||
+		!strings.Contains(findings[0].Evidence, "completion assessment incomplete") {
+		t.Errorf("missing partial-probe outcome: %s", findings[0].Evidence)
 	}
 }
 
