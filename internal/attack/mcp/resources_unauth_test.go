@@ -185,20 +185,31 @@ func TestResourcesUnauth_CredentialInContent(t *testing.T) {
 
 func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
 	cases := []struct {
-		name     string
-		result   map[string]interface{}
-		wrongID  bool
-		findings int
+		name        string
+		result      map[string]interface{}
+		wrongID     bool
+		status      int
+		rpcError    bool
+		badJSON     bool
+		findings    int
+		wantOutcome string
 	}{
-		{"missing contents", map[string]interface{}{}, false, 1},
-		{"empty contents", map[string]interface{}{"contents": []interface{}{}}, false, 1},
-		{"input required", map[string]interface{}{"resultType": "input_required", "inputRequests": map[string]interface{}{}}, false, 1},
-		{"empty text", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": ""}}}, false, 1},
-		{"invalid blob", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "not base64"}}}, false, 1},
-		{"wrong response ID", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, true, 1},
-		{"text content", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, false, 2},
-		{"complete result", map[string]interface{}{"resultType": "complete", "contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, false, 2},
-		{"blob content", map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "ZGF0YQ=="}}}, false, 2},
+		{name: "missing result", findings: 1, wantOutcome: "incomplete (missing result)"},
+		{name: "missing contents", result: map[string]interface{}{}, findings: 1, wantOutcome: "incomplete (missing resource contents)"},
+		{name: "empty contents", result: map[string]interface{}{"contents": []interface{}{}}, findings: 1, wantOutcome: "no non-empty content returned"},
+		{name: "input required", result: map[string]interface{}{"resultType": "input_required", "inputRequests": map[string]interface{}{}}, findings: 1, wantOutcome: "incomplete (input required)"},
+		{name: "unexpected result type", result: map[string]interface{}{"resultType": "unknown"}, findings: 1, wantOutcome: "incomplete (unexpected result type)"},
+		{name: "empty text", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": ""}}}, findings: 1, wantOutcome: "no non-empty content returned"},
+		{name: "invalid blob", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "not base64"}}}, findings: 1, wantOutcome: "incomplete (invalid resource content)"},
+		{name: "wrong response ID", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, wrongID: true, findings: 1, wantOutcome: "incomplete (invalid JSON-RPC response)"},
+		{name: "HTTP unauthorized", status: http.StatusUnauthorized, findings: 1, wantOutcome: "denied (HTTP 401)"},
+		{name: "HTTP forbidden", status: http.StatusForbidden, findings: 1, wantOutcome: "denied (HTTP 403)"},
+		{name: "HTTP unavailable", status: http.StatusServiceUnavailable, findings: 1, wantOutcome: "incomplete (HTTP 503)"},
+		{name: "JSON-RPC error", rpcError: true, findings: 1, wantOutcome: "incomplete (JSON-RPC error)"},
+		{name: "malformed response", badJSON: true, findings: 1, wantOutcome: "incomplete (invalid JSON-RPC response)"},
+		{name: "text content", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, findings: 2, wantOutcome: "content returned"},
+		{name: "complete result", result: map[string]interface{}{"resultType": "complete", "contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, findings: 2, wantOutcome: "content returned"},
+		{name: "blob content", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "ZGF0YQ=="}}}, findings: 2, wantOutcome: "content returned"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,6 +243,21 @@ func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
 				case "resources/list":
 					reply(map[string]interface{}{"resources": []map[string]string{{"uri": "config://one", "name": "one"}}})
 				case "resources/read":
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
+						return
+					}
+					if tc.rpcError {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": id,
+							"error": map[string]interface{}{"code": -32000, "message": "read failed"},
+						})
+						return
+					}
+					if tc.badJSON {
+						_, _ = w.Write([]byte("not json"))
+						return
+					}
 					reply(tc.result)
 				default:
 					w.WriteHeader(http.StatusNotFound)
@@ -242,6 +268,15 @@ func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
 			findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(context.Background(), ts.URL, testOpts())
 			if err != nil || len(findings) != tc.findings {
 				t.Fatalf("expected %d finding(s), got findings=%+v err=%v", tc.findings, findings, err)
+			}
+			if !strings.Contains(findings[0].Evidence, "1: "+tc.wantOutcome) {
+				t.Errorf("missing read outcome %q in listing evidence: %s", tc.wantOutcome, findings[0].Evidence)
+			}
+			if strings.Contains(findings[0].Description, "read their contents") {
+				t.Errorf("listing description claims unverified content access: %s", findings[0].Description)
+			}
+			if tc.findings == 1 && !strings.Contains(findings[0].Evidence, "resource content access not confirmed") {
+				t.Errorf("missing unconfirmed read status: %s", findings[0].Evidence)
 			}
 		})
 	}
