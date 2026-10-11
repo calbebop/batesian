@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -51,13 +52,16 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	}
 
 	sessions, sessErr := openSessionsAs(ctx, client, vars.BaseURL, discovery)
-	if sessErr != nil {
-		return nil, sessErr // not an MCP server, and why
+	if sessErr != nil && len(sessions) == 0 {
+		return nil, sessErr
 	}
 
 	var findings []attack.Finding
 	capabilityKnown := false
 	var incomplete []string
+	if sessErr != nil {
+		incomplete = append(incomplete, "legacy wire: "+sessErr.Error())
+	}
 
 	for _, sessA := range sessions {
 		if !sessA.ServerSupports("tools") {
@@ -80,11 +84,21 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	}
 
 	if !capabilityKnown {
+		if len(incomplete) > 0 {
+			return nil, fmt.Errorf("%w: %s; no served wire advertises the tools capability at %s",
+				attack.ErrInconclusive, strings.Join(incomplete, "; "), vars.BaseURL)
+		}
 		return nil, fmt.Errorf("%w: no served wire advertises the tools capability at %s",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
-	if len(findings) == 0 && len(incomplete) > 0 {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+	if len(incomplete) > 0 {
+		reason := strings.Join(incomplete, "; ")
+		if len(findings) == 0 {
+			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, reason)
+		}
+		for i := range findings {
+			findings[i].Evidence += "\nadditional probe incomplete: " + reason
+		}
 	}
 	return findings, nil
 }
@@ -133,10 +147,21 @@ func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL stri
 		}
 	}
 	if len(out) == 0 {
+		if errors.Is(legacyErr, attack.ErrInconclusive) {
+			return nil, legacyErr
+		}
 		return nil, inconclusive(legacyErr)
+	}
+	if errors.Is(legacyErr, attack.ErrInconclusive) {
+		return out, legacyErr
 	}
 	return out, nil
 }
+
+type scopeNotificationFailure struct{ reason string }
+
+func (f scopeNotificationFailure) Error() string { return f.reason }
+func (f scopeNotificationFailure) Unwrap() error { return attack.ErrInconclusive }
 
 func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoint string, p taskPrincipal) (mcpSession, bool) {
 	const requestID = "batesian-scope-discover"
@@ -203,19 +228,9 @@ func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, ba
 		initialized, err := client.POST(ctx, ep, initializedHeaders, map[string]interface{}{
 			"jsonrpc": "2.0", "method": "notifications/initialized",
 		})
-		if err != nil || initialized == nil {
-			observed.observe(initObservation{rankRefused, fmt.Sprintf(
-				"the MCP initialized notification at %s could not be delivered", ep)})
-			continue
-		}
-		if !initialized.IsSuccess() {
-			rank := rankRefused
-			if initialized.StatusCode == http.StatusUnauthorized || initialized.StatusCode == http.StatusForbidden {
-				rank = rankUnauthorized
-			}
-			observed.observe(initObservation{rank, fmt.Sprintf(
-				"the MCP initialized notification at %s was refused with HTTP %d", ep, initialized.StatusCode)})
-			continue
+		if !initializedNotificationOK(initialized, err) {
+			return mcpSession{}, scopeNotificationFailure{fmt.Sprintf(
+				"the MCP initialized notification at %s for principal %q did not complete", ep, p.name)}
 		}
 		return session, nil
 	}
