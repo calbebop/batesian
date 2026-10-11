@@ -313,18 +313,20 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		return nil, fmt.Sprintf("the anonymous control at %s returned no authorization verdict", sessA.Endpoint), false
 	}
 
-	var unanswered string
+	var incomplete []string
 	for i, cand := range candidates {
 		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
 		if fullCall.headerMismatch {
 			return findings, fmt.Sprintf("tools/call for %q returned HeaderMismatch for the full principal", cand.Name), false
 		}
 		if !fullCall.answered {
-			unanswered = fmt.Sprintf("tools/call returned no correlated response for the full principal %q", princA.name)
+			incomplete = append(incomplete, fmt.Sprintf("tools/call returned no correlated response for the full principal %q", princA.name))
 			continue
 		}
 		if !scopeShowsDispatch(fullCall, randID) {
-			continue // baseline did not establish dispatch; nothing to compare
+			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q did not establish dispatch for the full principal %q",
+				cand.Name, princA.name))
+			continue
 		}
 
 		limCall := e.callAs(ctx, client, sessB, princB, scopeIDLimBase+i, cand, randID)
@@ -332,7 +334,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			return findings, fmt.Sprintf("tools/call for %q returned HeaderMismatch for the limited principal", cand.Name), false
 		}
 		if !limCall.answered {
-			unanswered = fmt.Sprintf("tools/call returned no correlated response for the limited principal %q", princB.name)
+			incomplete = append(incomplete, fmt.Sprintf("tools/call returned no correlated response for the limited principal %q", princB.name))
 			continue
 		}
 		switch {
@@ -344,8 +346,8 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			// No verdict.
 		}
 	}
-	if unanswered != "" {
-		return findings, unanswered, false
+	if len(incomplete) > 0 {
+		return findings, strings.Join(incomplete, "; "), false
 	}
 	return findings, "", true
 }

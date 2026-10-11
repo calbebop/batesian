@@ -53,6 +53,7 @@ type scopeServer struct {
 	limitedListError        string
 	emptyFullList           bool
 	fullListMode            string
+	fullCallError           string
 	deleteAnnotations       map[string]interface{}
 	missingFullListTools    bool
 	missingLimitedListTools bool
@@ -408,6 +409,10 @@ func (s *scopeServer) handler() http.HandlerFunc {
 
 		case "tools/call":
 			s.toolCalls.Add(1)
+			if token == "tok-full-a" && s.fullCallError != "" {
+				rpcErr(-32602, s.fullCallError, http.StatusOK)
+				return
+			}
 			if s.headerMismatchStatus != 0 && token == s.headerMismatchToken {
 				rpcErr(-32020, "HeaderMismatch", s.headerMismatchStatus)
 				return
@@ -590,6 +595,47 @@ func TestScope_VulnerableFires(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, "limited principal") {
 		t.Errorf("evidence should name the limited principal's dispatch, got: %q", f.Evidence)
+	}
+}
+
+func TestScope_FullBaselineNeedsDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		modern bool
+	}{
+		{name: "unknown tool", reason: "Unknown tool: delete_item"},
+		{name: "full credential refused", reason: "insufficient_scope: items:write required"},
+		{name: "modern unknown tool", reason: "Unknown tool: delete_item", modern: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &scopeServer{auth: true, modernOnly: tc.modern, fullCallError: tc.reason}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "full principal") || s.toolCalls.Load() != 1 {
+				t.Fatalf("want incomplete baseline with no limited call, got findings=%+v err=%v calls=%d",
+					findings, err, s.toolCalls.Load())
+			}
+		})
+	}
+}
+
+func TestScope_ReportsEachIncompleteBaseline(t *testing.T) {
+	s := &scopeServer{auth: true, extraTool: true, fullCallError: "Unknown tool"}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	opts := scopeOpts()
+	opts.MCPScopeTools = []string{"delete_item", "send_email"}
+	findings, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), `"delete_item"`) || !strings.Contains(err.Error(), `"send_email"`) ||
+		s.toolCalls.Load() != 2 {
+		t.Fatalf("want both untested tools reported, got findings=%+v err=%v calls=%d",
+			findings, err, s.toolCalls.Load())
 	}
 }
 
