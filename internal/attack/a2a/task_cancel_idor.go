@@ -91,8 +91,6 @@ func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, ran
 	switch anon.outcome {
 	case cancelCanceled:
 		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline, anon.method)}, nil
-	case cancelAbsent:
-		return nil, nil
 	case cancelOther:
 		return nil, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID)
 	}
@@ -105,7 +103,7 @@ func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, ran
 	switch wrongOwner.outcome {
 	case cancelCanceled:
 		return []attack.Finding{e.idorFinding(endpoint, a, b, taskID, preBState, wrongOwner.method)}, nil
-	case cancelDenied:
+	case cancelDenied, cancelAbsent:
 		return nil, nil
 	}
 	return nil, fmt.Errorf("%w: cancellation of task %s was not confirmed or denied on every available method", attack.ErrInconclusive, taskID)
