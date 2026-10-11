@@ -221,7 +221,10 @@ func TestBatchBypass_RequiresExpectedResultShape(t *testing.T) {
 }
 
 func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
-	for _, mode := range []string{"initialize batch error", "method batch error", "notification error"} {
+	for _, mode := range []string{
+		"initialize batch error", "initialize batch timeout", "method batch error",
+		"method batch timeout", "method control timeout", "notification error",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/mcp" {
@@ -232,14 +235,18 @@ func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
 				isBatch := strings.HasPrefix(strings.TrimSpace(string(body)), "[")
 				switch {
 				case isBatch:
-					w.WriteHeader(http.StatusBadGateway)
+					if strings.Contains(mode, "batch timeout") {
+						w.WriteHeader(http.StatusRequestTimeout)
+					} else {
+						w.WriteHeader(http.StatusBadGateway)
+					}
 				case strings.Contains(string(body), "notifications/initialized"):
 					if mode == "notification error" {
 						w.WriteHeader(http.StatusBadGateway)
 					} else {
 						w.WriteHeader(http.StatusAccepted)
 					}
-				case strings.Contains(string(body), "initialize") && mode == "initialize batch error":
+				case strings.Contains(string(body), "initialize") && strings.HasPrefix(mode, "initialize batch"):
 					w.WriteHeader(http.StatusUnauthorized)
 				case strings.Contains(string(body), "initialize"):
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -251,7 +258,11 @@ func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
 						},
 					})
 				case strings.Contains(string(body), "tools/list"):
-					w.WriteHeader(http.StatusUnauthorized)
+					if mode == "method control timeout" {
+						w.WriteHeader(http.StatusRequestTimeout)
+					} else {
+						w.WriteHeader(http.StatusUnauthorized)
+					}
 				default:
 					w.WriteHeader(http.StatusNotFound)
 				}
