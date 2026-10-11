@@ -59,42 +59,25 @@ func (e *DNSRebindOriginExecutor) Execute(ctx context.Context, target string, op
 	// rule reported a bare "could not test" against a server it could in fact have
 	// probed.
 	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
-		accepted, resp := e.originAccepted(ctx, client, session)
-		if resp == nil {
-			// Nothing answered, so this wire yielded no verdict either way. Reporting
-			// it clean would credit a server with validation on the strength of a
-			// request that never arrived.
+		switch e.originAccepted(ctx, client, session) {
+		case probeInconclusive:
 			return nil, false
-		}
-		if !accepted {
-			// Refused. The specification asks for 403 specifically, and anything else
-			// is a lesser kind of compliant, but the security question is only whether
-			// the server PROCESSED a foreign-Origin request. It did not, so there is no
-			// rebinding exposure to report.
+		case probeRejected:
 			return nil, true
+		default:
+			return []attack.Finding{e.finding(session)}, true
 		}
-		return []attack.Finding{e.finding(session)}, true
 	})
 }
 
-// originAccepted repeats this wire's own handshake request with a foreign Origin
-// header and reports whether the server processed it anyway.
-//
-// The request is chosen per era so that it matches what the baseline was: initialize
-// on the handshake wires, server/discover on 2026-07-28, which every server MUST
-// implement and which is what opened the modern session in the first place.
-//
-// The response is returned alongside the verdict so that "refused" can be told from
-// "never answered". It is nil only in the second case.
+// originAccepted repeats the wire-opening request with a foreign Origin.
 func (e *DNSRebindOriginExecutor) originAccepted(ctx context.Context, client *attack.HTTPClient,
-	session mcpSession) (bool, *attack.Response) {
+	session mcpSession) probeVerdict {
 	if session.Era == EraModern {
-		resp, err := session.postShaping(ctx, client, "batesian-origin", "server/discover", nil,
+		const id = "batesian-origin"
+		resp, err := session.postShaping(ctx, client, id, "server/discover", nil,
 			func(h map[string]string) { h["Origin"] = foreignOrigin })
-		if err != nil {
-			return false, nil
-		}
-		return resp.IsAccepted(), resp
+		return originResponseVerdict(resp, err, session, id)
 	}
 
 	// legacyHandshakeBody, not mcpInitBody: the baseline this is paired against is the
@@ -103,10 +86,7 @@ func (e *DNSRebindOriginExecutor) originAccepted(ctx context.Context, client *at
 	// to do with Origin, and the rule read that as Origin validation.
 	headers := map[string]string{"Content-Type": "application/json", "Origin": foreignOrigin}
 	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
-	if err != nil {
-		return false, nil
-	}
-	return resp.IsAccepted(), resp
+	return originResponseVerdict(resp, err, session, "")
 }
 
 // probeMethod names the request the probe sent, for the finding text. The two wires

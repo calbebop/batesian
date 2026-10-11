@@ -83,20 +83,20 @@ func (e *OriginPrefixBypassExecutor) Execute(ctx context.Context, target string,
 
 		// Control: an unrelated origin. Accepted means no validator runs here at
 		// all, which suppresses the rule; rejected proves one does.
-		ctrlOK, ctrlResp := e.originWith(ctx, client, session, foreignOrigin)
-		if ctrlResp == nil {
-			return nil, false // no verdict from this wire
-		}
-		if ctrlOK {
+		switch e.originWith(ctx, client, session, foreignOrigin) {
+		case probeInconclusive:
+			return nil, false
+		case probeAnswered:
 			return nil, true // no gate: dns-rebind's surface, not ours
 		}
 
 		for _, probe := range probes {
-			ok, _ := e.originWith(ctx, client, session, probe.origin)
-			if !ok {
-				continue // this craft was rejected too: validator held on it
+			switch e.originWith(ctx, client, session, probe.origin) {
+			case probeInconclusive:
+				return nil, false
+			case probeAnswered:
+				return []attack.Finding{e.finding(session, probe)}, true
 			}
-			return []attack.Finding{e.finding(session, probe)}, true
 		}
 		// The browser-shaped prefix was rejected.
 		return nil, true
@@ -107,21 +107,16 @@ func (e *OriginPrefixBypassExecutor) Execute(ctx context.Context, target string,
 // The request shape mirrors dns-rebind's twin selection so both rules pair
 // their probes against the identical baseline per era.
 func (e *OriginPrefixBypassExecutor) originWith(ctx context.Context, client *attack.HTTPClient,
-	session mcpSession, origin string) (bool, *attack.Response) {
+	session mcpSession, origin string) probeVerdict {
 	if session.Era == EraModern {
-		resp, err := session.postShaping(ctx, client, "batesian-originpfx", "server/discover", nil,
+		const id = "batesian-originpfx"
+		resp, err := session.postShaping(ctx, client, id, "server/discover", nil,
 			func(h map[string]string) { h["Origin"] = origin })
-		if err != nil {
-			return false, nil
-		}
-		return resp.IsAccepted(), resp
+		return originResponseVerdict(resp, err, session, id)
 	}
 	headers := map[string]string{"Content-Type": "application/json", "Origin": origin}
 	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
-	if err != nil {
-		return false, nil
-	}
-	return resp.IsAccepted(), resp
+	return originResponseVerdict(resp, err, session, "")
 }
 
 func (e *OriginPrefixBypassExecutor) finding(session mcpSession, probe originProbe) attack.Finding {
