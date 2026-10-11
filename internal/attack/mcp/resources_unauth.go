@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 
@@ -76,16 +77,25 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	listResp, err := session.post(ctx, client, 3, "resources/list", nil)
 	verdict, listBody := classifyProbe(listResp, err, 3)
 	if verdict != probeAnswered {
-		return nil, verdict == probeRejected
+		return nil, listResp != nil && err == nil &&
+			(listResp.StatusCode == http.StatusUnauthorized || listResp.StatusCode == http.StatusForbidden)
 	}
 
-	// JSON-RPC error means the endpoint exists but rejected the call - not vulnerable.
+	if errObj, ok := listBody["error"].(map[string]interface{}); ok {
+		code := rpcErrorCode(errObj["code"])
+		message, _ := errObj["message"].(string)
+		return nil, authFlavoredError(code, message) ||
+			(code == -32601 && !session.ServerSupports("resources"))
+	}
 	if _, hasErr := listBody["error"]; hasErr {
-		return nil, true
+		return nil, false
 	}
 
 	result, ok := listBody["result"].(map[string]interface{})
 	if !ok {
+		return nil, false
+	}
+	if resultType, present := result["resultType"]; present && resultType != "complete" {
 		return nil, false
 	}
 	resourcesRaw, ok := result["resources"].([]interface{})
@@ -93,13 +103,8 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		return nil, false
 	}
 
-	// Follow every present cursor, including an empty string.
-	next, hasCursor := result["nextCursor"]
-	if next == nil {
-		hasCursor = false
-	}
-	cursor, more := next.(string)
-	complete := !hasCursor
+	cursor, more, validCursor := resourcesListCursor(result)
+	complete := validCursor && !more
 	seen := map[string]bool{}
 	nextID := 4
 	for p := 1; p < 10 && more; p++ {
@@ -122,17 +127,22 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		if !ok {
 			break
 		}
+		if resultType, present := pageResult["resultType"]; present && resultType != "complete" {
+			break
+		}
 		pageResources, ok := pageResult["resources"].([]interface{})
 		if !ok {
 			break
 		}
 		resourcesRaw = append(resourcesRaw, pageResources...)
-		next, present := pageResult["nextCursor"]
-		if !present || next == nil {
+		cursor, more, validCursor = resourcesListCursor(pageResult)
+		if !validCursor {
+			break
+		}
+		if !more {
 			complete = true
 			break
 		}
-		cursor, more = next.(string)
 	}
 
 	if len(resourcesRaw) == 0 {
@@ -141,12 +151,15 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 
 	// Build a display list of resource URIs
 	var uris []string
+	invalidEntries := false
 	for _, r := range resourcesRaw {
 		if rm, ok := r.(map[string]interface{}); ok {
 			if uri, ok := rm["uri"].(string); ok && uri != "" {
 				uris = append(uris, uri)
+				continue
 			}
 		}
+		invalidEntries = true
 	}
 	if len(uris) == 0 {
 		return nil, false
@@ -154,6 +167,9 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	evidence := fmt.Sprintf("HTTP %d from %s\nresources (%d): %v", listResp.StatusCode, session.Endpoint, len(uris), uris)
 	if !complete {
 		evidence += "\nlisting incomplete: pagination stopped before the final page"
+	}
+	if invalidEntries {
+		evidence += "\nlisting incomplete: malformed resource entries were omitted"
 	}
 
 	findings = append(findings, attack.Finding{
@@ -355,6 +371,18 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 		return nil, "no non-empty content returned"
 	}
 	return read, "content returned"
+}
+
+func resourcesListCursor(result map[string]interface{}) (string, bool, bool) {
+	next, present := result["nextCursor"]
+	if !present || next == nil {
+		return "", false, true
+	}
+	cursor, ok := next.(string)
+	if !ok {
+		return "", false, false
+	}
+	return cursor, true, true
 }
 
 // initializeMCP performs the MCP initialize handshake and returns a session
