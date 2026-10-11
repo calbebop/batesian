@@ -57,12 +57,38 @@ func confusedDeputyServer(mode string) *httptest.Server {
 				writeJSON(http.StatusBadRequest, map[string]interface{}{"error": "invalid_redirect_uri"})
 				return
 			}
-			writeJSON(http.StatusCreated, map[string]interface{}{
-				"client_id":     "cd-client-123",
-				"redirect_uris": redirects,
-			})
+			if mode == "dcr-invalid-metadata" {
+				writeJSON(http.StatusBadRequest, map[string]interface{}{"error": "invalid_client_metadata"})
+				return
+			}
+			if mode == "dcr-generic-error" {
+				writeJSON(http.StatusBadRequest, map[string]interface{}{"error": "invalid_request"})
+				return
+			}
+			registration := map[string]interface{}{"client_id": "cd-client-123"}
+			if mode == "dcr-no-echo" {
+				registration["note"] = redirects
+			} else {
+				registration["redirect_uris"] = redirects
+			}
+			writeJSON(http.StatusCreated, registration)
 		case r.URL.Path == "/authorize" && r.Method == http.MethodGet:
 			redirectURI := r.URL.Query().Get("redirect_uri")
+			if mode == "authorize-gateway" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if mode == "authorize-rate-limited" {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			if mode == "authorize-disconnect" {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
 			if mode == "vulnerable" {
 				// No exact-match: redirect to whatever was supplied.
 				http.Redirect(w, r, redirectURI+"?code=fake", http.StatusFound)
@@ -138,6 +164,44 @@ func TestConfusedDeputy_DCRRestricted(t *testing.T) {
 
 	if findings := runConfusedDeputy(t, ts); len(findings) != 0 {
 		t.Errorf("expected zero findings when DCR rejects an off-origin redirect, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestConfusedDeputy_UnrelatedRegistrationErrorsAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"dcr-invalid-metadata", "dcr-generic-error"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := confusedDeputyServer(mode)
+			defer ts.Close()
+
+			findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("registration did not test the redirect policy: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestConfusedDeputy_UnansweredAuthorizationIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"authorize-gateway", "authorize-rate-limited", "authorize-disconnect"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := confusedDeputyServer(mode)
+			defer ts.Close()
+
+			findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("authorization probe did not finish: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestConfusedDeputy_RegistrationWithoutRedirectEchoIsIncomplete(t *testing.T) {
+	ts := confusedDeputyServer("dcr-no-echo")
+	defer ts.Close()
+
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("registration did not confirm the redirect: findings=%+v err=%v", findings, err)
 	}
 }
 
