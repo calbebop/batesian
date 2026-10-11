@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,13 +63,17 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 
 		switch method {
 		case "server/discover":
+			caps := map[string]interface{}{
+				"tools": map[string]interface{}{}, "resources": map[string]interface{}{},
+			}
+			if nameMode == "second-stale" {
+				caps["prompts"] = map[string]interface{}{}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"supportedVersions": []string{"2026-07-28"},
-					"capabilities": map[string]interface{}{
-						"tools": map[string]interface{}{}, "resources": map[string]interface{}{},
-					},
+					"capabilities":      caps,
 				},
 			})
 		case "tools/list":
@@ -92,7 +97,15 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name")
 					return
 				}
-			case "ignores", "stale-control", "stale-error", "stale-result":
+			case "second-stale":
+				if method == "prompts/get" {
+					id = 99
+				}
+				if hdr != subject {
+					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name")
+					return
+				}
+			case "ignores", "stale-control", "stale-error", "stale-result", "auth-mismatch", "generic-error":
 				if hdr == "" { // presence enforced, value ignored
 					if nameMode == "stale-control" {
 						id = 99
@@ -107,6 +120,14 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{},
 					})
+					return
+				}
+				if nameMode == "auth-mismatch" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if nameMode == "generic-error" {
+					rpcErr(http.StatusOK, -32002, "Permission denied")
 					return
 				}
 			case "absent":
@@ -170,20 +191,33 @@ func TestSplit_McpNameValidatedIsClean(t *testing.T) {
 	}
 }
 
-func TestSplit_McpNameIgnoresUnrelatedResponses(t *testing.T) {
-	for _, mode := range []string{"stale-control", "stale-error", "stale-result"} {
+func TestSplit_McpNameUnansweredProbesAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"stale-control", "stale-error", "stale-result", "auth-mismatch", "generic-error"} {
 		t.Run(mode, func(t *testing.T) {
 			ts := nameSplitServer(t, mode)
 			defer ts.Close()
 
 			findings, err := runSplitRule(t, ts)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unanswered Mcp-Name probe should be incomplete: %v", err)
 			}
 			if len(findings) != 0 {
 				t.Errorf("unrelated response created a finding: %+v", findings)
 			}
 		})
+	}
+}
+
+func TestSplit_McpNameLaterProbeIsNotMasked(t *testing.T) {
+	ts := nameSplitServer(t, "second-stale")
+	defer ts.Close()
+
+	findings, err := runSplitRule(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("later Mcp-Name probe did not finish: findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(err.Error(), "prompts/get") {
+		t.Fatalf("missing later probe reason: %v", err)
 	}
 }
 
@@ -204,15 +238,13 @@ func TestSplit_McpNamePresenceNotEnforcedIsNotAFinding(t *testing.T) {
 	}
 }
 
-// Neither name-bearing method exists, so the dimension has no surface and must fall
-// through to the Mcp-Method verdict rather than blocking the rule.
-func TestSplit_NoNameBearingMethodStillReportsTheMethodVerdict(t *testing.T) {
+func TestSplit_AdvertisedNameBearingMethodNotImplementedIsIncomplete(t *testing.T) {
 	ts := nameSplitServer(t, "nomethod")
 	defer ts.Close()
 
 	findings, err := runSplitRule(t, ts)
-	if err != nil {
-		t.Fatalf("the Mcp-Method dimension tested fine, so this is clean: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("advertised resources/read was unavailable: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
@@ -221,7 +253,7 @@ func TestSplit_NoNameBearingMethodStillReportsTheMethodVerdict(t *testing.T) {
 
 // caseFoldServer validates the Mcp-Method value but compares it case-insensitively,
 // which the binding forbids: header names are case-insensitive, header VALUES are not.
-func caseFoldServer(t *testing.T) *httptest.Server {
+func caseFoldServer(t *testing.T, failFold bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
@@ -252,6 +284,10 @@ func caseFoldServer(t *testing.T) *httptest.Server {
 			rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch")
 			return
 		}
+		if failFold && r.Header.Get("Mcp-Method") == "TOOLS/LIST" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		switch method {
 		case "server/discover":
 			write(map[string]interface{}{
@@ -270,7 +306,7 @@ func caseFoldServer(t *testing.T) *httptest.Server {
 // Folding case is the narrower way to get it wrong, and an intermediary matching an
 // exact method name is walked past by a different spelling of the same method.
 func TestSplit_CaseFoldedMethodValueIsAFinding(t *testing.T) {
-	ts := caseFoldServer(t)
+	ts := caseFoldServer(t, false)
 	defer ts.Close()
 
 	findings, err := runSplitRule(t, ts)
@@ -282,5 +318,18 @@ func TestSplit_CaseFoldedMethodValueIsAFinding(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Title, "case-insensitively") {
 		t.Errorf("the finding should say the comparison folded case, got %q", findings[0].Title)
+	}
+}
+
+func TestSplit_CaseFoldedMethodWithoutAnswerIsIncomplete(t *testing.T) {
+	ts := caseFoldServer(t, true)
+	defer ts.Close()
+
+	findings, err := runSplitRule(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("case-folded probe did not finish: findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(err.Error(), "case-folded Mcp-Method") {
+		t.Fatalf("missing case-folded probe reason: %v", err)
 	}
 }
