@@ -336,21 +336,39 @@ func TestSessionAsCredential_OpenHandshakeStillFires(t *testing.T) {
 	}
 }
 
-// The handshake is open but only a credentialed caller is issued a session, so
-// there is no anonymous session to compare against. The refusals below could be
-// about the missing session rather than the missing credential, and that is the
-// ambiguity that produced the C# SDK false positive. Report nothing.
-func TestSessionAsCredential_NoAnonymousSessionIsSuppressed(t *testing.T) {
+func TestSessionAsCredential_NoAnonymousSessionIsInconclusive(t *testing.T) {
 	srv := sessionCredServer(t, "open-init-no-anon-session")
 	defer srv.Close()
 
 	findings, err := runSessionCred(t, srv)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "anonymous handshake") {
+		t.Fatalf("missing anonymous control must be inconclusive: findings=%+v err=%v", findings, err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("no anonymous session was available to attribute the refusals to the "+
-			"missing credential; got %d finding(s)", len(findings))
+}
+
+func TestSessionAsCredential_IncompleteCandidateIsNotMaskedByLaterCleanPath(t *testing.T) {
+	incomplete := sessionCredServer(t, "open-init-no-anon-session")
+	defer incomplete.Close()
+	clean := sessionCredServer(t, "token-required")
+	defer clean.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			incomplete.Config.Handler.ServeHTTP(w, r)
+		case "/":
+			clean.Config.Handler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := runSessionCred(t, srv)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "anonymous handshake") {
+		t.Fatalf("later clean path must not hide the incomplete control: findings=%+v err=%v", findings, err)
 	}
 }
 
