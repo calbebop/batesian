@@ -31,10 +31,11 @@ func listingServer(t *testing.T, mode string) *httptest.Server {
 	// -32601, and correctly concludes the surface is absent, so the mode would
 	// never exercise what this test is about.
 	listings := map[string]map[string]interface{}{
-		"tools/list":          {"tools": []interface{}{map[string]interface{}{"name": "echo"}}},
-		"prompts/list":        {"prompts": []interface{}{map[string]interface{}{"name": "greet"}}},
-		"resources/list":      {"resources": []interface{}{map[string]interface{}{"uri": "config://db"}}},
-		"completion/complete": {"completion": map[string]interface{}{"values": []interface{}{"alpha", "beta"}}},
+		"tools/list":               {"tools": []interface{}{map[string]interface{}{"name": "echo"}}},
+		"prompts/list":             {"prompts": []interface{}{map[string]interface{}{"name": "greet"}}},
+		"resources/list":           {"resources": []interface{}{map[string]interface{}{"uri": "config://db"}}},
+		"resources/templates/list": {"resourceTemplates": []interface{}{}},
+		"completion/complete":      {"completion": map[string]interface{}{"values": []interface{}{"alpha", "beta"}}},
 		// logging/setLevel is included for the same reason: left to fall through it
 		// answers -32601, which correctly reads as the method being absent, so the
 		// mode would never reach logging-unauth's gate.
