@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,32 +12,9 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ConfusedDeputyExecutor tests whether an MCP server's OAuth authorization
-// endpoint enforces exact redirect_uri validation (rule mcp-confused-deputy-001).
-//
-// The MCP "confused deputy" problem: a server that proxies OAuth to a third-party
-// authorization server with a static client_id, while forwarding a client-supplied
-// redirect_uri, lets an attacker harvest authorization codes once the upstream
-// consent screen is skipped (a consent cookie set for the static client_id). The
-// MCP Security Best Practices require the proxy to validate that redirect_uri
-// "exactly matches the registered URI" using exact string matching, and RFC 6749
-// section 4.1.2.1 requires the authorization server to NOT redirect to a missing,
-// invalid, or mismatching redirect_uri.
-//
-// Black-box detection (no browser, user, or consent cookie):
-//   - Register a client via DCR with an off-origin redirect R1.
-//   - Request /authorize with a DIFFERENT, unregistered off-origin redirect R2.
-//   - CONFIRMED: the server answers with a 3xx whose Location host is R2's host;
-//     it is redirecting to a redirect_uri that was never registered for the
-//     client (a direct RFC 6749 4.1.2.1 violation, the open-redirect primitive
-//     that enables the confused deputy).
-//   - INDICATOR: DCR accepted the arbitrary off-origin redirect R1 (the confused
-//     deputy precondition) but the authorize-time check could not be confirmed
-//     (e.g. the endpoint deferred validation behind a login page).
-//
-// Redirect targets use the reserved .invalid TLD (RFC 6761) with a per-run
-// marker, so they never resolve and the flow is never completed: the probe only
-// reads the server's redirect decision, it does not harvest any code.
+// ConfusedDeputyExecutor tests whether OAuth redirects to an unregistered URI.
+// It registers one .invalid URI, then probes /authorize with another. A redirect
+// to the second URI confirms the flaw; accepting the first is a risk indicator.
 type ConfusedDeputyExecutor struct {
 	rule attack.RuleContext
 }
@@ -104,12 +83,15 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	attackerRedirect := "https://" + attackerHost + "/cb"
 	loc, status, err := authorizeRedirectProbe(ctx, unauthClient, opts, authEP, clientID, attackerRedirect, vars.RandID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: authorization redirect probe did not complete: %v", attack.ErrInconclusive, err)
 	}
 
 	// The client_id has served its purpose, so remove the registration before
 	// reporting, which is what lets the report say whether anything was left behind.
 	removeClient()
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+		return nil, fmt.Errorf("%w: authorization redirect probe returned HTTP %d", attack.ErrInconclusive, status)
+	}
 
 	if redirectsToHost(status, loc, attackerHost) {
 		return []attack.Finding{{
@@ -156,7 +138,7 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 		}}, nil
 	}
 
-	return nil, nil
+	return nil, fmt.Errorf("%w: registration did not confirm the requested redirect URI and the authorization probe did not establish a redirect", attack.ErrInconclusive)
 }
 
 // discoverOAuthEndpoints reads the authorization-server metadata and returns the
@@ -167,24 +149,8 @@ func discoverOAuthEndpoints(ctx context.Context, client *attack.HTTPClient, base
 	return fields["registration_endpoint"], fields["authorization_endpoint"], err
 }
 
-// registerDCRClient registers a client via DCR with the given redirect_uri and
-// returns the issued client_id, whether the response echoed the off-origin
-// redirect back (i.e. DCR accepted an arbitrary external redirect target), and
-// how the registration itself went.
-//
-// The outcome matters because a refused registration has two very different
-// meanings. A server that refuses to register an off-origin redirect_uri has
-// applied the very mitigation this rule is about: the confused-deputy chain needs
-// an attacker-controlled redirect registered, and the allowlist stopped it at step
-// one, so a clean result is honest. A server whose DCR requires an initial access
-// token (RFC 7591 section 3) and answers 401, or which fails for any unrelated
-// reason, has told us nothing about redirect validation, and reporting that clean
-// grades an endpoint the rule never reached.
-//
-// The registration response is returned as well, so the caller can deregister the
-// client it just created once the client_id has served its purpose. See
-// deregisterDCRClient: a scan that registers a client with an attacker-shaped
-// redirect_uri and leaves it there has changed the target and not changed it back.
+// registerDCRClient returns the client ID, whether DCR echoed the requested
+// redirect URI, the registration outcome, and the response used for cleanup.
 func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrationEndpoint, redirectURI,
 	randID string) (clientID string, echoedRedirect bool, outcome dcrOutcome, reg *attack.Response) {
 	resp, err := client.POSTOAuth(ctx, registrationEndpoint, nil, map[string]interface{}{
@@ -203,29 +169,42 @@ func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrat
 			return "", false, dcrOutcome{unavailable: true,
 				detail: fmt.Sprintf("registration returned HTTP %d with no client_id", resp.StatusCode)}, resp
 		}
-		echoedRedirect = strings.Contains(resp.BodyString(), redirectURI)
+		var registration struct {
+			RedirectURIs []string `json:"redirect_uris"`
+		}
+		if json.Unmarshal(resp.Body, &registration) == nil {
+			for _, registered := range registration.RedirectURIs {
+				if registered == redirectURI {
+					echoedRedirect = true
+					break
+				}
+			}
+		}
 		return clientID, echoedRedirect, dcrOutcome{}, resp
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// DCR itself is credential-gated. Nothing about redirect policy follows.
 		return "", false, dcrOutcome{unavailable: true,
 			detail: fmt.Sprintf("registration requires credentials (HTTP %d)", resp.StatusCode)}, resp
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
-		// A client-error rejection of the registration we sent. This is the
-		// allowlist doing its job, which is the mitigation, not an untested surface.
-		return "", false, dcrOutcome{redirectRefused: true}, resp
+		var registrationError struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(resp.Body, &registrationError) == nil && registrationError.Error == "invalid_redirect_uri" {
+			return "", false, dcrOutcome{redirectRefused: true}, resp
+		}
+		return "", false, dcrOutcome{unavailable: true,
+			detail: fmt.Sprintf("registration returned HTTP %d without an invalid_redirect_uri error", resp.StatusCode)}, resp
 	default:
 		return "", false, dcrOutcome{unavailable: true,
 			detail: fmt.Sprintf("registration answered HTTP %d", resp.StatusCode)}, resp
 	}
 }
 
-// dcrOutcome records why a registration produced no client_id.
+// dcrOutcome records why registration produced no client ID.
 type dcrOutcome struct {
-	// redirectRefused: the server rejected the registration we sent, which for an
-	// off-origin redirect_uri is the mitigation this rule looks for.
+	// redirectRefused requires an explicit invalid_redirect_uri error.
 	redirectRefused bool
-	// unavailable: registration could not be completed for reasons unrelated to
-	// redirect policy, so the authorize endpoint was never probed.
+	// unavailable means redirect validation was not tested.
 	unavailable bool
 	detail      string
 }
@@ -254,12 +233,12 @@ func authorizeRedirectProbe(ctx context.Context, guard *attack.HTTPClient, opts 
 	}
 	reqURL := authorizationEndpoint + sep + q.Encode()
 	if err := guard.ValidateOAuthEndpoint(reqURL); err != nil {
-		return "", 0, err
+		return "", 0, errors.New("authorization endpoint was blocked by destination policy")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return "", 0, nil
+		return "", 0, errors.New("authorization request could not be built")
 	}
 	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
 
@@ -270,7 +249,10 @@ func authorizeRedirectProbe(ctx context.Context, guard *attack.HTTPClient, opts 
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", 0, nil
+		if ctx.Err() != nil {
+			return "", 0, ctx.Err()
+		}
+		return "", 0, errors.New("authorization endpoint did not answer")
 	}
 	defer resp.Body.Close()
 	return resp.Header.Get("Location"), resp.StatusCode, nil

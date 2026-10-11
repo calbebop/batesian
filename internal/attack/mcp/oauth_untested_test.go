@@ -37,6 +37,10 @@ func oauthOnlyServer(t *testing.T, dcrStatus int) *httptest.Server {
 			fmt.Fprint(w, `{"error":"invalid_token","error_description":"initial access token required"}`)
 			return
 		}
+		if dcrStatus == http.StatusBadRequest {
+			fmt.Fprint(w, `{"error":"invalid_redirect_uri"}`)
+			return
+		}
 		fmt.Fprint(w, `{"client_id":"c1"}`)
 	})
 	// The MCP handler lives here, which the candidate walk never tries.
