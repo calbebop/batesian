@@ -3,8 +3,10 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -105,6 +107,31 @@ func TestShadow_HardenedOriginMedium(t *testing.T) {
 	}
 }
 
+func TestShadow_UnobservedOriginDoesNotClaimRefusal(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		shadowMCPHandler(false)(w, r)
+	}))
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	if findings[0].Severity != "medium" ||
+		!strings.Contains(findings[0].Evidence, "inconclusive (HTTP 429)") ||
+		strings.Contains(findings[0].Evidence, "refused") ||
+		!strings.Contains(findings[0].Description, "was not assessed") {
+		t.Fatalf("unobserved Origin result was misreported: %+v", findings[0])
+	}
+}
+
 // TestShadow_FingerprintOnlyLow: the page names a known product but no MCP
 // endpoint answers. Low indicator, not silence - the dashboard is exposed
 // even though its protocol could not be driven from here.
@@ -132,6 +159,26 @@ func TestShadow_FingerprintOnlyLow(t *testing.T) {
 	}
 }
 
+func TestShadow_FingerprintWithIncompleteHandshake(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("<html><title>Serena Dashboard</title></html>"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 1 || findings[0].Severity != "low" ||
+		!strings.Contains(findings[0].Evidence, "handshake probes incomplete") {
+		t.Fatalf("dashboard finding must retain incomplete handshake evidence: findings=%+v err=%v", findings, err)
+	}
+}
+
 // TestShadow_NothingListeningClean: every probed port answers closed or with
 // an unrelated service. Checked-and-absent is a genuine clean result here -
 // each probe received an answer, so nothing went untested.
@@ -150,6 +197,72 @@ func TestShadow_NothingListeningClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings with no shadow surfaces, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestShadow_ClosedPortIsClean(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	closed := httptest.NewServer(http.NotFoundHandler())
+	port := portOf(closed.URL)
+	closed.Close()
+
+	withShadowPorts(t, port)
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("closed port should be clean: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_TransientResponsesAreInconclusive(t *testing.T) {
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			main := httptest.NewServer(http.NotFoundHandler())
+			defer main.Close()
+			shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer shadow.Close()
+
+			withShadowPorts(t, portOf(shadow.URL))
+			findings, err := runShadow(t, main.URL)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("transient responses must be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestShadow_FindingNotesOtherIncompletePort(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(shadowMCPHandler(false))
+	defer shadow.Close()
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer limited.Close()
+
+	withShadowPorts(t, portOf(shadow.URL), portOf(limited.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 1 ||
+		!strings.Contains(findings[0].Evidence, "other adjacent-port probes incomplete") {
+		t.Fatalf("finding must disclose the incomplete port: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_CanceledProbeIsInconclusive(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.NotFoundHandler())
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	findings, err := mcp.NewShadowSurfaceExecutor(shadowRC()).Execute(ctx, main.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("canceled probes must be incomplete: findings=%+v err=%v", findings, err)
 	}
 }
 

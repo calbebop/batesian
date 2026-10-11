@@ -2,42 +2,19 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// ShadowSurfaceExecutor looks for MCP surfaces the target host serves on
-// ports adjacent to the one it was given (rule mcp-shadow-surface-001).
-//
-// The class: developer dashboards and inspector proxies bind to loopback or
-// every interface with no authentication, on ports nobody associates with the
-// production service. An MCP server answering there is reachable by anything
-// on the machine and, when Origin validation is also absent, by any web page
-// in a browser via DNS rebinding - which is exactly the chain behind
-// CVE-2025-49596 (MCP Inspector), CVE-2026-49471 (Serena) and
-// CVE-2026-23744 (MCPJam). Operators rarely know these listeners exist, so
-// scanning only the URL they named misses them entirely.
-//
-// The port list is deliberately short and documented rather than a sweep:
-// each entry is a default binding of a product with a published unauth-RCE
-// advisory against it. Probing closed ports costs one refused connection.
-//
-//   - 6277  - MCP Inspector's proxy server default
-//   - 24282 - Serena's dashboard/API default
-//   - 3000  - the conventional dev-server port
-//
-// Oracles, all read-only:
-//
-//   - an initialize answered without credentials is an open shadow surface;
-//     repeating that exact request with a foreign Origin distinguishes the
-//     full browser-reachable chain (both accepted, high) from an open surface
-//     behind Origin validation (medium)
-//   - a dashboard fingerprint ("MCP Inspector", "Serena") without a drivable
-//     protocol endpoint is a low indicator naming the exposed product page
+// ShadowSurfaceExecutor checks adjacent ports for unauthenticated MCP listeners
+// and known dashboard fingerprints (rule mcp-shadow-surface-001).
 type ShadowSurfaceExecutor struct {
 	rule attack.RuleContext
 }
@@ -80,29 +57,45 @@ func (e *ShadowSurfaceExecutor) Execute(ctx context.Context, target string, opts
 	targetPort := u.Port()
 
 	var findings []attack.Finding
+	var incomplete []string
 	for _, port := range shadowPorts {
 		if strconv.Itoa(port) == targetPort {
 			continue // the surface the operator already aimed at; other rules own it
 		}
-		if f := e.probePort(ctx, client, scheme, u.Hostname(), port); f != nil {
+		f, uncertain := e.probePort(ctx, client, scheme, u.Hostname(), port)
+		if f != nil {
 			findings = append(findings, *f)
+		}
+		if uncertain {
+			incomplete = append(incomplete, strconv.Itoa(port))
+		}
+	}
+	if len(incomplete) > 0 {
+		ports := strings.Join(incomplete, ", ")
+		if len(findings) == 0 {
+			return nil, fmt.Errorf("%w: shadow-surface probes did not complete on port(s) %s",
+				attack.ErrInconclusive, ports)
+		}
+		for i := range findings {
+			findings[i].Evidence += "\nother adjacent-port probes incomplete: " + ports
 		}
 	}
 	return findings, nil
 }
 
-// probePort characterises one listener. A nil return covers everything from
-// "connection refused" to "an unrelated service answered": none of those is a
-// shadow MCP surface, and a refused connection is itself an answer - silence
-// here means checked-and-absent, never could-not-tell.
-func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HTTPClient, scheme, host string, port int) *attack.Finding {
+// probePort distinguishes a closed or unrelated listener from an incomplete probe.
+func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HTTPClient, scheme, host string, port int) (*attack.Finding, bool) {
 	base := scheme + "://" + host + ":" + strconv.Itoa(port)
 
-	marker := e.fingerprint(ctx, client, base)
+	marker, incomplete := e.fingerprint(ctx, client, base)
 
 	mcpPath := ""
 	for _, path := range shadowPaths {
 		resp, err := client.POST(ctx, base+path, nil, legacyHandshakeBody())
+		if shadowProbeIncomplete(resp, err) {
+			incomplete = true
+			continue
+		}
 		if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 			continue
 		}
@@ -112,10 +105,12 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 
 	if mcpPath == "" {
 		if marker == "" {
-			return nil
+			return nil, incomplete
 		}
-		// A known dashboard is served but its protocol endpoint did not answer
-		// the probes. Exposed product page, undriven protocol: low indicator.
+		probeEvidence := "no MCP handshake on " + strings.Join(shadowPaths, ", ")
+		if incomplete {
+			probeEvidence = "MCP handshake probes incomplete on " + strings.Join(shadowPaths, ", ")
+		}
 		return &attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -129,10 +124,10 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 					"rule does not drive. Inspector-class dashboards have shipped with unauthenticated "+
 					"RCE when exposed like this (CVE-2025-49596), so confirm what else the process serves.",
 				base, marker),
-			Evidence:    fmt.Sprintf("GET %s/ -> HTTP 200, body names %q\nno MCP handshake on %s", base, marker, strings.Join(shadowPaths, ", ")),
+			Evidence:    fmt.Sprintf("GET %s/ -> HTTP 200, body names %q\n%s", base, marker, probeEvidence),
 			Remediation: e.rule.Remediation,
 			TargetURL:   base + "/",
-		}
+		}, false
 	}
 
 	endpoint := base + mcpPath
@@ -141,12 +136,30 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 	// one header different. Accepting it is the browser-reachability half of
 	// the rebinding chain.
 	rebindResp, rebindErr := client.POST(ctx, endpoint, map[string]string{"Origin": foreignOrigin}, legacyHandshakeBody())
-	originOpen := rebindErr == nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body)
+	originOpen := rebindErr == nil && rebindResp != nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body)
+	originRefused := rebindErr == nil && rebindResp != nil && rebindResp.StatusCode == http.StatusForbidden
+	originEvidence := "inconclusive (transport failure)"
+	originDescription := "The foreign-Origin comparison did not yield a verdict, so browser reachability was not assessed."
+	if rebindResp != nil {
+		originEvidence = fmt.Sprintf("inconclusive (HTTP %d)", rebindResp.StatusCode)
+	}
+	if originOpen {
+		originEvidence = "accepted"
+		originDescription = "A matching handshake with a foreign Origin also succeeded."
+	} else if originRefused {
+		originEvidence = "refused (HTTP 403)"
+		originDescription = "A matching handshake with a foreign Origin was refused with HTTP 403."
+	}
 
 	sev, title := "medium", fmt.Sprintf("MCP surface answers without authentication on %s:%d%s", host, port, mcpPath)
 	if originOpen {
 		sev = "high"
 		title = fmt.Sprintf("Unauthenticated MCP surface accepts foreign Origins on %s:%d%s (DNS-rebinding chain)", host, port, mcpPath)
+	}
+	evidence := fmt.Sprintf("endpoint: %s\ninitialize without credentials: accepted\nforeign Origin twin (%s): %s",
+		endpoint, foreignOrigin, originEvidence)
+	if marker != "" {
+		evidence += "\npage fingerprint: " + marker
 	}
 	return &attack.Finding{
 		RuleID:     e.rule.ID,
@@ -154,52 +167,36 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 		Severity:   sev,
 		Confidence: attack.ConfirmedExploit,
 		Title:      title,
-		Description: fmt.Sprintf(
-			"The host behind %s also answers an MCP initialize at %s with no credentials. This "+
-				"listener sits on a non-standard port, away from the service the operator named, which "+
-				"is where inspector and dashboard processes end up after setup.", scheme+"://"+host, endpoint) +
-			func() string {
-				if originOpen {
-					return " The same handshake was accepted carrying a foreign Origin, so a page on " +
-						"another origin can reach this surface from a victim's browser - the full " +
-						"precondition pair behind CVE-2025-49596. Anything the process can do, the " +
-						"page can drive."
-				}
-				return " A foreign-Origin twin of the same handshake was refused, so direct cross-origin " +
-					"reaching is mitigated here; the surface is still unauthenticated for anything on " +
-					"the machine or network path."
-			}(),
-		Evidence: func() string {
-			lines := fmt.Sprintf("endpoint: %s\ninitialize without credentials: accepted\nforeign Origin twin (%s): ",
-				endpoint, foreignOrigin)
-			if originOpen {
-				lines += "accepted"
-			} else {
-				lines += "refused"
-			}
-			if marker != "" {
-				lines += "\npage fingerprint: " + marker
-			}
-			return lines
-		}(),
+		Description: fmt.Sprintf("An MCP initialize succeeded without credentials at %s on an adjacent port. %s",
+			endpoint, originDescription),
+		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
-	}
+	}, false
 }
 
-// fingerprint GETs the listener root and returns the first known product name
-// its body admits, or empty. It is a hint used for evidence and the low
-// finding, never load-bearing on its own.
-func (e *ShadowSurfaceExecutor) fingerprint(ctx context.Context, client *attack.HTTPClient, base string) string {
+func shadowProbeIncomplete(resp *attack.Response, err error) bool {
+	if err != nil {
+		return !errors.Is(err, syscall.ECONNREFUSED)
+	}
+	if resp == nil {
+		return true
+	}
+	return resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError
+}
+
+// fingerprint checks the page for a known dashboard name.
+func (e *ShadowSurfaceExecutor) fingerprint(ctx context.Context, client *attack.HTTPClient, base string) (string, bool) {
 	resp, err := client.GET(ctx, base+"/", nil)
-	if err != nil || !resp.IsSuccess() {
-		return ""
+	if err != nil || resp == nil || !resp.IsSuccess() {
+		return "", shadowProbeIncomplete(resp, err)
 	}
 	body := strings.ToLower(string(resp.Body))
 	for _, fp := range shadowFingerprints {
 		if strings.Contains(body, strings.ToLower(fp)) {
-			return fp
+			return fp, false
 		}
 	}
-	return ""
+	return "", false
 }

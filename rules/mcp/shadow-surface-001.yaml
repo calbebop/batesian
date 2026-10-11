@@ -18,20 +18,17 @@ info:
       3. 3000  - the conventional dev-server port
 
     ORACLES. An initialize answered without credentials is an open shadow
-    surface. Repeating that exact request with a foreign Origin separates two
-    severities: both accepted means a page on another origin can drive the
-    process from a victim's browser, which is the full precondition pair of
-    CVE-2025-49596 (high, confirmed); the foreign Origin refused leaves an
-    unauthenticated surface reachable from the machine and network path
-    (medium, confirmed). A page fingerprinting as a known dashboard without a
-    drivable protocol endpoint is a low indicator naming the product.
+    surface. Repeating that request with a foreign Origin separates an accepted
+    comparison (high) from a refused or unobserved one (medium). Only an HTTP
+    403 response is reported as an explicit refusal. A known dashboard page
+    without a confirmed protocol endpoint is a low indicator.
 
     Every probe is read-only: an initialize creates no session state beyond
     what the listener already tracks for its own clients, and nothing is ever
     invoked through a discovered surface.
 
-    A closed port is an answer, not a failure: silence from this rule means
-    each documented port was checked and none spoke MCP.
+    A closed port is a clean result. Timeouts, rate limits, and server errors
+    leave a port incomplete rather than clean.
 
   references:
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
