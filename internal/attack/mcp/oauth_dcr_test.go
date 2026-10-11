@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -194,6 +195,65 @@ func TestOAuthDCR_ScopeRestrictingServer(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings when scopes are restricted, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestOAuthDCR_IncompleteRegistrationMetadata(t *testing.T) {
+	cases := []struct {
+		name     string
+		metadata map[string]interface{}
+		complete bool
+	}{
+		{"missing-client-id", map[string]interface{}{"scope": "admin"}, false},
+		{"missing-scope", map[string]interface{}{"client_id": "probe-client"}, false},
+		{"null-scope", map[string]interface{}{"client_id": "probe-client", "scope": nil}, false},
+		{"invalid-scope", map[string]interface{}{"client_id": "probe-client", "scope": 42}, false},
+		{"empty-scope", map[string]interface{}{"client_id": "probe-client", "scope": ""}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var deletes atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/.well-known/oauth-authorization-server":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"issuer": "http://" + r.Host, "registration_endpoint": "http://" + r.Host + "/register",
+					})
+				case "/register":
+					registration := map[string]interface{}{
+						"registration_client_uri":   "http://" + r.Host + "/manage",
+						"registration_access_token": "cleanup-token",
+					}
+					for key, value := range tc.metadata {
+						registration[key] = value
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(registration)
+				case "/manage":
+					if r.Method != http.MethodDelete || r.Header.Get("Authorization") != "Bearer cleanup-token" {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					deletes.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != 0 {
+				t.Fatalf("unexpected findings: %+v", findings)
+			}
+			if tc.complete && err != nil || !tc.complete && !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("complete=%t, err=%v", tc.complete, err)
+			}
+			if got := deletes.Load(); got != 1 {
+				t.Fatalf("cleanup requests = %d, want 1", got)
+			}
+		})
 	}
 }
 
