@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -137,10 +138,8 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		Title: fmt.Sprintf(
 			"MCP prompts/list returned %d template(s) without authentication", len(names)),
 		Description: fmt.Sprintf(
-			"prompts/list at %s returned %d prompt template(s) without any authentication. "+
-				"Prompt templates may encode system-level instructions, operator context, or "+
-				"behavioral configuration that was not intended to be publicly readable. "+
-				"An attacker can use this information to craft targeted prompt injection payloads.",
+			"prompts/list at %s returned %d prompt names without authentication. "+
+				"This confirms name disclosure, not access to prompt contents.",
 			session.Endpoint, len(names)),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
@@ -148,6 +147,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 	})
 
 	const maxPromptReads = 10
+	var outcomes []string
 	for i, name := range names {
 		if i >= maxPromptReads {
 			break
@@ -155,14 +155,8 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		id := nextID
 		nextID++
 		getResp, err := session.post(ctx, client, id, "prompts/get", map[string]interface{}{"name": name})
-		getVerdict, getBody := classifyProbe(getResp, err, id)
-		if getVerdict != probeAnswered {
-			continue
-		}
-		if _, hasErr := getBody["error"]; hasErr {
-			continue
-		}
-		content := promptGetContent(getResp.Body, id)
+		content, outcome := promptGetOutcome(getResp, err, id)
+		outcomes = append(outcomes, outcome)
 		if content == "" {
 			continue
 		}
@@ -189,17 +183,50 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		})
 		break
 	}
+	findings[0].Evidence += "\nprompts/get attempts:"
+	for i, outcome := range outcomes {
+		findings[0].Evidence += fmt.Sprintf("\n  %d: %s", i+1, outcome)
+	}
+	if len(findings) == 1 {
+		findings[0].Evidence += "\nprompt content access not confirmed"
+	}
 
 	return findings, true
 }
 
-func promptGetContent(response []byte, id int) string {
+func promptGetOutcome(resp *attack.Response, err error, id int) (string, string) {
+	verdict, body := classifyProbe(resp, err, id)
+	switch verdict {
+	case probeInconclusive:
+		if err != nil || resp == nil {
+			return "", "incomplete (transport error)"
+		}
+		if !resp.IsSuccess() {
+			return "", fmt.Sprintf("incomplete (HTTP %d)", resp.StatusCode)
+		}
+		return "", "incomplete (invalid JSON-RPC response)"
+	case probeRejected:
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", fmt.Sprintf("denied (HTTP %d)", resp.StatusCode)
+		}
+		return "", "incomplete (JSON-RPC error)"
+	case probeAnswered:
+		if _, hasErr := body["error"]; hasErr {
+			return "", "incomplete (JSON-RPC error)"
+		}
+		return promptGetContent(resp.Body, id)
+	default:
+		return "", "incomplete (unknown response)"
+	}
+}
+
+func promptGetContent(response []byte, id int) (string, string) {
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
-		Result  struct {
+		Result  *struct {
 			ResultType string `json:"resultType"`
-			Messages   []struct {
+			Messages   *[]struct {
 				Content struct {
 					Type     string `json:"type"`
 					Text     string `json:"text"`
@@ -214,38 +241,65 @@ func promptGetContent(response []byte, id int) string {
 		} `json:"result"`
 		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(response, &body) != nil || body.JSONRPC != "2.0" ||
-		string(body.ID) != strconv.Itoa(id) || len(body.Error) != 0 ||
-		(body.Result.ResultType != "" && body.Result.ResultType != "complete") {
-		return ""
+	if json.Unmarshal(response, &body) != nil {
+		return "", "incomplete (invalid prompt response)"
+	}
+	if body.JSONRPC != "2.0" || string(body.ID) != strconv.Itoa(id) || len(body.Error) != 0 {
+		return "", "incomplete (invalid JSON-RPC response)"
+	}
+	if body.Result == nil {
+		return "", "incomplete (missing result)"
+	}
+	if body.Result.ResultType == "input_required" {
+		return "", "incomplete (input required)"
+	}
+	if body.Result.ResultType != "" && body.Result.ResultType != "complete" {
+		return "", "incomplete (unexpected result type)"
+	}
+	if body.Result.Messages == nil {
+		return "", "incomplete (missing prompt messages)"
 	}
 
 	var content string
-	for _, message := range body.Result.Messages {
+	invalidContent := false
+	for _, message := range *body.Result.Messages {
 		item := message.Content
 		switch item.Type {
 		case "text":
 			content = item.Text
 		case "image", "audio":
 			decoded, err := base64.StdEncoding.DecodeString(item.Data)
-			if err == nil && len(decoded) != 0 {
+			if err != nil {
+				invalidContent = true
+			} else if len(decoded) != 0 {
 				content = fmt.Sprintf("[%s content: %d bytes]", item.Type, len(decoded))
 			}
 		case "resource":
 			if item.Resource.URI == "" {
+				invalidContent = true
 				continue
 			}
 			content = item.Resource.Text
 			if content == "" {
 				decoded, err := base64.StdEncoding.DecodeString(item.Resource.Blob)
-				if err == nil && len(decoded) != 0 {
+				if err != nil {
+					invalidContent = true
+				} else if len(decoded) != 0 {
 					content = fmt.Sprintf("[embedded resource: %d bytes]", len(decoded))
 				}
 			}
+		default:
+			invalidContent = true
 		}
 		if content != "" {
 			break
 		}
 	}
-	return content
+	if content != "" {
+		return content, "content returned"
+	}
+	if invalidContent {
+		return "", "incomplete (invalid prompt content)"
+	}
+	return "", "no non-empty content returned"
 }
