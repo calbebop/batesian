@@ -65,6 +65,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 	// saying "could not reach a testable endpoint" about a server that answered and
 	// refused it sends the operator to the wrong place.
 	var observed initObservation
+	var missingAnonSession string
 	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
 		// Step 1: handshake with the credential and capture the session id.
 		session, ok, resp := e.initialize(ctx, client, ep, authed)
@@ -122,11 +123,9 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		if s, anonOK, _ := e.initialize(ctx, client, ep, nil); anonOK {
 			anonSession = s
 			if anonSession.SessionID == "" {
-				// It handshakes anonymously but issues this caller no session, so there
-				// is no anonymous session to compare against, and a refusal below cannot
-				// be attributed to the missing credential rather than the missing
-				// session. Report nothing rather than guess.
-				return nil, true
+				missingAnonSession = fmt.Sprintf("the anonymous handshake at %s issued no session id, "+
+					"so the authentication control could not be compared", ep)
+				return nil, false
 			}
 			switch e.toolsList(ctx, client, ep, anonSession, nil) {
 			case accessGranted:
@@ -192,6 +191,9 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 
 		return []attack.Finding{e.finding(ep, session.SessionID, bogus, anonSession.SessionID)}, true
 	})
+	if len(findings) == 0 && missingAnonSession != "" {
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, missingAnonSession)
+	}
 	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
 		return nil, inconclusive(handshakeRefusal{observed.reason})
 	}
