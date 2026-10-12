@@ -9,6 +9,7 @@ import (
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
+	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
 // hostInjectCanary is the value injected into host-related headers.
@@ -57,10 +58,8 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 
 	var findings []attack.Finding
 	seen := map[string]bool{}
-	// A card has to be served for the reflection test to mean anything. Without
-	// one, every probe falls through the continues below and the rule returns an
-	// empty slice, which reads as "no reflection" rather than "never tested".
 	cardParsed := false
+	var unobserved []string
 
 	for _, path := range cardPaths {
 		for _, probe := range probes {
@@ -71,13 +70,25 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 			}
 			headers[probe.header] = probe.value
 			resp, err := client.GET(ctx, cardURL, headers)
-			if err != nil || !resp.IsSuccess() {
+			probeName := path + " " + probe.header
+			if err != nil || resp == nil {
+				unobserved = append(unobserved, probeName+": no response")
+				continue
+			}
+			if !resp.IsSuccess() {
+				if resp.StatusCode < 400 || resp.StatusCode >= 500 {
+					unobserved = append(unobserved, fmt.Sprintf("%s: HTTP %d", probeName, resp.StatusCode))
+				}
 				continue
 			}
 
-			// Parse the agent card and check if the canary appears in URL fields.
 			var card map[string]interface{}
 			if err := json.Unmarshal(resp.Body, &card); err != nil {
+				unobserved = append(unobserved, probeName+": invalid card JSON")
+				continue
+			}
+			if err := protocola2a.ValidateAgentCard(resp.Body); err != nil {
+				unobserved = append(unobserved, probeName+": invalid Agent Card")
 				continue
 			}
 			cardParsed = true
@@ -143,6 +154,13 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 		}
 	}
 
+	if len(unobserved) > 0 {
+		detail := "unobserved header probes: " + strings.Join(unobserved, "; ")
+		if len(findings) == 0 {
+			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
+		}
+		findings[0].Evidence += "\n" + detail
+	}
 	if len(findings) == 0 && !cardParsed {
 		return nil, fmt.Errorf("%w: no parseable agent card was served under %s for any injected "+
 			"host header, so there was no card body in which to look for a reflection",
@@ -157,20 +175,8 @@ type reflection struct {
 	value string
 }
 
-// findReflections recursively walks a JSON object and returns the dot-paths and
-// values of any string field whose value contains the canary substring, sorted by
-// path.
-//
-// The sort is load-bearing, not cosmetic. walkJSON ranges a
-// map[string]interface{}, and Go randomizes map iteration order, so without it the
-// reflection order changed between runs. Everything downstream inherits that
-// order: the caller joins the paths into the dedup key that collapses the same
-// reflection across the two well-known paths, so the key differed run to run and
-// the dedup hit or missed at random. The same header was reported twice, once as
-// "provider.url, url" and once as "url, provider.url", and one fixture yielded 3,
-// 4 or 5 findings on identical input. The finding title, description and evidence
-// list the fields too, so a stable order also makes two scans of an unchanged
-// target diffable.
+// findReflections returns canary-bearing fields in stable path order.
+// The order keeps finding deduplication and output deterministic.
 func findReflections(v interface{}, canary string) []reflection {
 	var out []reflection
 	walkJSON(v, "", canary, &out)
