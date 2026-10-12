@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -18,44 +19,18 @@ import (
 	protoa2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
-// PeerImpersonationExecutor tests whether an A2A server validates the
-// cryptographic signature of incoming bearer JWTs when accepting peer
-// agent requests (rule a2a-peer-impersonation-001).
-//
-// Attack sequence:
-//  1. Fetch /.well-known/agent-card.json to extract the agent name for use as
-//     the JWT subject. Falls back to "trusted-orchestrator" if unavailable.
-//  2. Discover the issuer and audience the target actually trusts, and build a
-//     forged HS256 JWT carrying them, signed with a random key the server cannot
-//     know. Claims: sub=<agent-name>, iss=<discovered>, role=orchestrator,
-//     aud=<discovered>.
-//  3. Send a SendMessage request with the forged token in Authorization: Bearer.
-//  4. Send a baseline SendMessage with no Authorization header.
-//  5. Compare: forged accepted + baseline rejected => server trusts claims
-//     without signature verification; both accepted => no auth enforced.
-//
-// The issuer must be discovered rather than invented. This rule asks one
-// question: does the server verify the signature? A server that checks the
-// issuer against an allowlist before (or instead of) verifying the signature
-// answers a token bearing an unknown issuer with a 401, which is
-// indistinguishable from a server that verified the signature and found it
-// invalid. Issuer allowlisting is ordinary practice, so a fabricated issuer made
-// this rule report those servers clean. Measured against a server that trusts a
-// published issuer and never verifies signatures: reported clean with a
-// fabricated issuer, HIGH with the real one, same server both times.
-//
-// When no issuer can be discovered and the forged probe is refused, the rule
-// says so rather than reporting clean, because the refusal cannot be attributed
-// to signature verification.
+// PeerImpersonationExecutor compares a forged bearer JWT with an anonymous
+// request. A refusal is only meaningful when the issuer is known and the
+// response identifies an authentication failure.
 type PeerImpersonationExecutor struct {
 	rule attack.RuleContext
 }
 
-// NewPeerImpersonationExecutor creates an executor for the a2a-peer-impersonation attack type.
 func init() {
 	attack.Register("a2a-peer-impersonation", func(rc attack.RuleContext) attack.Executor { return NewPeerImpersonationExecutor(rc) })
 }
 
+// NewPeerImpersonationExecutor creates an executor for the peer impersonation rule.
 func NewPeerImpersonationExecutor(r attack.RuleContext) *PeerImpersonationExecutor {
 	return &PeerImpersonationExecutor{rule: r}
 }
@@ -99,26 +74,44 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	// Steps 3 and 4: on each revision the agent might speak, send the forged probe
 	// and the unauthenticated baseline, and keep the first pair where the send
 	// method exists. The baseline uses unauthClient so opts.Token is not injected.
-	forgedResp, baselineResp, wire, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
+	forgedResp, baselineResp, wire, incomplete, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
 	if !ok {
+		if len(incomplete) > 0 {
+			return nil, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+				strings.Join(incomplete, "; "))
+		}
 		return nil, fmt.Errorf("%w: no revision's send method is implemented at %s "+
 			"(tried v1.0 SendMessage and v0.3 message/send), so credential handling was never exercised",
 			attack.ErrInconclusive, endpoint)
 	}
 
-	// Acceptance = a 2xx carrying a JSON-RPC result envelope (IsAccepted).
-	// Rejection is anything else: a 401/403, a 4xx, OR a 200 carrying a
-	// JSON-RPC error envelope (no result). The
-	// only difference between the two probes is the Authorization header, so the
-	// forged-vs-baseline comparison isolates credential handling regardless of
-	// how the server signals rejection.
 	forgedOK := forgedResp.IsAccepted()
 	baselineOK := baselineResp.IsAccepted()
+	forgedDenied := peerAuthDenied(forgedResp)
+	baselineDenied := peerAuthDenied(baselineResp)
+
+	if forgedOK && !baselineOK && !baselineDenied {
+		incomplete = append(incomplete, wire+" anonymous baseline did not establish an authentication rejection")
+	}
+	if !forgedOK && !forgedDenied {
+		incomplete = append(incomplete, wire+" forged token response did not establish an authentication rejection")
+	}
+	if !forgedOK && baselineOK {
+		incomplete = append(incomplete, wire+" anonymous request succeeded while the forged token was refused")
+	}
+	if !forgedOK && !claims.discovered() {
+		incomplete = append(incomplete, "no trusted issuer was published for the forged token")
+	}
+	findingObserved := forgedOK && (baselineOK || baselineDenied)
+	if len(incomplete) > 0 && !findingObserved {
+		return nil, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+			strings.Join(incomplete, "; "))
+	}
 
 	var findings []attack.Finding
 
 	switch {
-	case forgedOK && !baselineOK:
+	case forgedOK && baselineDenied:
 		// Forged JWT accepted, but no-auth request rejected: server reads claims
 		// without verifying the signature against a known key.
 		findings = append(findings, attack.Finding{
@@ -165,20 +158,20 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			TargetURL:   endpoint,
 		})
 
-	case !forgedOK && !claims.discovered():
-		// The forged token was refused, but it carried an invented issuer, so the
-		// refusal is equally consistent with the server filtering unknown issuers
-		// and with the server verifying the signature. Reporting clean here is the
-		// false negative this rule shipped with: a server that trusts a published
-		// issuer and never checks signatures looks identical from the outside.
-		return nil, fmt.Errorf("%w: the target publishes no trusted issuer, so a forged token "+
-			"carrying an invented issuer (%s) cannot distinguish signature verification from "+
-			"issuer filtering; publish RFC 9728 protected-resource metadata or an "+
-			"openIdConnect/oauth2 securityScheme in the agent card to make this testable",
-			attack.ErrInconclusive, claims.iss)
 	}
 
 	return findings, nil
+}
+
+func peerAuthDenied(resp *attack.Response) bool {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return true
+	}
+	if !resp.IsSuccess() {
+		return false
+	}
+	_, hasError := jsonRPCErrorCode(resp.Body)
+	return hasError && errMessageIsAuth(resp.Body)
 }
 
 // impersonationWire is one revision's send request, in the shape that revision
@@ -189,14 +182,7 @@ type impersonationWire struct {
 	body    map[string]interface{}
 }
 
-// impersonationWires lists the send methods to try, newest first.
-//
-// The rule sent only v1.0 SendMessage and had no fallback, alone among the A2A
-// rules. A v0.3 agent answers that with -32601 at HTTP 200 for BOTH the forged and
-// the baseline probe, so neither was accepted, no switch case matched, and the rule
-// returned clean: a server that trusts a published issuer and never verifies a
-// signature was reported secure because the scanner spoke the wrong revision at it.
-// The rejection it saw came from the dispatcher, not the auth layer.
+// impersonationWires lists the v1.0 and v0.3 send methods, newest first.
 func impersonationWires(randID string) []impersonationWire {
 	return []impersonationWire{
 		{
@@ -226,11 +212,9 @@ func impersonationWires(randID string) []impersonationWire {
 	}
 }
 
-// probeWires sends the forged and baseline probes on each revision and returns the
-// first pair where the method exists. A revision answering -32601 to both is not
-// implemented here and says nothing about credential handling.
+// probeWires skips unsupported methods and records unobserved comparisons.
 func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
-	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, ok bool) {
+	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, incomplete []string, ok bool) {
 	for _, w := range impersonationWires(randID) {
 		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
 		for k, v := range w.headers {
@@ -238,18 +222,24 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 		}
 		fResp, err := client.POST(ctx, endpoint, forgedHeaders, w.body)
 		if err != nil {
+			incomplete = append(incomplete, w.name+" forged request failed")
 			continue
 		}
 		bResp, err := unauthClient.POST(ctx, endpoint, w.headers, w.body)
 		if err != nil {
+			incomplete = append(incomplete, w.name+" anonymous request failed")
 			continue
 		}
 		if methodAbsent(fResp) && methodAbsent(bResp) {
 			continue
 		}
-		return fResp, bResp, w.name, true
+		if methodAbsent(fResp) || methodAbsent(bResp) {
+			incomplete = append(incomplete, w.name+" method availability differed between probes")
+			continue
+		}
+		return fResp, bResp, w.name, incomplete, true
 	}
-	return nil, nil, "", false
+	return nil, nil, "", incomplete, false
 }
 
 // methodAbsent reports whether a response is a -32601, which real SDKs return at

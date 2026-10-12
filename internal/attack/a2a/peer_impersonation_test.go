@@ -448,6 +448,133 @@ func TestPeerImpersonation_NoSendMethodIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_UnjudgedResponsesAreInconclusive(t *testing.T) {
+	tests := []struct {
+		name           string
+		forgedStatus   int
+		baselineStatus int
+		forgedError    string
+		baselineError  string
+	}{
+		{name: "both unavailable", forgedStatus: http.StatusServiceUnavailable, baselineStatus: http.StatusServiceUnavailable},
+		{name: "forged unavailable", forgedStatus: http.StatusServiceUnavailable, baselineStatus: http.StatusUnauthorized},
+		{name: "baseline unavailable", forgedStatus: http.StatusOK, baselineStatus: http.StatusServiceUnavailable},
+		{name: "forged application error", forgedStatus: http.StatusOK, baselineStatus: http.StatusUnauthorized, forgedError: "Task not found"},
+		{name: "baseline application error", forgedStatus: http.StatusOK, baselineStatus: http.StatusOK, baselineError: "Task not found"},
+		{name: "service error with auth text", forgedStatus: http.StatusServiceUnavailable, baselineStatus: http.StatusUnauthorized, forgedError: "unauthorized"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				status := tt.baselineStatus
+				errorMessage := tt.baselineError
+				if r.Header.Get("Authorization") != "" {
+					status = tt.forgedStatus
+					errorMessage = tt.forgedError
+				}
+				if status != http.StatusOK {
+					w.WriteHeader(status)
+				}
+				if errorMessage != "" {
+					rpcErr(w, req["id"], -32001, errorMessage)
+					return
+				}
+				if status != http.StatusOK {
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"id": "task-001"},
+				})
+			}))
+			defer ts.Close()
+
+			exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+			findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestPeerImpersonation_MismatchedWireDoesNotProduceCleanResult(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("peer-agent"))
+			return
+		}
+		req := readBody(r)
+		switch req["method"] {
+		case "GetTask", "tasks/get":
+			rpcErr(w, req["id"], -32001, "Task not found")
+		case "SendMessage":
+			if r.Header.Get("Authorization") != "" {
+				rpcErr(w, req["id"], -32601, "Method not found")
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		case "message/send":
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer ts.Close()
+
+	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete without findings, got findings=%v err=%v", findings, err)
+	}
+	if !strings.Contains(err.Error(), "method availability differed") {
+		t.Fatalf("missing mismatched wire reason: %v", err)
+	}
+}
+
+func TestPeerImpersonation_FindingSurvivesMismatchedWire(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("peer-agent"))
+			return
+		}
+		req := readBody(r)
+		switch req["method"] {
+		case "GetTask", "tasks/get":
+			rpcErr(w, req["id"], -32001, "Task not found")
+		case "SendMessage":
+			if r.Header.Get("Authorization") != "" {
+				rpcErr(w, req["id"], -32601, "Method not found")
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		case "message/send":
+			if r.Header.Get("Authorization") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"id": "task-001"},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
+		t.Fatalf("want high finding from v0.3 probe, got findings=%v err=%v", findings, err)
+	}
+}
+
 // Both the forged token's issuer and the finding's evidence come from a walk over
 // the card's securitySchemes map, and Go randomizes map order. A card declaring two
 // issuer-bearing schemes is normal during an IdP migration. Measured before the
