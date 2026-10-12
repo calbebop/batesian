@@ -96,6 +96,20 @@ func extensionServer(mode string, required bool) *httptest.Server {
 				return
 			}
 			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+		case "omitted-service-error", "omitted-rate-limit", "omitted-timeout":
+			if !activated {
+				status := http.StatusServiceUnavailable
+				switch mode {
+				case "omitted-rate-limit":
+					status = http.StatusTooManyRequests
+				case "omitted-timeout":
+					status = http.StatusRequestTimeout
+				}
+				w.WriteHeader(status)
+				writeErr(-32008, "extension support required")
+				return
+			}
+			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
 		default: // failopen
 			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
 		}
@@ -141,7 +155,8 @@ func TestExtDowngrade_FailClosed(t *testing.T) {
 }
 
 func TestExtDowngrade_IncompleteOmission(t *testing.T) {
-	for _, mode := range []string{"omitted-generic", "omitted-transport", "omitted-wrong-id"} {
+	for _, mode := range []string{"omitted-generic", "omitted-transport", "omitted-wrong-id",
+		"omitted-service-error", "omitted-rate-limit", "omitted-timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			ts := extensionServer(mode, true)
 			defer ts.Close()
