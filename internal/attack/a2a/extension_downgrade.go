@@ -41,6 +41,7 @@ func NewExtensionDowngradeExecutor(r attack.RuleContext) *ExtensionDowngradeExec
 const (
 	a2aExtensionsHeader       = "A2A-Extensions"
 	a2aExtensionsHeaderLegacy = "X-A2A-Extensions"
+	extensionSupportRequired  = -32008
 )
 
 // activationHeaders returns the activation header set for the given extension
@@ -60,36 +61,46 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 
 	required, cardServed := e.requiredExtensions(ctx, client, vars.BaseURL)
 	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	if !cardServed {
+		return nil, fmt.Errorf("%w: required extensions could not be read from an Agent Card at %s",
+			attack.ErrInconclusive, vars.BaseURL)
+	}
 	if len(required) == 0 {
-		if !cardServed && !ok {
-			return nil, attack.ErrInconclusive // nothing here is an A2A agent
-		}
-		return nil, nil // no required extension advertised => nothing to downgrade
+		return nil, nil
 	}
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
 
 	var observed setupObservation
+	tested := false
 	for _, uri := range required {
 		// Control: activate the required extension. If even this is rejected we
 		// cannot exercise the rule (e.g. messaging needs creds we lack).
-		accepted, shape, ctrlObs := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
+		accepted, shape, ctrlObs, _ := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
 		if !accepted {
 			observed.observe(ctrlObs)
 			continue
 		}
 		// Test: omit the extension header and reuse the shape that worked.
-		omitted, _, _ := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
+		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
 		if omitted {
 			return []attack.Finding{e.finding(endpoint, uri, shape)}, nil
 		}
+		if rejectedRequired {
+			tested = true
+			continue
+		}
+		observed.observe(setupObservation{setupOtherRefusal, fmt.Sprintf(
+			"request omitting required extension %q at %s did not confirm an extension-policy rejection", uri, endpoint)})
 	}
-	// No finding. If every control failed and the best explanation is a refusal
-	// (auth, transport), the premise was never established and clean would claim
-	// coverage the scan does not have. classifyTaskSetup maps feature-absent
-	// (-32601, -32003, -32004) to nil (genuine not-applicable) and everything
-	// else to ErrInconclusive.
+	if tested && observed.rank == setupFeatureAbsent {
+		return nil, fmt.Errorf("%w: not every required extension could be tested at %s",
+			attack.ErrInconclusive, endpoint)
+	}
+	if tested && observed.rank == setupNothing {
+		return nil, nil
+	}
 	return nil, observed.err()
 }
 
@@ -133,11 +144,8 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 	return nil, cardServed
 }
 
-// sendMessage issues a SendMessage with the given extra headers. When forceShape
-// is empty it tries the A2A v1.0 PascalCase shape then the v0.3 slash shape and
-// returns which one was accepted; when forceShape is set it uses only that shape
-// (so the control and test requests are byte-identical except for the header).
-func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, forceShape string) (accepted bool, shape string, obs setupObservation) {
+// sendMessage tries both wire shapes, or only forceShape when set.
+func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, forceShape string) (accepted bool, shape string, obs setupObservation, rejectedRequired bool) {
 	type variant struct {
 		name   string
 		method string
@@ -166,19 +174,26 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		if v.name == "v1.0" {
 			params["configuration"] = map[string]interface{}{"returnImmediately": true}
 		}
+		requestID := "batesian-ext-" + v.name + "-" + randID
 		resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-ext-" + v.name + "-" + randID,
+			"id":      requestID,
 			"method":  v.method,
 			"params":  params,
 		})
-		if err == nil && resp.IsAccepted() {
-			return true, v.name, setupObservation{}
+		if err == nil && resp != nil && resp.IsAccepted() {
+			return true, v.name, setupObservation{}, false
+		}
+		if forceShape != "" && err == nil && resp != nil {
+			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+			if valid && hasError && code == extensionSupportRequired {
+				return false, "", setupObservation{}, true
+			}
 		}
 		obs.observe(classifyTaskSetup("activating a required extension", endpoint,
 			c.PresentsCredential(endpoint), resp))
 	}
-	return false, "", obs
+	return false, "", obs, false
 }
 
 func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack.Finding {

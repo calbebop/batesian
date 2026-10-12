@@ -105,22 +105,22 @@ func TestRules_NonA2ATargetIsNotTested(t *testing.T) {
 	}
 }
 
-// The regression this change could easily cause: an agent that serves no card is
-// still an agent when its JSON-RPC endpoint answers, and must stay testable.
-// a2a_delegation_server.py and a2a_push_binding_server.py are both cardless.
+// Endpoint-only rules can still run against a cardless A2A agent.
 func TestRules_CardlessAgentStaysTestable(t *testing.T) {
 	ts := cardlessAgentServer()
 	defer ts.Close()
 
-	// The card rules genuinely cannot run without a card, so they are excluded:
-	// this asserts the endpoint rules are not skipped for want of one.
-	for _, name := range []string{"extension-downgrade", "extcard", "session-smuggle"} {
+	for _, name := range []string{"extcard", "session-smuggle"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := executors()[name].Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 			if errors.Is(err, attack.ErrInconclusive) {
 				t.Errorf("rule reported it could not test a cardless agent whose endpoint answers")
 			}
 		})
+	}
+	_, err := executors()["extension-downgrade"].Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("extension rule needs an Agent Card, got err=%v", err)
 	}
 }
 
