@@ -179,24 +179,30 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		for _, restBase := range resolveHTTPJSONBases(ctx, client, vars.BaseURL) {
 			for _, route := range restPushRoutes {
 				headers := restVersionHeaders(route.version, nil)
-				sendResp3, err3 := client.POST(ctx, endpointpkg.AppendPath(restBase, route.sendPath), headers,
+				sendURL := endpointpkg.AppendPath(restBase, route.sendPath)
+				sendResp3, err3 := client.POST(ctx, sendURL, headers,
 					restTaskSendRequest(vars.RandID, "ping", route.version))
 				if err3 == nil && sendResp3 != nil && sendResp3.StatusCode != 404 {
 					reached = true
 				}
+				taskID := ""
 				if err3 == nil && sendResp3 != nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
-					if taskID := restTaskID(sendResp3.Body); taskID != "" {
-						cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
-						cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
-							restPushConfigRequest(taskID, callbackURL, token, "", vars.RandID, route.version))
-						if cfgErr == nil && cfgResp != nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
-							taskAccepted = true
-							registrationConfirmed = true
-							acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
-						} else {
-							obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
-						}
+					taskID = restTaskID(sendResp3.Body)
+				}
+				if taskID != "" {
+					cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
+					cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
+						restPushConfigRequest(taskID, callbackURL, token, "", vars.RandID, route.version))
+					if cfgErr == nil && cfgResp != nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+						taskAccepted = true
+						registrationConfirmed = true
+						acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
+					} else {
+						obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
 					}
+				} else {
+					obs.observe(classifyRESTPushTaskSetup("creating a task on the HTTP+JSON/"+route.version+" wire",
+						sendURL, client.PresentsCredential(sendURL), sendResp3))
 				}
 				if taskAccepted {
 					break
@@ -277,6 +283,22 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		})
 	}
 	return findings, nil
+}
+
+func classifyRESTPushTaskSetup(what, url string, credentialed bool, resp *attack.Response) setupObservation {
+	if resp != nil {
+		switch resp.StatusCode {
+		case 404, 405:
+			return setupObservation{rank: setupFeatureAbsent}
+		case 401, 403:
+			return classifyTaskSetup(what, url, credentialed, resp)
+		}
+		if !resp.IsSuccess() {
+			return setupObservation{rank: setupOtherRefusal,
+				reason: fmt.Sprintf("%s at %s returned HTTP %d without a task", what, url, resp.StatusCode)}
+		}
+	}
+	return classifyTaskSetup(what, url, credentialed, resp)
 }
 
 func privatePushCallbackURL(rawURL string) bool {
