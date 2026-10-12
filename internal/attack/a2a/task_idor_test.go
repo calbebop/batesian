@@ -307,6 +307,35 @@ func TestTaskIDOR_Patched(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_TaskReadServiceErrorIsInconclusive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		method, id := decodeRPC(r)
+		switch method {
+		case "SendMessage", "message/send":
+			if !hasOwnerAuth(r) {
+				rpcErr(w, id, -32600, "authentication required")
+				return
+			}
+			taskResult(w, id, "task-owner", "ctx-owner")
+		case "GetTask", "tasks/get":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			rpcErr(w, id, -32001, "Task not found")
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want no finding and inconclusive result, got findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestTaskIDOR_UnjudgedTaskListIsInconclusive(t *testing.T) {
 	tests := []struct {
 		name   string

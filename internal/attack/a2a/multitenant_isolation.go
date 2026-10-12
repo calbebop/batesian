@@ -200,6 +200,10 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			result.denied = true
 			continue
 		}
+		if !resp.IsSuccess() {
+			result.unknown = true
+			continue
+		}
 		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
 			if code == -32001 {
 				result.denied = true
