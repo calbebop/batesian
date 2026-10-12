@@ -390,6 +390,70 @@ func TestTaskIDOR_OpenServerIsNotIDOR(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_AnonymousCreationBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		inconclusive bool
+	}{
+		{"unavailable", true},
+		{"unavailable-auth-body", true},
+		{"malformed", true},
+		{"wrong-id-success", true},
+		{"wrong-id-auth", true},
+		{"taskless-message", true},
+		{"open", false},
+		{"denied", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "SendMessage", "message/send":
+					if hasOwnerAuth(r) {
+						taskResult(w, id, "task-owner", "ctx-owner")
+						return
+					}
+					switch tc.name {
+					case "unavailable":
+						w.WriteHeader(http.StatusServiceUnavailable)
+					case "unavailable-auth-body":
+						w.WriteHeader(http.StatusServiceUnavailable)
+						rpcErr(w, id, -32600, "authentication required")
+					case "malformed":
+						_, _ = w.Write([]byte("not json"))
+					case "wrong-id-success":
+						taskResult(w, "other-request", "task-anon", "ctx-anon")
+					case "wrong-id-auth":
+						rpcErr(w, "other-request", -32600, "authentication required")
+					case "taskless-message":
+						writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+							"result": map[string]interface{}{"messageId": "reply", "role": "agent"}})
+					case "open":
+						taskResult(w, id, "task-anon", "ctx-anon")
+					case "denied":
+						rpcErr(w, id, -32600, "authentication required")
+					}
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+		})
+	}
+}
+
 // TestTaskIDOR_NoContextIdNullRead_NoFalsePositive guards the empty-substring
 // false positive. The server auth-gates creation but returns a task WITHOUT a
 // contextId (so the executor's contextID is ""), and answers the unauthenticated
