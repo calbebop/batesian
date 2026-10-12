@@ -64,6 +64,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		response     *attack.Response
 		acceptedWire int
 		deniedWire   [2]bool
+		setup        setupObservation
 	}
 	// Try v1.0, then v0.3. Keep the per-wire auth result for the owner check.
 	sendCreate := func(c *attack.HTTPClient, randID string) createProbe {
@@ -87,6 +88,18 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
 			return valid && hasError && attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body))
 		}
+		observeFailure := func(resp *attack.Response, err error) {
+			if err != nil {
+				resp = nil
+			}
+			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
+				probe.setup.observe(setupObservation{setupOtherRefusal,
+					fmt.Sprintf("task creation at %s returned HTTP %d", endpoint, resp.StatusCode)})
+				return
+			}
+			probe.setup.observe(classifyTaskSetup("creating a probe task", endpoint,
+				c.PresentsCredential(endpoint), resp))
+		}
 		resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -106,6 +119,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			return probe
 		}
 		probe.deniedWire[0] = err == nil && denied(resp)
+		observeFailure(resp, err)
 		resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -124,6 +138,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			return probe
 		}
 		probe.deniedWire[1] = err == nil && denied(resp)
+		observeFailure(resp, err)
 		return probe
 	}
 
@@ -137,8 +152,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		if !ok && !list.reached {
 			return nil, attack.ErrInconclusive
 		}
-		return nil, classifyTaskSetup("creating a probe task as the owner", endpoint,
-			authedClient.PresentsCredential(endpoint), owner.response).err()
+		return nil, owner.setup.err()
 	}
 	taskID, _ := extractTaskContext(owner.response.Body)
 	if taskID == "" {
