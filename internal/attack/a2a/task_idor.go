@@ -69,9 +69,27 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	sendCreate := func(c *attack.HTTPClient, randID string) createProbe {
 		var probe createProbe
 		v1Headers := map[string]string{"A2A-Version": "1.0"}
+		requestID := "batesian-create-" + randID
+		accepted := func(resp *attack.Response) bool {
+			if resp == nil || !resp.IsSuccess() {
+				return false
+			}
+			_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+			return valid && !hasError
+		}
+		denied := func(resp *attack.Response) bool {
+			if resp == nil || resp.StatusCode == 429 || resp.StatusCode >= 500 {
+				return false
+			}
+			if resp.StatusCode == 401 || resp.StatusCode == 403 {
+				return true
+			}
+			_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+			return valid && hasError && attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body))
+		}
 		resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-create-" + randID,
+			"id":      requestID,
 			"method":  "SendMessage",
 			"params": map[string]interface{}{
 				"configuration": map[string]interface{}{"returnImmediately": true},
@@ -83,14 +101,14 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			},
 		})
 		probe.response = resp
-		if err == nil && resp.IsAccepted() {
+		if err == nil && accepted(resp) {
 			probe.acceptedWire = 1
 			return probe
 		}
-		probe.deniedWire[0] = resp != nil && isA2AAuthRejection(resp)
+		probe.deniedWire[0] = err == nil && denied(resp)
 		resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-create-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -101,11 +119,11 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			},
 		})
 		probe.response = resp
-		if err == nil && resp.IsAccepted() {
+		if err == nil && accepted(resp) {
 			probe.acceptedWire = 2
 			return probe
 		}
-		probe.deniedWire[1] = resp != nil && isA2AAuthRejection(resp)
+		probe.deniedWire[1] = err == nil && denied(resp)
 		return probe
 	}
 
@@ -236,6 +254,19 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if len(findings) == 0 && ownerProtected && (read.unknown || !read.denied) {
 		return nil, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
 			attack.ErrInconclusive, taskID)
+	}
+	if len(findings) == 0 && !ownerProtected {
+		switch {
+		case !authedClient.PresentsCredential(endpoint):
+			return nil, fmt.Errorf("%w: the owner request presented no credential at %s",
+				attack.ErrInconclusive, endpoint)
+		case anon.acceptedWire == 0 && !anon.deniedWire[owner.acceptedWire-1]:
+			return nil, fmt.Errorf("%w: anonymous task creation did not establish an auth rejection on the owner's send method",
+				attack.ErrInconclusive)
+		case anon.acceptedWire != 0 && anonTaskID == "":
+			return nil, fmt.Errorf("%w: anonymous send returned no task ID, so open task creation could not be established",
+				attack.ErrInconclusive)
+		}
 	}
 	return findings, nil
 }
