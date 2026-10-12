@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -186,7 +187,8 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		}
 		if forceShape != "" && err == nil && resp != nil {
 			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
-			if valid && hasError && code == extensionSupportRequired {
+			if (resp.IsSuccess() || resp.StatusCode == http.StatusBadRequest) &&
+				valid && hasError && code == extensionSupportRequired {
 				return false, "", setupObservation{}, true
 			}
 		}
