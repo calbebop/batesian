@@ -203,6 +203,63 @@ func TestTaskSetup_FeatureAbsentStaysClean(t *testing.T) {
 	}
 }
 
+func TestTaskSetup_HTTPFailureWithUnsupportedBodyIsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		code   int
+	}{
+		{"rate limited", http.StatusTooManyRequests, -32601},
+		{"service unavailable", http.StatusServiceUnavailable, -32004},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+					writeJSON(w, map[string]interface{}{
+						"name": "Setup agent", "supportedInterfaces": []interface{}{
+							map[string]string{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+						},
+					})
+					return
+				}
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				case "SendMessage":
+					w.WriteHeader(tc.status)
+					rpcErr(w, id, tc.code, "Method not found")
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			for _, rule := range []struct {
+				id    string
+				build func(attack.RuleContext) attack.Executor
+			}{
+				{"a2a-task-cancel-idor-001", theEightRules()["a2a-task-cancel-idor-001"]},
+				{"a2a-task-enumeration-001", func(rc attack.RuleContext) attack.Executor {
+					return a2aattack.NewTaskEnumerationExecutor(rc)
+				}},
+			} {
+				t.Run(rule.id, func(t *testing.T) {
+					findings, err := rule.build(attack.RuleContext{ID: rule.id}).Execute(
+						context.Background(), srv.URL, twoRejectedPrincipals())
+					if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+						t.Fatalf("findings=%+v err=%v, want incomplete", findings, err)
+					}
+				})
+			}
+		})
+	}
+}
+
 // a2a-session-smuggle-001 sends a message claiming the agent role, which the
 // specification requires the server to REFUSE. That refusal is the pass this rule
 // looks for, so it must stay a clean result: only an authorization refusal means the

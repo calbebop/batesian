@@ -93,6 +93,11 @@ func classifyTaskSetup(what, endpoint string, credentialed bool, resp *attack.Re
 			"%s at %s was refused with HTTP %d %s, so no task existed to test with",
 			what, endpoint, resp.StatusCode, attack.CredentialNote(credentialed))}
 	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return setupObservation{setupOtherRefusal, fmt.Sprintf(
+			"%s at %s returned HTTP %d, so no task existed to test with",
+			what, endpoint, resp.StatusCode)}
+	}
 
 	code, hasErr := jsonRPCErrorCode(resp.Body)
 	msg := jsonRPCErrorMessage(resp.Body)
