@@ -89,6 +89,35 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 			tid, _ := params["taskId"].(string)
+			if method == "CreateTaskPushNotificationConfig" &&
+				((mode == "write-anon-mixed" && who == "") || (mode == "write-cross-mixed" && who == "tenant-b")) {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if (mode == "write-anon-unavailable" && who == "") ||
+				(mode == "write-cross-unavailable" && who == "tenant-b") {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if (mode == "write-anon-malformed" && who == "") ||
+				(mode == "write-cross-malformed" && who == "tenant-b") {
+				_, _ = w.Write([]byte("not json"))
+				return
+			}
+			if mode == "write-anon-generic-error" && who == "" {
+				rpcErr("invalid request")
+				return
+			}
+			if mode == "write-cross-wrong-id" && who == "tenant-b" {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request",
+					"error": map[string]interface{}{"code": -32600, "message": "not task owner"}})
+				return
+			}
+			if (mode == "write-anon-http-denied" && who == "") ||
+				(mode == "write-cross-http-denied" && who == "tenant-b") {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if mode == "push-gated" {
 				// Push access can be gated separately from task creation.
 				w.Header().Set("Content-Type", "application/json")
@@ -107,7 +136,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("auth required")
 				return
 			}
-			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-")) && who != "" && taskOwner[tid] != who {
+			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && who != "" && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -182,7 +211,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("read denied")
 				return
 			}
-			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-")) && taskOwner[tid] != who {
+			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -411,6 +440,35 @@ func TestPushBinding_CrossReadOutcomes(t *testing.T) {
 		{"cross-read-wrong-id", true},
 		{"cross-read-http-denied", false},
 		{"cross-read-rpc-denied", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := pushServer(tc.mode)
+			defer ts.Close()
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+		})
+	}
+}
+
+func TestPushBinding_WriteOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		inconclusive bool
+	}{
+		{"write-anon-unavailable", true},
+		{"write-anon-malformed", true},
+		{"write-anon-generic-error", true},
+		{"write-anon-mixed", true},
+		{"write-cross-unavailable", true},
+		{"write-cross-malformed", true},
+		{"write-cross-wrong-id", true},
+		{"write-cross-mixed", true},
+		{"write-anon-http-denied", false},
+		{"write-cross-http-denied", false},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			ts := pushServer(tc.mode)
