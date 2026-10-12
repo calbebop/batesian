@@ -16,25 +16,7 @@ import (
 	a2aattack "github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// cardSecServer builds a mock A2A server whose AgentCard security declaration and
-// JSON-RPC auth behavior depend on mode:
-//   - "vuln-v1":      card declares securityRequirements in the real v1.0 wire
-//     shape (names nested under "schemes"), but message/send is served
-//     unauthenticated => finding.
-//   - "vuln-v1-flat":  the same field carrying the OpenAPI-flat shape, which a
-//     server that hand-rolls its card may serve => finding.
-//   - "vuln-v03":     same, but the card uses the v0.3 "security" field => finding
-//     (proves both field spellings are read).
-//   - "secure":       card declares required auth and the server enforces it
-//     (401 without a token) => silent.
-//   - "anon-allowed": card requirement list includes an empty {} object, so
-//     anonymous access is explicitly permitted; even though the endpoint is open,
-//     it must not be flagged => silent.
-//   - "anon-allowed-v1": the v1.0 spelling of the same statement, an entry whose
-//     "schemes" map is empty => silent.
-//   - "no-security":  card declares no security requirement; the open endpoint is
-//     not a broken promise => silent.
-//   - "not-a2a":      no card, everything 404 => inconclusive.
+// cardSecServer serves card and task outcomes for the auth-contract tests.
 func cardSecServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	store := map[string]bool{}
@@ -78,6 +60,16 @@ func cardSecServer(mode string) *httptest.Server {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent-card.json" {
+			if mode == "fallback-vuln" || mode == "fallback-secure" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, card())
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent.json" &&
+			(mode == "fallback-vuln" || mode == "fallback-secure") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, card())
 			return
@@ -105,7 +97,7 @@ func cardSecServer(mode string) *httptest.Server {
 		}
 
 		// In secure mode every method requires a bearer token.
-		if mode == "secure" && !hasToken {
+		if (mode == "secure" || mode == "fallback-secure") && !hasToken {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -374,5 +366,65 @@ func TestCardSecurity_FindingSurvivesFailedFirstMethod(t *testing.T) {
 	findings, err := runCardSec(t, srv)
 	if len(findings) != 1 || err != nil {
 		t.Fatalf("v0.3 task creation should retain the finding: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestCardSecurity_UnobservedPrimaryCard(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		inconclusive bool
+		reason       string
+	}{
+		{"server error", http.StatusServiceUnavailable, true, "HTTP 503"},
+		{"auth required", http.StatusUnauthorized, true, "HTTP 401"},
+		{"invalid card", http.StatusOK, true, "invalid Agent Card"},
+		{"path absent", http.StatusNotFound, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/agent-card.json":
+					w.WriteHeader(tc.status)
+				case "/.well-known/agent.json":
+					_, _ = io.WriteString(w, `{"name":"Legacy Agent","url":"https://agent.example.com/"}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := runCardSec(t, srv)
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("findings=%v err=%v, want inconclusive=%v", findings, err, tc.inconclusive)
+			}
+			if tc.inconclusive && !strings.Contains(err.Error(), "/.well-known/agent-card.json: "+tc.reason) {
+				t.Fatalf("missing failed card path: %v", err)
+			}
+		})
+	}
+}
+
+func TestCardSecurity_FindingNotesUnobservedCard(t *testing.T) {
+	srv := cardSecServer("fallback-vuln")
+	defer srv.Close()
+
+	findings, err := runCardSec(t, srv)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("want a finding from the fallback card, got findings=%v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("finding omitted failed primary read: %q", findings[0].Evidence)
+	}
+}
+
+func TestCardSecurity_SecureFallbackIsIncomplete(t *testing.T) {
+	srv := cardSecServer("fallback-secure")
+	defer srv.Close()
+
+	findings, err := runCardSec(t, srv)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("want incomplete result for the unreadable primary card, got findings=%v err=%v", findings, err)
 	}
 }

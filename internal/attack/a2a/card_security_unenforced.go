@@ -11,27 +11,8 @@ import (
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
-// CardSecurityUnenforcedExecutor tests whether an A2A server enforces the
-// authentication its own AgentCard advertises (rule a2a-card-security-unenforced-001).
-//
-// The AgentCard is a machine-readable contract. Its securitySchemes plus a
-// requirements list (named "security" in v0.3 cards, "securityRequirements" in
-// v1.0 proto-JSON cards) declare which authentication a caller MUST present. When
-// the card declares a non-empty requirement with no anonymous alternative, yet
-// the server answers an unauthenticated core request with a result, the agent
-// violates its own published security contract - broad unauthenticated access to
-// an agent that told clients it was protected.
-//
-// This is the case nothing else covers: a2a-task-idor-001 keys off whether
-// anonymous creation is rejected and suppresses its finding when the server has
-// no auth at all, so a wide-open agent goes unflagged today. This rule flags it
-// precisely when the card promised auth (an attributable regression). It is
-// distinct from a2a-extcard-unauth-001 (the extended-card endpoint) and
-// a2a-card-trust-001 / a2a-jws-algconf-001 (card signatures).
-//
-// SAFETY: the read probe is non-mutating (tasks/get on a random non-existent id).
-// The confirmation write creates a single throwaway probe task, the same footprint
-// a2a-task-idor-001 already has.
+// CardSecurityUnenforcedExecutor checks whether an agent enforces the auth
+// required by its public Agent Card. Confirmation creates one probe task.
 type CardSecurityUnenforcedExecutor struct {
 	rule attack.RuleContext
 }
@@ -58,18 +39,24 @@ const (
 func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	// Every request this rule makes is anonymous. The agent card is the PUBLIC
-	// contract an unauthenticated caller reads, and the probes must present no
-	// credentials, so injecting opts.Token anywhere would misrepresent what an
-	// anonymous client actually sees.
+	// Card and task probes must reflect an anonymous caller.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
 	// Fetch the card. Without it there is no declared contract to test against.
-	cardBody, ok := fetchAgentCardBody(ctx, client, vars.BaseURL)
+	cardBody, ok, cardReadReason := fetchAgentCardBodyWithOutcome(ctx, client, vars.BaseURL)
+	withCardReadReason := func(err error) error {
+		if cardReadReason == "" {
+			return err
+		}
+		if err == nil {
+			err = attack.ErrInconclusive
+		}
+		return fmt.Errorf("%w: unobserved card read: %s", err, cardReadReason)
+	}
 	if !ok {
-		return nil, fmt.Errorf("%w: no agent card was served under %s, and this rule tests the "+
+		return nil, withCardReadReason(fmt.Errorf("%w: no agent card was served under %s, and this rule tests the "+
 			"card's declared security against what the endpoint actually enforces",
-			attack.ErrInconclusive, vars.BaseURL)
+			attack.ErrInconclusive, vars.BaseURL))
 	}
 	card, ok := parseCard(cardBody)
 	if !ok {
@@ -80,14 +67,14 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	// Only proceed when the card declares required auth with no anonymous option.
 	schemes, required := declaredAuthRequirement(card)
 	if !required {
-		return nil, nil
+		return nil, withCardReadReason(nil)
 	}
 
 	// Resolve the JSON-RPC endpoint to probe. The card requires auth but we cannot
 	// reach a testable endpoint, so the contract cannot be exercised here.
 	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	if !ok {
-		return nil, attack.ErrInconclusive
+		return nil, withCardReadReason(attack.ErrInconclusive)
 	}
 
 	// Step 1 (non-mutating): can an unauthenticated read even reach the handler?
@@ -99,17 +86,21 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	// write executed with no credentials despite the card requiring them.
 	createdTaskID, err := e.createProbe(ctx, client, endpoint, vars.RandID)
 	if err != nil {
-		return nil, err
+		return nil, withCardReadReason(err)
 	}
 	if createdTaskID == "" {
-		return nil, nil
+		return nil, withCardReadReason(nil)
 	}
 
 	// Strengthen: read the just-created task back with no credentials. If that also
 	// returns the task, both the write and the read paths ignore the declared auth.
 	readBack := createdTaskID != "" && e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID) == probeProcessedResult
 
-	return []attack.Finding{e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)}, nil
+	finding := e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)
+	if cardReadReason != "" {
+		finding.Evidence += "\nunobserved card read: " + cardReadReason
+	}
+	return []attack.Finding{finding}, nil
 }
 
 // readTask issues an unauthenticated tasks/get for taskID (v1.0 GetTask then v0.3
@@ -250,16 +241,34 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 	}
 }
 
-// fetchAgentCardBody returns the raw card body from the primary (v1.0) path,
-// falling back to the legacy (v0.3) path.
+// fetchAgentCardBody falls back to the older agent.json path when needed.
 func fetchAgentCardBody(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]byte, bool) {
-	if body, _, ok := fetchCard(ctx, client, endpoint.AppendPath(baseURL, cardPathPrimary)); ok {
-		return body, true
+	body, ok, _ := fetchAgentCardBodyWithOutcome(ctx, client, baseURL)
+	return body, ok
+}
+
+func fetchAgentCardBodyWithOutcome(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]byte, bool, string) {
+	primaryURL := endpoint.AppendPath(baseURL, cardPathPrimary)
+	primaryBody, _, primaryOK, primaryReason := fetchCardWithOutcome(ctx, client, primaryURL)
+	if primaryOK {
+		return primaryBody, true, ""
 	}
-	if body, _, ok := fetchCard(ctx, client, endpoint.AppendPath(baseURL, cardPathLegacy)); ok {
-		return body, true
+	legacyURL := endpoint.AppendPath(baseURL, cardPathLegacy)
+	legacyBody, _, legacyOK, legacyReason := fetchCardWithOutcome(ctx, client, legacyURL)
+	if legacyOK {
+		if primaryReason != "" {
+			return legacyBody, true, primaryURL + ": " + primaryReason
+		}
+		return legacyBody, true, ""
 	}
-	return nil, false
+	var reasons []string
+	if primaryReason != "" {
+		reasons = append(reasons, primaryURL+": "+primaryReason)
+	}
+	if legacyReason != "" {
+		reasons = append(reasons, legacyURL+": "+legacyReason)
+	}
+	return nil, false, strings.Join(reasons, "; ")
 }
 
 // declaredAuthRequirement reports the distinct scheme names a card requires, and
