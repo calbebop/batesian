@@ -366,23 +366,30 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 			}
 			listResp, err := unauthClient.GET(ctx, pageURL, le.headers)
 			if err != nil || listResp == nil {
-				if page > 0 {
-					probe.unverified = true
-				}
+				probe.unverified = true
 				break
 			}
 			if listResp.StatusCode != 404 {
 				probe.reached = true
 			}
 			if !listResp.IsSuccess() {
-				if page > 0 {
+				if page > 0 || (listResp.StatusCode != 401 && listResp.StatusCode != 403 &&
+					listResp.StatusCode != 404 && listResp.StatusCode != 405) {
 					probe.unverified = true
 				}
 				break
 			}
-			ids := listedTaskIDs(listResp.Body)
-			if len(ids) == 0 && countListedTasks(listResp.Body) > 0 {
+			if isJSONRPCError(listResp.Body) {
+				code, hasError := jsonRPCErrorCode(listResp.Body)
+				if !hasError || code != jsonRPCMethodNotFound {
+					probe.unverified = true
+				}
+				break
+			}
+			ids, token, valid := parseRESTTaskListPage(listResp.Body)
+			if !valid {
 				probe.unverified = true
+				break
 			}
 			if containsTaskID(ids, ownerTaskID) {
 				if !ownerProtected {
@@ -408,11 +415,6 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 				if id != ownerTaskID && id != anonTaskID {
 					probe.unverified = true
 				}
-			}
-			token, valid := restTaskPageToken(listResp.Body)
-			if !valid {
-				probe.unverified = true
-				break
 			}
 			if token == "" {
 				break

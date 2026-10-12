@@ -307,6 +307,56 @@ func TestTaskIDOR_Patched(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_UnjudgedTaskListIsInconclusive(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"service unavailable", http.StatusServiceUnavailable, ""},
+		{"RPC application error", http.StatusOK, `{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}`},
+		{"malformed list", http.StatusOK, `{"tasks":[{}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					if r.URL.Path == "/tasks" {
+						w.WriteHeader(tt.status)
+						_, _ = io.WriteString(w, tt.body)
+						return
+					}
+					http.NotFound(w, r)
+					return
+				}
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				if !hasOwnerAuth(r) {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				switch method {
+				case "SendMessage", "message/send":
+					taskResult(w, id, "task-owner", "ctx-owner")
+				case "GetTask", "tasks/get":
+					taskWithHistory(w, id, "task-owner", "ctx-owner")
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 // TestTaskIDOR_OpenServerIsNotIDOR: the server enforces NO authentication at all
 // (anonymous creation succeeds). Reading a task back without credentials is then
 // expected behaviour, not broken object-level authorization. The rule MUST stay
