@@ -81,6 +81,11 @@ func tenantServer(mode string) *httptest.Server {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
+			if mode == "cross-read-service-error" && tenant != "" && tenant != own {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
 			if mode == "one-read-error" {
 				if tenant == "" {
 					rpcErr(w, id, -32600, "authentication required")
@@ -191,8 +196,8 @@ func TestMultiTenant_HeaderScopedPrincipals(t *testing.T) {
 	}
 }
 
-func TestMultiTenant_RedactedReadsAreInconclusive(t *testing.T) {
-	for _, mode := range []string{"redacted", "unrelated", "one-read-error", "anon-read-error"} {
+func TestMultiTenant_UnjudgedReadsAreInconclusive(t *testing.T) {
+	for _, mode := range []string{"redacted", "unrelated", "one-read-error", "anon-read-error", "cross-read-service-error"} {
 		t.Run(mode, func(t *testing.T) {
 			ts := tenantServer(mode)
 			defer ts.Close()

@@ -204,6 +204,10 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			probe.denied = true
 			return probe
 		}
+		if !resp.IsSuccess() {
+			probe.unknown = true
+			return probe
+		}
 		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
 			if code == -32001 {
 				probe.denied = true
