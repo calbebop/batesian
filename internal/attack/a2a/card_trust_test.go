@@ -653,3 +653,97 @@ func TestCardTrust_NotACardServer(t *testing.T) {
 		t.Errorf("expected zero findings against a non-card server, got %d", len(findings))
 	}
 }
+
+func TestCardTrust_UnobservedCardReads(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		reason string
+	}{
+		{"server error", http.StatusServiceUnavailable, "", "HTTP 503"},
+		{"auth required", http.StatusUnauthorized, "", "HTTP 401"},
+		{"malformed JSON", http.StatusOK, "{", "invalid Agent Card"},
+		{"non-card JSON", http.StatusOK, `{"status":"ok"}`, "invalid Agent Card"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/agent-card.json":
+					w.Header().Set("Cache-Control", "no-store")
+					_ = json.NewEncoder(w).Encode(unsignedCard())
+				case "/.well-known/agent.json":
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "/.well-known/agent.json: "+tc.reason) {
+				t.Fatalf("want incomplete legacy read, got findings=%v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCardTrust_AbsentAlternatePathIsClean(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		primary interface{}
+		legacy  interface{}
+	}{
+		{"legacy absent", unsignedCard(), nil},
+		{"primary absent", nil, unsignedCard()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(tc.primary, tc.legacy, "no-store")
+			defer ts.Close()
+
+			findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("want clean result with one card path, got findings=%v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCardTrust_UnobservedPrimaryRead(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(unsignedCard())
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("want incomplete primary read, got findings=%v err=%v", findings, err)
+	}
+}
+
+func TestCardTrust_CacheFindingNotesUnobservedRead(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			_ = json.NewEncoder(w).Encode(unsignedCard())
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("want cache finding, got findings=%v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "/.well-known/agent.json: HTTP 503") {
+		t.Fatalf("finding omitted unobserved read: %q", findings[0].Evidence)
+	}
+}
