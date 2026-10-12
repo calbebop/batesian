@@ -97,6 +97,11 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				text = body.Message.Parts[0].Text
 			}
 			if !hasOwnerAuth(r) {
+				if mode == "anon-send-503-auth-body" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					writeJSON(w, map[string]interface{}{"error": map[string]string{"message": "authentication required"}})
+					return
+				}
 				if mode != "open" {
 					w.WriteHeader(http.StatusUnauthorized)
 					return
@@ -133,7 +138,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			}
 			if !hasOwnerAuth(r) {
 				switch mode {
-				case "scoped", "dual-rpc-read-error":
+				case "scoped", "dual-rpc-read-error", "anon-send-503-auth-body":
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				case "redacted":
@@ -188,6 +193,7 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 		{"off-origin card pinned", "off-origin", false, false, true, false},
 		{"task ID escaped", "escaped-id", false, false, true, false},
 		{"anonymous read denied", "scoped", false, false, false, false},
+		{"anonymous creation service error", "anon-send-503-auth-body", false, false, false, true},
 		{"open creation", "open", false, false, false, false},
 		{"redacted task", "redacted", false, false, false, true},
 		{"unrelated task", "unrelated", false, false, false, true},
