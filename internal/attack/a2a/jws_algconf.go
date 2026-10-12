@@ -12,25 +12,8 @@ import (
 	"github.com/calbebop/batesian/internal/endpoint"
 )
 
-// JWSAlgConfExecutor inspects A2A AgentCard JWS signatures for algorithm
-// confusion vulnerabilities and structural weaknesses (rule a2a-jws-algconf-001).
-//
-// The A2A v0.3.0 spec added an optional signatures field (RFC 7515 JWS) to
-// AgentCards for cryptographic integrity. Common implementation mistakes:
-//
-//   - alg:none - any verifier reading alg from the header is trivially bypassed
-//   - HS256/384/512 - symmetric key unsuitable for public card verification;
-//     enables RS256->HS256 confusion attack using the exposed public key
-//   - empty signature value - passes broken verifiers that skip bytes check
-//   - jku in unprotected header - key URL is outside signature coverage
-//   - cross-domain jku - external key server enables key substitution
-//   - plain HTTP jku - MITM can substitute malicious keys in transit
-//
-// This executor only READS the published card and decodes headers - it does not
-// forge or attempt to verify any signature. It is therefore a static analyzer:
-// every finding is a RiskIndicator (a weak/forgeable configuration was observed),
-// never a ConfirmedExploit, because no verifier has been shown to accept a forged
-// card. Severity still reflects the impact if the weakness is exploitable.
+// JWSAlgConfExecutor flags risky Agent Card signature metadata. It does not
+// verify signatures or demonstrate a verifier bypass.
 type JWSAlgConfExecutor struct {
 	rule attack.RuleContext
 }
@@ -61,15 +44,28 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 	}
 
 	var card map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &card); err != nil {
-		return nil, fmt.Errorf("%w: the agent card at %s is not parseable JSON, so its JWS "+
+	if err := json.Unmarshal(resp.Body, &card); err != nil || card == nil {
+		return nil, fmt.Errorf("%w: the agent card at %s is not a JSON object, so its JWS "+
 			"signatures could not be analysed", attack.ErrInconclusive, cardURL)
+	}
+	name, _ := card["name"].(string)
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("%w: the agent card at %s has no valid name",
+			attack.ErrInconclusive, cardURL)
 	}
 
 	var findings []attack.Finding
 	agentHost := hostOnly(vars.BaseURL)
 
-	sigsRaw, _ := card["signatures"].([]interface{})
+	var sigsRaw []interface{}
+	if raw, present := card["signatures"]; present {
+		var ok bool
+		sigsRaw, ok = raw.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: signatures on the Agent Card at %s are not an array",
+				attack.ErrInconclusive, cardURL)
+		}
+	}
 
 	// If no signatures are present but the card advertises extended card support,
 	// emit an informational finding - no cryptographic integrity guarantee exists.
@@ -92,28 +88,16 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		return findings, nil
 	}
 
+	var unreadable []int
 	for i, sigRaw := range sigsRaw {
-		sig, ok := sigRaw.(map[string]interface{})
+		sig, ok := parseCardSignature(sigRaw)
 		if !ok {
+			unreadable = append(unreadable, i)
 			continue
 		}
-
-		protected, _ := sig["protected"].(string)
-		header, _ := sig["header"].(map[string]interface{})
-		signature, _ := sig["signature"].(string)
-
-		headerJSON, err := base64.RawURLEncoding.DecodeString(protected)
-		if err != nil {
-			continue
-		}
-
-		var protectedHeader map[string]interface{}
-		if err := json.Unmarshal(headerJSON, &protectedHeader); err != nil {
-			continue
-		}
-
-		alg, _ := protectedHeader["alg"].(string)
-		jku, _ := protectedHeader["jku"].(string)
+		alg, _ := sig.protectedHeader["alg"].(string)
+		jku, _ := sig.protectedHeader["jku"].(string)
+		header, signature, headerJSON := sig.header, sig.signature, sig.protectedJSON
 
 		// Check 1: alg:none or missing alg
 		switch strings.ToLower(alg) {
@@ -222,7 +206,72 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		}
 	}
 
+	if len(unreadable) > 0 {
+		if len(findings) == 0 {
+			return nil, fmt.Errorf("%w: Agent Card signature entries %v at %s could not be inspected",
+				attack.ErrInconclusive, unreadable, cardURL)
+		}
+		findings[0].Evidence += fmt.Sprintf("\nuninspected signature entries: %v", unreadable)
+	}
 	return findings, nil
+}
+
+type cardSignature struct {
+	protectedHeader map[string]interface{}
+	header          map[string]interface{}
+	signature       string
+	protectedJSON   []byte
+}
+
+func parseCardSignature(raw interface{}) (cardSignature, bool) {
+	sig, ok := raw.(map[string]interface{})
+	if !ok {
+		return cardSignature{}, false
+	}
+	protected, ok := sig["protected"].(string)
+	if !ok {
+		return cardSignature{}, false
+	}
+	signature, ok := sig["signature"].(string)
+	if !ok {
+		return cardSignature{}, false
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(signature); err != nil {
+		return cardSignature{}, false
+	}
+	var header map[string]interface{}
+	if rawHeader, present := sig["header"]; present {
+		header, ok = rawHeader.(map[string]interface{})
+		if !ok {
+			return cardSignature{}, false
+		}
+	}
+	protectedJSON, err := base64.RawURLEncoding.DecodeString(protected)
+	if err != nil {
+		return cardSignature{}, false
+	}
+	var protectedHeader map[string]interface{}
+	if json.Unmarshal(protectedJSON, &protectedHeader) != nil || protectedHeader == nil {
+		return cardSignature{}, false
+	}
+	for _, key := range []string{"alg", "jku"} {
+		if value, present := protectedHeader[key]; present {
+			if _, ok := value.(string); !ok {
+				return cardSignature{}, false
+			}
+		}
+	}
+	if value, present := header["jku"]; present {
+		if _, ok := value.(string); !ok {
+			return cardSignature{}, false
+		}
+	}
+	return cardSignature{
+		protectedHeader: protectedHeader,
+		header:          header,
+		signature:       signature,
+		protectedJSON:   protectedJSON,
+	}, true
 }
 
 // hostOnly returns the host component of a URL (host:port or just host).
