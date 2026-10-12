@@ -102,6 +102,36 @@ func delegationServer(mode string) *httptest.Server {
 				taskResult(w, id, taskID, "ctx-"+tn)
 				return
 			}
+			if tenant == "B" {
+				switch mode {
+				case "b-unavailable":
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				case "b-malformed":
+					_, _ = w.Write([]byte(`not json`))
+					return
+				case "b-wrong-id":
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": "other", "error": map[string]interface{}{"code": -32001, "message": "task not found"}})
+					return
+				case "b-mixed":
+					if method == "SendMessage" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					rpcErr(w, id, -32001, "task not found")
+					return
+				case "b-http-denied":
+					w.WriteHeader(http.StatusForbidden)
+					return
+				case "b-legacy-denied":
+					if method == "SendMessage" {
+						rpcErr(w, id, -32601, "Method not found")
+						return
+					}
+					rpcErr(w, id, -32001, "task not found")
+					return
+				}
+			}
 			// delegated continuation
 			mu.Lock()
 			own := owner[contID]
@@ -341,6 +371,36 @@ func TestDelegation_Secure(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against owner-bound continuation, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestDelegation_UnobservedContinuation(t *testing.T) {
+	for _, mode := range []string{"b-unavailable", "b-malformed", "b-wrong-id", "b-mixed"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := delegationServer(mode)
+			defer ts.Close()
+
+			findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 0 {
+				t.Fatalf("unobserved B continuation must be inconclusive: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestDelegation_ExplicitContinuationDenial(t *testing.T) {
+	for _, mode := range []string{"b-http-denied", "b-legacy-denied"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := delegationServer(mode)
+			defer ts.Close()
+
+			findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("explicit B denial must be clean: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
