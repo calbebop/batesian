@@ -67,24 +67,19 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 
 	// Step 2: re-submit against the SAME task ID with different content, on the
 	// wire that created it.
-	tamperResp, err := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
-	if err != nil {
-		return nil, fmt.Errorf("%w: task %s continuation received no answer: %v",
-			attack.ErrInconclusive, taskID, err)
+	tamperResp, sendErr := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
+	accepted := sendErr == nil && tamperResp != nil && tamperResp.IsAccepted()
+	rejected := sendErr == nil && tamperResp != nil && continuationRejected(tamperResp)
+	var continuation taskContent
+	var hasTask bool
+	if accepted {
+		continuation, hasTask = storedTaskContent(tamperResp.Body, taskID)
 	}
-	if !tamperResp.IsAccepted() {
-		if continuationRejected(tamperResp) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("%w: task %s continuation returned an unjudged response (HTTP %d)",
-			attack.ErrInconclusive, taskID, tamperResp.StatusCode)
-	}
-	continuation, hasTask := storedTaskContent(tamperResp.Body, taskID)
 
-	// Step 3: compare the same stored field after the continuation.
+	// Read back even when the send reports an error.
 	getBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
 	if !ok {
-		return nil, fmt.Errorf("%w: task %s was re-submitted and accepted, but reading it back "+
+		return nil, fmt.Errorf("%w: task %s was re-submitted, but reading it back "+
 			"returned no task content, so whether the stored artifact changed could not be "+
 			"established", attack.ErrInconclusive, taskID)
 	}
@@ -125,8 +120,19 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 			allPreserved = false
 		}
 	}
-	if allPreserved && hasTask && continuation.completed() {
+	if allPreserved && (rejected || (accepted && hasTask && continuation.completed())) {
 		return nil, nil
+	}
+	if sendErr != nil {
+		return nil, fmt.Errorf("%w: task %s continuation received no answer: %v",
+			attack.ErrInconclusive, taskID, sendErr)
+	}
+	if tamperResp == nil {
+		return nil, fmt.Errorf("%w: task %s continuation returned no response", attack.ErrInconclusive, taskID)
+	}
+	if !accepted {
+		return nil, fmt.Errorf("%w: task %s continuation returned an unjudged response (HTTP %d)",
+			attack.ErrInconclusive, taskID, tamperResp.StatusCode)
 	}
 	return nil, fmt.Errorf("%w: task %s did not show a completed replacement in its original artifacts",
 		attack.ErrInconclusive, taskID)
