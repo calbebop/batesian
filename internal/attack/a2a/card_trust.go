@@ -45,14 +45,21 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	primaryURL := endpoint.AppendPath(vars.BaseURL, cardPathPrimary)
 	legacyURL := endpoint.AppendPath(vars.BaseURL, cardPathLegacy)
 
-	primaryBody, primaryCache, primaryOK := fetchCard(ctx, client, primaryURL)
-	legacyBody, legacyCache, legacyOK := fetchCard(ctx, client, legacyURL)
+	primaryBody, primaryCache, primaryOK, primaryReason := fetchCardWithOutcome(ctx, client, primaryURL)
+	legacyBody, legacyCache, legacyOK, legacyReason := fetchCardWithOutcome(ctx, client, legacyURL)
+	var unobserved []string
+	if primaryReason != "" {
+		unobserved = append(unobserved, primaryURL+": "+primaryReason)
+	}
+	if legacyReason != "" {
+		unobserved = append(unobserved, legacyURL+": "+legacyReason)
+	}
 	if !primaryOK && !legacyOK {
-		// This rule analyses the card, so no card means it was not exercised.
-		// It used to return clean here, which reads as "the card is fine" for a
-		// target that served none.
-		return nil, fmt.Errorf("%w: no agent card was served at %s or %s, and this rule analyses "+
-			"the card's transport and caching headers", attack.ErrInconclusive, primaryURL, legacyURL)
+		detail := fmt.Sprintf("no agent card was served at %s or %s", primaryURL, legacyURL)
+		if len(unobserved) > 0 {
+			detail += "; unobserved card reads: " + strings.Join(unobserved, "; ")
+		}
+		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
 	}
 
 	var cacheFindings []attack.Finding
@@ -71,6 +78,13 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	var findings []attack.Finding
 	findings = append(findings, e.checkCanonicalization(primaryURL, primaryBody, primaryOK, legacyURL, legacyBody, legacyOK)...)
 	findings = append(findings, cacheFindings...)
+	if len(unobserved) > 0 {
+		detail := "unobserved card reads: " + strings.Join(unobserved, "; ")
+		if len(findings) == 0 {
+			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
+		}
+		findings[0].Evidence += "\n" + detail
+	}
 	return findings, nil
 }
 
@@ -246,19 +260,30 @@ func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) [
 
 // fetchCard GETs an agent card and returns its body and freshness headers.
 func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool) {
+	body, cache, ok, _ = fetchCardWithOutcome(ctx, client, url)
+	return body, cache, ok
+}
+
+func fetchCardWithOutcome(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool, reason string) {
 	resp, err := client.GET(ctx, url, cardVersionHeaders(url))
-	if err != nil || !resp.IsSuccess() {
-		return nil, cardCacheHeaders{}, false
+	if err != nil || resp == nil {
+		return nil, cardCacheHeaders{}, false, "no response"
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, cardCacheHeaders{}, false, ""
+	}
+	if !resp.IsSuccess() {
+		return nil, cardCacheHeaders{}, false, fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 	if _, parsed := parseCard(resp.Body); !parsed {
-		return nil, cardCacheHeaders{}, false
+		return nil, cardCacheHeaders{}, false, "invalid Agent Card"
 	}
 	return resp.Body, cardCacheHeaders{
 		control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
 		expires:    resp.Headers.Get("Expires"),
 		date:       resp.Headers.Get("Date"),
 		receivedAt: time.Now(),
-	}, true
+	}, true, ""
 }
 
 func parseCard(body []byte) (map[string]interface{}, bool) {
