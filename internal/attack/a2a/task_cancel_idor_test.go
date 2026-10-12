@@ -79,6 +79,39 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			if mode == "http-error-b-503" && tok == "tok-b" {
+				if method == "CancelTask" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					rpcErr(-32001, "Task not found")
+				} else {
+					w.WriteHeader(http.StatusForbidden)
+				}
+				return
+			}
+			if mode == "http-error-408" || mode == "http-error-429" || mode == "http-error-503" {
+				if tok == "tok-b" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if tok == "" {
+					if method == "tasks/cancel" {
+						rpcErr(-32601, "Method not found")
+						return
+					}
+					switch mode {
+					case "http-error-408":
+						w.WriteHeader(http.StatusRequestTimeout)
+						rpcErr(-32001, "Task not found")
+					case "http-error-429":
+						w.WriteHeader(http.StatusTooManyRequests)
+						rpcErr(-32601, "Method not found")
+					case "http-error-503":
+						w.WriteHeader(http.StatusServiceUnavailable)
+						rpcErr(-32001, "Task not found")
+					}
+					return
+				}
+			}
 			if method == "CancelTask" &&
 				((mode == "no-cancel-unreadable" && tok == "") ||
 					(mode == "no-cancel-unreadable-b" && tok == "tok-b")) {
@@ -297,6 +330,20 @@ func TestTaskCancelIDOR_AmbiguousResponsesAreInconclusive(t *testing.T) {
 			findings, err := runTaskCancel(t, srv)
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
+func TestTaskCancelIDOR_HTTPErrorBodyIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"http-error-408", "http-error-429", "http-error-503", "http-error-b-503"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+
+			findings, err := runTaskCancel(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v, want incomplete", findings, err)
 			}
 		})
 	}
