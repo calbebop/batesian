@@ -60,18 +60,6 @@ func (s setupObservation) err() error {
 	}
 }
 
-// errIfAuthRefused is err() narrowed to authorization refusals.
-//
-// For session smuggling and context fixation, a non-auth rejection prevents the
-// unsafe state and is clean. An auth refusal never exercises the behavior and is
-// therefore inconclusive.
-func (s setupObservation) errIfAuthRefused() error {
-	if s.rank != setupAuthRefused {
-		return nil
-	}
-	return s.err()
-}
-
 // A2A's own error codes for a surface the agent does not offer. A rule cannot test
 // what is not implemented, and reporting that as clean is the same call the OAuth
 // rules make for a server with no OAuth.

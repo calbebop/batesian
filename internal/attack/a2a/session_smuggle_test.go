@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -282,6 +283,116 @@ func TestSessionSmuggle_PatchedRejects(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against patched server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func sessionRoleProbeServer(v1, legacy string) *httptest.Server {
+	var mu sync.Mutex
+	stored := ""
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		req := readBody(r)
+		id := req["id"]
+		switch req["method"] {
+		case "GetTask", "tasks/get":
+			params, _ := req["params"].(map[string]interface{})
+			if params["id"] != "task-role" {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			mu.Lock()
+			text := stored
+			mu.Unlock()
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"id": "task-role", "history": []interface{}{
+					map[string]interface{}{"role": 1, "parts": []interface{}{map[string]string{"text": text}}},
+				}}})
+		case "SendMessage", "message/send":
+			mode := v1
+			if req["method"] == "message/send" {
+				mode = legacy
+			}
+			switch mode {
+			case "unavailable":
+				w.WriteHeader(http.StatusServiceUnavailable)
+			case "disconnected":
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			case "malformed":
+				_, _ = w.Write([]byte(`not json`))
+			case "wrong-id":
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": "other",
+					"error": map[string]interface{}{"code": -32602, "message": "role must be USER"}})
+			case "role-denied":
+				rpcErr(w, id, -32602, "role must be USER")
+			case "generic-invalid":
+				rpcErr(w, id, -32602, "Invalid params")
+			case "unauthorized":
+				w.WriteHeader(http.StatusUnauthorized)
+			case "rate-limited":
+				w.WriteHeader(http.StatusTooManyRequests)
+			case "unsupported":
+				rpcErr(w, id, -32601, "Method not found")
+			case "normalized":
+				mu.Lock()
+				stored = textOf(req)
+				mu.Unlock()
+				taskResult(w, id, "task-role", "ctx-role")
+			}
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+}
+
+func TestSessionSmuggle_UnobservedSend(t *testing.T) {
+	for _, tc := range []struct {
+		name, v1, legacy string
+	}{
+		{"gateway failure", "unavailable", "unavailable"},
+		{"connection closed", "disconnected", "unsupported"},
+		{"malformed reply", "malformed", "unsupported"},
+		{"wrong response ID", "wrong-id", "unsupported"},
+		{"mixed failure and denial", "unavailable", "role-denied"},
+		{"generic invalid params", "generic-invalid", "unsupported"},
+		{"authentication required", "unauthorized", "unauthorized"},
+		{"rate limited", "rate-limited", "unsupported"},
+		{"normalized fallback after failure", "unavailable", "normalized"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := sessionRoleProbeServer(tc.v1, tc.legacy)
+			defer ts.Close()
+
+			findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unobserved send must be inconclusive: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestSessionSmuggle_ExplicitRoleDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name, v1, legacy string
+	}{
+		{"v1", "role-denied", "unsupported"},
+		{"legacy", "unsupported", "role-denied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := sessionRoleProbeServer(tc.v1, tc.legacy)
+			defer ts.Close()
+
+			findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || err != nil {
+				t.Fatalf("role denial must be clean: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
