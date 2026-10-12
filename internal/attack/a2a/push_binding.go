@@ -93,7 +93,9 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 
 	// Read before writing so B can observe A's original config.
 	var findings []attack.Finding
-	if e.getPush(ctx, clientB, endpoint, b.Headers, taskID, ownerSet, markerURL, vars.RandID+"-cross-read") {
+	crossRead, crossReadJudged := e.getPushOutcome(ctx, clientB, endpoint, b.Headers, taskID,
+		ownerSet, markerURL, vars.RandID+"-cross-read")
+	if crossRead {
 		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed))
 	}
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
@@ -104,6 +106,10 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	}
 	if attackerSet.accepted && len(findings) == 0 {
 		return nil, attack.ErrInconclusive
+	}
+	if !crossReadJudged && len(findings) == 0 {
+		return nil, fmt.Errorf("%w: principal %s's push-config read did not establish whether task %s was accessible",
+			attack.ErrInconclusive, b.Name, taskID)
 	}
 	return findings, nil
 }
@@ -222,6 +228,12 @@ func pushResult(body []byte, requestID string) map[string]interface{} {
 }
 
 func (e *PushBindingExecutor) getPush(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, taskID string, set pushSet, expectedURL, randID string) bool {
+	matched, _ := e.getPushOutcome(ctx, c, endpoint, extra, taskID, set, expectedURL, randID)
+	return matched
+}
+
+// getPushOutcome distinguishes a denied or mismatched read from an unjudged one.
+func (e *PushBindingExecutor) getPushOutcome(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, taskID string, set pushSet, expectedURL, randID string) (matched, judged bool) {
 	method := "tasks/pushNotificationConfig/get"
 	params := map[string]interface{}{"id": taskID, "pushNotificationConfigId": set.id}
 	if set.v1 {
@@ -234,30 +246,48 @@ func (e *PushBindingExecutor) getPush(ctx context.Context, c *attack.HTTPClient,
 		"jsonrpc": "2.0", "id": requestID,
 		"method": method, "params": params,
 	})
-	if err != nil || !resp.IsAccepted() {
-		return false
+	if err != nil || resp == nil {
+		return false, false
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
+		return false, true
+	}
+	if !resp.IsAccepted() {
+		_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if resp.IsSuccess() && valid && hasError {
+			message := strings.ToLower(jsonRPCErrorMessage(resp.Body))
+			if code == -32001 || attack.AuthFlavoredMessage(message) ||
+				strings.Contains(message, "not task owner") || strings.Contains(message, "not found") {
+				return false, true
+			}
+		}
+		return false, false
 	}
 	result := pushResult(resp.Body, requestID)
 	if result == nil {
-		return false
+		return false, false
 	}
 	if returnedTask, ok := result["taskId"]; ok && returnedTask != taskID {
-		return false
+		return false, false
 	}
 	config := result
 	if !set.v1 {
 		var ok bool
 		config, ok = result["pushNotificationConfig"].(map[string]interface{})
 		if !ok {
-			return false
+			return false, false
 		}
 		if returnedID, ok := config["id"]; ok && returnedID != set.id {
-			return false
+			return false, false
 		}
 	} else if returnedID, ok := result["id"]; ok && returnedID != set.id {
-		return false
+		return false, false
 	}
-	return config["url"] == expectedURL
+	returnedURL, ok := config["url"].(string)
+	if !ok || returnedURL == "" {
+		return false, false
+	}
+	return returnedURL == expectedURL, true
 }
 
 func pushBindingHeaders(extra map[string]string, v1 bool) map[string]string {

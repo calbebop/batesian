@@ -107,7 +107,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("auth required")
 				return
 			}
-			if mode == "bound" && who != "" && taskOwner[tid] != who {
+			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-")) && who != "" && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -133,6 +133,33 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			lastSetID = reqID
 			result(lastSetResult)
 		case "GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get":
+			if who == "tenant-b" {
+				switch mode {
+				case "cross-read-unavailable":
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				case "cross-read-malformed":
+					_, _ = w.Write([]byte("not json"))
+					return
+				case "cross-read-empty-result":
+					configID, _ := params["id"].(string)
+					result(map[string]interface{}{"taskId": "task-tenant-a", "id": configID})
+					return
+				case "cross-read-generic-error":
+					rpcErr("invalid request")
+					return
+				case "cross-read-wrong-id":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request",
+						"result": map[string]interface{}{"url": "unrelated"}})
+					return
+				case "cross-read-http-denied":
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				case "cross-read-rpc-denied":
+					rpcErr("not authorized")
+					return
+				}
+			}
 			if mode == "replay-set" {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": lastSetID, "result": lastSetResult})
 				return
@@ -155,7 +182,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("read denied")
 				return
 			}
-			if mode == "bound" && taskOwner[tid] != who {
+			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-")) && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -369,6 +396,32 @@ func TestPushBinding_Bound(t *testing.T) {
 
 	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 0 {
 		t.Errorf("expected zero findings against an owner-bound server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestPushBinding_CrossReadOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		inconclusive bool
+	}{
+		{"cross-read-unavailable", true},
+		{"cross-read-malformed", true},
+		{"cross-read-empty-result", true},
+		{"cross-read-generic-error", true},
+		{"cross-read-wrong-id", true},
+		{"cross-read-http-denied", false},
+		{"cross-read-rpc-denied", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := pushServer(tc.mode)
+			defer ts.Close()
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+		})
 	}
 }
 
