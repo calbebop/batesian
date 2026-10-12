@@ -35,6 +35,7 @@ func cancelServer(mode string) *httptest.Server {
 	var mu sync.Mutex
 	store := map[string]*task{}
 	counter := 0
+	readFailuresRemaining := 0
 
 	bearer := func(r *http.Request) string {
 		return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -78,6 +79,13 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			if method == "CancelTask" &&
+				((mode == "no-cancel-unreadable" && tok == "") ||
+					(mode == "no-cancel-unreadable-b" && tok == "tok-b")) {
+				mu.Lock()
+				readFailuresRemaining = 4
+				mu.Unlock()
+			}
 			if mode == "transport" && method == "CancelTask" {
 				conn, _, _ := w.(http.Hijacker).Hijack()
 				_ = conn.Close()
@@ -87,7 +95,9 @@ func cancelServer(mode string) *httptest.Server {
 				rpcErr(-32601, "method not found")
 				return
 			}
-			if mode == "no-cancel-surface" || (mode == "legacy-only" && method == "CancelTask") ||
+			if mode == "no-cancel-surface" || mode == "no-cancel-unreadable" ||
+				mode == "no-cancel-unreadable-b" ||
+				(mode == "legacy-only" && method == "CancelTask") ||
 				(mode == "transport" && method == "tasks/cancel") {
 				// Neither wire implements cancellation.
 				rpcErr(-32601, "method not found")
@@ -166,6 +176,12 @@ func cancelServer(mode string) *httptest.Server {
 
 		case "GetTask", "tasks/get":
 			mu.Lock()
+			if readFailuresRemaining > 0 {
+				readFailuresRemaining--
+				mu.Unlock()
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			t := store[taskID]
 			mu.Unlock()
 			if t == nil {
@@ -332,6 +348,20 @@ func TestTaskCancelIDOR_NoCancelSurface(t *testing.T) {
 
 	if findings, err := runTaskCancel(t, srv); err != nil || len(findings) != 0 {
 		t.Errorf("expected 0 findings / nil err when no cancel surface exists, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+func TestTaskCancelIDOR_UnsupportedMethodsNeedReadback(t *testing.T) {
+	for _, mode := range []string{"no-cancel-unreadable", "no-cancel-unreadable-b"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+
+			findings, err := runTaskCancel(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete without findings, got findings=%v err=%v", findings, err)
+			}
+		})
 	}
 }
 

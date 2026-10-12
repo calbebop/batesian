@@ -230,7 +230,7 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 			priorUncertain = true
 		}
 	}
-	if unsupported == len(shapes) {
+	if !uncertain && unsupported == len(shapes) {
 		return cancelProbe{outcome: cancelAbsent}
 	}
 	if !uncertain && denied > 0 && denied+unsupported == len(shapes) {
