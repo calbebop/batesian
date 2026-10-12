@@ -33,6 +33,10 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		},
 	}
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		if mode == "unreadable-card" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(card)
 	})
@@ -62,9 +66,33 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		switch mode {
 		case "noauth-msg":
 			writeErr(-32600, "authentication required")
-		case "failclosed":
+		case "failclosed", "failclosed-http":
 			if !activated {
-				writeErr(-32600, "required extension not activated")
+				if mode == "failclosed-http" {
+					w.WriteHeader(http.StatusBadRequest)
+				}
+				writeErr(-32008, "extension support required")
+				return
+			}
+			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+		case "omitted-generic":
+			if !activated {
+				writeErr(-32600, "invalid request")
+				return
+			}
+			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+		case "omitted-transport":
+			if !activated {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
+			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+		case "omitted-wrong-id":
+			if !activated {
+				rpcErr(w, "other-request", -32008, "extension support required")
 				return
 			}
 			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
@@ -99,13 +127,40 @@ func TestExtDowngrade_FailOpen(t *testing.T) {
 // TestExtDowngrade_FailClosed: server rejects requests that omit the required
 // extension => secure, no finding.
 func TestExtDowngrade_FailClosed(t *testing.T) {
-	ts := extensionServer("failclosed", true)
-	defer ts.Close()
+	for _, mode := range []string{"failclosed", "failclosed-http"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, true)
+			defer ts.Close()
+			exec := a2a.NewExtensionDowngradeExecutor(testRuleCtx())
+			findings, err := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if err != nil || len(findings) != 0 {
+				t.Errorf("expected a clean result against a fail-closed server, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
 
-	exec := a2a.NewExtensionDowngradeExecutor(testRuleCtx())
-	findings, _ := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings against a fail-closed server, got %d: %+v", len(findings), findings)
+func TestExtDowngrade_IncompleteOmission(t *testing.T) {
+	for _, mode := range []string{"omitted-generic", "omitted-transport", "omitted-wrong-id"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, true)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_UnreadableCard(t *testing.T) {
+	ts := extensionServer("unreadable-card", true)
+	defer ts.Close()
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
 	}
 }
 
@@ -120,16 +175,15 @@ func TestExtDowngrade_NotRequired(t *testing.T) {
 	}
 }
 
-// TestExtDowngrade_ControlRejected: messaging is always rejected, so the control
-// cannot succeed and the rule cannot test => no finding.
+// TestExtDowngrade_ControlRejected keeps an untested control incomplete.
 func TestExtDowngrade_ControlRejected(t *testing.T) {
 	ts := extensionServer("noauth-msg", true)
 	defer ts.Close()
 
 	exec := a2a.NewExtensionDowngradeExecutor(testRuleCtx())
-	findings, _ := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings when control is rejected, got %d", len(findings))
+	findings, err := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Errorf("expected an incomplete result when control is rejected, got %d findings, err=%v", len(findings), err)
 	}
 }
 
