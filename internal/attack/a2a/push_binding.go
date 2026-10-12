@@ -107,6 +107,14 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if attackerSet.accepted && len(findings) == 0 {
 		return nil, attack.ErrInconclusive
 	}
+	if !openSet.accepted && !openSet.judged && len(findings) == 0 {
+		return nil, fmt.Errorf("%w: anonymous push-config write did not establish whether task %s was writable",
+			attack.ErrInconclusive, taskID)
+	}
+	if !attackerSet.accepted && !attackerSet.judged && len(findings) == 0 {
+		return nil, fmt.Errorf("%w: principal %s's push-config write did not establish whether task %s was writable",
+			attack.ErrInconclusive, b.Name, taskID)
+	}
 	if !crossReadJudged && len(findings) == 0 {
 		return nil, fmt.Errorf("%w: principal %s's push-config read did not establish whether task %s was accessible",
 			attack.ErrInconclusive, b.Name, taskID)
@@ -172,6 +180,7 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 
 type pushSet struct {
 	accepted bool
+	judged   bool
 	v1       bool
 	id       string
 	obs      setupObservation
@@ -188,6 +197,8 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 		{"tasks/pushNotificationConfig/set", map[string]interface{}{"taskId": taskID, "pushNotificationConfig": cfg}},
 	}
 	var obs setupObservation
+	denied := false
+	unjudged := false
 	for _, at := range attempts {
 		requestID := "batesian-pb-set-" + randID
 		headers := pushBindingHeaders(extra, at.method == "CreateTaskPushNotificationConfig")
@@ -197,9 +208,9 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 			"method":  at.method,
 			"params":  at.params,
 		})
-		if err == nil && resp.IsAccepted() {
+		if err == nil && resp != nil && resp.IsAccepted() {
 			if returned := pushResult(resp.Body, requestID); returned != nil {
-				set := pushSet{accepted: true, v1: at.method == "CreateTaskPushNotificationConfig", id: configID}
+				set := pushSet{accepted: true, judged: true, v1: at.method == "CreateTaskPushNotificationConfig", id: configID}
 				if id, _ := returned["id"].(string); id != "" {
 					set.id = id
 				} else if nested, ok := returned["pushNotificationConfig"].(map[string]interface{}); ok {
@@ -210,9 +221,52 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 				return set
 			}
 		}
+		switch classifyPushWriteResponse(resp, err, requestID) {
+		case pushWriteDenied:
+			denied = true
+		case pushWriteUnjudged:
+			unjudged = true
+		}
 		obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extra), resp))
 	}
-	return pushSet{obs: obs}
+	return pushSet{judged: denied && !unjudged, obs: obs}
+}
+
+type pushWriteOutcome uint8
+
+const (
+	pushWriteUnjudged pushWriteOutcome = iota
+	pushWriteAbsent
+	pushWriteDenied
+)
+
+func classifyPushWriteResponse(resp *attack.Response, err error, requestID string) pushWriteOutcome {
+	if err != nil || resp == nil {
+		return pushWriteUnjudged
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return pushWriteDenied
+	}
+	if resp.StatusCode == 404 || resp.StatusCode == 405 {
+		return pushWriteAbsent
+	}
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		return pushWriteUnjudged
+	}
+	_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+	if !valid || !hasError {
+		return pushWriteUnjudged
+	}
+	switch code {
+	case jsonRPCMethodNotFound, a2aPushNotSupported, a2aUnsupportedOperation:
+		return pushWriteAbsent
+	}
+	message := strings.ToLower(jsonRPCErrorMessage(resp.Body))
+	if code == -32001 || attack.AuthFlavoredMessage(message) || strings.Contains(message, "auth required") ||
+		strings.Contains(message, "not task owner") || strings.Contains(message, "not found") {
+		return pushWriteDenied
+	}
+	return pushWriteUnjudged
 }
 
 func pushResult(body []byte, requestID string) map[string]interface{} {
