@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -202,6 +203,12 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 			uncertain = true
 		}
 		if err != nil || resp == nil {
+			uncertain = true
+			priorUncertain = true
+			continue
+		}
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode >= http.StatusInternalServerError {
 			uncertain = true
 			priorUncertain = true
 			continue
