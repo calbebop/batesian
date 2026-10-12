@@ -14,6 +14,15 @@ type DelegationIntegrityExecutor struct {
 	rule attack.RuleContext
 }
 
+type continuationOutcome uint8
+
+const (
+	continuationUnobserved continuationOutcome = iota
+	continuationUnsupported
+	continuationDenied
+	continuationAccepted
+)
+
 func init() {
 	attack.Register("a2a-delegation-integrity", func(rc attack.RuleContext) attack.Executor {
 		return NewDelegationIntegrityExecutor(rc)
@@ -65,7 +74,7 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 
 	// Exclude endpoints that persist unauthenticated continuations.
 	anonymousMarker := "anon-" + vars.RandID
-	anonymousAccepted := e.continueTask(ctx, unauthClient, endpoint, nil, taskID, contextID, anonymousMarker)
+	anonymousOutcome := e.continueTask(ctx, unauthClient, endpoint, nil, taskID, contextID, anonymousMarker)
 	_, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, anonymousMarker, vars.RandID)
 	if err != nil {
 		return nil, err
@@ -75,13 +84,13 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	}
 
 	marker := "cross-" + vars.RandID
-	bAccepted := e.continueTask(ctx, clientB, endpoint, b.Headers, taskID, contextID, marker)
+	bOutcome := e.continueTask(ctx, clientB, endpoint, b.Headers, taskID, contextID, marker)
 	readable, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, marker, vars.RandID)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		if bAccepted || !readable {
+		if bOutcome != continuationDenied || !readable {
 			return nil, fmt.Errorf("%w: cross-principal continuation was not found in the owner's task history", attack.ErrInconclusive)
 		}
 		return nil, nil
@@ -96,11 +105,11 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	if !readable {
 		return nil, fmt.Errorf("%w: owner task history was unavailable on anonymous recheck", attack.ErrInconclusive)
 	}
-	anonymousOutcome := "no accepted response; no stored message observed"
-	if anonymousAccepted {
-		anonymousOutcome = "accepted; no stored message observed"
+	anonymousEvidence := "no accepted response; no stored message observed"
+	if anonymousOutcome == continuationAccepted {
+		anonymousEvidence = "accepted; no stored message observed"
 	}
-	return []attack.Finding{e.finding(endpoint, a, b, taskID, contextID, marker, anonymousOutcome, consumed)}, nil
+	return []attack.Finding{e.finding(endpoint, a, b, taskID, contextID, marker, anonymousEvidence, consumed)}, nil
 }
 
 // consumeOwnedTask finds an upstream task owned by A.
@@ -163,15 +172,16 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	return taskID, contextID, taskID != "", obs
 }
 
-// continueTask reports acceptance; owner readback establishes persistence.
-func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, contextID, marker string) bool {
+// continueTask distinguishes denial from an unanswered probe.
+func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, contextID, marker string) continuationOutcome {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
+	requestID := "batesian-deleg-cont-" + marker
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-deleg-cont-" + marker,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -184,26 +194,69 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "batesian-deleg-cont-" + marker,
-			"method":  "message/send",
-			"params": map[string]interface{}{
-				"message": map[string]interface{}{
-					"role":      "user",
-					"parts":     []interface{}{map[string]string{"kind": "text", "text": "batesian delegation continuation " + marker}},
-					"messageId": "batesian-deleg-cont-" + marker,
-					"taskId":    taskID,
-					"contextId": contextID,
-				},
+	first := classifyContinuation(resp, err, requestID)
+	if first == continuationAccepted {
+		return first
+	}
+	resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      requestID,
+		"method":  "message/send",
+		"params": map[string]interface{}{
+			"message": map[string]interface{}{
+				"role":      "user",
+				"parts":     []interface{}{map[string]string{"kind": "text", "text": "batesian delegation continuation " + marker}},
+				"messageId": "batesian-deleg-cont-" + marker,
+				"taskId":    taskID,
+				"contextId": contextID,
 			},
-		})
+		},
+	})
+	second := classifyContinuation(resp, err, requestID)
+	if second == continuationAccepted {
+		return second
 	}
-	if err != nil || !resp.IsAccepted() {
-		return false
+	if first == continuationUnobserved || second == continuationUnobserved {
+		return continuationUnobserved
 	}
-	return true
+	if first == continuationDenied || second == continuationDenied {
+		return continuationDenied
+	}
+	return continuationUnsupported
+}
+
+func classifyContinuation(resp *attack.Response, err error, requestID string) continuationOutcome {
+	if err != nil || resp == nil {
+		return continuationUnobserved
+	}
+	if resp.IsAccepted() {
+		return continuationAccepted
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return continuationDenied
+	}
+	if !resp.IsSuccess() {
+		return continuationUnobserved
+	}
+	var envelope struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      string `json:"id"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(resp.Body, &envelope) != nil || envelope.JSONRPC != "2.0" ||
+		envelope.ID != requestID || envelope.Error == nil {
+		return continuationUnobserved
+	}
+	if envelope.Error.Code == -32001 || attack.AuthFlavoredMessage(envelope.Error.Message) {
+		return continuationDenied
+	}
+	if envelope.Error.Code == jsonRPCMethodNotFound || envelope.Error.Code == a2aUnsupportedOperation {
+		return continuationUnsupported
+	}
+	return continuationUnobserved
 }
 
 func (e *DelegationIntegrityExecutor) waitForOwnerMarker(ctx context.Context, c *attack.HTTPClient, endpoint string, headers map[string]string, taskID, marker, randID string) (readable, found bool, err error) {
