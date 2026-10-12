@@ -411,6 +411,70 @@ func TestArtifactTamper_UnjudgedContinuationIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestArtifactTamper_OverwriteDespiteError(t *testing.T) {
+	for _, mode := range []string{"reported immutable", "service unavailable", "disconnected"} {
+		t.Run(mode, func(t *testing.T) {
+			var mu sync.Mutex
+			var stored string
+			var sends int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req := readBody(r)
+				id := req["id"]
+				switch req["method"] {
+				case "SendMessage":
+					params, _ := req["params"].(map[string]interface{})
+					message, _ := params["message"].(map[string]interface{})
+					parts, _ := message["parts"].([]interface{})
+					part, _ := parts[0].(map[string]interface{})
+					mu.Lock()
+					stored, _ = part["text"].(string)
+					sends++
+					sendCount := sends
+					mu.Unlock()
+					if sendCount == 2 {
+						switch mode {
+						case "reported immutable":
+							rpcErr(w, id, -32600, "task ID already exists")
+						case "service unavailable":
+							w.WriteHeader(http.StatusServiceUnavailable)
+						case "disconnected":
+							conn, _, err := w.(http.Hijacker).Hijack()
+							if err != nil {
+								t.Errorf("hijack: %v", err)
+								return
+							}
+							_ = conn.Close()
+						}
+						return
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+				case "GetTask":
+					mu.Lock()
+					text, sendCount := stored, sends
+					mu.Unlock()
+					if sendCount == 0 {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"id": "task-1", "status": map[string]string{"state": "completed"},
+							"artifacts": storedArtifact(text)}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit {
+				t.Fatalf("stored overwrite must be reported despite the send error: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 func TestArtifactTamper_ChecksEveryOriginalArtifact(t *testing.T) {
 	var original, latest string
 	var sends int
