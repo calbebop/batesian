@@ -33,8 +33,20 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		},
 	}
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
-		if mode == "unreadable-card" {
+		if mode == "unreadable-card" || mode == "primary-failed-fallback" || mode == "primary-failed-fallback-closed" {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(card)
+	})
+	mux.HandleFunc("/.well-known/agent.json", func(w http.ResponseWriter, r *http.Request) {
+		if mode == "legacy-failed" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if mode != "primary-failed-fallback" && mode != "primary-failed-fallback-closed" {
+			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -66,7 +78,7 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		switch mode {
 		case "noauth-msg":
 			writeErr(-32600, "authentication required")
-		case "failclosed", "failclosed-http":
+		case "failclosed", "failclosed-http", "primary-failed-fallback-closed":
 			if !activated {
 				if mode == "failclosed-http" {
 					w.WriteHeader(http.StatusBadRequest)
@@ -176,6 +188,41 @@ func TestExtDowngrade_UnreadableCard(t *testing.T) {
 		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+func TestExtDowngrade_PartialCardReadIsInconclusive(t *testing.T) {
+	for _, mode := range []string{"primary-failed-fallback", "legacy-failed"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, false)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "HTTP 503") {
+				t.Fatalf("want incomplete card read, got findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_FindingNotesUnobservedCard(t *testing.T) {
+	ts := extensionServer("primary-failed-fallback", true)
+	defer ts.Close()
+	findings := runExtDowngrade(t, ts)
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("finding omitted failed card read: %+v", findings)
+	}
+}
+
+func TestExtDowngrade_FallbackClosedIsInconclusive(t *testing.T) {
+	ts := extensionServer("primary-failed-fallback-closed", true)
+	defer ts.Close()
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("want incomplete primary card read, got findings=%+v err=%v", findings, err)
 	}
 }
 

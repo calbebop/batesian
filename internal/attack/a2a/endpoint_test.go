@@ -888,9 +888,9 @@ func TestVersionedCardRuleReaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	extensions, served := (&ExtensionDowngradeExecutor{}).requiredExtensions(t.Context(), newClient(server.URL), server.URL)
-	if !served || !slices.Equal(extensions, []string{"urn:test:required"}) {
-		t.Fatalf("extensions=%q served=%v", extensions, served)
+	extensions, served, reason := (&ExtensionDowngradeExecutor{}).requiredExtensions(t.Context(), newClient(server.URL), server.URL)
+	if !served || reason != "" || !slices.Equal(extensions, []string{"urn:test:required"}) {
+		t.Fatalf("extensions=%q served=%v reason=%q", extensions, served, reason)
 	}
 	opts := attack.Options{TimeoutSeconds: 5}
 	if _, err := NewJWSAlgConfExecutor(attack.RuleContext{}).Execute(t.Context(), server.URL, opts); err != nil {

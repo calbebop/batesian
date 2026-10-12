@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -60,17 +61,26 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	required, cardServed := e.requiredExtensions(ctx, client, vars.BaseURL)
+	required, cardServed, cardReadReason := e.requiredExtensions(ctx, client, vars.BaseURL)
+	withCardReadReason := func(err error) error {
+		if cardReadReason == "" {
+			return err
+		}
+		if err == nil {
+			err = attack.ErrInconclusive
+		}
+		return fmt.Errorf("%w: unobserved Agent Card read: %s", err, cardReadReason)
+	}
 	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
 	if !cardServed {
-		return nil, fmt.Errorf("%w: required extensions could not be read from an Agent Card at %s",
-			attack.ErrInconclusive, vars.BaseURL)
+		return nil, withCardReadReason(fmt.Errorf("%w: required extensions could not be read from an Agent Card at %s",
+			attack.ErrInconclusive, vars.BaseURL))
 	}
 	if len(required) == 0 {
-		return nil, nil
+		return nil, withCardReadReason(nil)
 	}
 	if !ok {
-		return nil, attack.ErrInconclusive
+		return nil, withCardReadReason(attack.ErrInconclusive)
 	}
 
 	var observed setupObservation
@@ -86,7 +96,11 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 		// Test: omit the extension header and reuse the shape that worked.
 		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
 		if omitted {
-			return []attack.Finding{e.finding(endpoint, uri, shape)}, nil
+			finding := e.finding(endpoint, uri, shape)
+			if cardReadReason != "" {
+				finding.Evidence += "\nunobserved Agent Card read: " + cardReadReason
+			}
+			return []attack.Finding{finding}, nil
 		}
 		if rejectedRequired {
 			tested = true
@@ -96,28 +110,30 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 			"request omitting required extension %q at %s did not confirm an extension-policy rejection", uri, endpoint)})
 	}
 	if tested && observed.rank == setupFeatureAbsent {
-		return nil, fmt.Errorf("%w: not every required extension could be tested at %s",
-			attack.ErrInconclusive, endpoint)
+		return nil, withCardReadReason(fmt.Errorf("%w: not every required extension could be tested at %s",
+			attack.ErrInconclusive, endpoint))
 	}
 	if tested && observed.rank == setupNothing {
-		return nil, nil
+		return nil, withCardReadReason(nil)
 	}
-	return nil, observed.err()
+	return nil, withCardReadReason(observed.err())
 }
 
-// requiredExtensions fetches the agent card and returns the URIs of every
-// extension the card marks `required: true`.
-//
-// cardServed is reported separately from the result, because an empty list means
-// two different things. A card that advertises no required extension leaves
-// nothing to downgrade, which is a clean result. No card at all means the target
-// was never identified as an A2A agent, and returning clean for that claims
-// coverage the scan does not have.
-func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) (uris []string, cardServed bool) {
+// requiredExtensions keeps unreadable card paths separate from absent ones.
+func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, client *attack.HTTPClient, baseURL string) (uris []string, cardServed bool, readReason string) {
+	var failures []string
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
 		cardURL := endpoint.AppendPath(baseURL, path)
 		resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
-		if err != nil || !resp.IsSuccess() {
+		if err != nil || resp == nil {
+			failures = append(failures, path+": request failed")
+			continue
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			continue
+		}
+		if !resp.IsSuccess() {
+			failures = append(failures, fmt.Sprintf("%s: HTTP %d", path, resp.StatusCode))
 			continue
 		}
 		var card struct {
@@ -128,7 +144,8 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 				} `json:"extensions"`
 			} `json:"capabilities"`
 		}
-		if err := json.Unmarshal(resp.Body, &card); err != nil {
+		if !resp.IsJSON() || json.Unmarshal(resp.Body, &card) != nil {
+			failures = append(failures, path+": invalid JSON")
 			continue
 		}
 		cardServed = true
@@ -139,10 +156,10 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 			}
 		}
 		if len(out) > 0 {
-			return out, true
+			return out, true, strings.Join(failures, "; ")
 		}
 	}
-	return nil, cardServed
+	return nil, cardServed, strings.Join(failures, "; ")
 }
 
 // sendMessage tries both wire shapes, or only forceShape when set.
