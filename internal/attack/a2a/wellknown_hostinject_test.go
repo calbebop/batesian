@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,32 @@ import (
 	a2aattack "github.com/calbebop/batesian/internal/attack/a2a"
 )
 
+func hostInjectCard(url string) map[string]interface{} {
+	return map[string]interface{}{
+		"name":               "Test Agent",
+		"description":        "Test agent",
+		"version":            "0.3.0",
+		"url":                url,
+		"capabilities":       map[string]interface{}{},
+		"defaultInputModes":  []string{"text/plain"},
+		"defaultOutputModes": []string{"text/plain"},
+		"skills":             []interface{}{},
+	}
+}
+
+func hostInjectModernCard(url string) map[string]interface{} {
+	card := hostInjectCard(url)
+	delete(card, "url")
+	card["version"] = "1.0.0"
+	card["supportedInterfaces"] = []map[string]string{{
+		"url": url, "protocolBinding": "JSONRPC", "protocolVersion": "1.0",
+	}}
+	card["skills"] = []map[string]interface{}{{
+		"id": "test", "name": "Test", "description": "Test skill", "tags": []string{"test"},
+	}}
+	return card
+}
+
 func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 	// Server reflects X-Forwarded-Host into the agent card url field.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -20,11 +47,7 @@ func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 		if host == "" {
 			host = r.Host
 		}
-		card := map[string]interface{}{
-			"name":    "Test Agent",
-			"version": "1.0",
-			"url":     "http://" + host + "/",
-		}
+		card := hostInjectModernCard("http://" + host + "/")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(card)
 	}))
@@ -51,11 +74,7 @@ func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 func TestWellKnownHostInject_HardcodedURL(t *testing.T) {
 	// Server always returns the same hardcoded URL - not vulnerable.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		card := map[string]interface{}{
-			"name":    "Secure Agent",
-			"version": "1.0",
-			"url":     "https://agent.example.com/",
-		}
+		card := hostInjectCard("https://agent.example.com/")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(card)
 	}))
@@ -71,6 +90,92 @@ func TestWellKnownHostInject_HardcodedURL(t *testing.T) {
 	}
 }
 
+func TestWellKnownHostInject_UnobservedProbeOutcomes(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		reason string
+	}{
+		{"server error", http.StatusServiceUnavailable, "", "HTTP 503"},
+		{"malformed JSON", http.StatusOK, "{", "invalid card JSON"},
+		{"non-card JSON", http.StatusOK, `{"status":"ok"}`, "invalid Agent Card"},
+		{"partial card", http.StatusOK, `{"name":"Agent"}`, "invalid Agent Card"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/agent-card.json" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if r.Header.Get("X-Original-Host") != "" {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(hostInjectCard("https://agent.example.com/"))
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{ID: "a2a-wellknown-hostinject-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "X-Original-Host: "+tc.reason) {
+				t.Fatalf("want incomplete X-Original-Host probe, got findings=%v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestWellKnownHostInject_HeaderRejectionIsObserved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-card.json" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("X-Original-Host") != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hostInjectCard("https://agent.example.com/"))
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{ID: "a2a-wellknown-hostinject-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("want clean result for rejected header and absent legacy path, got findings=%v err=%v", findings, err)
+	}
+}
+
+func TestWellKnownHostInject_PartialFindingNotesUnobservedProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-card.json" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("X-Original-Host") != "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		host := r.Header.Get("X-Forwarded-Host")
+		if host == "" {
+			host = "agent.example.com"
+		}
+		_ = json.NewEncoder(w).Encode(hostInjectCard("https://" + host + "/"))
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{ID: "a2a-wellknown-hostinject-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) == 0 {
+		t.Fatalf("want reflection finding, got findings=%v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "X-Original-Host: HTTP 503") {
+		t.Fatalf("finding omitted unobserved probe: %q", findings[0].Evidence)
+	}
+}
+
 // TestWellKnownHostInject_HostHeaderReflected verifies the forged Host header
 // actually reaches the server (req.Host plumbing) and a reflection into the url
 // field is reported as a high/RiskIndicator (reflection is proven; the
@@ -78,11 +183,7 @@ func TestWellKnownHostInject_HardcodedURL(t *testing.T) {
 func TestWellKnownHostInject_HostHeaderReflected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only trusts the real Host header (not X-Forwarded-*).
-		card := map[string]interface{}{
-			"name":    "Host-Reflect Agent",
-			"version": "1.0",
-			"url":     "http://" + r.Host + "/",
-		}
+		card := hostInjectCard("http://" + r.Host + "/")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(card)
 	}))
@@ -109,12 +210,8 @@ func TestWellKnownHostInject_NonURLFieldReflected(t *testing.T) {
 		if host == "" {
 			host = "static-host"
 		}
-		card := map[string]interface{}{
-			"name":        "Desc-Reflect Agent",
-			"version":     "1.0",
-			"url":         "https://agent.example.com/", // hardcoded, safe
-			"description": "Operated from origin " + host,
-		}
+		card := hostInjectCard("https://agent.example.com/")
+		card["description"] = "Operated from origin " + host
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(card)
 	}))
@@ -143,14 +240,10 @@ func TestWellKnownHostInject_ReflectsInProviderField(t *testing.T) {
 		if host == "" {
 			host = "static.example.com"
 		}
-		card := map[string]interface{}{
-			"name":    "Multi-Reflect Agent",
-			"version": "1.0",
-			"url":     fmt.Sprintf("http://%s/api", host),
-			"provider": map[string]interface{}{
-				"organization": "Acme",
-				"url":          fmt.Sprintf("https://%s/company", host),
-			},
+		card := hostInjectCard(fmt.Sprintf("http://%s/api", host))
+		card["provider"] = map[string]interface{}{
+			"organization": "Acme",
+			"url":          fmt.Sprintf("https://%s/company", host),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(card)
@@ -183,28 +276,13 @@ func multiFieldReflectingServer(t *testing.T) *httptest.Server {
 			host = r.Host
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"name":         "Reflector",
-			"description":  "d",
-			"version":      "1.0.0",
-			"url":          "https://" + host + "/a2a",
-			"provider":     map[string]interface{}{"organization": "Org", "url": "https://" + host + "/org"},
-			"capabilities": map[string]interface{}{},
-			"skills":       []interface{}{},
-		})
+		card := hostInjectCard("https://" + host + "/a2a")
+		card["provider"] = map[string]interface{}{"organization": "Org", "url": "https://" + host + "/org"}
+		_ = json.NewEncoder(w).Encode(card)
 	}))
 }
 
-// Two scans of an unchanged target must agree, and each header must be reported
-// once rather than once per field ordering.
-//
-// findReflections walks the card with a map range, and Go randomizes map iteration
-// order. The reflected field names flow into the dedup key that collapses the same
-// reflection across the two well-known paths, so before the paths were sorted the
-// key differed between runs: the same header was reported twice, once as
-// "provider.url, url" and once as "url, provider.url", and this server yielded 3, 4
-// or 5 findings on identical input. Repeating the scan is what makes the failure
-// reliable instead of a coin flip.
+// Repeated scans must agree and report each header only once.
 func TestWellKnownHostInject_ResultIsDeterministic(t *testing.T) {
 	srv := multiFieldReflectingServer(t)
 	defer srv.Close()

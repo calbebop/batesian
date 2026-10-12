@@ -865,6 +865,16 @@ func TestFetchCard_VersionHeaderByPath(t *testing.T) {
 }
 
 func TestVersionedCardRuleReaders(t *testing.T) {
+	const card = `{
+		"name":"Versioned Agent",
+		"description":"Test agent",
+		"version":"1.0.0",
+		"supportedInterfaces":[{"url":"https://agent.example.com/a2a","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],
+		"capabilities":{"extensions":[{"uri":"urn:test:required","required":true}]},
+		"defaultInputModes":["text/plain"],
+		"defaultOutputModes":["text/plain"],
+		"skills":[{"id":"test","name":"Test","description":"Test skill","tags":["test"]}]
+	}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != cardPathPrimary {
 			http.NotFound(w, r)
@@ -874,7 +884,7 @@ func TestVersionedCardRuleReaders(t *testing.T) {
 			http.Error(w, "wrong A2A version", http.StatusBadRequest)
 			return
 		}
-		_, _ = io.WriteString(w, `{"name":"Versioned Agent","capabilities":{"extensions":[{"uri":"urn:test:required","required":true}]}}`)
+		_, _ = io.WriteString(w, card)
 	}))
 	defer server.Close()
 
