@@ -454,6 +454,60 @@ func TestTaskIDOR_AnonymousCreationBaseline(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_OwnerCreationOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		inconclusive bool
+	}{
+		{"unavailable", true},
+		{"unavailable-method-error", true},
+		{"unauthorized", true},
+		{"legacy-unavailable", true},
+		{"unsupported", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				switch method {
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				case "SendMessage":
+					switch tc.mode {
+					case "unavailable":
+						w.WriteHeader(http.StatusServiceUnavailable)
+					case "unavailable-method-error":
+						w.WriteHeader(http.StatusServiceUnavailable)
+						rpcErr(w, id, -32601, "Method not found")
+					case "unauthorized":
+						w.WriteHeader(http.StatusUnauthorized)
+					default:
+						rpcErr(w, id, -32601, "Method not found")
+					}
+				case "message/send":
+					if tc.mode == "legacy-unavailable" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+					} else {
+						rpcErr(w, id, -32601, "Method not found")
+					}
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+		})
+	}
+}
+
 // TestTaskIDOR_NoContextIdNullRead_NoFalsePositive guards the empty-substring
 // false positive. The server auth-gates creation but returns a task WITHOUT a
 // contextId (so the executor's contextID is ""), and answers the unauthenticated
