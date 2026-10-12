@@ -83,6 +83,10 @@ func cancelServer(mode string) *httptest.Server {
 				_ = conn.Close()
 				return
 			}
+			if strings.HasPrefix(mode, "anon-hidden-") && tok == "" {
+				rpcErr(-32601, "method not found")
+				return
+			}
 			if mode == "no-cancel-surface" || (mode == "legacy-only" && method == "CancelTask") ||
 				(mode == "transport" && method == "tasks/cancel") {
 				// Neither wire implements cancellation.
@@ -145,7 +149,7 @@ func cancelServer(mode string) *httptest.Server {
 			}
 			mu.Lock()
 			t := store[taskID]
-			if mode == "secure" && (t == nil || t.owner != tok) {
+			if (mode == "secure" || mode == "anon-hidden-secure") && (t == nil || t.owner != tok) {
 				mu.Unlock()
 				w.WriteHeader(http.StatusForbidden)
 				return
@@ -250,6 +254,7 @@ func TestTaskCancelIDOR_ConfirmedWireVariants(t *testing.T) {
 		{"mutate-then-403", "without authentication", "CancelTask"},
 		{"mutate-then-notfound", "without authentication", "CancelTask"},
 		{"b-mutate-then-403", "non-owning", "CancelTask"},
+		{"anon-hidden-vuln", "non-owning", "CancelTask"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -283,11 +288,14 @@ func TestTaskCancelIDOR_AmbiguousResponsesAreInconclusive(t *testing.T) {
 
 // TestTaskCancelIDOR_Secure: cancel bound to the owner => no finding.
 func TestTaskCancelIDOR_Secure(t *testing.T) {
-	srv := cancelServer("secure")
-	defer srv.Close()
-
-	if findings, err := runTaskCancel(t, srv); err != nil || len(findings) != 0 {
-		t.Errorf("expected 0 findings / nil err for owner-bound cancel, got %d findings, err=%v", len(findings), err)
+	for _, mode := range []string{"secure", "anon-hidden-secure"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+			if findings, err := runTaskCancel(t, srv); err != nil || len(findings) != 0 {
+				t.Errorf("expected 0 findings / nil err for owner-bound cancel, got %d findings, err=%v", len(findings), err)
+			}
+		})
 	}
 }
 
