@@ -255,6 +255,62 @@ func TestPushSSRF_SecondRESTBindingFromCard(t *testing.T) {
 	}
 }
 
+func TestPushSSRF_RESTTaskSetupOutcomes(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		body         string
+		inconclusive bool
+	}{
+		{"service unavailable", http.StatusServiceUnavailable, "", true},
+		{"service error with RPC code", http.StatusServiceUnavailable, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`, true},
+		{"authentication refused", http.StatusUnauthorized, "", true},
+		{"message without task", http.StatusOK, `{"message":{"messageId":"reply","role":"agent","parts":[]}}`, true},
+		{"route absent", http.StatusNotFound, "", false},
+		{"method absent", http.StatusMethodNotAllowed, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/agent-card.json" {
+					writeJSON(w, map[string]interface{}{
+						"name": "REST agent",
+						"supportedInterfaces": []interface{}{map[string]string{
+							"url": "http://" + r.Host + "/rest", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
+						}},
+					})
+					return
+				}
+				if r.URL.Path == "/rest/message:send" {
+					w.WriteHeader(tt.status)
+					_, _ = w.Write([]byte(tt.body))
+					return
+				}
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				method, id := decodeRPC(r)
+				if method == "GetTask" || method == "tasks/get" {
+					rpcErr(w, id, -32001, "Task not found")
+					return
+				}
+				rpcErr(w, id, -32601, "Method not found")
+			}))
+			defer ts.Close()
+
+			opts := testOpts()
+			opts.OOBListenerURL = "https://oob.example.invalid"
+			findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, opts)
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tt.inconclusive ||
+				(!tt.inconclusive && err != nil) {
+				t.Fatalf("want inconclusive=%t without findings, got findings=%v err=%v",
+					tt.inconclusive, findings, err)
+			}
+		})
+	}
+}
+
 // An agent that advertises no HTTP+JSON interface must not be probed for one.
 // The old code POSTed /tasks/send at every target regardless, which was a
 // guaranteed 404 on each scan.
