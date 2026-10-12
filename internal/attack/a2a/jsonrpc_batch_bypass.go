@@ -186,16 +186,12 @@ func (e *BatchBypassExecutor) finding(endpoint, shape string, ctrl, test *attack
 	}}
 }
 
-// isA2AAuthRejection reports whether a response is an A2A authentication rejection.
-// A2A enforces auth at the HTTP layer, so the primary signal is HTTP 401/403; a
-// JSON-RPC error envelope whose message reads as an auth failure is also accepted
-// for servers that wrap the rejection at 200. A2A application errors (TaskNotFound
-// at -32001, method-not-found, invalid params) are deliberately NOT counted.
+// isA2AAuthRejection accepts HTTP 401/403 or an auth error on a successful response.
 func isA2AAuthRejection(resp *attack.Response) bool {
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return true
 	}
-	return errMessageIsAuth(resp.Body)
+	return resp.IsSuccess() && errMessageIsAuth(resp.Body)
 }
 
 // a2aBatchDispatched requires a response correlated to the task probe.
