@@ -46,6 +46,8 @@ const (
 type enumAgentConfig struct {
 	requireImmediate bool
 	requireTenant    bool
+	ownerListStatus  int
+	ownerListCode    int
 }
 
 func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
@@ -123,6 +125,11 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				}},
 			})
 		case "ListTasks", "tasks/list":
+			if method == "ListTasks" && caller == "a" && config.ownerListStatus != 0 {
+				w.WriteHeader(config.ownerListStatus)
+				rpcErr(config.ownerListCode, "Method not found")
+				return
+			}
 			if behaviour == enumAbsent {
 				rpcErr(-32601, "Method not found")
 				return
@@ -264,6 +271,30 @@ func TestTaskEnumeration_NoListMethodIsClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %d", len(findings))
+	}
+}
+
+func TestTaskEnumeration_OwnerListHTTPFailureIsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		code   int
+	}{
+		{"rate limited", http.StatusTooManyRequests, -32601},
+		{"service unavailable", http.StatusServiceUnavailable, -32601},
+		{"unauthorized", http.StatusUnauthorized, -32601},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := enumAgent(t, enumAbsent, enumAgentConfig{
+				ownerListStatus: tc.status, ownerListCode: tc.code,
+			})
+			defer srv.Close()
+
+			findings, err := runEnum(t, srv, enumOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v, want incomplete", findings, err)
+			}
+		})
 	}
 }
 

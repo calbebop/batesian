@@ -238,7 +238,7 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 				if page > 0 {
 					return nil, listIncomplete
 				}
-				if valid && hasError && code == jsonRPCMethodNotFound {
+				if resp.IsSuccess() && valid && hasError && code == jsonRPCMethodNotFound {
 					break
 				}
 				absentEverywhere = false
