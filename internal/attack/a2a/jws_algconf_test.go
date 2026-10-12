@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -189,5 +190,103 @@ func TestJWSAlgConfExecutor_NotFound(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings for 404, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestJWSAlgConfExecutor_MalformedSignaturesIncomplete(t *testing.T) {
+	validHeader := buildProtectedHeader(map[string]interface{}{"alg": "ES256"})
+	tests := []struct {
+		name       string
+		signatures interface{}
+	}{
+		{"non-array", "invalid"},
+		{"null-array", nil},
+		{"non-object-entry", []interface{}{"invalid"}},
+		{"invalid-protected-encoding", []interface{}{map[string]interface{}{"protected": "%%%", "signature": "c2ln"}}},
+		{"non-object-protected", []interface{}{map[string]interface{}{"protected": base64.RawURLEncoding.EncodeToString([]byte("null")), "signature": "c2ln"}}},
+		{"non-string-signature", []interface{}{map[string]interface{}{"protected": validHeader, "signature": 7}}},
+		{"invalid-signature-encoding", []interface{}{map[string]interface{}{"protected": validHeader, "signature": "%%%"}}},
+		{"non-object-header", []interface{}{map[string]interface{}{"protected": validHeader, "signature": "c2ln", "header": "invalid"}}},
+		{"non-string-alg", []interface{}{map[string]interface{}{"protected": buildProtectedHeader(map[string]interface{}{"alg": 7}), "signature": "c2ln"}}},
+		{"non-string-jku", []interface{}{map[string]interface{}{"protected": buildProtectedHeader(map[string]interface{}{"alg": "ES256", "jku": 7}), "signature": "c2ln"}}},
+		{"mixed-clean-malformed", []interface{}{
+			map[string]interface{}{"protected": validHeader, "signature": "c2ln"},
+			map[string]interface{}{"protected": "%%%", "signature": "c2ln"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/agent-card.json" {
+					writeJSON(w, map[string]interface{}{"name": "Test Agent", "signatures": tt.signatures})
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
+func TestJWSAlgConfExecutor_NullCardIncomplete(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			writeJSON(w, nil)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+func TestJWSAlgConfExecutor_NamelessCardIncomplete(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			writeJSON(w, map[string]interface{}{})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+func TestJWSAlgConfExecutor_RetainsFindingsWithMalformedEntry(t *testing.T) {
+	card := map[string]interface{}{
+		"name": "Test Agent",
+		"signatures": []interface{}{
+			map[string]interface{}{"protected": buildProtectedHeader(map[string]interface{}{"alg": "none"}), "signature": ""},
+			map[string]interface{}{"protected": "%%%", "signature": "c2ln"},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			writeJSON(w, card)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if err != nil || len(findings) == 0 {
+		t.Fatalf("expected the valid signature's finding, got %d findings, err=%v", len(findings), err)
+	}
+	if !strings.Contains(findings[0].Evidence, "uninspected signature entries: [1]") {
+		t.Errorf("missing partial-coverage evidence: %s", findings[0].Evidence)
 	}
 }
