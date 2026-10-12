@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -146,6 +147,11 @@ func cancelRESTTask(ctx context.Context, caller, owner *attack.HTTPClient, cance
 	if err != nil || resp == nil {
 		return cancelOther, fmt.Errorf("%w: REST cancellation at %s did not answer",
 			attack.ErrInconclusive, cancelURL)
+	}
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError {
+		return cancelOther, fmt.Errorf("%w: REST cancellation at %s returned HTTP %d",
+			attack.ErrInconclusive, cancelURL, resp.StatusCode)
 	}
 	if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
 		return cancelDenied, nil

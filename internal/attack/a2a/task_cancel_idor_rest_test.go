@@ -136,6 +136,21 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			anonymousError := caller == "" && (mode == "anon-408-auth-body" ||
+				mode == "anon-429-auth-body" || mode == "anon-503-auth-body")
+			crossError := caller == "b" && mode == "cross-503-auth-body"
+			if anonymousError || crossError {
+				status := http.StatusServiceUnavailable
+				switch mode {
+				case "anon-408-auth-body":
+					status = http.StatusRequestTimeout
+				case "anon-429-auth-body":
+					status = http.StatusTooManyRequests
+				}
+				w.WriteHeader(status)
+				writeJSON(w, map[string]interface{}{"error": map[string]string{"message": "unauthorized"}})
+				return
+			}
 			if caller == "" {
 				if mode != "anonymous-leak" && mode != "anon-mutate-403" && mode != "unpersisted" && mode != "anon-ambiguous" && mode != "no-cancel" {
 					w.WriteHeader(http.StatusUnauthorized)
@@ -196,6 +211,10 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 		{"non-owner response not persisted", "cross-unpersisted", false, false, "", true},
 		{"anonymous error", "anon-ambiguous", false, false, "", true},
 		{"cross-principal error", "cross-ambiguous", false, false, "", true},
+		{"anonymous timeout with auth body", "anon-408-auth-body", false, false, "", true},
+		{"anonymous rate limit with auth body", "anon-429-auth-body", false, false, "", true},
+		{"anonymous service error with auth body", "anon-503-auth-body", false, false, "", true},
+		{"cross-principal service error with auth body", "cross-503-auth-body", false, false, "", true},
 		{"owner cannot read", "owner-blind", false, false, "", true},
 		{"task already terminal", "terminal", false, false, "", true},
 		{"task creation absent", "no-send", false, false, "", true},
