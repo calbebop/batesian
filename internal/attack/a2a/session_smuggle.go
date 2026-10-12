@@ -25,6 +25,15 @@ const (
 	sessionHistoryPollInterval = 250 * time.Millisecond
 )
 
+type roleProbeOutcome uint8
+
+const (
+	roleProbeUnobserved roleProbeOutcome = iota
+	roleProbeAbsent
+	roleProbeRejected
+	roleProbeAccepted
+)
+
 // NewSessionSmuggleExecutor creates an executor for the agent-role-injection attack type.
 func init() {
 	attack.Register("agent-role-injection", func(rc attack.RuleContext) attack.Executor { return NewSessionSmuggleExecutor(rc) })
@@ -50,16 +59,38 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
 	marker := "batesian-roleinj-" + vars.RandID
+	requestID := "batesian-" + vars.RandID
 
 	reached := false
-	// Track the best rejection, distinguishing authorization refusals.
-	var obs setupObservation
+	normalized := false
+	var incomplete error
+	observe := func(ep, method string, resp *attack.Response, err error) roleProbeOutcome {
+		outcome := classifyRoleProbe(resp, err, requestID)
+		if resp != nil && resp.StatusCode != 404 && resp.StatusCode != 405 {
+			reached = true
+		}
+		if outcome == roleProbeUnobserved && incomplete == nil {
+			switch {
+			case err != nil:
+				incomplete = fmt.Errorf("%w: %s at %s received no answer: %v", attack.ErrInconclusive, method, ep, err)
+			case resp == nil:
+				incomplete = fmt.Errorf("%w: %s at %s returned no response", attack.ErrInconclusive, method, ep)
+			case resp.StatusCode == 401 || resp.StatusCode == 403:
+				incomplete = fmt.Errorf("%w: %s at %s was refused with HTTP %d %s",
+					attack.ErrInconclusive, method, ep, resp.StatusCode, attack.CredentialNote(client.PresentsCredential(ep)))
+			default:
+				incomplete = fmt.Errorf("%w: %s at %s returned HTTP %d without a verifiable role-policy outcome",
+					attack.ErrInconclusive, method, ep, resp.StatusCode)
+			}
+		}
+		return outcome
+	}
 	for _, ep := range endpoints {
 		// Try both the v1.0 PascalCase method (SDK >=1.0.0) and the legacy slash
 		// method (SDK v0.3 compat), each carrying the marker as the message text.
 		resp, err := client.POST(ctx, ep, a2aHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-" + vars.RandID,
+			"id":      requestID,
 			"method":  "SendMessage",
 			"params": map[string]interface{}{
 				"configuration": map[string]interface{}{"returnImmediately": true},
@@ -70,10 +101,11 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 				},
 			},
 		})
-		if err != nil || !resp.IsAccepted() {
+		outcome := observe(ep, "SendMessage", resp, err)
+		if outcome != roleProbeAccepted {
 			resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
 				"jsonrpc": "2.0",
-				"id":      "batesian-" + vars.RandID,
+				"id":      requestID,
 				"method":  "message/send",
 				"params": map[string]interface{}{
 					"message": map[string]interface{}{
@@ -83,19 +115,9 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 					},
 				},
 			})
+			outcome = observe(ep, "message/send", resp, err)
 		}
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != 404 {
-			reached = true
-		}
-
-		// Answered non-auth rejections are clean. An authorization refusal is
-		// inconclusive; accepted replies are evaluated below.
-		if !resp.IsAccepted() {
-			obs.observe(classifyTaskSetup("sending a message claiming the agent role", ep,
-				client.PresentsCredential(ep), resp))
+		if outcome != roleProbeAccepted {
 			continue
 		}
 
@@ -108,19 +130,56 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		if evalErr != nil {
 			return nil, evalErr
 		}
-		return nil, nil // accepted but neutralized (normalized to user role)
+		normalized = true
 	}
 
+	if incomplete != nil {
+		return nil, incomplete
+	}
 	if !reached {
 		return nil, attack.ErrInconclusive
 	}
 	// reached only records that something answered without a 404, which any
 	// JSON-RPC service satisfies. Confirm the target is an A2A agent before
 	// reporting this as a clean result.
-	if err := notTestableGiven(ctx, client, vars.BaseURL, endpointOK); err != nil {
-		return nil, err
+	if !normalized {
+		if err := notTestableGiven(ctx, client, vars.BaseURL, endpointOK); err != nil {
+			return nil, err
+		}
 	}
-	return nil, obs.errIfAuthRefused()
+	return nil, nil
+}
+
+func classifyRoleProbe(resp *attack.Response, err error, requestID string) roleProbeOutcome {
+	if err != nil || resp == nil {
+		return roleProbeUnobserved
+	}
+	if resp.StatusCode == 404 || resp.StatusCode == 405 {
+		return roleProbeAbsent
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 408 ||
+		resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		return roleProbeUnobserved
+	}
+	_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+	if !valid {
+		return roleProbeUnobserved
+	}
+	if !hasError {
+		if resp.IsSuccess() {
+			return roleProbeAccepted
+		}
+		return roleProbeUnobserved
+	}
+	switch code {
+	case jsonRPCMethodNotFound, a2aUnsupportedOperation:
+		return roleProbeAbsent
+	case -32602:
+		if strings.Contains(strings.ToLower(jsonRPCErrorMessage(resp.Body)), "role") {
+			return roleProbeRejected
+		}
+	}
+	return roleProbeUnobserved
 }
 
 // evaluateAcceptance reports only when task history contains the marker under a
