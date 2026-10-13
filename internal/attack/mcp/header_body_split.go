@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -31,9 +32,9 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	sessions, err := openSessions(ctx, client, vars.BaseURL)
-	if err != nil {
-		return nil, err
+	sessions, sessionErr := openSessions(ctx, client, vars.BaseURL)
+	if len(sessions) == 0 {
+		return nil, sessionErr
 	}
 
 	// Set when a wire turned out not to enforce Mcp-Method presence, carrying the
@@ -76,13 +77,16 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 		}
 	}
 	if blockedReason != "" {
-		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason)
+		return findings, errors.Join(sessionErr, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason))
 	}
 	if nameBlockedReason != "" {
-		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, nameBlockedReason)
+		return findings, errors.Join(sessionErr, fmt.Errorf("%w: %s", attack.ErrInconclusive, nameBlockedReason))
 	}
 	if len(findings) > 0 {
-		return findings, nil
+		return findings, sessionErr
+	}
+	if sessionErr != nil {
+		return nil, sessionErr
 	}
 	if anyTested {
 		return nil, nil

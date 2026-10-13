@@ -231,6 +231,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	}
 
 	var findings []attack.Finding
+	var incomplete error
 
 	// Step 4: can B read A's task by id? A correctly-scoped server answers -32602.
 	meta, readVerdict := e.getTask(ctx, client, sessB, princB, taskID)
@@ -242,12 +243,18 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	case probeAnswered:
 		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, true, auth))
 
-		// Escalate if B can also read the result. tasks/result blocks until the
-		// task is terminal, so poll tasks/get first and stay inside the budget.
+		// Poll before tasks/result, which blocks until the task is terminal.
 		if e.pollTerminal(ctx, client, sessB, princB, taskID) {
-			if content, ok := e.getResult(ctx, client, sessB, princB, taskID); ok {
+			switch content, verdict := e.getResult(ctx, client, sessB, princB, taskID); verdict {
+			case probeAnswered:
 				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, true, auth))
+			case probeInconclusive:
+				incomplete = fmt.Errorf("%w: principal %s's tasks/result at %s returned no verdict",
+					attack.ErrInconclusive, princB.name, sessB.Endpoint)
 			}
+		} else {
+			incomplete = fmt.Errorf("%w: task %s was not confirmed terminal, so tasks/result was not assessed",
+				attack.ErrInconclusive, taskID)
 		}
 	}
 
@@ -262,12 +269,12 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), true, auth))
 		}
 		if verdict == probeInconclusive {
-			return findings, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
-				attack.ErrInconclusive, princB.name, sessB.Endpoint)
+			return findings, errors.Join(incomplete, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
+				attack.ErrInconclusive, princB.name, sessB.Endpoint))
 		}
 	}
 
-	return findings, nil
+	return findings, incomplete
 }
 
 // initSession performs an initialize handshake as the given token, discovering
@@ -610,29 +617,42 @@ func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTP
 	return false
 }
 
-// getResult reads the underlying tool output for a terminal task, returning the
-// raw result payload when the server disclosed it.
-func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (string, bool) {
+// getResult distinguishes disclosure, explicit refusal, and an unjudged read.
+func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (string, probeVerdict) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      5,
 		"method":  "tasks/result",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	if err != nil || !resp.IsSuccess() {
-		return "", false
+	if resp != nil && (resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError) {
+		return "", probeInconclusive
+	}
+	verdict, _ := classifyProbe(resp, err, 5)
+	if verdict != probeAnswered {
+		return "", verdict
 	}
 	var body struct {
-		Result json.RawMessage        `json:"result"`
-		Error  map[string]interface{} `json:"error"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return "", false
+		return "", probeInconclusive
 	}
-	if body.Error != nil || len(body.Result) == 0 {
-		return "", false
+	if body.Error != nil {
+		if body.Error.Code == -32602 || attack.AuthFlavoredMessage(body.Error.Message) {
+			return "", probeRejected
+		}
+		return "", probeInconclusive
 	}
-	return string(body.Result), true
+	if len(body.Result) == 0 {
+		return "", probeInconclusive
+	}
+	return string(body.Result), probeAnswered
 }
 
 // requestorLabel describes what boundary was actually crossed, so the finding
