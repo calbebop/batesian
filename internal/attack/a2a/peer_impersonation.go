@@ -242,9 +242,14 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 	return nil, nil, "", incomplete, false
 }
 
-// methodAbsent reports whether a response is a -32601, which real SDKs return at
-// HTTP 200 for a method name the revision does not define.
+// methodAbsent accepts method-not-found only with an observed RPC response.
 func methodAbsent(resp *attack.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if !resp.IsSuccess() && resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+		return false
+	}
 	code, ok := jsonRPCErrorCode(resp.Body)
 	return ok && code == methodNotFound
 }

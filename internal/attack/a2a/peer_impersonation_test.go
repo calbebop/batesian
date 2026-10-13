@@ -356,13 +356,8 @@ func TestPeerImpersonation_NotA2AServer(t *testing.T) {
 	}
 }
 
-// v03IssuerAllowlistServer is issuerAllowlistServer speaking v0.3 only: it answers
-// the v1.0 method name with -32601 at HTTP 200, the way a real SDK does.
-//
-// The rule sent only v1.0 SendMessage, so both probes were refused by the
-// DISPATCHER, neither was accepted, no switch case matched, and a server that
-// trusts a published issuer and never verifies a signature was reported clean.
-func v03IssuerAllowlistServer(t *testing.T) *httptest.Server {
+// v03IssuerAllowlistServer answers the v1.0 method with -32601.
+func v03IssuerAllowlistServer(t *testing.T, methodStatus int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
@@ -375,8 +370,13 @@ func v03IssuerAllowlistServer(t *testing.T) *httptest.Server {
 		}
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &req)
+		if req.Method == "GetTask" || req.Method == "tasks/get" {
+			rpcErr(w, req.ID, -32001, "Task not found")
+			return
+		}
 		if req.Method != "message/send" {
 			// This revision does not define that name.
+			w.WriteHeader(methodStatus)
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req.ID,
 				"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
 			return
@@ -409,19 +409,30 @@ func v03IssuerAllowlistServer(t *testing.T) *httptest.Server {
 }
 
 func TestPeerImpersonation_V03AgentIsStillTested(t *testing.T) {
-	ts := v03IssuerAllowlistServer(t)
-	defer ts.Close()
+	for _, tt := range []struct {
+		name   string
+		status int
+	}{
+		{name: "RPC 200", status: http.StatusOK},
+		{name: "HTTP 400", status: http.StatusBadRequest},
+		{name: "HTTP 404", status: http.StatusNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := v03IssuerAllowlistServer(t, tt.status)
+			defer ts.Close()
 
-	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
-	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(findings) == 0 {
-		t.Fatal("expected a finding: the v0.3 agent accepts a randomly signed token bearing its published issuer")
-	}
-	if !strings.Contains(findings[0].Evidence, "v0.3 message/send") {
-		t.Errorf("evidence should name the revision that answered, got: %s", findings[0].Evidence)
+			exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+			findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) == 0 {
+				t.Fatal("expected a finding from the v0.3 agent")
+			}
+			if !strings.Contains(findings[0].Evidence, "v0.3 message/send") {
+				t.Errorf("evidence should name the revision that answered, got: %s", findings[0].Evidence)
+			}
+		})
 	}
 }
 
@@ -445,6 +456,46 @@ func TestPeerImpersonation_NoSendMethodIsInconclusive(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %d", len(findings))
+	}
+}
+
+func TestPeerImpersonation_ServiceErrorDoesNotProveMethodAbsent(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+	}{
+		{name: "timeout", status: http.StatusRequestTimeout},
+		{name: "rate limited", status: http.StatusTooManyRequests},
+		{name: "unavailable", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				switch req["method"] {
+				case "GetTask", "tasks/get":
+					rpcErr(w, req["id"], -32001, "Task not found")
+				case "SendMessage":
+					w.WriteHeader(tt.status)
+					rpcErr(w, req["id"], -32601, "Method not found")
+				case "message/send":
+					w.WriteHeader(http.StatusUnauthorized)
+				}
+			}))
+			defer ts.Close()
+
+			exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+			findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete after a v1 service failure, got findings=%v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), "v1.0 SendMessage forged token response") {
+				t.Fatalf("missing v1 service failure reason: %v", err)
+			}
+		})
 	}
 }
 
