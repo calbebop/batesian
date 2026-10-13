@@ -475,7 +475,8 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var call struct {
-					Method string `json:"method"`
+					Method string          `json:"method"`
+					ID     json.RawMessage `json:"id"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
 					t.Errorf("decode request: %v", err)
@@ -498,10 +499,10 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 				case "resources/list":
 					id := r.Header.Get("Mcp-Session-Id")
 					if id == "authenticated" || (id == "anonymous" && tc.anonResources) {
-						_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":11,"result":{"resources":[{"uri":"file:///private"}]}}`)
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resources":[{"uri":"file:///private"}]}}`, call.ID)
 						return
 					}
-					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":11,"result":{"resources":[]}}`)
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resources":[]}}`, call.ID)
 				case "notifications/initialized":
 					w.WriteHeader(http.StatusAccepted)
 				default:
@@ -620,18 +621,18 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 	for _, tc := range []struct {
 		capability string
 		method     string
-		id         int
 		firstPage  string
 	}{
-		{"tools", "tools/list", 10, `{"tools":[{"name":"first"}],"nextCursor":"more"}`},
-		{"resources", "resources/list", 11, `{"resources":[{"uri":"file:///first"}],"nextCursor":"more"}`},
-		{"prompts", "prompts/list", 12, `{"prompts":[{"name":"first"}],"nextCursor":"more"}`},
+		{"tools", "tools/list", `{"tools":[{"name":"first"}],"nextCursor":"more"}`},
+		{"resources", "resources/list", `{"resources":[{"uri":"file:///first"}],"nextCursor":"more"}`},
+		{"prompts", "prompts/list", `{"prompts":[{"name":"first"}],"nextCursor":"more"}`},
 	} {
 		t.Run(tc.capability, func(t *testing.T) {
 			listCalls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
-					Method string `json:"method"`
+					Method string          `json:"method"`
+					ID     json.RawMessage `json:"id"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Errorf("decode request: %v", err)
@@ -648,9 +649,9 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 				case tc.method:
 					listCalls++
 					if listCalls == 1 {
-						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, tc.id, tc.firstPage)
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, tc.firstPage)
 					} else {
-						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32602,"message":"Invalid cursor"}}`, tc.id)
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"Invalid cursor"}}`, req.ID)
 					}
 				default:
 					http.NotFound(w, r)

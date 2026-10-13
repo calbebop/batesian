@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,6 +32,58 @@ var listCases = []struct {
 	}},
 }
 
+func TestLegacyListIDsStayUniqueAcrossMethods(t *testing.T) {
+	var ids []int
+	calls := make(map[string]int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		ids = append(ids, request.ID)
+		calls[request.Method]++
+		result := map[string]interface{}{}
+		switch request.Method {
+		case "tools/list":
+			result["tools"] = []map[string]string{{"name": "tool"}}
+		case "resources/list":
+			result["resources"] = []map[string]string{{"uri": "file:///resource"}}
+		case "prompts/list":
+			result["prompts"] = []map[string]string{{"name": "prompt"}}
+		default:
+			t.Errorf("unexpected method %q", request.Method)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if calls[request.Method] == 1 {
+			result["nextCursor"] = "next"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": request.ID, "result": result,
+		})
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{Endpoint: srv.URL}
+	for _, tc := range listCases {
+		count, err := tc.call(client, session)
+		if err != nil || count != 2 {
+			t.Fatalf("%s returned %d items, error %v", tc.method, count, err)
+		}
+	}
+	if !slices.Equal(ids, []int{2, 3, 4, 5, 6, 7}) {
+		t.Errorf("legacy request IDs = %v", ids)
+	}
+}
+
 func TestListMethodsFollowEmptyCursor(t *testing.T) {
 	for _, tc := range listCases {
 		for _, modern := range []bool{false, true} {
@@ -43,6 +96,7 @@ func TestListMethodsFollowEmptyCursor(t *testing.T) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var req struct {
 						Method string                 `json:"method"`
+						ID     int                    `json:"id"`
 						Params map[string]interface{} `json:"params"`
 					}
 					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -57,6 +111,13 @@ func TestListMethodsFollowEmptyCursor(t *testing.T) {
 					if calls == 0 && present || calls == 1 && (!present || cursor != "") {
 						t.Errorf("page %d cursor = %v, present = %t", calls+1, cursor, present)
 					}
+					wantID := tc.id
+					if !modern {
+						wantID = calls + 2
+					}
+					if req.ID != wantID {
+						t.Errorf("page %d ID = %d, want %d", calls+1, req.ID, wantID)
+					}
 					calls++
 					result := map[string]interface{}{tc.key: []interface{}{tc.item}}
 					if modern {
@@ -68,7 +129,7 @@ func TestListMethodsFollowEmptyCursor(t *testing.T) {
 						result["nextCursor"] = nil
 					}
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"jsonrpc": "2.0", "id": tc.id, "result": result,
+						"jsonrpc": "2.0", "id": req.ID, "result": result,
 					})
 				}))
 				defer srv.Close()

@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -94,6 +96,7 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			type request struct {
 				method  string
+				id      int
 				version string
 				session string
 			}
@@ -101,6 +104,7 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body struct {
 					Method string `json:"method"`
+					ID     int    `json:"id"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode request: %v", err)
@@ -108,7 +112,7 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 					return
 				}
 				requests = append(requests, request{
-					method: body.Method, version: r.Header.Get("MCP-Protocol-Version"),
+					method: body.Method, id: body.ID, version: r.Header.Get("MCP-Protocol-Version"),
 					session: r.Header.Get("Mcp-Session-Id"),
 				})
 				switch body.Method {
@@ -130,10 +134,9 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 				case "notifications/initialized":
 					w.WriteHeader(http.StatusAccepted)
 				case "tools/list", "resources/list", "prompts/list":
-					id := map[string]int{"tools/list": 10, "resources/list": 11, "prompts/list": 12}[body.Method]
 					key := map[string]string{"tools/list": "tools", "resources/list": "resources", "prompts/list": "prompts"}[body.Method]
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{key: []interface{}{}},
+						"jsonrpc": "2.0", "id": body.ID, "result": map[string]interface{}{key: []interface{}{}},
 					})
 				default:
 					t.Errorf("unexpected method %q", body.Method)
@@ -165,6 +168,9 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 			}
 			if requests[0].method != "initialize" || requests[0].version != "" || requests[0].session != "" {
 				t.Errorf("initialize carried session headers: %+v", requests[0])
+			}
+			if requests[0].id != 1 || requests[2].id != 2 || requests[3].id != 3 || requests[4].id != 4 {
+				t.Errorf("legacy request IDs = %+v", requests)
 			}
 			for _, got := range requests[1:] {
 				if got.version != tc.version || got.session != tc.sessionID {
@@ -241,6 +247,7 @@ func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body struct {
 					Method string                 `json:"method"`
+					ID     json.RawMessage        `json:"id"`
 					Params map[string]interface{} `json:"params"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -326,7 +333,7 @@ func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 						}
 					}
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"jsonrpc": "2.0", "id": 10, "result": result,
+						"jsonrpc": "2.0", "id": body.ID, "result": result,
 					})
 				default:
 					t.Errorf("unexpected method %q", body.Method)
@@ -613,5 +620,120 @@ func TestInitializedNotificationTransportFailure(t *testing.T) {
 	defer mu.Unlock()
 	if !slices.Equal(methods, []string{"server/discover", "initialize", "notifications/initialized"}) {
 		t.Errorf("methods = %v", methods)
+	}
+}
+
+func TestConnectMatchesSSEResponsesByID(t *testing.T) {
+	for _, modern := range []bool{false, true} {
+		name := "legacy"
+		if modern {
+			name = "modern"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if request.Method == "server/discover" && !modern {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if request.Method == "notifications/initialized" {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				send := func(id interface{}, result map[string]interface{}) {
+					data, err := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+					if err != nil {
+						t.Errorf("marshal response: %v", err)
+						return
+					}
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				}
+				switch request.Method {
+				case "server/discover":
+					result := map[string]interface{}{
+						"resultType": "complete", "supportedVersions": []string{modernVersion},
+						"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+					}
+					send(99, result)
+					send(request.ID, result)
+				case "initialize":
+					result := map[string]interface{}{
+						"protocolVersion": "2025-11-25",
+						"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+						"serverInfo":      map[string]interface{}{"name": "fixture", "version": "1"},
+					}
+					send(99, result)
+					send(request.ID, result)
+				case "tools/list":
+					bad := map[string]interface{}{"tools": []map[string]string{{"name": "unrelated"}}}
+					good := map[string]interface{}{"tools": []map[string]string{{"name": "matched"}}}
+					if modern {
+						bad["resultType"] = "complete"
+						good["resultType"] = "complete"
+					}
+					send(99, bad)
+					_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n")
+					send(request.ID, good)
+				default:
+					t.Errorf("unexpected request %q", request.Method)
+				}
+			}))
+			defer srv.Close()
+			client, err := NewClient(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := client.Connect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session.Modern != modern {
+				t.Fatalf("selected modern=%t, want %t", session.Modern, modern)
+			}
+			tools, err := client.ListTools(context.Background(), session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tools) != 1 || tools[0].Name != "matched" {
+				t.Errorf("tools = %+v, want matched", tools)
+			}
+		})
+	}
+}
+
+func TestReadResponseBodyRejectsUnmatchedSSE(t *testing.T) {
+	resp := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(
+		"data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n"))}
+	resp.Header.Set("Content-Type", "text/event-stream")
+	if _, err := readResponseBody(resp, 10); err == nil {
+		t.Fatal("accepted an unrelated SSE response")
+	}
+}
+
+func TestResponseIDMatchesPreservesType(t *testing.T) {
+	for _, tc := range []struct {
+		body     string
+		expected interface{}
+		want     bool
+	}{
+		{`{"id":2}`, 2, true},
+		{`{"id":"2"}`, 2, false},
+		{`{"id":2.0}`, 2, false},
+		{`{"id":"batesian-probe-discover"}`, "batesian-probe-discover", true},
+		{`{"id":2}`, "2", false},
+		{`{"id":null}`, 2, false},
+	} {
+		if got := responseIDMatches([]byte(tc.body), tc.expected); got != tc.want {
+			t.Errorf("responseIDMatches(%s, %v) = %t, want %t", tc.body, tc.expected, got, tc.want)
+		}
 	}
 }
