@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -36,7 +37,9 @@ func TestScanJSONMetadataAndOutcomes(t *testing.T) {
 		}}},
 		{Rule: loaded[2], Skipped: true, SkipMsg: "missing prerequisite"},
 		{Rule: loaded[3], Err: errors.New("probe failed")},
-		{Rule: loaded[4]},
+		{Rule: loaded[4], TargetObjects: []attack.TargetObject{{
+			Kind: "oauth_client", Creation: "confirmed", ID: "client-1", Cleanup: attack.CleanupCompleted,
+		}}},
 	}
 	doc, err := buildScanJSON(scanJSONInput{
 		Target: "https://target.example/mcp", Reported: engine.Coalesce(executed),
@@ -65,9 +68,9 @@ func TestScanJSONMetadataAndOutcomes(t *testing.T) {
 		{RuleID: loaded[1].ID, Status: "findings", FindingCount: 1},
 		{RuleID: loaded[2].ID, Status: "skipped", Reason: "missing prerequisite"},
 		{RuleID: loaded[3].ID, Status: "error", Error: "probe failed"},
-		{RuleID: loaded[4].ID, Status: "no_findings"},
+		{RuleID: loaded[4].ID, Status: "no_findings", TargetObjects: executed[4].TargetObjects},
 	} {
-		if outcomes[i] != want {
+		if !reflect.DeepEqual(outcomes[i], want) {
 			t.Errorf("outcome %d = %+v, want %+v", i, outcomes[i], want)
 		}
 	}

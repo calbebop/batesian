@@ -33,7 +33,7 @@ import (
 // whether it left anything behind, and if so what to look for.
 type dcrCleanup struct {
 	clientName string
-	deleted    bool
+	status     attack.CleanupStatus
 	// reason is why the client could not be removed, empty when it was.
 	reason string
 }
@@ -45,11 +45,33 @@ func (c dcrCleanup) evidenceLine() string {
 	if c.clientName == "" {
 		return ""
 	}
-	if c.deleted {
+	switch c.status {
+	case attack.CleanupCompleted:
 		return fmt.Sprintf("client registered by this probe (%s): deleted afterwards via RFC 7592\n", c.clientName)
+	case attack.CleanupAttempted:
+		return fmt.Sprintf("client registered by this probe (%s): cleanup attempted but not confirmed, %s; "+
+			"verify its status on the target\n", c.clientName, c.reason)
+	case attack.CleanupNotAttempted:
+		return fmt.Sprintf("client registered by this probe (%s): cleanup not attempted, %s; "+
+			"verify its status on the target\n", c.clientName, c.reason)
 	}
-	return fmt.Sprintf("client registered by this probe (%s): LEFT REGISTERED on the target, %s; "+
-		"remove it by hand\n", c.clientName, c.reason)
+	return fmt.Sprintf("client registered by this probe (%s): cleanup unavailable, %s; "+
+		"the client may remain on the target\n", c.clientName, c.reason)
+}
+
+func recordDCRState(state *attack.TargetState, endpoint, clientName string, reg *attack.Response, cleanup dcrCleanup) {
+	if reg == nil || (reg.StatusCode != http.StatusOK && reg.StatusCode != http.StatusCreated) {
+		return
+	}
+	state.Record(attack.TargetObject{
+		Kind:          "oauth_client",
+		Creation:      "accepted",
+		ID:            reg.JSONField("client_id"),
+		Name:          clientName,
+		Endpoint:      endpoint,
+		Cleanup:       cleanup.status,
+		CleanupDetail: cleanup.reason,
+	})
 }
 
 // deregisterDCRClient removes a client this scan registered, following RFC 7592.
@@ -66,9 +88,13 @@ func (c dcrCleanup) evidenceLine() string {
 // itself just issued, not the operator's credential.
 func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 	registrationEndpoint, clientName string, reg *attack.Response) dcrCleanup {
-	out := dcrCleanup{clientName: clientName}
+	out := dcrCleanup{clientName: clientName, status: attack.CleanupUnavailable}
 	if reg == nil {
 		out.reason = "the registration produced no response to read a management URI from"
+		return out
+	}
+	if reg.StatusCode != http.StatusOK && reg.StatusCode != http.StatusCreated {
+		out.reason = "the registration was not confirmed"
 		return out
 	}
 
@@ -96,6 +122,7 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 		return out
 	}
 
+	out.status = attack.CleanupAttempted
 	resp, err := client.DELETEOAuth(ctx, clientURI, map[string]string{
 		"Authorization": "Bearer " + accessToken,
 	})
@@ -103,10 +130,12 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 		out.reason = "the delete request failed: " + err.Error()
 		return out
 	}
-	// RFC 7592 section 2.3 specifies 204 on success. Accept any 2xx: implementations
-	// answer 200 with a body, and 202 when deletion is queued.
-	if resp.IsSuccess() || resp.StatusCode == http.StatusNoContent {
-		out.deleted = true
+	if resp.StatusCode == http.StatusNoContent {
+		out.status = attack.CleanupCompleted
+		return out
+	}
+	if resp.IsSuccess() {
+		out.reason = fmt.Sprintf("the delete returned HTTP %d rather than RFC 7592's 204", resp.StatusCode)
 		return out
 	}
 	out.reason = fmt.Sprintf("the delete was refused with HTTP %d", resp.StatusCode)

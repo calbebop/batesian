@@ -132,16 +132,23 @@ func TestMetadataSSRF_NoCallbackIsIncomplete(t *testing.T) {
 func TestMetadataSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 	ts := metadataSSRFServer("nofetch")
 	defer ts.Close()
+	state := &attack.TargetState{}
 
 	findings, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{
 		TimeoutSeconds: 5,
 		OOBListenerURL: "http://oob.batesian.invalid",
+		TargetState:    state,
 	})
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("external callbacks need manual verification, got findings=%+v err=%v", findings, err)
 	}
 	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
+	}
+	objects := state.Snapshot()
+	if len(objects) != 1 || objects[0].Cleanup != attack.CleanupNotAttempted ||
+		!strings.Contains(findings[0].Evidence, "cleanup not attempted") {
+		t.Errorf("external OOB client disposition was hidden: objects=%+v evidence=%s", objects, findings[0].Evidence)
 	}
 }
 

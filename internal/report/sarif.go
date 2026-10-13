@@ -51,10 +51,16 @@ type sarifInvocation struct {
 }
 
 type sarifCoverage struct {
-	RulesSelected  int `json:"rulesSelected"`
-	RulesCompleted int `json:"rulesCompleted"`
-	RulesSkipped   int `json:"rulesSkipped"`
-	RulesErrored   int `json:"rulesErrored"`
+	RulesSelected  int                 `json:"rulesSelected"`
+	RulesCompleted int                 `json:"rulesCompleted"`
+	RulesSkipped   int                 `json:"rulesSkipped"`
+	RulesErrored   int                 `json:"rulesErrored"`
+	TargetObjects  []sarifTargetObject `json:"targetObjects,omitempty"`
+}
+
+type sarifTargetObject struct {
+	RuleID string `json:"ruleId"`
+	attackpkg.TargetObject
 }
 
 type sarifNotification struct {
@@ -231,6 +237,10 @@ func buildSARIFInvocation(results []engine.RunResult) sarifInvocation {
 	invocation.Properties.RulesSelected = len(results)
 
 	for _, result := range results {
+		for _, object := range result.TargetObjects {
+			invocation.Properties.TargetObjects = append(invocation.Properties.TargetObjects,
+				sarifTargetObject{RuleID: result.Rule.ID, TargetObject: object})
+		}
 		switch {
 		case result.Err != nil:
 			invocation.Properties.RulesErrored++

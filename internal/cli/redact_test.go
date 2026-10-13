@@ -32,12 +32,19 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 			TargetURL: endpoint,
 		}},
 		Err: errors.New("request failed: " + endpoint),
+		TargetObjects: []attack.TargetObject{{
+			Kind: "oauth_client", Creation: "confirmed", ID: "client-1", Endpoint: endpoint,
+			Cleanup: attack.CleanupAttempted, CleanupDetail: "DELETE " + endpoint,
+		}},
 	}}
 
 	r := newOutputRedactor(target)
 	safe := r.results(result)
 	if result[0].Findings[0].TargetURL != endpoint {
 		t.Fatal("redaction changed the scan result")
+	}
+	if got := r.ruleOutcomes(result)[0].TargetObjects[0].Endpoint; strings.Contains(got, "password") {
+		t.Fatalf("rule outcome exposed target-side endpoint: %s", got)
 	}
 
 	var table, sarif bytes.Buffer

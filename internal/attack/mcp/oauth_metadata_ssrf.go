@@ -106,6 +106,9 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 
 	if listener == nil {
 		// External OOB: we cannot observe the callback ourselves.
+		cleanup := dcrCleanup{clientName: clientName, status: attack.CleanupNotAttempted,
+			reason: "the external OOB callback may arrive after this scan"}
+		recordDCRState(opts.TargetState, registrationEndpoint, clientName, resp, cleanup)
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -115,7 +118,7 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 			Description: fmt.Sprintf("The registration endpoint at %s accepted a client registration whose URL "+
 				"metadata fields pointed at %s. Check your OOB server for inbound requests to the marker paths to "+
 				"confirm a metadata-fetch SSRF.", registrationEndpoint, listenerURL),
-			Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v", registrationEndpoint, listenerURL, urlMetadataFields),
+			Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v\n%s", registrationEndpoint, listenerURL, urlMetadataFields, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   registrationEndpoint,
 		}}, nil
@@ -128,6 +131,7 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	// listening for, trading a real finding for a tidier target.
 	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "batesian-"+vars.RandID)
 	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, resp)
+	recordDCRState(opts.TargetState, registrationEndpoint, clientName, resp, cleanup)
 	if !received {
 		return nil, fmt.Errorf("%w: no metadata callback observed; the listener may be unreachable or the fetch delayed",
 			attack.ErrInconclusive)
