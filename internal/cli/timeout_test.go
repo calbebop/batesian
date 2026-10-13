@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,8 +92,8 @@ func TestScan_InvalidTimeoutStopsBeforeNetwork(t *testing.T) {
 
 	err := runScan(scanCmd, nil)
 	const want = "--timeout must be greater than zero"
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("error = %v, want %q and config path", err, want)
 	}
 	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
 		t.Fatalf("network calls before timeout validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())

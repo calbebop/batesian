@@ -362,8 +362,8 @@ func TestScan_DryRunRejectsIncompleteOAuth(t *testing.T) {
 
 	err := runScan(scanCmd, nil)
 	const want = "OAuth token acquisition requires --client-id and --token-url"
-	if err == nil || err.Error() != want {
-		t.Fatalf("error = %v, want %q", err, want)
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("error = %v, want %q and config path", err, want)
 	}
 }
 
@@ -899,8 +899,8 @@ func TestScan_InvalidOutputStopsBeforeOAuth(t *testing.T) {
 	setScanFlag(t, "dry-run", "false")
 
 	err := runScan(scanCmd, nil)
-	if err == nil || !strings.Contains(err.Error(), `unknown output format "jsno"`) {
-		t.Fatalf("expected output format error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `unknown output format "jsno"`) || !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("expected output format error with config path, got %v", err)
 	}
 	if oauthConnections.Load() != 0 || targetHits.Load() != 0 {
 		t.Fatalf("network calls before output validation: oauth=%d target=%d", oauthConnections.Load(), targetHits.Load())
@@ -928,8 +928,8 @@ func TestScan_InvalidOutputStopsBeforePKCE(t *testing.T) {
 	setScanFlag(t, "dry-run", "false")
 
 	err := runScan(scanCmd, nil)
-	if err == nil || !strings.Contains(err.Error(), `unknown output format "xml"`) {
-		t.Fatalf("expected output format error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `unknown output format "xml"`) || !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("expected output format error with config path, got %v", err)
 	}
 }
 
