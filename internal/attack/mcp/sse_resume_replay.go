@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -80,9 +81,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil, true, "the server issued no session ID for the replay comparison"
 	}
 
-	// A's checkpoint: open A's stream and capture an id-bearing event plus the
-	// data of the events that follow it (the session-A-specific markers a resume
-	// from the checkpoint would replay).
+	// Capture a checkpoint and a later event that names session A.
 	aEvents, aStatus, aErr := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
 	if aStatus == http.StatusNotFound || aStatus == http.StatusMethodNotAllowed ||
 		aStatus == http.StatusNotAcceptable || aStatus == http.StatusNotImplemented {
@@ -91,9 +90,9 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	if (aErr != nil && !errors.Is(aErr, context.DeadlineExceeded)) || aStatus < 200 || aStatus >= 300 {
 		return nil, true, "session A SSE stream could not be read"
 	}
-	checkpointID, markers := resumeCheckpoint(aEvents)
+	checkpointID, markers := resumeCheckpoint(aEvents, sessionA.SessionID)
 	if checkpointID == "" || len(markers) == 0 {
-		return nil, true, "session A stream supplied no checkpoint and later event to compare"
+		return nil, true, "session A stream supplied no checkpoint and later session-labeled event to compare"
 	}
 
 	sessionB, ok, _, setupReason := e.initialize(ctx, client, ep, tokenB)
@@ -109,25 +108,22 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
 	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
 	for _, ev := range bEvents {
-		if markers[ev.data] {
-			marker := ev.data
+		if marker, ok := markers[ev.id]; ok && marker == ev.data {
 			return []attack.Finding{{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "high",
 				Confidence: attack.ConfirmedExploit,
-				Title:      "MCP SSE resumption replays another session's events (cross-session redelivery)",
+				Title:      "MCP SSE resumption delivered a session-A-labeled event to session B",
 				Description: fmt.Sprintf(
-					"At %s, session B resumed an SSE stream with Last-Event-ID=%q and received an event "+
-						"that belongs to session A (data marker %q). The server's resumption buffer is not "+
-						"scoped to the originating session, so a client can replay another session's "+
-						"messages - leaking conversation data, tool outputs, or notifications across "+
-						"sessions. The spec requires that resumption MUST NOT replay a different stream's "+
-						"messages.", ep, checkpointID, marker),
+					"At %s, session B resumed with Last-Event-ID=%q and received event %q with "+
+						"the same data observed on session A's stream. The event data names session A's "+
+						"server-issued ID %q. This is evidence of cross-session redelivery on the "+
+						"legacy MCP SSE transport.", ep, checkpointID, ev.id, sessionA.SessionID),
 				Evidence: fmt.Sprintf(
 					"endpoint: %s\nsession A: %s (checkpoint event id %s)\nsession B: %s\n"+
-						"B resumed Last-Event-ID: %s\nA's event marker delivered to B: %s",
-					ep, sessionA.SessionID, checkpointID, sessionB.SessionID, checkpointID, marker),
+						"B resumed Last-Event-ID: %s\nmatching event id: %s\nmatching event data: %s",
+					ep, sessionA.SessionID, checkpointID, sessionB.SessionID, checkpointID, ev.id, marker),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
 			}}, true, ""
@@ -259,15 +255,9 @@ func rawSSEClient(opts attack.Options) *http.Client {
 	}
 }
 
-// resumeCheckpoint selects the first id-bearing event as the resume cursor and
-// collects the data of every later event as session-specific markers. Resuming
-// from the cursor's exact id asks the server for the events after it, so a
-// vulnerable server replays those markers into a different session. MCP event
-// ids are opaque (spec: Streamable HTTP resumability), so the cursor id is used
-// verbatim with no arithmetic. It returns an empty id when no event carries an
-// id, or no markers when nothing follows the checkpoint (nothing to replay).
-func resumeCheckpoint(events []sseEvent) (checkpointID string, markers map[string]bool) {
-	markers = map[string]bool{}
+// resumeCheckpoint keeps later id-bearing events that name session A.
+func resumeCheckpoint(events []sseEvent, sessionID string) (checkpointID string, markers map[string]string) {
+	markers = map[string]string{}
 	idx := -1
 	for i, ev := range events {
 		if ev.id != "" {
@@ -279,9 +269,41 @@ func resumeCheckpoint(events []sseEvent) (checkpointID string, markers map[strin
 		return "", markers
 	}
 	for _, ev := range events[idx+1:] {
-		if ev.data != "" {
-			markers[ev.data] = true
+		if ev.id != "" && eventNamesSession(ev.data, sessionID) {
+			markers[ev.id] = ev.data
 		}
 	}
 	return events[idx].id, markers
+}
+
+func eventNamesSession(data, sessionID string) bool {
+	var value interface{}
+	if json.Unmarshal([]byte(data), &value) != nil {
+		return false
+	}
+	var matches func(interface{}) bool
+	matches = func(v interface{}) bool {
+		switch item := v.(type) {
+		case []interface{}:
+			for _, child := range item {
+				if matches(child) {
+					return true
+				}
+			}
+		case map[string]interface{}:
+			for key, child := range item {
+				field := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
+				if field == "sid" || field == "session" || field == "sessionid" || field == "mcpsessionid" {
+					if id, ok := child.(string); ok && id == sessionID {
+						return true
+					}
+				}
+				if matches(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return matches(value)
 }

@@ -12,21 +12,11 @@ info:
     The MCP specification's Security section requires implementations to control
     log access.
 
-    logging/setLevel is a state-changing operation. When it is reachable without
-    authentication, an anonymous caller can:
-    - flood logs at the debug level (driving cost/DoS on the logging pipeline and
-      burying attack traces in noise), or
-    - suppress logging at the emergency level (hiding malicious activity from
-      operators).
-
     The rule gates on the advertised logging capability, then sends a single
-    logging/setLevel request with a deliberately invalid level string. A -32602
-    (invalid params) protocol error, or any result envelope, proves the handler
-    was dispatched without authentication. A server that enforces authentication
-    rejects the request with HTTP 401/403 or an auth error before dispatch.
-
-    The probe never changes the server's real log verbosity: the invalid level is
-    rejected by a compliant server (nothing is set).
+    logging/setLevel request with a deliberately invalid level string. A result
+    envelope confirms an anonymous response from the method. A non-authentication
+    JSON-RPC error is only an indicator: validation middleware may have generated
+    it before dispatch. The probe does not test a valid log-level change.
 
     Currency: logging/setLevel is normative in revisions 2024-11-05 through
     2025-11-25. The 2026-07-28 revision removes the method outright (log level is

@@ -71,9 +71,7 @@ func FuzzServerSupports(f *testing.F) {
 	})
 }
 
-// FuzzDispatchClassifiers covers the three "was this dispatched without auth"
-// classifiers. They decide whether a confirmed finding is reported, so they must
-// never treat an auth rejection or an undecodable body as a successful dispatch.
+// FuzzDispatchClassifiers checks that classified responses carry evidence.
 func FuzzDispatchClassifiers(f *testing.F) {
 	f.Add([]byte(`{"error":{"code":-32602,"message":"Invalid params"}}`))
 	f.Add([]byte(`{"error":{"code":-32603,"message":"invalid_value"}}`))
@@ -91,14 +89,13 @@ func FuzzDispatchClassifiers(f *testing.F) {
 		if err := json.Unmarshal(data, &body); err != nil {
 			return
 		}
-		for _, fn := range []func(map[string]interface{}) (bool, string){
+		for _, fn := range []func(map[string]interface{}) (dispatchSignal, string){
 			completionDispatchReachable,
 			setLevelDispatchReachable,
 		} {
-			reachable, reason := fn(body)
-			// A positive verdict must always carry evidence for the report.
-			if reachable && reason == "" {
-				t.Fatalf("classifier reported reachable with no evidence for %q", data)
+			signal, reason := fn(body)
+			if signal != dispatchNone && reason == "" {
+				t.Fatalf("classifier reported a signal with no evidence for %q", data)
 			}
 		}
 		// Value extraction and its evidence cap must hold for any shape.

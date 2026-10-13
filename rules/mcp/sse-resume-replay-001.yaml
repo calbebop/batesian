@@ -12,21 +12,17 @@ info:
     session's data into another (cross-session redelivery, CWE-488), and is also a
     replay vector (CWE-294).
 
-    The check needs two distinct, server-minted sessions and only confirms a real
-    cross-session leak:
+    The check needs two distinct, server-minted sessions and session-specific
+    evidence:
 
       1. Initialize session A; open A's SSE stream (no Last-Event-ID) and capture
-         an id-bearing checkpoint event plus the data of a later session-A event
-         as a marker. If the server does not mint distinct session ids, or emits
-         no id-bearing event with a later event to replay, the rule cannot test
-         (no finding).
+         an id-bearing checkpoint event plus a later event whose session field
+         equals A's server-issued session ID. Without both, the result is
+         inconclusive.
       2. Initialize session B; confirm B's session id differs from A's.
-      3. As session B, resume with A's checkpoint id (Last-Event-ID set to A's
-         exact event id; the spec treats event ids as opaque, so no arithmetic is
-         applied). A CONFIRMED finding is raised only when B's resumed stream
-         delivers A's data marker - i.e., the server replayed session A's event to
-         session B. A server that replays only the requester's own events, or that
-         ignores Last-Event-ID, produces no finding.
+      3. As session B, resume with A's checkpoint ID. A confirmed finding requires
+         the same later event ID and data in B's resumed stream. Shared broadcasts
+         without a session-specific marker do not establish a cross-session leak.
 
     Currency: GET-stream resumption via Last-Event-ID is normative in revisions
     2025-03-26 through 2025-11-25; the 2026-07-28 revision removes the GET stream

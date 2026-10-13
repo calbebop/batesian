@@ -409,23 +409,20 @@ func (e *TaskEnumerationExecutor) finding(endpoint string, a, b attack.Principal
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "A2A ListTasks enumerates another principal's tasks (broken authorization scoping)",
+		Severity:   "medium",
+		Confidence: attack.RiskIndicator,
+		Title:      "A2A ListTasks returned a task created with another credential",
 		Description: fmt.Sprintf(
-			"ListTasks at %s returned principal %s's task to principal %s, who has no claim to it. "+
-				"The specification requires the opposite twice: section 3.1.4 states that "+
-				"implementations MUST implement appropriate authorization scoping so clients can only "+
-				"access authorized tasks, and section 13.1 that servers MUST return only tasks visible "+
-				"to the authenticated client. Enumeration is worse than reading a task by id, because "+
-				"it needs no prior knowledge: one valid credential yields every task identifier on the "+
-				"server, and those identifiers are what the per-task read, cancel and push-config "+
-				"surfaces take as input.", endpoint, a.Name, b.Name),
+			"ListTasks at %s returned a task created with principal %s's credential to principal %s. "+
+				"The anonymous listing did not return it. This may expose task identifiers across an "+
+				"intended authorization boundary, but different credentials alone do not establish "+
+				"different task visibility. Check whether %s is authorized to see this task under the "+
+				"agent's access policy.", endpoint, a.Name, b.Name, b.Name),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntask owner: %s (tenant %s)\nenumerating principal: %s (tenant %s)\n"+
+			"endpoint: %s\ntask creator: %s (configured tenant %s)\nlisting principal: %s (configured tenant %s)\n"+
 				"task created by %s: %s\ntask ids returned to %s: %v\n"+
-				"unauthenticated ListTasks: did not return the task, so authorization is enforced "+
-				"and the failure is scoping between valid principals",
+				"unauthenticated ListTasks: did not return the task\n"+
+				"authorization policy for the two principals: not verified",
 			endpoint, a.Name, a.Tenant, b.Name, b.Tenant, a.Name, taskID, b.Name, otherList),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,

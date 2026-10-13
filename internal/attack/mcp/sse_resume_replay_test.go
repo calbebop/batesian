@@ -155,6 +155,15 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 				eventCounter++
 				eid := fmt.Sprintf("evt-%s-%d", sid, eventCounter)
 				data := fmt.Sprintf(`{"sid":%q,"secret":"S-%s-%d"}`, sid, sid, eventCounter)
+				if mode == "broadcast" {
+					data = `{"notification":"shared"}`
+				}
+				if mode == "substring" {
+					data = `{"notification":"shared sess-1 broadcast"}`
+				}
+				if mode == "incidental" {
+					data = `{"notification":"sess-1"}`
+				}
 				entry := sseLogEntry{eid: eid, sid: sid, data: data}
 				log = append(log, entry)
 				fresh = append(fresh, entry)
@@ -213,8 +222,23 @@ func TestResume_Vulnerable(t *testing.T) {
 	if findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
-	if !strings.Contains(findings[0].Title, "cross-session") {
-		t.Errorf("expected cross-session in title, got %q", findings[0].Title)
+	if !strings.Contains(findings[0].Evidence, "matching event id:") {
+		t.Errorf("expected matching event id in evidence, got %q", findings[0].Evidence)
+	}
+}
+
+func TestResume_SharedBroadcastIsNotSessionEvidence(t *testing.T) {
+	for _, mode := range []string{"broadcast", "substring", "incidental"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := resumeServer(t, mode)
+			defer ts.Close()
+
+			findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("shared event is not session-specific evidence: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 

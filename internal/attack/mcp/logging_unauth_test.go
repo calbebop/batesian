@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -71,6 +72,8 @@ func loggingServer(mode string) *httptest.Server {
 			case "reachable-internal":
 				// server-everything surfaces an invalid level as -32603 (internal).
 				rpcErr(-32603, "invalid_value: unknown log level")
+			case "result":
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{}})
 			default:
 				// The scanner only ever sends an invalid level; a compliant server
 				// answers -32602 and changes nothing.
@@ -101,8 +104,18 @@ func TestLoggingUnauth_Reachable(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "medium" {
-		t.Errorf("expected medium/confirmed, got %q/%v", f.Severity, f.Confidence)
+	if f.Confidence != attack.RiskIndicator || f.Severity != "medium" {
+		t.Errorf("expected medium/indicator, got %q/%v", f.Severity, f.Confidence)
+	}
+}
+
+func TestLoggingUnauth_Result(t *testing.T) {
+	srv := loggingServer("result")
+	defer srv.Close()
+
+	findings := runLoggingUnauth(t, srv)
+	if len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Fatalf("expected confirmed result envelope, got %+v", findings)
 	}
 }
 
@@ -113,6 +126,9 @@ func TestLoggingUnauth_ReachableInternalError(t *testing.T) {
 	findings := runLoggingUnauth(t, srv)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for a -32603 invalid-level response, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Confidence != attack.RiskIndicator || strings.Contains(findings[0].Evidence, "was dispatched") {
+		t.Errorf("generic error must not prove dispatch: %+v", findings[0])
 	}
 }
 

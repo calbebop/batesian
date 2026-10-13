@@ -211,8 +211,7 @@ func runEnum(t *testing.T, srv *httptest.Server, opts attack.Options) ([]attack.
 	return exec.Execute(context.Background(), srv.URL, opts)
 }
 
-// The finding: B is authenticated, has no claim to A's task, and its identifier comes
-// back in B's listing.
+// Different credentials do not prove different task visibility.
 func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 	srv := enumAgent(t, enumUnscoped)
 	defer srv.Close()
@@ -225,15 +224,16 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 		t.Fatalf("expected the enumeration finding, got %d", len(findings))
 	}
 	f := findings[0]
-	if f.Severity != "high" || f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %s/%s", f.Severity, f.Confidence)
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/RiskIndicator, got %s/%s", f.Severity, f.Confidence)
 	}
-	// The evidence has to name both principals and the task, or the claim is not
-	// checkable by the person reading it.
-	for _, want := range []string{"task owner: a", "enumerating principal: b", "task ids returned to b"} {
+	for _, want := range []string{"task creator: a", "listing principal: b", "task ids returned to b", "authorization policy for the two principals: not verified"} {
 		if !strings.Contains(f.Evidence, want) {
 			t.Errorf("evidence missing %q; got:\n%s", want, f.Evidence)
 		}
+	}
+	if strings.Contains(f.Description, "no claim") || strings.Contains(f.Description, "every task") {
+		t.Errorf("finding overstates the observed access: %s", f.Description)
 	}
 }
 
