@@ -13,22 +13,16 @@ info:
     Security section requires implementations to control access to sensitive
     suggestions and to prevent completion-based information disclosure.
 
-    When the endpoint is reachable without authentication it becomes an
-    enumeration oracle: an anonymous caller can fuzz argument values or
-    URI-template segments and read back valid completions. Those suggestions can
-    reveal internal identifiers, file paths, usernames, or other namespace
-    contents that were never meant to be exposed to an unauthenticated client.
-
     The rule reports two outcomes:
-    - completion/complete dispatches an unauthenticated request (medium): the
-      access control gap is confirmed by probing with a reference the server
-      handles rather than rejecting at an auth layer.
+    - An anonymous completion result (medium) confirms the method answered.
+      A non-authentication JSON-RPC error is only an indicator because it may
+      come from validation before dispatch.
     - completion/complete returns real suggestion values for a discovered prompt
-      argument or resource template (high): the endpoint is actively leaking
-      valid completions to an anonymous caller.
+      argument or resource template (high): the values are visible to an
+      anonymous caller. Whether they are sensitive depends on the deployment.
 
     completion/complete is read-only; the probe never executes a tool or mutates
-    state and sends only benign single-character argument values.
+    state and sends an empty prefix to request suggestions.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/completion

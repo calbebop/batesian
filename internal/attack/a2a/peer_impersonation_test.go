@@ -198,6 +198,9 @@ func TestPeerImpersonation_ForgedJWTAccepted(t *testing.T) {
 	if findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("expected ConfirmedExploit confidence, got %q", findings[0].Confidence)
 	}
+	if !strings.Contains(findings[0].Description, "does not establish") {
+		t.Errorf("finding must qualify unobserved peer privileges: %s", findings[0].Description)
+	}
 }
 
 // TestPeerImpersonation_UnauthAllowed verifies a medium-severity finding is
@@ -217,8 +220,11 @@ func TestPeerImpersonation_UnauthAllowed(t *testing.T) {
 	if findings[0].Severity != "medium" {
 		t.Errorf("expected medium severity, got %q", findings[0].Severity)
 	}
-	if findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("expected ConfirmedExploit confidence, got %q", findings[0].Confidence)
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("expected RiskIndicator confidence, got %q", findings[0].Confidence)
+	}
+	if strings.Contains(findings[0].Title, "impersonation") {
+		t.Errorf("anonymous access does not prove impersonation: %s", findings[0].Title)
 	}
 }
 

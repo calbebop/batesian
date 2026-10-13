@@ -113,7 +113,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Algorithm Confusion](#a2a-jws-algconf-001) | Critical | indicator | CWE-327 |
-| `a2a-peer-impersonation-001` | [Peer Agent Impersonation via Forged JWT](#a2a-peer-impersonation-001) | High / Medium | confirmed | CWE-290 |
+| `a2a-peer-impersonation-001` | [Forged JWT Acceptance](#a2a-peer-impersonation-001) | High / Medium | confirmed / indicator | CWE-290 |
 | `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | Critical | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
@@ -123,7 +123,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
-| `a2a-task-enumeration-001` | [ListTasks Enumerates Another Principal's Tasks](#a2a-task-enumeration-001) | High | confirmed | CWE-639 / CWE-200 |
+| `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
 | `a2a-push-callback-auth-001` | [Push Notification Without Integrity Token](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
 
@@ -264,16 +264,16 @@ impact-if-true, not a demonstrated exploit).
 
 ### a2a-peer-impersonation-001
 
-**Peer Agent Impersonation via Forged JWT** | Severity: High / Medium | CWE-290
+**Forged JWT Acceptance** | Severity: High / Medium | CWE-290
 
 Forges an HS256 JWT signed with a random key the server cannot know, claiming to
 be a trusted peer agent (`sub`, `iss`, `role`, `aud`), and submits it. The result
-is compared against an unauthenticated baseline. A **confirmed** authentication
-bypass is reported only when the forged token is accepted while the baseline is
-rejected - where "rejected" includes both HTTP 401/403 and a JSON-RPC `error`
-envelope (so servers that reject auth at the protocol layer are not false
-negatives). If both forged and unauthenticated requests succeed, the server has no
-authentication at all and a lower-severity finding is raised instead.
+is compared against an anonymous baseline. A **confirmed** finding is reported
+when the random-key token succeeds but the anonymous request is rejected. This
+shows that the token passed the endpoint's gate, not which claim was accepted or
+whether peer-specific privileges were granted. If both requests succeed, the
+rule reports anonymous access as an **indicator** because public access may be
+intentional.
 
 ---
 
@@ -535,17 +535,12 @@ signatures).
 
 ### a2a-task-enumeration-001
 
-**ListTasks Enumerates Another Principal's Tasks** | Severity: High | CWE-639 / CWE-200
+**Cross-Credential Task Listing** | Severity: Medium | CWE-639 / CWE-200
 
-Tests whether one authenticated principal can enumerate another's tasks through
-`ListTasks`. The specification requires the opposite twice: section 3.1.4, on
-`ListTasks` itself, states that "Implementations **MUST** implement appropriate
-authorization scoping to ensure clients can only access authorized tasks", and section
-13.1 that "Servers **MUST** return only tasks visible to the authenticated client".
-
-Enumeration is worse than reading a task by id, because it needs no prior knowledge.
-One valid credential yields every task identifier on the server, and those identifiers
-are what the per-task read, cancel and push-notification-config surfaces take as input.
+Tests whether a task created with one credential appears in `ListTasks` under
+another. A2A requires each client to see only tasks authorized by the agent's
+access policy. Different credentials alone do not prove that their task visibility
+must differ, so the result is an **indicator** for policy review.
 
 **A distinct surface**, not a second look at an existing one.
 `a2a-multitenant-isolation-001` reads a task **by id**, so it only shows that a caller
@@ -566,12 +561,10 @@ is not what decided the outcome:
 3. Control: an **unauthenticated** `ListTasks`. If it returns A's task, the server
    enforces no authorization on this surface at all, which is `a2a-task-idor-001`'s
    finding; reporting it here too would count one defect twice.
-4. Principal B lists. A's task id appearing in B's response is the **confirmed**
-   finding.
+4. Principal B lists. A's task ID appearing in B's response is the indicator.
 
 Identifiers are compared, never key names, and history is deliberately not requested
-(`historyLength` 0): the failure is that the identifiers came back, and pulling another
-tenant's conversation content to prove it would be gratuitous. The rule follows
+(`historyLength` 0). The rule follows
 `nextPageToken` for up to ten pages per caller. A repeated token, failed page, or
 page limit makes the result not tested rather than clean.
 

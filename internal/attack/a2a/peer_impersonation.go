@@ -112,19 +112,17 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 
 	switch {
 	case forgedOK && baselineDenied:
-		// Forged JWT accepted, but no-auth request rejected: server reads claims
-		// without verifying the signature against a known key.
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
 			Severity:   "high",
 			Confidence: attack.ConfirmedExploit,
-			Title:      "A2A server accepted forged peer agent JWT without signature validation",
+			Title:      "A2A SendMessage accepted a randomly signed JWT but rejected anonymous access",
 			Description: fmt.Sprintf(
-				"A forged HS256 JWT (sub=%q, iss=%q, role=orchestrator) signed with a random "+
-					"key was accepted by the A2A server (HTTP %d), while an unauthenticated "+
-					"baseline request was rejected (HTTP %d). The server is granting access based "+
-					"on JWT claims alone without verifying the token signature.",
+				"A randomly signed HS256 JWT (sub=%q, iss=%q) was accepted (HTTP %d), while "+
+					"the same request without a token was rejected (HTTP %d). This demonstrates "+
+					"that this token passed the endpoint's authentication gate. It does not establish "+
+					"which claim was honored or that peer-specific privileges were granted.",
 				agentName, claims.iss,
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
@@ -138,17 +136,17 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 		})
 
 	case forgedOK && baselineOK:
-		// Both accepted: the server does not enforce authentication at all.
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
 			Severity:   "medium",
-			Confidence: attack.ConfirmedExploit,
-			Title:      "A2A server accepts unauthenticated requests; peer impersonation possible",
+			Confidence: attack.RiskIndicator,
+			Title:      "A2A SendMessage accepted an anonymous request",
 			Description: fmt.Sprintf(
-				"Both a forged JWT request (HTTP %d) and an unauthenticated baseline request "+
-					"(HTTP %d) were accepted. The server does not enforce authentication, "+
-					"making peer agent impersonation trivial for any caller.",
+				"Both a randomly signed JWT request (HTTP %d) and an anonymous request "+
+					"(HTTP %d) were accepted. This endpoint permits anonymous SendMessage "+
+					"requests; whether that violates policy depends on the deployment. No "+
+					"peer identity or elevated privilege was verified.",
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
 				"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\n%s",

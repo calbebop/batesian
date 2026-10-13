@@ -1,25 +1,16 @@
 id: a2a-peer-impersonation-001
 info:
-  name: A2A Peer Agent Impersonation via Forged JWT
+  name: A2A Forged JWT Acceptance
   author: batesian
   severity: high
   description: |
-    A2A servers are expected to validate the identity of calling agents using
-    bearer tokens with cryptographic signatures. An attacker can forge a JWT
-    claiming to be a trusted peer agent (via the "sub" claim) and test whether
-    the server grants elevated access or behaves differently from an
-    unauthenticated baseline.
+    Sends a randomly signed JWT and compares SendMessage with an anonymous
+    baseline. Acceptance of the JWT while anonymous access is denied confirms
+    that this token passed the endpoint's authentication gate. It does not prove
+    that the claimed peer identity or any elevated privilege was granted.
 
-    This executor fetches the agent card to learn the target agent name, then
-    constructs a forged HS256 JWT signed with a random key unknown to the server.
-    The JWT claims sub=<agent-name>, iss=legitimate-orchestrator.example.com,
-    role=orchestrator, and aud=<target>. A SendMessage request is made with the
-    forged token, and the response is compared to an unauthenticated baseline.
-
-    If the forged JWT is accepted while the baseline is rejected, the server is
-    trusting JWT claims without verifying the signature -- a critical
-    authentication bypass. If both are accepted, the server has no authentication
-    at all, making peer impersonation trivial.
+    If both requests succeed, the rule reports anonymous access as an indicator.
+    Public access may be intentional, so review the deployment policy.
 
   references:
     - https://a2aprotocol.ai/docs/specification#authentication
@@ -43,10 +34,6 @@ attack:
   type: a2a-peer-impersonation
 
 remediation: |
-  Validate all incoming JWT bearer tokens against a published JWKS endpoint or a
-  known symmetric secret. Reject tokens where the signature cannot be verified,
-  the issuer (iss) is not on an allowlist, or the subject (sub) does not match a
-  registered peer agent identity. Do not grant elevated access based solely on
-  claims in an unverified token. Use asymmetric keys (RS256, ES256) so private
-  keys never leave the issuing orchestrator, and require the audience (aud) claim
-  to match the receiving agent's own identifier.
+  If SendMessage requires authentication, verify token signatures, issuer,
+  audience, and subject before granting access. Document intentional public
+  access separately from peer-authenticated operations.

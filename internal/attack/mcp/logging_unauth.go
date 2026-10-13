@@ -74,38 +74,39 @@ func (e *LoggingUnauthExecutor) Execute(ctx context.Context, target string, opts
 		}
 	}
 
-	reachable, reason := setLevelDispatchReachable(body)
-	if !reachable {
+	signal, reason := setLevelDispatchReachable(body)
+	if signal == dispatchNone {
 		return nil, fmt.Errorf("%w: MCP handshake succeeded at %s, but logging/setLevel returned no authorization verdict",
 			attack.ErrInconclusive, session.Endpoint)
 	}
+	confidence := attack.ConfirmedExploit
+	title := "MCP logging/setLevel returned a result without authentication"
+	description := fmt.Sprintf("logging/setLevel at %s returned a result for an anonymous request with an invalid level. The probe did not verify that a valid log-level change would be accepted.", session.Endpoint)
+	if signal == dispatchError {
+		confidence = attack.RiskIndicator
+		title = "MCP logging/setLevel returned a non-authentication error to an anonymous request"
+		description = fmt.Sprintf("logging/setLevel at %s returned a non-authentication JSON-RPC error for an anonymous request. The error may have come from validation before method dispatch; log-level control was not demonstrated.", session.Endpoint)
+	}
 
 	return []attack.Finding{{
-		RuleID:     e.rule.ID,
-		RuleName:   e.rule.Name,
-		Severity:   "medium",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "MCP logging/setLevel reachable without authentication",
-		Description: fmt.Sprintf(
-			"logging/setLevel at %s dispatched an unauthenticated request (probed with an invalid level, "+
-				"so the server's real log verbosity was not changed). The MCP spec requires servers to "+
-				"control log access; an anonymous caller can set the minimum log level, flooding logs at "+
-				"debug (cost/DoS and burying attack traces) or suppressing them at emergency (hiding "+
-				"malicious activity from operators).", session.Endpoint),
+		RuleID:      e.rule.ID,
+		RuleName:    e.rule.Name,
+		Severity:    "medium",
+		Confidence:  confidence,
+		Title:       title,
+		Description: description,
 		Evidence:    fmt.Sprintf("HTTP %d from %s\nprobe level (invalid): %s\n%s", resp.StatusCode, session.Endpoint, bogusLevel, reason),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}}, nil
 }
 
-// setLevelDispatchReachable reports whether the invalid-level probe was dispatched.
-func setLevelDispatchReachable(body map[string]interface{}) (bool, string) {
+func setLevelDispatchReachable(body map[string]interface{}) (dispatchSignal, string) {
 	switch sig, code := classifyDispatch(body); sig {
 	case dispatchResult:
-		return true, "logging/setLevel returned a result envelope for an unauthenticated request, so it was dispatched without auth"
+		return dispatchResult, "logging/setLevel returned a result envelope to an anonymous request"
 	case dispatchError:
-		return true, fmt.Sprintf(
-			"JSON-RPC error %d returned for an invalid level, so logging/setLevel was dispatched past the auth layer without credentials", code)
+		return dispatchError, fmt.Sprintf("JSON-RPC error %d returned for an invalid level; dispatch was not verified", code)
 	}
-	return false, ""
+	return dispatchNone, ""
 }

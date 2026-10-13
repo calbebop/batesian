@@ -163,7 +163,7 @@ would lack:
 | `mcp-session-fixation-001` | Control requires an un-initialized session id to be rejected. It is accepted, so the server tracks no sessions and this is not fixation. |
 | `mcp-jsonrpc-batch-bypass-001` | Requires the single-request control to be rejected while the batch succeeds. Nothing is rejected, so there is no bypass to demonstrate. |
 | `mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-oauth-metadata-ssrf-001`, `mcp-confused-deputy-001`, `mcp-vulnerable-version-001`'s non-matching path, and `mcp-secret-canary-001` | No OAuth registration, authorization, metadata, or recognizable vulnerable-component identity exists; the canary credential was not echoed in any response. |
-| `mcp-sse-resume-replay-001` | Requires two distinct server-minted sessions and id-bearing events to replay. |
+| `mcp-sse-resume-replay-001` | Requires distinct server-minted sessions and a later session-labeled event to compare. |
 | `mcp-header-body-split-001` | The server does not enforce `Mcp-Method` presence, so it is not SEP-2243-aware and there is no split-brain to demonstrate. |
 | `mcp-tool-param-traversal-001`, `mcp-tool-poisoning-001`, `mcp-task-id-entropy-001` | Every post-April content-integrity rule: the manifest is factual and unique across two consecutive reads, its annotated read-only tools expose no path parameter to traverse, and task-augmented calls return uuid-shaped handles over a full hex alphabet. A reference implementation with clean descriptions staying clean is exactly what the byte-level oracles are supposed to permit. |
 

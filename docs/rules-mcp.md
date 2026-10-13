@@ -150,8 +150,8 @@ candidate answers does a rule report that it could not test.
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | High / Medium | confirmed | CWE-862 |
 | `mcp-tools-unauth-001` | [Tools Listed Without Authentication](#mcp-tools-unauth-001) | Medium | confirmed | CWE-862 |
-| `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed | CWE-862 |
-| `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed | CWE-862 |
+| `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed / indicator | CWE-862 |
+| `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed / indicator | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
@@ -338,19 +338,14 @@ A server that requires auth or does not advertise tools produces no finding.
 `completion/complete` returns autocompletion suggestions for prompt arguments and
 resource-template URIs; servers that support it advertise the `completions`
 capability, which is read from the `initialize` or `server/discover` result.
-The MCP spec requires implementations to control access to
-completion suggestions and prevent completion-based information disclosure, so an
-unauthenticated completion endpoint is both an access-control failure and an
-enumeration oracle. The rule confirms two outcomes: `completion/complete`
-dispatching an unauthenticated request (**medium**), and returning real suggestion
-values for a discovered prompt argument or resource-template variable (**high**) -
-both **confirmed**. To establish reachability without depending on an open
-prompts/resources listing, the rule falls back to a synthetic prompt reference,
-which the spec answers with a `-32602` (invalid params) protocol error; reaching
-that error (or any result envelope) shows the call was dispatched without
-credentials. The probe is read-only - it never executes a tool and sends only
-benign single-character argument values. A server that requires auth, or does not
-advertise the completions capability, produces no finding.
+The MCP spec requires implementations to control access to sensitive suggestions.
+An anonymous result envelope is **confirmed** at medium severity; a generic
+non-authentication JSON-RPC error is a medium **indicator** because validation
+middleware may have produced it before method dispatch. Real suggestion values
+for a discovered prompt or resource template produce a high, confirmed disclosure
+finding. The rule falls back to a synthetic reference when discovery is unavailable.
+The probe is read-only and sends an empty prefix. A server that requires auth or
+does not advertise completions produces no finding.
 
 ---
 
@@ -358,19 +353,12 @@ advertise the completions capability, produces no finding.
 
 **logging/setLevel Without Authentication** | Severity: Medium | CWE-862
 
-`logging/setLevel` sets the server's minimum log verbosity; servers that support
-it advertise the `logging` capability, confirmed structurally from the captured
-`initialize` result (`ServerSupports`). The MCP spec's Security section requires
-implementations to control log access, so an unauthenticated `logging/setLevel` is
-an access-control failure on a state-changing method: an anonymous caller can
-flood logs at `debug` (cost/DoS and burying attack traces) or suppress them at
-`emergency` (hiding malicious activity). The rule gates on the capability, then
-sends one `logging/setLevel` with a deliberately **invalid** level string; a
-`-32602` (invalid params) error - or any result envelope - proves the handler was
-dispatched without auth, while the invalid level means the server's real verbosity
-is never changed. A server that rejects with HTTP 401/403 or an auth error, or
-does not advertise the logging capability, produces no finding. Reported
-**confirmed** at medium severity.
+`logging/setLevel` sets the server's minimum log verbosity. The rule checks the
+advertised `logging` capability, then sends an anonymous request with an invalid
+level. A result envelope is a medium **confirmed** finding. A non-authentication
+JSON-RPC error is a medium **indicator** because it may come from middleware
+before dispatch. The probe does not verify a valid log-level change. An auth
+rejection or missing capability produces no finding.
 
 **Currency.** `logging/setLevel` is normative in revisions 2024-11-05 through
 2025-11-25. The **2026-07-28** revision **removes the method outright** (log
@@ -614,18 +602,14 @@ are reported as not tested.
 
 **SSE Resumption Cross-Session Replay (Last-Event-ID)** | Severity: High | CWE-488
 
-The 2025-03-26 / 2025-06-18 Streamable HTTP transport lets a client resume a
-broken SSE stream with a `Last-Event-ID` header; the spec requires that a server
-MUST NOT replay another stream's messages. This rule confirms a cross-session
-leak only, using two distinct server-minted sessions: (1) initialize session A
-and open its SSE stream, capturing a checkpoint event id and an A-specific data
-marker (if the server mints no distinct session id or emits no id-bearing event,
-the rule can't test - no finding); (2) initialize session B (must differ from A);
-(3) as B, resume from before A's checkpoint. A **confirmed** finding is raised
-only when B's resumed stream delivers A's exact data marker - the resumption
-buffer is not scoped to the originating session. A server that replays only the
-requester's own events, or ignores `Last-Event-ID`, produces no finding. (Note:
-the 2026-07 draft removes resumability, so this is version-scoped.)
+The legacy Streamable HTTP transport allows SSE resumption with `Last-Event-ID`
+and forbids replay from another stream. This rule uses two distinct server-minted
+sessions. It captures a checkpoint and later event on session A, then resumes as
+B from A's checkpoint. A **confirmed** finding requires the later event's ID and
+data to match in B's stream and a session field in its data to equal A's session ID.
+A shared broadcast without that session-specific evidence is inconclusive. A server that scopes
+replay to B or ignores `Last-Event-ID` produces no finding. The 2026-07-28
+revision removed this resumability mechanism.
 
 ---
 

@@ -42,6 +42,7 @@ type completionOutcome struct {
 	status int
 	reason string
 	values []string
+	signal dispatchSignal
 }
 
 type completionDiscoveryVerdict int
@@ -99,7 +100,7 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		if out == nil {
 			continue
 		}
-		if firstReachable == nil {
+		if firstReachable == nil || (firstReachable.signal == dispatchError && out.signal == dispatchResult) {
 			firstReachable = out
 		}
 		if len(out.values) > 0 {
@@ -140,18 +141,21 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		base = disclosure
 	}
 
+	confidence := attack.ConfirmedExploit
+	title := "MCP completion/complete returned a result without authentication"
+	description := fmt.Sprintf("completion/complete at %s returned a result for an anonymous request (probed via %s). The result alone does not establish that sensitive suggestions were disclosed.", session.Endpoint, base.ref.label)
+	if base.signal == dispatchError {
+		confidence = attack.RiskIndicator
+		title = "MCP completion/complete returned a non-authentication error to an anonymous request"
+		description = fmt.Sprintf("completion/complete at %s returned a non-authentication JSON-RPC error for an anonymous request (probed via %s). The error may have come from validation before method dispatch; access to completion suggestions was not demonstrated.", session.Endpoint, base.ref.label)
+	}
 	findings = []attack.Finding{{
-		RuleID:     e.rule.ID,
-		RuleName:   e.rule.Name,
-		Severity:   "medium",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "MCP completion/complete reachable without authentication",
-		Description: fmt.Sprintf(
-			"completion/complete at %s dispatched an unauthenticated request (probed via %s). The MCP "+
-				"spec requires servers to control access to completion suggestions and prevent "+
-				"completion-based information disclosure; an anonymous caller can use this endpoint as an "+
-				"enumeration oracle, fuzzing argument values or URI-template segments to recover valid "+
-				"completions.", session.Endpoint, base.ref.label),
+		RuleID:      e.rule.ID,
+		RuleName:    e.rule.Name,
+		Severity:    "medium",
+		Confidence:  confidence,
+		Title:       title,
+		Description: description,
 		Evidence:    fmt.Sprintf("HTTP %d from %s\nprobe: %s\n%s", base.status, session.Endpoint, base.ref.label, base.reason),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
@@ -231,11 +235,11 @@ func (e *CompletionUnauthExecutor) probe(ctx context.Context, client *attack.HTT
 	if verdict != probeAnswered {
 		return nil, false
 	}
-	reachable, reason := completionDispatchReachable(body)
-	if !reachable {
+	signal, reason := completionDispatchReachable(body)
+	if signal == dispatchNone {
 		return nil, true
 	}
-	out = &completionOutcome{ref: ref, status: resp.StatusCode, reason: reason}
+	out = &completionOutcome{ref: ref, status: resp.StatusCode, reason: reason, signal: signal}
 	if ref.real {
 		out.values = completionValues(body)
 	}
@@ -416,24 +420,20 @@ func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSessio
 	return result, completionDiscoveryComplete
 }
 
-// completionDispatchReachable reports whether a completion/complete response
-// shows the handler was reached without auth. A completion result, any result
-// envelope, or any JSON-RPC error that is not "method not found" and not
-// auth-flavored means the call dispatched. The reason is used as finding evidence.
-func completionDispatchReachable(body map[string]interface{}) (bool, string) {
+func completionDispatchReachable(body map[string]interface{}) (dispatchSignal, string) {
 	sig, code := classifyDispatch(body)
 	switch sig {
 	case dispatchResult:
 		if res, ok := body["result"].(map[string]interface{}); ok {
 			if _, ok := res["completion"]; ok {
-				return true, "completion/complete returned a completion result without auth"
+				return dispatchResult, "completion/complete returned a completion result without auth"
 			}
 		}
-		return true, "completion/complete returned a result envelope without auth"
+		return dispatchResult, "completion/complete returned a result envelope without auth"
 	case dispatchError:
-		return true, fmt.Sprintf("JSON-RPC error %d returned for the completion probe, so completion/complete was dispatched without auth", code)
+		return dispatchError, fmt.Sprintf("JSON-RPC error %d returned for the completion probe; dispatch was not verified", code)
 	}
-	return false, ""
+	return dispatchNone, ""
 }
 
 // completionValues extracts the string suggestion values from a

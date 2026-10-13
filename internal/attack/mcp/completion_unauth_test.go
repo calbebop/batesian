@@ -272,7 +272,7 @@ func TestCompletionUnauth_ReachableEmpty(t *testing.T) {
 }
 
 // TestCompletionUnauth_ReachableSynthetic: no prompt/resource refs to discover,
-// synthetic probe dispatches (-32602) => medium only.
+// synthetic probe returns -32602 => medium indicator only.
 func TestCompletionUnauth_ReachableSynthetic(t *testing.T) {
 	srv := completionServer("reachable-synth")
 	defer srv.Close()
@@ -284,11 +284,12 @@ func TestCompletionUnauth_ReachableSynthetic(t *testing.T) {
 	if findings[0].Severity != "medium" {
 		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
 	}
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("generic validation error must be an indicator, got %q", findings[0].Confidence)
+	}
 }
 
-// TestCompletionUnauth_ReachableViaInternalError: a synthetic probe answered with
-// -32603 still proves completion/complete was dispatched without auth. The old
-// dispatch helper accepted only -32602 and stayed silent here (false negative).
+// An internal error is observable but does not prove handler dispatch.
 func TestCompletionUnauth_ReachableViaInternalError(t *testing.T) {
 	srv := completionServer("reachable-internal")
 	defer srv.Close()
@@ -299,6 +300,9 @@ func TestCompletionUnauth_ReachableViaInternalError(t *testing.T) {
 	}
 	if findings[0].Severity != "medium" {
 		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
+	}
+	if findings[0].Confidence != attack.RiskIndicator || strings.Contains(findings[0].Evidence, "was dispatched") {
+		t.Errorf("generic error must not prove dispatch: %+v", findings[0])
 	}
 }
 
