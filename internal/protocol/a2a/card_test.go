@@ -804,9 +804,7 @@ func TestAgentCard_SupportsExtendedCard(t *testing.T) {
 	}
 }
 
-// TestAgentCard_ProtocolVersionCaptured guards the field being read at all.
-// buildJSONOutput re-marshals the parsed card, so a field the struct does not
-// capture is dropped from probe's JSON output as well as its table.
+// TestAgentCard_ProtocolVersionCaptured guards the typed card used by the table output.
 func TestAgentCard_ProtocolVersionCaptured(t *testing.T) {
 	const v03 = `{"name":"Agent","description":"d","version":"1.0.0","protocolVersion":"0.3.0",
 		"url":"http://127.0.0.1:1/","preferredTransport":"JSONRPC","capabilities":{},"skills":[]}`
@@ -817,7 +815,7 @@ func TestAgentCard_ProtocolVersionCaptured(t *testing.T) {
 	if card.ProtocolVersion != "0.3.0" {
 		t.Errorf("ProtocolVersion = %q, want %q", card.ProtocolVersion, "0.3.0")
 	}
-	// The JSON output path round-trips the card, so the field must survive that.
+	// Other callers may round-trip the typed card.
 	raw, err := json.Marshal(&card)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
