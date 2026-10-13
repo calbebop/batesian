@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -33,13 +34,11 @@ func (e *TaskIDORExecutor) probeRESTTaskReads(ctx context.Context, target string
 			findings, err, tested := e.probeRESTTaskRead(ctx, owner, anon, sendURL,
 				endpoint.AppendPath(base, route.tasks), route.version, vars.RandID)
 			if len(findings) != 0 {
-				return findings, nil, true
+				return findings, errors.Join(incomplete, err), true
 			}
 			baseTested = baseTested || tested
 			anyTested = anyTested || tested
-			if incomplete == nil {
-				incomplete = err
-			}
+			incomplete = errors.Join(incomplete, err)
 		}
 		if !baseTested && incomplete == nil {
 			incomplete = fmt.Errorf("%w: advertised HTTP+JSON interface at %s did not yield a testable owner task",

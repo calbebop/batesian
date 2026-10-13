@@ -31,21 +31,21 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	ctx = withTenantRouting(ctx)
 	findings, jsonErr := e.probeJSONRPC(ctx, target, opts)
 	if len(findings) != 0 {
-		return findings, nil
+		return findings, jsonErr
 	}
 	restFindings, restErr, tested := e.probeRESTTaskReads(ctx, target, opts)
-	if len(restFindings) != 0 {
-		return restFindings, nil
-	}
-	if restErr != nil {
-		return nil, restErr
-	}
 	if tested && errors.Is(jsonErr, attack.ErrInconclusive) {
 		vars := attack.NewVars(target, opts.OOBListenerURL)
 		card, found := fetchDiscoveryCard(ctx, attack.NewHTTPClient(opts, vars), vars.BaseURL)
 		if found && len(jsonRPCInterfaces(card)) == 0 {
-			return nil, nil
+			jsonErr = nil
 		}
+	}
+	if len(restFindings) != 0 {
+		return restFindings, errors.Join(jsonErr, restErr)
+	}
+	if restErr != nil {
+		return nil, errors.Join(jsonErr, restErr)
 	}
 	return nil, jsonErr
 }

@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -55,17 +56,19 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 	if ok {
 		findings, err := e.probeJSONRPC(ctx, endpoint, vars.RandID, a, b, clientA, clientB, unauthClient)
 		if len(findings) != 0 {
-			return findings, nil
+			return findings, err
 		}
 		rpcErr = err
+	} else {
+		rpcErr = advertisedJSONRPCUnavailable(ctx, unauthClient, vars.BaseURL)
 	}
 	findings, restErr, restTested := e.probeREST(ctx, vars.BaseURL, vars.RandID,
 		a, b, clientA, clientB, unauthClient)
 	if len(findings) != 0 {
-		return findings, nil
+		return findings, errors.Join(rpcErr, restErr)
 	}
 	if restErr != nil {
-		return nil, restErr
+		return nil, errors.Join(rpcErr, restErr)
 	}
 	if rpcErr != nil {
 		return nil, rpcErr

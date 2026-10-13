@@ -299,8 +299,8 @@ func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 
 	findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
 		Execute(context.Background(), ts.URL, idorOpts())
-	if err != nil {
-		t.Fatalf("the REST listing answered, so the rule reached a testable surface: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("the task read was unjudged despite a list finding: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("anonymous listing must include the owner's task; got %d: %+v\n"+
@@ -333,7 +333,7 @@ func TestA2ATaskIDOR_SecondRESTBaseFromCard(t *testing.T) {
 
 	findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
 		Execute(context.Background(), ts.URL, idorOpts())
-	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].TargetURL, prefix) {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 || !strings.Contains(findings[0].TargetURL, prefix) {
 		t.Fatalf("expected the later REST base to expose the owner task: findings=%+v err=%v paths=%v", findings, err, hits)
 	}
 }
@@ -378,8 +378,8 @@ func TestA2ATaskIDOR_RootFallbackStillProbed(t *testing.T) {
 
 	findings, err := a2a.NewTaskIDORExecutor(attack.RuleContext{ID: "a2a-task-idor-001"}).
 		Execute(context.Background(), ts.URL, idorOpts())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("the task read was unjudged despite a list finding: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("the root fallback must still be probed; got %d: %+v (paths: %v)",

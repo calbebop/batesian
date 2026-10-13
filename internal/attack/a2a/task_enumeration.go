@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -39,15 +40,21 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 	restBases := resolveHTTPJSONBases(ctx, clientA, vars.BaseURL)
+	var incomplete error
+	if !ok {
+		incomplete = advertisedJSONRPCUnavailable(ctx, unauthClient, vars.BaseURL)
+	}
 	if !ok && len(restBases) == 0 {
+		if incomplete != nil {
+			return nil, incomplete
+		}
 		return nil, attack.ErrInconclusive
 	}
 
-	var incomplete error
 	if ok {
 		findings, err := e.probeJSONRPC(ctx, endpoint, vars.RandID, a, b, clientA, clientB, unauthClient)
 		if len(findings) != 0 {
-			return findings, nil
+			return findings, err
 		}
 		incomplete = err
 	}
@@ -62,12 +69,10 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 			findings, err, tested := e.probeREST(ctx, sendURL, listURL, route.version, vars.RandID,
 				a, b, clientA, clientB, unauthClient)
 			if len(findings) != 0 {
-				return findings, nil
+				return findings, errors.Join(incomplete, err)
 			}
 			baseTested = baseTested || tested
-			if incomplete == nil {
-				incomplete = err
-			}
+			incomplete = errors.Join(incomplete, err)
 		}
 		if !baseTested && incomplete == nil {
 			incomplete = fmt.Errorf("%w: advertised HTTP+JSON interface at %s did not create a task to test",

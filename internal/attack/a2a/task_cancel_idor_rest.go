@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,7 +32,7 @@ func (e *TaskCancelIDORExecutor) probeREST(ctx context.Context, target, randID s
 				endpoint.AppendPath(base, route.tasks), route.version, routeID,
 				a, b, owner, other, anon)
 			if len(findings) != 0 {
-				return findings, nil, true
+				return findings, errors.Join(incomplete, err), true
 			}
 			baseTested = baseTested || tested
 			anyTested = anyTested || tested
