@@ -265,25 +265,56 @@ func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body
 }
 
 func fetchCardWithOutcome(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool, reason string) {
-	resp, err := client.GET(ctx, url, cardVersionHeaders(url))
-	if err != nil || resp == nil {
-		return nil, cardCacheHeaders{}, false, "no response"
+	headers := cardVersionHeaders(url)
+	attempts := []map[string]string{headers}
+	if len(headers) > 0 {
+		attempts = append(attempts, nil)
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, cardCacheHeaders{}, false, ""
+	bestPriority := -1
+	for _, attempt := range attempts {
+		resp, err := client.GET(ctx, url, attempt)
+		if err != nil || resp == nil {
+			if bestPriority >= 0 {
+				return nil, cardCacheHeaders{}, false, reason
+			}
+			return nil, cardCacheHeaders{}, false, "no response"
+		}
+		if !resp.IsSuccess() {
+			priority := cardReadFailurePriority(resp.StatusCode)
+			if priority > bestPriority {
+				bestPriority = priority
+				if resp.StatusCode == http.StatusNotFound {
+					reason = ""
+				} else {
+					reason = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				}
+			}
+			continue
+		}
+		if _, parsed := parseCard(resp.Body); !parsed {
+			return nil, cardCacheHeaders{}, false, "invalid Agent Card"
+		}
+		return resp.Body, cardCacheHeaders{
+			control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
+			expires:    resp.Headers.Get("Expires"),
+			date:       resp.Headers.Get("Date"),
+			receivedAt: time.Now(),
+		}, true, ""
 	}
-	if !resp.IsSuccess() {
-		return nil, cardCacheHeaders{}, false, fmt.Sprintf("HTTP %d", resp.StatusCode)
+	return nil, cardCacheHeaders{}, false, reason
+}
+
+func cardReadFailurePriority(status int) int {
+	switch {
+	case status >= 500:
+		return 3
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return 2
+	case status == http.StatusNotFound:
+		return 0
+	default:
+		return 1
 	}
-	if _, parsed := parseCard(resp.Body); !parsed {
-		return nil, cardCacheHeaders{}, false, "invalid Agent Card"
-	}
-	return resp.Body, cardCacheHeaders{
-		control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
-		expires:    resp.Headers.Get("Expires"),
-		date:       resp.Headers.Get("Date"),
-		receivedAt: time.Now(),
-	}, true, ""
 }
 
 func parseCard(body []byte) (map[string]interface{}, bool) {
