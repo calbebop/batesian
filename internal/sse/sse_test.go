@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -134,12 +135,54 @@ func TestReader_CRLFLineEndings(t *testing.T) {
 	}
 }
 
-func TestReader_PartialAtEOF(t *testing.T) {
-	// No terminating blank line: the trailing block is still dispatched.
-	got := collect(t, "data: x\n")
-	if len(got) != 1 || got[0].Data != "x" {
-		t.Errorf("got %v, want one event with data %q", got, "x")
+func TestReader_LineEndingsAndBOM(t *testing.T) {
+	input := "\ufeffid: 1\rdata: first\r\rdata: second\r\n\r\ndata: third\n\n"
+	rd := NewReader(iotest.OneByteReader(strings.NewReader(input)))
+	want := []Event{{ID: "1", Data: "first"}, {Data: "second"}, {Data: "third"}}
+	for i, expected := range want {
+		got, err := rd.Next()
+		if err != nil || got != expected {
+			t.Fatalf("event %d = %+v, %v; want %+v", i, got, err, expected)
+		}
 	}
+	if _, err := rd.Next(); err != io.EOF {
+		t.Fatalf("end of stream: got %v, want EOF", err)
+	}
+}
+
+func TestReader_PartialAtEOF(t *testing.T) {
+	for _, input := range []string{"data: x", "data: x\n", "data: x\r", "data: x\r\n"} {
+		if got := collect(t, input); len(got) != 0 {
+			t.Errorf("%q: got %v, want no event", input, got)
+		}
+	}
+}
+
+func TestReader_ErrorAfterBufferedData(t *testing.T) {
+	want := errors.New("stream failed")
+	rd := NewReader(&failAfterData{data: strings.NewReader("data: x\n"), err: want})
+	if _, err := rd.Next(); !errors.Is(err, want) {
+		t.Fatalf("got %v, want stream error", err)
+	}
+}
+
+func TestReader_OversizedLineAfterBufferedData(t *testing.T) {
+	rd := NewReaderSize(strings.NewReader("data: pending\n"+strings.Repeat("x", 200)), 64)
+	if _, err := rd.Next(); !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("got %v, want oversized-line error", err)
+	}
+}
+
+type failAfterData struct {
+	data *strings.Reader
+	err  error
+}
+
+func (r *failAfterData) Read(p []byte) (int, error) {
+	if r.data.Len() == 0 {
+		return 0, r.err
+	}
+	return r.data.Read(p)
 }
 
 func TestReader_IDOnlyEventNotEmitted(t *testing.T) {
