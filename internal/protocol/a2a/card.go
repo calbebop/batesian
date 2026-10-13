@@ -11,7 +11,7 @@ import (
 )
 
 // AgentCard is the agent's public identity document.
-// Served at GET /.well-known/agent-card.json (v1.0) or /.well-known/agent.json (v0.3 legacy).
+// Served at GET /.well-known/agent-card.json, with agent.json as a legacy fallback.
 type AgentCard struct {
 	// Required fields (v1.0)
 	Name         string            `json:"name"`

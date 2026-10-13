@@ -16,11 +16,10 @@ import (
 )
 
 const (
-	// WellKnownPath is the v1.0 spec path for the public Agent Card.
+	// WellKnownPath is the public Agent Card path for v0.3 and later.
 	WellKnownPath = "/.well-known/agent-card.json"
 
-	// WellKnownPathLegacy is the v0.3 path still used by many deployed agents
-	// and all official a2a-samples. Probe both paths for maximum compatibility.
+	// WellKnownPathLegacy supports older deployments that serve agent.json.
 	WellKnownPathLegacy = "/.well-known/agent.json"
 
 	// ExtendedCardPath is the path for the authenticated extended Agent Card.
@@ -134,24 +133,29 @@ func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-// FetchAgentCard retrieves the public Agent Card. It tries the v1.0 path first
-// (/.well-known/agent-card.json), then falls back to the v0.3 legacy path
-// (/.well-known/agent.json) for compatibility with older deployments and samples.
+// FetchAgentCard retrieves the public Agent Card across v1.0 and v0.3 endpoints.
 func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, error) {
-	paths := []string{WellKnownPath, WellKnownPathLegacy}
+	attempts := []struct {
+		path string
+		v1   bool
+	}{
+		{WellKnownPath, true},
+		{WellKnownPath, false},
+		{WellKnownPathLegacy, false},
+	}
 
-	var lastResult *ProbeResult
-	for _, path := range paths {
-		target := endpoint.AppendPath(c.baseURL, path)
-		result, body, err := c.get(ctx, target, path == WellKnownPath)
-		lastResult = result
+	var bestFailure *ProbeResult
+	for _, attempt := range attempts {
+		target := endpoint.AppendPath(c.baseURL, attempt.path)
+		result, body, err := c.get(ctx, target, attempt.v1)
 
 		if err != nil {
-			// Network error - no point trying the other path
 			return nil, result, err
 		}
 		if !result.IsSuccess() {
-			// Not found at this path; try the next one
+			if bestFailure == nil || cardFailurePriority(result.StatusCode) > cardFailurePriority(bestFailure.StatusCode) {
+				bestFailure = result
+			}
 			continue
 		}
 
@@ -165,8 +169,24 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 		return &card, result, nil
 	}
 
-	return nil, lastResult, fmt.Errorf("no Agent Card found at %s or %s (HTTP %d) - is this an A2A agent?",
-		endpoint.AppendPath(c.baseURL, WellKnownPath), endpoint.AppendPath(c.baseURL, WellKnownPathLegacy), lastResult.StatusCode)
+	if bestFailure.StatusCode != http.StatusNotFound {
+		return nil, bestFailure, fmt.Errorf("agent card request to %s returned HTTP %d", bestFailure.URL, bestFailure.StatusCode)
+	}
+	return nil, bestFailure, fmt.Errorf("no Agent Card found at %s or %s (HTTP 404) - is this an A2A agent?",
+		endpoint.AppendPath(c.baseURL, WellKnownPath), endpoint.AppendPath(c.baseURL, WellKnownPathLegacy))
+}
+
+func cardFailurePriority(status int) int {
+	switch {
+	case status >= 500:
+		return 3
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return 2
+	case status == http.StatusNotFound:
+		return 0
+	default:
+		return 1
+	}
 }
 
 // ProbeExtendedCard fetches the v1.0 /extendedAgentCard path without authentication.
@@ -201,6 +221,8 @@ func (c *Client) get(ctx context.Context, target string, v1 bool) (*ProbeResult,
 	}
 	if v1 {
 		defaultV1Version(req)
+	} else {
+		req.Header.Del("A2A-Version")
 	}
 	result, err := c.do(req)
 	if err != nil {

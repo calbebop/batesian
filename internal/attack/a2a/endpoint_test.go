@@ -171,6 +171,31 @@ func TestFetchDiscoveryCard_VersionHeaderByPath(t *testing.T) {
 	}
 }
 
+func TestFetchDiscoveryCard_V03AtCanonicalPath(t *testing.T) {
+	var headers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != cardPathPrimary {
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		headers = append(headers, r.Header.Get("A2A-Version"))
+		if r.Header.Get("A2A-Version") != "" {
+			http.Error(w, "unsupported version", http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"Legacy","url":"http://agent.example/rpc","preferredTransport":"JSONRPC"}`)
+	}))
+	defer server.Close()
+	card, found := fetchDiscoveryCard(t.Context(), newClient(server.URL), server.URL)
+	if !found || card.URL != "http://agent.example/rpc" {
+		t.Fatalf("card=%+v found=%v", card, found)
+	}
+	if !slices.Equal(headers, []string{"1.0", ""}) {
+		t.Fatalf("version headers = %q", headers)
+	}
+}
+
 func TestResolveHTTPJSONBases_FallsBackFromUnusablePrimaryCard(t *testing.T) {
 	for _, primary := range []string{
 		`{}`,
@@ -859,6 +884,47 @@ func TestFetchCard_VersionHeaderByPath(t *testing.T) {
 			defer server.Close()
 			if _, _, ok := fetchCard(t.Context(), newClient(server.URL), server.URL+tc.path); !ok {
 				t.Fatal("card not fetched")
+			}
+		})
+	}
+}
+
+func TestFetchCard_V03AtCanonicalPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != cardPathPrimary {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("A2A-Version") != "" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"Legacy"}`)
+	}))
+	defer server.Close()
+	client := newClient(server.URL)
+	if body, _, ok := fetchCard(t.Context(), client, server.URL+cardPathPrimary); !ok || !strings.Contains(string(body), "Legacy") {
+		t.Fatalf("card=%s found=%v", body, ok)
+	}
+	if !cardServed(t.Context(), client, server.URL) {
+		t.Fatal("canonical v0.3 card did not establish A2A reachability")
+	}
+}
+
+func TestFetchCard_PreservesHTTPFailure(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(status)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+			_, _, ok, reason := fetchCardWithOutcome(t.Context(), newClient(server.URL), server.URL+cardPathPrimary)
+			if ok || reason != fmt.Sprintf("HTTP %d", status) {
+				t.Fatalf("found=%v reason=%q", ok, reason)
 			}
 		})
 	}

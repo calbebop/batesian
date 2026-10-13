@@ -153,12 +153,19 @@ func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, b
 	return strings.Contains(strings.ToLower(resp.Headers.Get("WWW-Authenticate")), "resource_metadata")
 }
 
-// fetchDiscoveryCard retrieves and parses the public agent card, trying the v1.0
-// well-known path then the v0.3 legacy path.
+// fetchDiscoveryCard retrieves and parses the public agent card.
 func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL string) (a2aDiscoveryCard, bool) {
-	for _, path := range []string{"/.well-known/agent-card.json", "/.well-known/agent.json"} {
-		cardURL := endpointpkg.AppendPath(baseURL, path)
-		resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
+	attempts := []struct {
+		path    string
+		headers map[string]string
+	}{
+		{cardPathPrimary, map[string]string{"A2A-Version": "1.0"}},
+		{cardPathPrimary, nil},
+		{cardPathLegacy, nil},
+	}
+	for _, attempt := range attempts {
+		cardURL := endpointpkg.AppendPath(baseURL, attempt.path)
+		resp, err := client.GET(ctx, cardURL, attempt.headers)
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}

@@ -3,8 +3,10 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -922,6 +924,59 @@ func TestFetchAgentCard_VersionHeaderByPath(t *testing.T) {
 			}
 			if _, _, err := client.FetchAgentCard(t.Context()); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestFetchAgentCard_V03AtCanonicalPath(t *testing.T) {
+	var headers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != WellKnownPath {
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		headers = append(headers, r.Header.Get("A2A-Version"))
+		if r.Header.Get("A2A-Version") != "" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(legacyV03CardJSON))
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, result, err := client.FetchAgentCard(t.Context())
+	if err != nil || card == nil || card.Name != "Legacy Agent" || result.URL != server.URL+WellKnownPath {
+		t.Fatalf("card=%+v result=%+v err=%v", card, result, err)
+	}
+	if !slices.Equal(headers, []string{"1.0", ""}) {
+		t.Fatalf("version headers = %q", headers)
+	}
+}
+
+func TestFetchAgentCard_PreservesHTTPFailure(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == WellKnownPath && r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(status)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			card, result, err := client.FetchAgentCard(t.Context())
+			if card != nil || result == nil || result.StatusCode != status || err == nil ||
+				!strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) {
+				t.Fatalf("card=%+v result=%+v err=%v", card, result, err)
 			}
 		})
 	}
