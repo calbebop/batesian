@@ -17,11 +17,12 @@ import (
 
 // RunResult holds the findings and any error from executing a single rule.
 type RunResult struct {
-	Rule     *rules.Rule
-	Findings []attackpkg.Finding
-	Err      error
-	Skipped  bool
-	SkipMsg  string
+	Rule          *rules.Rule
+	Findings      []attackpkg.Finding
+	TargetObjects []attackpkg.TargetObject
+	Err           error
+	Skipped       bool
+	SkipMsg       string
 }
 
 // Engine executes rules against a target.
@@ -92,6 +93,9 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 		}
 	}
 
+	state := &attackpkg.TargetState{}
+	opts := e.opts
+	opts.TargetState = state
 	defer func() {
 		if p := recover(); p != nil {
 			result = RunResult{
@@ -99,6 +103,7 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 				Err:  fmt.Errorf("executor panicked: %v", p),
 			}
 		}
+		result.TargetObjects = state.Snapshot()
 	}()
 
 	// In a dry run, label every request this rule records so the plan groups by rule.
@@ -109,9 +114,9 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	var findings []attackpkg.Finding
 	var err error
 	if chained, ok := entry.executor.(attackpkg.ChainExecutor); ok {
-		findings, err = chained.ExecuteChained(ctx, target, e.opts, bb)
+		findings, err = chained.ExecuteChained(ctx, target, opts, bb)
 	} else {
-		findings, err = entry.executor.Execute(ctx, target, e.opts)
+		findings, err = entry.executor.Execute(ctx, target, opts)
 	}
 	// A rule that could not reach a testable endpoint is recorded as skipped, not
 	// as a (misleading) clean result and not as an error.

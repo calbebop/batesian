@@ -169,6 +169,7 @@ func (r outputRedactor) results(results []engine.RunResult) []engine.RunResult {
 		for j := range out[i].Findings {
 			out[i].Findings[j] = r.finding(out[i].Findings[j])
 		}
+		out[i].TargetObjects = r.targetObjects(results[i].TargetObjects)
 	}
 	return out
 }
@@ -178,6 +179,20 @@ func (r outputRedactor) ruleOutcomes(results []engine.RunResult) []scanJSONRuleO
 	for i := range out {
 		out[i].Reason = r.text(out[i].Reason)
 		out[i].Error = r.text(out[i].Error)
+		out[i].TargetObjects = r.targetObjects(out[i].TargetObjects)
+	}
+	return out
+}
+
+func (r outputRedactor) targetObjects(objects []attackpkg.TargetObject) []attackpkg.TargetObject {
+	out := make([]attackpkg.TargetObject, len(objects))
+	for i, object := range objects {
+		object.ID = r.text(object.ID)
+		object.Name = r.text(object.Name)
+		object.ParentID = r.text(object.ParentID)
+		object.Endpoint = r.url(object.Endpoint)
+		object.CleanupDetail = r.text(object.CleanupDetail)
+		out[i] = object
 	}
 	return out
 }

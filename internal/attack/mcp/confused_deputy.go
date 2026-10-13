@@ -57,10 +57,11 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 	var cleanup dcrCleanup
 	cleanedUp := false
 	removeClient := func() {
-		if cleanedUp || clientID == "" {
+		if cleanedUp || regResp == nil || (regResp.StatusCode != http.StatusOK && regResp.StatusCode != http.StatusCreated) {
 			return
 		}
 		cleanup = deregisterDCRClient(ctx, unauthClient, regEP, clientName, regResp)
+		recordDCRState(opts.TargetState, regEP, clientName, regResp, cleanup)
 		cleanedUp = true
 	}
 	defer removeClient()

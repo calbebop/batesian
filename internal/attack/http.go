@@ -40,6 +40,7 @@ var Version = "dev"
 // HTTPClient is a thin wrapper around net/http.Client with helpers for attack requests.
 type HTTPClient struct {
 	inner *http.Client
+	state *TargetState
 	// discovery is the scan-scoped endpoint cache; nil disables reuse.
 	discovery *DiscoveryCache
 	vars      Vars
@@ -232,6 +233,7 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 	}
 	return &HTTPClient{
 		discovery: opts.Discovery,
+		state:     opts.TargetState,
 		inner: &http.Client{
 			Timeout:   timeout,
 			Transport: Transport(opts),
@@ -415,7 +417,10 @@ func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string
 	for k, v := range expandedHeaders {
 		merged[k] = v
 	}
-	return c.do(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes), merged)
+	resp, err := c.do(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes), merged)
+	recordA2ATask(c.state, url, jsonBytes, resp)
+	recordMCPTask(c.state, url, jsonBytes, resp)
+	return resp, err
 }
 
 // POSTOAuth sends a POST only when the target-advertised OAuth URL stays within

@@ -121,6 +121,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				taskAccepted = true
 				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
+				recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
 			} else {
 				obs.observe(classifyPushRegistration("CreateTaskPushNotificationConfig", pushResp))
 			}
@@ -151,6 +152,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v0.3-message-send"
+				recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
 
 				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -167,6 +169,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				if setErr == nil && setResp != nil && setResp.IsAccepted() {
 					registrationConfirmed = true
 					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+					recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
 				} else {
 					obs.observe(classifyPushRegistration("tasks/pushNotificationConfig/set", setResp))
 				}
@@ -197,6 +200,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 						taskAccepted = true
 						registrationConfirmed = true
 						acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
+						recordPushConfig(opts.TargetState, cfgURL, taskID, route.version, cfgResp)
 					} else {
 						obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
 					}

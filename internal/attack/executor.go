@@ -96,6 +96,9 @@ type Options struct {
 	// paths. The engine allocates it per scan; nil keeps every rule walking
 	// independently (the behaviour direct executor use in tests expects).
 	Discovery *DiscoveryCache
+
+	// TargetState records objects created on the target during a rule run.
+	TargetState *TargetState
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant

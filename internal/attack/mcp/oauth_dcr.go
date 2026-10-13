@@ -90,6 +90,7 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 	// anonymously registered client holding whatever privileged scopes the server was
 	// willing to grant, which is the very thing being reported.
 	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, escalatedResp)
+	recordDCRState(opts.TargetState, registrationEndpoint, clientName, escalatedResp, cleanup)
 
 	// Step 3: Fire only when registration succeeded AND the server registered a
 	// privileged scope. A rejected registration (auth required / scope policy)

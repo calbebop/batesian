@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	attackpkg "github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/engine"
 	"github.com/calbebop/batesian/internal/rules"
 )
@@ -37,17 +38,18 @@ type scanJSONRuleset struct {
 }
 
 type scanJSONRuleOutcome struct {
-	RuleID       string `json:"rule_id"`
-	Status       string `json:"status"`
-	FindingCount int    `json:"finding_count"`
-	Reason       string `json:"reason,omitempty"`
-	Error        string `json:"error,omitempty"`
+	RuleID        string                   `json:"rule_id"`
+	Status        string                   `json:"status"`
+	FindingCount  int                      `json:"finding_count"`
+	Reason        string                   `json:"reason,omitempty"`
+	Error         string                   `json:"error,omitempty"`
+	TargetObjects []attackpkg.TargetObject `json:"target_objects,omitempty"`
 }
 
 func buildRuleOutcomes(results []engine.RunResult) []scanJSONRuleOutcome {
 	out := make([]scanJSONRuleOutcome, 0, len(results))
 	for _, r := range results {
-		outcome := scanJSONRuleOutcome{RuleID: r.Rule.ID, FindingCount: len(r.Findings)}
+		outcome := scanJSONRuleOutcome{RuleID: r.Rule.ID, FindingCount: len(r.Findings), TargetObjects: r.TargetObjects}
 		switch {
 		case r.Err != nil:
 			outcome.Status = "error"

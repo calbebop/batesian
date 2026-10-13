@@ -128,6 +128,7 @@ loaded rule descriptors. The hash ignores rule-file ordering and YAML comments.
 count and any skip reason or error. Outcomes are captured before coalescing, so
 the finding count can exceed the coalesced `summary.total`. The existing
 `findings`, `skipped`, `errors`, and `summary` fields remain available.
+Each `rule_outcomes` entry can also list `target_objects` with creation (`accepted` or `unverified`) and cleanup (`not_attempted`, `attempted`, `completed`, or `unavailable`) status. SARIF places the same records under invocation `properties.targetObjects`. Review these records even for clean or incomplete rules.
 
 To require complete coverage in a JSON pipeline:
 

@@ -51,6 +51,7 @@ const (
 	dcrOtherScheme                   // a URI on another scheme, which must not be followed
 	dcrUserinfoURI                   // a URI with userinfo, which must not be followed
 	dcrRefuseDel                     // full advertisement, but DELETE is refused
+	dcrAcceptedDel                   // DELETE is queued but not confirmed
 )
 
 func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrServer {
@@ -86,7 +87,7 @@ func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrSer
 		}
 		base := "http://" + r.Host
 		switch d.support {
-		case dcrFull, dcrRefuseDel:
+		case dcrFull, dcrRefuseDel, dcrAcceptedDel:
 			out["registration_client_uri"] = base + "/register/" + id
 			out["registration_access_token"] = "rat-" + id
 		case dcrNoToken:
@@ -119,6 +120,11 @@ func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrSer
 		if d.support == dcrRefuseDel {
 			d.mu.Unlock()
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if d.support == dcrAcceptedDel {
+			d.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
 			return
 		}
 		delete(d.live, id)
@@ -186,6 +192,37 @@ func TestDCRCleanup_ScopeEscalationRemovesItsClient(t *testing.T) {
 	}
 }
 
+func TestDCRStateReportedForCleanRule(t *testing.T) {
+	srv := newDCRServer(t, dcrFull, "tools:read")
+	defer srv.Close()
+	state := &attack.TargetState{}
+	exec := mcpattack.NewOAuthDCRExecutor(attack.RuleContext{ID: "mcp-oauth-dcr-001"})
+	findings, err := exec.Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5, TargetState: state})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("clean rule: findings=%+v err=%v", findings, err)
+	}
+	objects := state.Snapshot()
+	if len(objects) != 1 || objects[0].Kind != "oauth_client" || objects[0].ID == "" ||
+		objects[0].Cleanup != attack.CleanupCompleted {
+		t.Fatalf("target objects = %+v", objects)
+	}
+}
+
+func TestDCRAcceptedDeleteIsNotReportedComplete(t *testing.T) {
+	srv := newDCRServer(t, dcrAcceptedDel, "tools:read")
+	defer srv.Close()
+	state := &attack.TargetState{}
+	exec := mcpattack.NewOAuthDCRExecutor(attack.RuleContext{ID: "mcp-oauth-dcr-001"})
+	findings, err := exec.Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5, TargetState: state})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("clean rule: findings=%+v err=%v", findings, err)
+	}
+	objects := state.Snapshot()
+	if len(objects) != 1 || objects[0].Cleanup != attack.CleanupAttempted || len(srv.liveNames()) != 1 {
+		t.Fatalf("queued delete must remain unverified: %+v", objects)
+	}
+}
+
 // A server without the management protocol keeps the client. That is not an error,
 // but the operator has to be told, and told what to search for.
 func TestDCRCleanup_NoManagementProtocolIsReported(t *testing.T) {
@@ -201,8 +238,8 @@ func TestDCRCleanup_NoManagementProtocolIsReported(t *testing.T) {
 		t.Fatalf("expected the escalated-scope finding, got %d", len(findings))
 	}
 	ev := findings[0].Evidence
-	if !strings.Contains(ev, "LEFT REGISTERED") {
-		t.Errorf("a client that could not be removed must be reported as left behind; got:\n%s", ev)
+	if !strings.Contains(ev, "cleanup unavailable") {
+		t.Errorf("a client that could not be removed must report unavailable cleanup; got:\n%s", ev)
 	}
 	if !strings.Contains(ev, "batesian-probe-") {
 		t.Errorf("the report must name the client so it can be found by hand; got:\n%s", ev)

@@ -334,6 +334,7 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		} else {
 			fmt.Fprintf(p.w, "  %s\n\n", Green("No findings. Target appears clean for the tested rules."))
 		}
+		p.printTargetObjects(results)
 		return
 	}
 
@@ -379,6 +380,7 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 	}
 
 	p.printSkipsAndErrors(results)
+	p.printTargetObjects(results)
 
 	if notExercised > 0 || errored > 0 {
 		parts := []string{}
@@ -391,6 +393,37 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) {
 		fmt.Fprintf(p.w, "\n  %s\n", Yellow(fmt.Sprintf(
 			"Note: %d of %d rule(s) did not complete (%s).",
 			notExercised+errored, len(results), strings.Join(parts, ", "))))
+	}
+}
+
+func (p *Printer) printTargetObjects(results []engine.RunResult) {
+	printed := false
+	for _, result := range results {
+		for _, object := range result.TargetObjects {
+			if !printed {
+				fmt.Fprintln(p.w, "\n  Target-side objects:")
+				printed = true
+			}
+			id := object.ID
+			if id == "" {
+				id = object.Name
+			}
+			if id == "" {
+				id = "ID unavailable"
+			}
+			fmt.Fprintf(p.w, "  %s: %s %s (creation: %s, cleanup: %s)\n",
+				EscapeTerminal(result.Rule.ID), EscapeTerminal(object.Kind),
+				EscapeTerminal(id), EscapeTerminal(object.Creation), EscapeTerminal(string(object.Cleanup)))
+			if object.ParentID != "" {
+				fmt.Fprintf(p.w, "    parent task: %s\n", EscapeTerminal(object.ParentID))
+			}
+			if object.Endpoint != "" {
+				fmt.Fprintf(p.w, "    endpoint: %s\n", EscapeTerminal(object.Endpoint))
+			}
+			if object.CleanupDetail != "" {
+				fmt.Fprintf(p.w, "    %s\n", EscapeTerminal(object.CleanupDetail))
+			}
+		}
 	}
 }
 
