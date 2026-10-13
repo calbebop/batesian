@@ -238,7 +238,8 @@ func TestPoisoning_PaginatedManifests(t *testing.T) {
 				return
 			}
 			finding := findingsWith(findings, tc.want)
-			if err != nil || finding == nil {
+			partial := tc.name == "finding survives second failure"
+			if finding == nil || errors.Is(err, attack.ErrInconclusive) != partial || (!partial && err != nil) {
 				t.Fatalf("missed %q: findings=%+v err=%v", tc.want, findings, err)
 			}
 			if tc.want == "changed between" && (finding.Severity != "medium" || finding.Confidence != attack.RiskIndicator) {

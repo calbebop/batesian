@@ -188,6 +188,30 @@ func TestTraversal_VulnerableFires(t *testing.T) {
 	}
 }
 
+func TestTraversal_RetainsFindingWhenLaterToolIsUnobserved(t *testing.T) {
+	srv := &traversalServer{
+		caps: map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{
+			readOnlySchemaTool("read_note"),
+			readOnlySchemaTool("echo_note_path"),
+		},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			if name == "echo_note_path" {
+				return "", false, "backend unavailable"
+			}
+			path, _ := args["path"].(string)
+			return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "echo_note_path") {
+		t.Fatalf("first tool's finding should survive the second tool's incomplete probe: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestTraversal_ProbesEachPathParameter(t *testing.T) {
 	tool := readOnlySchemaTool("read_note")
 	schema := tool["inputSchema"].(map[string]interface{})

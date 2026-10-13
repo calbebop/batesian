@@ -187,8 +187,9 @@ func TestTokenReplay_PartialProbeIsInconclusive(t *testing.T) {
 			findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).
 				Execute(context.Background(), srv.URL, testOpts())
 			if tc.acceptNoAud {
-				if err != nil || len(findings) != 1 {
-					t.Fatalf("want confirmed finding despite incomplete probe, got findings=%+v err=%v", findings, err)
+				if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 ||
+					!strings.Contains(err.Error(), tc.wire+" wrong-aud") {
+					t.Fatalf("want confirmed finding and incomplete probe, got findings=%+v err=%v", findings, err)
 				}
 				return
 			}

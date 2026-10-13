@@ -251,9 +251,11 @@ func TestCanary_ReflectionSurvivesFailedRead(t *testing.T) {
 	ts := canaryFailedReadServer(t, "reflect")
 	defer ts.Close()
 
-	findings := runCanary(t, ts)
-	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "modern tools/list") {
-		t.Fatalf("expected the observed reflection, got %+v", findings)
+	findings, err := mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "modern tools/list") ||
+		!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "legacy tools/list") {
+		t.Fatalf("expected the reflection and incomplete read, got findings=%+v err=%v", findings, err)
 	}
 }
 

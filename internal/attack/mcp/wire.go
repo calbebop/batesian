@@ -252,9 +252,7 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 // probe reports whether it established a verdict on that wire. A clean result
 // requires a verdict from every served wire.
 //
-// Findings survive an undetermined wire. A rule that confirmed an open listing
-// and then failed to complete a follow-up probe still found the listing, and the
-// honest report is that finding rather than a blanket "not tested".
+// Findings survive an undetermined wire, but the rule outcome stays incomplete.
 func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
 	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	sessions, err := openSessions(ctx, client, baseURL)
@@ -270,8 +268,8 @@ func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		}
 		out = append(out, labelEra(s, findings)...)
 	}
-	if len(out) == 0 && len(undetermined) > 0 {
-		return nil, fmt.Errorf("%w: the MCP handshake succeeded at %s, but no protocol-level verdict "+
+	if len(undetermined) > 0 {
+		return out, fmt.Errorf("%w: the MCP handshake succeeded at %s, but no protocol-level verdict "+
 			"from %s wire(s)", attack.ErrInconclusive, baseURL, strings.Join(undetermined, ", "))
 	}
 	return out, nil

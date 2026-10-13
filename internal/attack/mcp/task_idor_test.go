@@ -218,7 +218,7 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			if mode == "list-incomplete" {
+			if mode == "list-incomplete" || mode == "vuln-list-incomplete" {
 				result(map[string]interface{}{"tasks": []interface{}{}, "nextCursor": "next-page"})
 				return
 			}
@@ -323,6 +323,23 @@ func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
 				t.Fatalf("want incomplete=%t, got findings=%+v err=%v", tc.inconclusive, findings, err)
 			}
 		})
+	}
+}
+
+func TestTaskIDOR_RetainsFindingWhenTaskListIncomplete(t *testing.T) {
+	srv := taskIDORServer("vuln-list-incomplete")
+	defer srv.Close()
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{
+			TimeoutSeconds: 5,
+			MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"},
+				{Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "tasks/list") {
+		t.Fatalf("task reads should survive incomplete enumeration: findings=%+v err=%v", findings, err)
 	}
 }
 

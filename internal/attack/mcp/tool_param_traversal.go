@@ -43,17 +43,17 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 		}
 		return fs, determined
 	})
-	if len(findings) == 0 && stopReason != "" {
-		return nil, fmt.Errorf("%w: tools/call for %s; the path probe was not assessed",
+	if stopReason != "" {
+		return findings, fmt.Errorf("%w: tools/call for %s; the path probe was not assessed",
 			attack.ErrInconclusive, stopReason)
 	}
-	if len(findings) == 0 && len(pending) > 0 {
+	if len(pending) > 0 {
 		names := make([]string, 0, len(pending))
 		for name := range pending {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		return nil, fmt.Errorf("%w: approve exact tool names with --mcp-invoke-tool before traversal probes: %s",
+		return findings, fmt.Errorf("%w: approve exact tool names with --mcp-invoke-tool before traversal probes: %s",
 			attack.ErrInconclusive, strings.Join(names, ", "))
 	}
 	return findings, err

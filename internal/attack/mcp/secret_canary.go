@@ -51,6 +51,9 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 		return result, reached
 	})
 	if len(findings) != 0 || err != nil {
+		if incomplete != "" {
+			return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, incomplete)
+		}
 		return findings, err
 	}
 	if incomplete != "" {
@@ -131,7 +134,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		return nil, applicable, ""
 	}
 
-	return []attack.Finding{{
+	finding := attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "medium",
@@ -146,7 +149,11 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			ep, reflectedAt, canary, snippetAround(reflectedIn, canary)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
-	}}, true, ""
+	}
+	if len(incomplete) > 0 {
+		return []attack.Finding{finding}, true, "credential-canary responses were not observed: " + strings.Join(incomplete, ", ")
+	}
+	return []attack.Finding{finding}, true, ""
 }
 
 // looksJSONRPC rejects generic JSON errors that only resemble MCP replies.

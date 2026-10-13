@@ -719,10 +719,10 @@ func TestScope_DualWireFindingKeepsIncompleteHandshake(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := runScope(t, ts)
-	if err != nil || len(findings) != 1 ||
-		!strings.Contains(findings[0].Evidence, "additional probe incomplete: legacy wire") ||
-		!strings.Contains(findings[0].Evidence, "initialized notification") {
-		t.Fatalf("want modern finding with incomplete legacy evidence, got findings=%+v err=%v", findings, err)
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 ||
+		!strings.Contains(err.Error(), "legacy wire") ||
+		!strings.Contains(err.Error(), "initialized notification") {
+		t.Fatalf("want modern finding with incomplete legacy outcome, got findings=%+v err=%v", findings, err)
 	}
 }
 

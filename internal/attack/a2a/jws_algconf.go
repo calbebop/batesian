@@ -207,11 +207,8 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 	}
 
 	if len(unreadable) > 0 {
-		if len(findings) == 0 {
-			return nil, fmt.Errorf("%w: Agent Card signature entries %v at %s could not be inspected",
-				attack.ErrInconclusive, unreadable, cardURL)
-		}
-		findings[0].Evidence += fmt.Sprintf("\nuninspected signature entries: %v", unreadable)
+		return findings, fmt.Errorf("%w: Agent Card signature entries %v at %s could not be inspected",
+			attack.ErrInconclusive, unreadable, cardURL)
 	}
 	return findings, nil
 }

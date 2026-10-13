@@ -150,7 +150,7 @@ func TestWellKnownHostInject_HeaderRejectionIsObserved(t *testing.T) {
 	}
 }
 
-func TestWellKnownHostInject_PartialFindingNotesUnobservedProbe(t *testing.T) {
+func TestWellKnownHostInject_PartialFindingKeepsUnobservedProbeIncomplete(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/agent-card.json" {
 			w.WriteHeader(http.StatusNotFound)
@@ -170,11 +170,11 @@ func TestWellKnownHostInject_PartialFindingNotesUnobservedProbe(t *testing.T) {
 
 	exec := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{ID: "a2a-wellknown-hostinject-001"})
 	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil || len(findings) == 0 {
-		t.Fatalf("want reflection finding, got findings=%v err=%v", findings, err)
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) == 0 {
+		t.Fatalf("want reflection finding and incomplete probe, got findings=%v err=%v", findings, err)
 	}
-	if !strings.Contains(findings[0].Evidence, "X-Original-Host: HTTP 503") {
-		t.Fatalf("finding omitted unobserved probe: %q", findings[0].Evidence)
+	if !strings.Contains(err.Error(), "X-Original-Host: HTTP 503") {
+		t.Fatalf("outcome omitted unobserved probe: %v", err)
 	}
 }
 
