@@ -8,29 +8,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
 	a2aattack "github.com/calbebop/batesian/internal/attack/a2a"
 )
 
-// Eight A2A rules need a task before their oracle means anything, and each of them
-// used to report a clean result when no task could be created. On an agent that
-// enforces authorization and is scanned without a usable credential, that is a
-// high- or critical-severity claim with nothing behind it: "this agent does not
-// leak tasks across principals" when no task was ever created.
-//
-// It survived five validation rounds because it needs an agent that is reachable
-// AND enforces authorization, and no fixture in testdata/ is one. This is that
-// fixture, in-process.
+// These rules need a task before their oracle can run. A refused setup must be
+// reported as incomplete, not clean.
 
-// securedAgent serves a valid agent card so endpoint resolution succeeds, then
-// refuses every JSON-RPC call with HTTP 401 unless it carries validToken. That is
-// the shape of the a2a-sdk agent this defect was found against, and of every
-// correctly secured deployment.
-func securedAgent(t *testing.T, validToken string) *httptest.Server {
+type securedAgentFixture struct {
+	*httptest.Server
+	authorizedCreates atomic.Int64
+}
+
+// securedAgent admits the listed credentials and counts authorized task creates.
+func securedAgent(t *testing.T, validTokens ...string) *securedAgentFixture {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fixture := &securedAgentFixture{}
+	fixture.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"name":"Secured Agent","description":"d","version":"1.0.0",`+
@@ -38,7 +35,14 @@ func securedAgent(t *testing.T, validToken string) *httptest.Server {
 				`"supportedInterfaces":[{"url":"http://`+r.Host+`/","protocolBinding":"JSONRPC","protocolVersion":"1.0"}]}`)
 			return
 		}
-		if r.Header.Get("Authorization") != "Bearer "+validToken {
+		authorized := false
+		for _, token := range validTokens {
+			if r.Header.Get("Authorization") == "Bearer "+token {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, `{"error":"unauthenticated","message":"a valid bearer token is required"}`)
@@ -48,6 +52,9 @@ func securedAgent(t *testing.T, validToken string) *httptest.Server {
 		// this fixture cannot pass by refusing everything.
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if method, _ := req["method"].(string); method == "SendMessage" || method == "message/send" {
+			fixture.authorizedCreates.Add(1)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": req["id"],
@@ -57,6 +64,7 @@ func securedAgent(t *testing.T, validToken string) *httptest.Server {
 			},
 		})
 	}))
+	return fixture
 }
 
 // theEightRules are every rule whose oracle needs a task it has to create first.
@@ -89,9 +97,7 @@ func theEightRules() map[string]func(attack.RuleContext) attack.Executor {
 	}
 }
 
-// twoRejectedPrincipals is the case that produced eight silent false cleans: the
-// operator configured two identities, so the two-principal gate from #170 passes,
-// and the agent rejects both.
+// Both configured identities are rejected by the fixture.
 func twoRejectedPrincipals() attack.Options {
 	return attack.Options{
 		TimeoutSeconds: 5,
@@ -103,8 +109,7 @@ func twoRejectedPrincipals() attack.Options {
 	}
 }
 
-// No rule may report a clean result when the credential it was given cannot create
-// a task. Every one of these reported clean before.
+// A rejected credential must not produce a clean result.
 func TestTaskSetup_RejectedCredentialIsNotTestedForEveryRule(t *testing.T) {
 	srv := securedAgent(t, "the-valid-token")
 	defer srv.Close()
@@ -132,28 +137,29 @@ func TestTaskSetup_RejectedCredentialIsNotTestedForEveryRule(t *testing.T) {
 	}
 }
 
-// The same agent with the credential it accepts. Every rule must get past setup, so
-// the fixture above cannot be passing merely by being unreachable, and so this
-// change cannot be silencing rules that could in fact run.
+// Each rule must create a task with accepted credentials before its oracle runs.
 func TestTaskSetup_AcceptedCredentialGetsPastSetup(t *testing.T) {
-	srv := securedAgent(t, "the-valid-token")
+	srv := securedAgent(t, "valid-a", "valid-b")
 	defer srv.Close()
 
 	opts := attack.Options{
 		TimeoutSeconds: 5,
-		Token:          "the-valid-token",
+		Token:          "valid-a",
 		Principals: []attack.Principal{
-			{Name: "a", Token: "the-valid-token", Tenant: "A"},
-			{Name: "b", Token: "the-valid-token", Tenant: "B"},
+			{Name: "a", Token: "valid-a", Tenant: "A"},
+			{Name: "b", Token: "valid-b", Tenant: "B"},
 		},
 	}
 	for id, build := range theEightRules() {
 		t.Run(id, func(t *testing.T) {
 			exec := build(attack.RuleContext{ID: id, Severity: "high"})
-			_, err := exec.Execute(context.Background(), srv.URL, opts)
-			if errors.Is(err, attack.ErrInconclusive) &&
-				strings.Contains(err.Error(), "no task existed to test with") {
-				t.Errorf("setup should have succeeded with the accepted credential; got: %v", err)
+			before := srv.authorizedCreates.Load()
+			findings, err := exec.Execute(context.Background(), srv.URL, opts)
+			if srv.authorizedCreates.Load() == before {
+				t.Fatalf("accepted credentials did not create a task: findings=%+v err=%v", findings, err)
+			}
+			if err != nil && !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("rule failed after task creation: %v", err)
 			}
 		})
 	}

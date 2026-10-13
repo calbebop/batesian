@@ -210,9 +210,6 @@ func waitForCallback(
 		states := q["state"]
 		if len(states) != 1 || states[0] != expectedState {
 			respondCallbackError(w, "state mismatch", "the state parameter did not match the value sent in the authorization request")
-			once.Do(func() {
-				resultCh <- result{err: errors.New("state parameter mismatch (possible CSRF; aborting)")}
-			})
 			return
 		}
 		errParam := q.Get("error")
@@ -306,18 +303,24 @@ func respondCallbackError(w http.ResponseWriter, errParam, desc string) {
 
 // openInBrowser launches the authorization URL without a shell.
 func openInBrowser(target string) error {
+	return openInBrowserWith(target, runtime.GOOS, (*exec.Cmd).Start)
+}
+
+func openInBrowserWith(target, platform string, launch func(*exec.Cmd) error) error {
 	if _, err := parseOAuthEndpoint(target, "authorization URL"); err != nil {
 		return fmt.Errorf("refusing to open browser: %w", err)
 	}
-	switch runtime.GOOS {
+	var cmd *exec.Cmd
+	switch platform {
 	case "windows":
 		// #nosec G204 -- target validated as https URL above; no shell involved.
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	case "darwin":
 		// #nosec G204 -- target validated as https URL above.
-		return exec.Command("open", target).Start()
+		cmd = exec.Command("open", target)
 	default:
 		// #nosec G204 -- target validated as https URL above.
-		return exec.Command("xdg-open", target).Start()
+		cmd = exec.Command("xdg-open", target)
 	}
+	return launch(cmd)
 }

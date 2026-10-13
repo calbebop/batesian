@@ -390,32 +390,58 @@ func TestPerformPKCEFlowUsesProxyAndSkipTLS(t *testing.T) {
 	}
 }
 
-// TestPerformPKCEFlow_StateMismatch verifies that a callback with a tampered
-// state parameter is rejected (CSRF protection).
-func TestPerformPKCEFlow_StateMismatch(t *testing.T) {
+func TestPerformPKCEFlow_StateMismatchKeepsLoginPending(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"valid-token"}`)
 	}))
 	defer srv.Close()
 
 	port := pickFreePort(t)
-
-	resultCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	urlCh := make(chan string, 1)
+	type flowResult struct {
+		token *auth.TokenResponse
+		err   error
+	}
+	resultCh := make(chan flowResult, 1)
 	go func() {
-		_, err := performPKCEFlowForTest(context.Background(), auth.PKCEFlowConfig{
-			AuthURL:         srv.URL + "/authorize",
-			TokenURL:        srv.URL + "/token",
-			ClientID:        "c",
-			RedirectPort:    port,
-			OpenBrowser:     false,
-			Logger:          func(string, ...interface{}) {},
+		token, err := performPKCEFlowForTest(ctx, auth.PKCEFlowConfig{
+			AuthURL:      srv.URL + "/authorize",
+			TokenURL:     srv.URL + "/token",
+			ClientID:     "c",
+			RedirectPort: port,
+			OpenBrowser:  false,
+			Logger: func(format string, args ...interface{}) {
+				msg := fmt.Sprintf(format, args...)
+				if strings.Contains(msg, "code_challenge") {
+					urlCh <- strings.TrimSpace(msg)
+				}
+			},
 			CallbackTimeout: 5 * time.Second,
 		}, srv.Client())
-		resultCh <- err
+		resultCh <- flowResult{token, err}
 	}()
 
-	// Give the flow a moment to bind the listener.
-	time.Sleep(150 * time.Millisecond)
+	var authURL string
+	select {
+	case authURL = <-urlCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flow did not print authorization URL")
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := parsed.Query().Get("state")
+	if state == "" {
+		t.Fatal("authorization URL missing state")
+	}
 
 	cb := fmt.Sprintf("http://127.0.0.1:%d/callback?code=anything&state=tampered", port)
 	resp, err := http.Get(cb)
@@ -424,14 +450,32 @@ func TestPerformPKCEFlow_StateMismatch(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mismatched callback status = %d, want 400", resp.StatusCode)
+	}
 
 	select {
-	case err := <-resultCh:
-		if err == nil || !strings.Contains(err.Error(), "state") {
-			t.Fatalf("expected state mismatch error, got: %v", err)
+	case result := <-resultCh:
+		t.Fatalf("mismatched callback ended the login: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cb = fmt.Sprintf("http://127.0.0.1:%d/callback?code=valid&state=%s", port, url.QueryEscape(state))
+	resp, err = http.Get(cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("valid callback status = %d, want 200", resp.StatusCode)
+	}
+	select {
+	case result := <-resultCh:
+		if result.err != nil || result.token == nil || result.token.AccessToken != "valid-token" {
+			t.Fatalf("valid callback did not finish login: %+v", result)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("flow did not reject tampered state within 5s")
+		t.Fatal("valid callback did not finish login")
 	}
 }
 
@@ -439,12 +483,11 @@ func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
 	tests := []struct {
 		name      string
 		stateMode string
-		wantError string
 	}{
-		{name: "missing", stateMode: "missing", wantError: "state parameter mismatch"},
-		{name: "mismatched", stateMode: "mismatched", wantError: "state parameter mismatch"},
-		{name: "duplicate", stateMode: "duplicate", wantError: "state parameter mismatch"},
-		{name: "matching", stateMode: "matching", wantError: "authorization server returned error: access_denied"},
+		{name: "missing", stateMode: "missing"},
+		{name: "mismatched", stateMode: "mismatched"},
+		{name: "duplicate", stateMode: "duplicate"},
+		{name: "matching", stateMode: "matching"},
 	}
 
 	for _, tc := range tests {
@@ -516,11 +559,28 @@ func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
 			if tc.stateMode == "matching" && !strings.Contains(string(body), "access_denied") {
 				t.Fatalf("verified OAuth error missing from callback response: %s", body)
 			}
+			if tc.stateMode != "matching" {
+				select {
+				case err := <-resultCh:
+					t.Fatalf("unverified OAuth error ended the login: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
+				query.Set("state", state)
+				callback = fmt.Sprintf("http://127.0.0.1:%d/callback?%s", port, query.Encode())
+				resp, err = client.Get(callback)
+				if err != nil {
+					t.Fatalf("hitting valid callback: %v", err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("valid OAuth error status = %d, want 400", resp.StatusCode)
+				}
+			}
 
 			select {
 			case err := <-resultCh:
-				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
-					t.Fatalf("flow error = %v, want %q", err, tc.wantError)
+				if err == nil || !strings.Contains(err.Error(), "authorization server returned error: access_denied") {
+					t.Fatalf("flow error = %v, want verified access_denied", err)
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("flow did not return after callback")
