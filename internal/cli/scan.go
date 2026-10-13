@@ -381,6 +381,9 @@ func loadRules(builtins fs.FS, extraDir string) ([]*rules.Rule, error) {
 		}
 		loaded = append(loaded, extra...)
 	}
+	if err := rules.ValidateUniqueIDs(loaded); err != nil {
+		return nil, fmt.Errorf("loading rule catalogs: %w", err)
+	}
 
 	return loaded, nil
 }
@@ -398,6 +401,9 @@ func ruleWarningsError(source string, warns []rules.LoadWarning) error {
 }
 
 func selectScanRules(loaded []*rules.Rule, protocol string, severities, tags, ids []string) ([]*rules.Rule, error) {
+	if err := rules.ValidateUniqueIDs(loaded); err != nil {
+		return nil, err
+	}
 	protocols, err := parseProtocols(protocol)
 	if err != nil {
 		return nil, err
