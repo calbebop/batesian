@@ -70,5 +70,7 @@ app.state.posture = "vulnerable"
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         app.state.posture = sys.argv[1]
+    if app.state.posture not in SERVER_INFO:
+        sys.exit(f"unknown posture {app.state.posture!r}; expected one of {', '.join(SERVER_INFO)}")
     print(f"[*] MCP vulnerable-version fixture ({app.state.posture}) on port {PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

@@ -12,6 +12,7 @@ from starlette.routing import Route
 import uvicorn
 
 PORT = 7811
+POSTURES = ("prefix", "port-prefix", "hardened", "open")
 
 
 async def jsonrpc(request: Request) -> JSONResponse:
@@ -63,6 +64,8 @@ app.state.origin_allowed = make_allowed("prefix")
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         app.state.posture = sys.argv[1]
+    if app.state.posture not in POSTURES:
+        sys.exit(f"unknown posture {app.state.posture!r}; expected one of {', '.join(POSTURES)}")
     app.state.origin_allowed = make_allowed(app.state.posture)
     print(f"[*] MCP origin-prefix-bypass fixture ({app.state.posture}) on port {PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

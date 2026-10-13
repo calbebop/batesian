@@ -14,11 +14,12 @@ Flow the scanner drives:
 A safe server would never fetch registrant-supplied URLs at registration time.
 
 Validate against it (OOB listener auto-starts locally):
-  python testdata/mcp_oauth_metadata_ssrf_server.py
+  python testdata/mcp_oauth_metadata_ssrf_server.py --allow-metadata-fetch
   batesian scan --target http://127.0.0.1:7791 --rule-ids mcp-oauth-metadata-ssrf-001 -v
 
-Run: python testdata/mcp_oauth_metadata_ssrf_server.py
+Outbound metadata fetches are disabled unless --allow-metadata-fetch is set.
 """
+import argparse
 import json
 import urllib.request
 from starlette.applications import Starlette
@@ -43,6 +44,9 @@ async def metadata(request: Request) -> JSONResponse:
 
 
 async def register(request: Request) -> Response:
+    if not request.app.state.allow_metadata_fetch:
+        return JSONResponse({"error": "metadata fetch disabled; restart with --allow-metadata-fetch"},
+                            status_code=403)
     body = await request.json()
     for field in FETCHED_FIELDS:
         url = body.get(field)
@@ -62,8 +66,17 @@ app = Starlette(routes=[
     Route("/.well-known/oauth-authorization-server", metadata, methods=["GET"]),
     Route("/register", register, methods=["POST"]),
 ])
+app.state.allow_metadata_fetch = False
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="MCP OAuth metadata fetch fixture")
+    parser.add_argument("--allow-metadata-fetch", action="store_true",
+                        help="allow the fixture to fetch registrant-supplied URLs")
+    args = parser.parse_args()
+    app.state.allow_metadata_fetch = args.allow_metadata_fetch
     print(f"[*] MCP OAuth metadata-SSRF vulnerable server on port {PORT}", flush=True)
-    print(f"[*] Vulnerability: DCR fetches registrant-supplied URLs {FETCHED_FIELDS}", flush=True)
+    if args.allow_metadata_fetch:
+        print(f"[*] DCR fetches registrant-supplied URLs {FETCHED_FIELDS}", flush=True)
+    else:
+        print("[*] Outbound metadata fetches disabled", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)
