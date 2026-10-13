@@ -32,6 +32,11 @@ func NewSSEResumeReplayExecutor(r attack.RuleContext) *SSEResumeReplayExecutor {
 
 type sseEvent struct{ id, data string }
 
+const (
+	maxSSECollectBytes  = 4 << 20
+	maxSSECollectEvents = 256
+)
+
 func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
@@ -107,6 +112,13 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	// replayed into B's session. MCP event ids are opaque (spec: Streamable HTTP
 	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
 	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
+	if bStatus == http.StatusNotImplemented || (bStatus >= 400 && bStatus < 500 &&
+		bStatus != http.StatusRequestTimeout && bStatus != http.StatusTooManyRequests) {
+		return nil, true, "" // the cross-session resume was refused
+	}
+	if (bErr != nil && !errors.Is(bErr, context.DeadlineExceeded)) || bStatus < 200 || bStatus >= 300 {
+		return nil, true, "session B SSE resume response could not be read"
+	}
 	for _, ev := range bEvents {
 		if marker, ok := markers[ev.id]; ok && marker == ev.data {
 			return []attack.Finding{{
@@ -129,11 +141,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 			}}, true, ""
 		}
 	}
-	if bStatus == http.StatusNotImplemented || (bStatus >= 400 && bStatus < 500 &&
-		bStatus != http.StatusRequestTimeout && bStatus != http.StatusTooManyRequests) {
-		return nil, true, "" // the cross-session resume was refused
-	}
-	if bErr != nil || bStatus < 200 || bStatus >= 300 {
+	if bErr != nil {
 		return nil, true, "session B SSE resume response could not be read"
 	}
 	return nil, true, ""
@@ -220,15 +228,18 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		return nil, resp.StatusCode, fmt.Errorf("unexpected SSE content type")
 	}
-	// Read events for the window via the shared parser, which joins a payload
-	// split across several "data:" lines so a marker or checkpoint id is not
-	// reduced to its last fragment. The stream is bounded by the request
-	// context: when the window expires the body read errors and the loop stops.
-	rd := sse.NewReader(resp.Body)
+	limited := &io.LimitedReader{R: resp.Body, N: maxSSECollectBytes + 1}
+	rd := sse.NewReader(limited)
 	var events []sseEvent
 	for {
 		ev, err := rd.Next()
 		if err != nil {
+			if ctx.Err() != nil {
+				return events, resp.StatusCode, ctx.Err()
+			}
+			if limited.N == 0 {
+				return events, resp.StatusCode, fmt.Errorf("SSE stream exceeded %d-byte collection limit", maxSSECollectBytes)
+			}
 			if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 				return events, resp.StatusCode, context.DeadlineExceeded
 			}
@@ -239,6 +250,9 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 		}
 		if ctx.Err() != nil {
 			return events, resp.StatusCode, ctx.Err()
+		}
+		if len(events) == maxSSECollectEvents {
+			return events, resp.StatusCode, fmt.Errorf("SSE stream exceeded %d-event collection limit", maxSSECollectEvents)
 		}
 		events = append(events, sseEvent{id: ev.ID, data: ev.Data})
 	}

@@ -115,6 +115,8 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 			}
 		} else {
 			switch mode {
+			case "resume-broken":
+				w.Header().Set("Content-Length", "100000")
 			case "resume-error":
 				w.WriteHeader(http.StatusBadGateway)
 				return
@@ -197,6 +199,14 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 				continue // compliant: only replay the requester's own events
 			}
 			writeEvent(ev.eid, ev.data)
+		}
+		switch mode {
+		case "resume-flood":
+			for i := 0; i < 257; i++ {
+				writeEvent(fmt.Sprintf("extra-%d", i), `{"notice":true}`)
+			}
+		case "resume-oversize":
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", strings.Repeat("x", 5<<20))
 		}
 	}))
 }
@@ -309,6 +319,9 @@ func TestResume_IncompleteSetupAndStreams(t *testing.T) {
 		{"same-session", "second distinct session"},
 		{"resume-error", "session B SSE resume"},
 		{"resume-drop", "session B SSE resume"},
+		{"resume-broken", "session B SSE resume"},
+		{"resume-flood", "session B SSE resume"},
+		{"resume-oversize", "session B SSE resume"},
 		{"resume-timeout", "session B SSE resume"},
 	}
 	for _, tc := range tests {

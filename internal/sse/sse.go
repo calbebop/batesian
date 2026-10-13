@@ -35,6 +35,7 @@ type Reader struct {
 	id      string
 	data    strings.Builder
 	hasData bool
+	started bool
 }
 
 // NewReader returns a Reader over r with the default 32 MiB line limit.
@@ -49,6 +50,7 @@ func NewReaderSize(r io.Reader, maxLine int) *Reader {
 		maxLine = defaultLineBytes
 	}
 	sc := bufio.NewScanner(r)
+	sc.Split(splitLines)
 	// Grow on demand instead of allocating maxLine for every response.
 	initial := initialLineBytes
 	if maxLine < initial {
@@ -60,19 +62,20 @@ func NewReaderSize(r io.Reader, maxLine int) *Reader {
 
 // Next returns the next event that carries a non-empty data payload.
 //
-// It returns io.EOF when exhausted and dispatches a trailing unterminated block.
+// It returns io.EOF when exhausted. An unfinished block is discarded.
 func (r *Reader) Next() (Event, error) {
 	for {
 		if !r.sc.Scan() {
-			if ev, ok := r.flush(); ok {
-				return ev, nil
-			}
 			if err := r.sc.Err(); err != nil {
 				return Event{}, err
 			}
 			return Event{}, io.EOF
 		}
 		line := r.sc.Text()
+		if !r.started {
+			line = strings.TrimPrefix(line, "\ufeff")
+			r.started = true
+		}
 		switch {
 		case line == "":
 			if ev, ok := r.flush(); ok {
@@ -95,6 +98,29 @@ func (r *Reader) Next() (Event, error) {
 			}
 		}
 	}
+}
+
+// splitLines accepts CR, LF, and CRLF without consuming a trailing CR before
+// the next byte arrives.
+func splitLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		switch b {
+		case '\n':
+			return i + 1, data[:i], nil
+		case '\r':
+			if i+1 == len(data) && !atEOF {
+				return 0, nil, nil
+			}
+			if i+1 < len(data) && data[i+1] == '\n' {
+				return i + 2, data[:i], nil
+			}
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // flush returns a non-empty buffered event and resets the buffer.
