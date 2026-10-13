@@ -13,8 +13,10 @@ chain steps are in result properties. When a finding differs from its rule's
 default severity, its SARIF rule ID gains a severity suffix, such as
 `mcp-example-001/medium`. The original ID remains in `sourceRuleId`. This keeps
 GitHub's rule-level security score aligned with each result. Fingerprints use
-the rule, finding text, and target path; query strings do not affect identity.
-The revised fingerprints may cause existing alerts to appear new once.
+the rule, target path, and occurrence when a rule reports multiple findings at
+one target. Display-title and query-string changes do not affect identity.
+The v2 fingerprints may cause existing alerts to appear new once. Every SARIF
+run records its assessed target, including runs with no findings.
 
 ## GitHub Actions
 

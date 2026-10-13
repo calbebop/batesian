@@ -42,7 +42,7 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 
 	var table, sarif bytes.Buffer
 	report.New(&table, true).PrintScanSummary(safe)
-	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
+	if err := report.WriteSARIF(&sarif, safe, "test", r.displayTarget()); err != nil {
 		t.Fatal(err)
 	}
 	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), safe))
@@ -62,6 +62,42 @@ func TestOutputRedactorScanFormats(t *testing.T) {
 		if !strings.Contains(body, "REDACTED") {
 			t.Errorf("%s output lost the redacted target", format)
 		}
+	}
+}
+
+func TestSARIFCleanScanTargetRedacted(t *testing.T) {
+	r := newOutputRedactor("https://operator:password@example.com/mcp?access_token=secret-value")
+	results := []engine.RunResult{{Rule: &rules.Rule{ID: "mcp-test-001"}}}
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test", r.displayTarget()); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"operator", "password", "secret-value"} {
+		if strings.Contains(buf.String(), secret) {
+			t.Fatalf("clean SARIF exposed %q", secret)
+		}
+	}
+	var doc struct {
+		Runs []struct {
+			Properties struct {
+				Target string `json:"assessedTargetUri"`
+			} `json:"properties"`
+			Artifacts []struct {
+				Location struct {
+					URI string `json:"uri"`
+				} `json:"location"`
+			} `json:"artifacts"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := "https://example.com/mcp?REDACTED"
+	if got := doc.Runs[0].Properties.Target; got != want {
+		t.Fatalf("assessed target = %q, want %q", got, want)
+	}
+	if got := doc.Runs[0].Artifacts[0].Location.URI; got != want {
+		t.Fatalf("target artifact = %q, want %q", got, want)
 	}
 }
 
@@ -112,7 +148,7 @@ func TestCoalescedDetailsAcrossScanFormats(t *testing.T) {
 	}
 	var table, sarif bytes.Buffer
 	report.New(&table, true).PrintScanSummary(safe)
-	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
+	if err := report.WriteSARIF(&sarif, safe, "test", r.displayTarget()); err != nil {
 		t.Fatal(err)
 	}
 	jsonBody, err := json.Marshal(testScanJSON(t, target, safe))
@@ -188,7 +224,7 @@ func TestOutputRedactorConfiguredSecrets(t *testing.T) {
 	}})
 	var table, sarif bytes.Buffer
 	report.New(&table, true).PrintScanSummary(results)
-	if err := report.WriteSARIF(&sarif, results, "test"); err != nil {
+	if err := report.WriteSARIF(&sarif, results, "test", r.displayTarget()); err != nil {
 		t.Fatal(err)
 	}
 	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), results))
@@ -242,7 +278,7 @@ func TestOutputRedactorIndependentURLs(t *testing.T) {
 	}
 	var table, sarif bytes.Buffer
 	report.New(&table, true).PrintScanSummary(safe)
-	if err := report.WriteSARIF(&sarif, safe, "test"); err != nil {
+	if err := report.WriteSARIF(&sarif, safe, "test", r.displayTarget()); err != nil {
 		t.Fatal(err)
 	}
 	jsonBody, err := json.Marshal(testScanJSON(t, r.displayTarget(), safe))
