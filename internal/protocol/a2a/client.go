@@ -155,12 +155,12 @@ func (c *Client) FetchAgentCard(ctx context.Context) (*AgentCard, *ProbeResult, 
 			continue
 		}
 
+		if err := ValidateAgentCard(body); err != nil {
+			return nil, result, fmt.Errorf("invalid Agent Card from %s: %w", target, err)
+		}
 		var card AgentCard
 		if err := json.Unmarshal(body, &card); err != nil {
 			return nil, result, fmt.Errorf("response from %s is not valid JSON: %w", target, err)
-		}
-		if err := ValidateAgentCard(body); err != nil {
-			return nil, result, fmt.Errorf("invalid Agent Card from %s: %w", target, err)
 		}
 		return &card, result, nil
 	}

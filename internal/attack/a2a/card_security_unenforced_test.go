@@ -35,6 +35,14 @@ func cardSecServer(mode string) *httptest.Server {
 			sec = `"securityRequirements":[{"schemes":{}}],`
 		case "no-security":
 			sec = ``
+		case "malformed-v1":
+			sec = `"securityRequirements":["bearerAuth"],`
+		case "malformed-v03":
+			sec = `"security":[{"bearerAuth":"read"}],`
+		case "malformed-with-anonymous":
+			sec = `"securityRequirements":[{}, {"bearerAuth":null}],`
+		case "undefined-scheme":
+			sec = `"securityRequirements":[{"missing":[]}],`
 		default: // vuln-v1, secure
 			// The shape both official SDKs serve: SecurityRequirement is a
 			// proto message holding one map field, so the scheme names sit a
@@ -286,6 +294,20 @@ func TestCardSecurity_AnonymousAllowedV1(t *testing.T) {
 	if findings, err := runCardSec(t, srv); err != nil || len(findings) != 0 {
 		t.Errorf("expected 0 findings / nil err when the v1.0 card permits anonymous access, got %d findings, err=%v",
 			len(findings), err)
+	}
+}
+
+func TestCardSecurity_MalformedRequirementsAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"malformed-v1", "malformed-v03", "malformed-with-anonymous", "undefined-scheme"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cardSecServer(mode)
+			defer srv.Close()
+			findings, err := runCardSec(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "invalid Agent Card security metadata") {
+				t.Fatalf("malformed declaration must not be judged as anonymous: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 

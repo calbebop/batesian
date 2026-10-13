@@ -9,6 +9,7 @@ import (
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
+	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
 // CardSecurityUnenforcedExecutor checks whether an agent enforces the auth
@@ -62,6 +63,9 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	if !ok {
 		return nil, fmt.Errorf("%w: the agent card served by %s is not parseable JSON, so its "+
 			"declared security contract could not be read", attack.ErrInconclusive, vars.BaseURL)
+	}
+	if err := protocola2a.ValidateSecurityRequirements(cardBody); err != nil {
+		return nil, withCardReadReason(fmt.Errorf("%w: invalid Agent Card security metadata: %v", attack.ErrInconclusive, err))
 	}
 
 	// Only proceed when the card declares required auth with no anonymous option.
