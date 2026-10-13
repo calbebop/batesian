@@ -1,47 +1,65 @@
-package auth_test
+package auth
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/calbebop/batesian/internal/auth"
 )
 
-// TestWindowsBrowserCmd_PreservesAmpersands pins the regression behind the
-// rundll32 switch: cmd /c start without shell-quoting treated & in the
-// authorization URL as a command separator, truncating what opened and
-// leaking the remainder of the line to whatever followed. The rundll32 form
-// carries the URL as one raw CreateProcess argument, so every metacharacter
-// must survive verbatim - asserted here on any platform, since command
-// construction no longer depends on running Windows to be inspectable.
-func TestWindowsBrowserCmd_PreservesAmpersands(t *testing.T) {
+func TestBrowserLaunchCommands(t *testing.T) {
 	url := "https://auth.example.com/authorize?client_id=batesian&redirect_uri=https%3A%2F%2F127.0.0.1%3A9&scope=mcp%3Aread+openid&state=st1&code_challenge=abc&code_challenge_method=S256"
+	for _, tc := range []struct {
+		platform string
+		wantArgs []string
+	}{
+		{"windows", []string{"rundll32", "url.dll,FileProtocolHandler", url}},
+		{"darwin", []string{"open", url}},
+		{"linux", []string{"xdg-open", url}},
+	} {
+		t.Run(tc.platform, func(t *testing.T) {
+			called := false
+			err := openInBrowserWith(url, tc.platform, func(cmd *exec.Cmd) error {
+				called = true
+				if len(cmd.Args) != len(tc.wantArgs) {
+					t.Fatalf("launch args = %q, want %q", cmd.Args, tc.wantArgs)
+				}
+				for i, want := range tc.wantArgs {
+					if cmd.Args[i] != want {
+						t.Fatalf("launch arg %d = %q, want %q", i, cmd.Args[i], want)
+					}
+				}
+				if strings.Contains(strings.ToLower(cmd.Path), "cmd") {
+					t.Fatalf("browser launch routes through a shell: %q", cmd.Path)
+				}
+				return nil
+			})
+			if err != nil || !called {
+				t.Fatalf("browser launch was not attempted: called=%t err=%v", called, err)
+			}
+		})
+	}
+}
 
-	cmd := auth.WindowsBrowserCmd(url)
-
-	if len(cmd.Args) != 3 {
-		t.Fatalf("want exactly [rundll32 url.dll,FileProtocolHandler <url>], got %+v", cmd.Args)
-	}
-	if cmd.Args[0] != "rundll32" || !strings.HasPrefix(cmd.Args[1], "url.dll,FileProtocolHandler") {
-		t.Fatalf("unexpected dispatch form: %+v", cmd.Args)
-	}
-	got := cmd.Args[2]
-	if got != url {
-		t.Fatalf("URL mutated in transit:\n want %q\n got  %q", url, got)
-	}
-	for _, metachar := range []string{"&", "?"} {
-		if !strings.Contains(got, metachar) {
-			t.Errorf("metachar %q missing from constructed argument; quoting reintroduced the truncation bug", metachar)
+func TestBrowserLaunchRejectsInvalidURL(t *testing.T) {
+	for _, target := range []string{"http://auth.example.com/authorize", "not-a-url"} {
+		called := false
+		err := openInBrowserWith(target, "windows", func(*exec.Cmd) error {
+			called = true
+			return nil
+		})
+		if err == nil || called {
+			t.Fatalf("invalid URL must not launch: target=%q called=%t err=%v", target, called, err)
 		}
 	}
 }
 
-// TestWindowsBrowserCmd_NoShellInPath guards against re-routing through
-// cmd.exe: everything before the URL must be rundll32 itself, since any
-// intermediate shell would reinterpret & and ? before rundll32 ever sees them.
-func TestWindowsBrowserCmd_NoShellInPath(t *testing.T) {
-	cmd := auth.WindowsBrowserCmd("https://x.example/?a=1&b=2")
-	if strings.Contains(strings.ToLower(cmd.Path), "cmd") {
-		t.Fatalf("launch path routes through cmd.exe again: %q", cmd.Path)
+func TestBrowserLaunchReturnsStartError(t *testing.T) {
+	want := errors.New("start failed")
+	err := openInBrowserWith("https://auth.example.com/authorize", "windows", func(*exec.Cmd) error {
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("launch error = %v, want %v", err, want)
 	}
 }
