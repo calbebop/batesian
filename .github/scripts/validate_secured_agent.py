@@ -9,7 +9,7 @@ import tempfile
 import time
 import urllib.request
 
-from validation_outcomes import incomplete_rules
+from validation_outcomes import incomplete_rules, rule_statuses
 
 HOST = "127.0.0.1"
 PORT = 3111
@@ -130,26 +130,31 @@ def main():
     rules, doc = scan_posture("secured")
     total = doc.get("summary", {}).get("total", len(rules))
     skipped, errors = incomplete_rules(doc, SECURED_RULES)
-    ok = total == 0 and len(rules) == 0 and not skipped and not errors
+    statuses = rule_statuses(doc, SECURED_RULES)
+    ok = total == 0 and len(rules) == 0 and not skipped and not errors and \
+        all(status == "no_findings" for status in statuses.values())
     all_ok &= ok
     check("secured (authorization rules complete cleanly)", ok,
           f"total={total}; findings={sorted(rules)}; skipped={skipped}; errors={errors}")
 
-    rules, _ = scan_posture("idor")
+    rules, doc = scan_posture("idor")
     missing = IDOR_RULES - rules
-    ok = not missing
+    statuses = rule_statuses(doc, IDOR_RULES)
+    ok = not missing and all(status == "findings" for status in statuses.values())
     all_ok &= ok
     check("idor (the five ownership rules must fire)", ok,
           f"missing {sorted(missing)}; fired {sorted(rules)}")
 
-    rules, _ = scan_posture("idor-paged")
-    ok = "a2a-task-enumeration-001" in rules
+    rules, doc = scan_posture("idor-paged")
+    ok = "a2a-task-enumeration-001" in rules and \
+        rule_statuses(doc, {"a2a-task-enumeration-001"})["a2a-task-enumeration-001"] == "findings"
     all_ok &= ok
     check("idor-paged (task enumeration must fire)", ok,
           f"a2a-task-enumeration-001 {'present' if ok else 'ABSENT'}; fired {sorted(rules)}")
 
-    rules, _ = scan_posture("unauth-read")
-    ok = "a2a-task-idor-001" in rules
+    rules, doc = scan_posture("unauth-read")
+    ok = "a2a-task-idor-001" in rules and \
+        rule_statuses(doc, {"a2a-task-idor-001"})["a2a-task-idor-001"] == "findings"
     all_ok &= ok
     check("unauth-read (a2a-task-idor-001 must fire)", ok,
           f"a2a-task-idor-001 {'present' if ok else 'ABSENT'}; fired {sorted(rules)}")

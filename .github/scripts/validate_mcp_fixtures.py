@@ -53,7 +53,7 @@ import time
 import urllib.error
 import urllib.request
 
-from validation_outcomes import incomplete_rules
+from validation_outcomes import incomplete_rules, rule_statuses
 
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 FIXTURE_DIR = os.environ.get("BATESIAN_FIXTURE_DIR", "testdata")
@@ -140,6 +140,17 @@ def scan(port, *extra):
     doc = json.loads(out.stdout)
     fired = {f["rule_id"] for f in doc.get("findings", [])}
     skipped = {s["rule_id"] for s in doc.get("skipped", [])}
+    errors = {e["rule_id"] for e in doc.get("errors", [])}
+    statuses = rule_statuses(doc, fired | skipped | errors)
+    for rid in fired:
+        if statuses[rid] != "findings":
+            raise ValueError(f"finding for {rid} has {statuses[rid]} outcome")
+    for rid in skipped:
+        if statuses[rid] != "skipped":
+            raise ValueError(f"skip for {rid} has {statuses[rid]} outcome")
+    for rid in errors:
+        if statuses[rid] != "error":
+            raise ValueError(f"error for {rid} has {statuses[rid]} outcome")
     return fired, skipped, doc
 
 
@@ -175,11 +186,14 @@ def transient():
 
     p, l = start("mcp_transient_failure_server.py", 7802, "7802", "ok")
     try:
-        fired, _, _ = scan(7802)
+        fired, _, doc = scan(7802)
     finally:
         stop(p, l)
     fired_unauth = fired & UNAUTH_FAMILY
-    ok_all &= check("transient ok (the unauth family fires)", bool(fired_unauth),
+    statuses = rule_statuses(doc, UNAUTH_FAMILY)
+    ok_all &= check("transient ok (the unauth family fires)",
+                    bool(fired_unauth) and all(status in {"findings", "no_findings"}
+                                               for status in statuses.values()),
                     f"unauth fired {sorted(fired_unauth)}")
 
     p, l = start("mcp_transient_failure_server.py", 7802, "7802", "401")
@@ -189,20 +203,24 @@ def transient():
         stop(p, l)
     # A 401 is clean only when these rules did not fire, skip, or error.
     incomplete, errors = incomplete_rules(doc, UNAUTH_FAMILY)
+    statuses = rule_statuses(doc, UNAUTH_FAMILY)
     ok_all &= check("transient 401 (unauth family clean, auth enforced)",
-                    not (fired & UNAUTH_FAMILY) and not incomplete and not errors,
+                    not (fired & UNAUTH_FAMILY) and not incomplete and not errors and
+                    all(status == "no_findings" for status in statuses.values()),
                     f"unauth fired {sorted(fired & UNAUTH_FAMILY)}; skipped {incomplete}; errors {errors}")
 
     p, l = start("mcp_transient_failure_server.py", 7802, "7802", "502")
     try:
-        fired, skipped, _ = scan(7802)
+        fired, skipped, doc = scan(7802)
     finally:
         stop(p, l)
     # 502 is an undetermined probe: the unauth family is not-tested (skipped), the
     # outcome distinct from the 401 clean. If 502 ever reads like 401 (clean), the
     # probe-honesty conflation is back.
+    statuses = rule_statuses(doc, UNAUTH_FAMILY)
     ok_all &= check("transient 502 (unauth family not tested, distinct from clean)",
-                    not (fired & UNAUTH_FAMILY) and bool(skipped & UNAUTH_FAMILY),
+                    not (fired & UNAUTH_FAMILY) and bool(skipped & UNAUTH_FAMILY) and
+                    all(status in {"skipped", "no_findings"} for status in statuses.values()),
                     f"unauth fired {sorted(fired & UNAUTH_FAMILY)}; skipped {sorted(skipped & UNAUTH_FAMILY)}")
     return ok_all
 
@@ -248,11 +266,11 @@ def log_optin():
 
     p, l = start("mcp_log_optin_server.py", 7804, "never")
     try:
-        fired, skipped, _ = scan(7804)
+        fired, skipped, doc = scan(7804)
     finally:
         stop(p, l)
     ok_all &= check("log-optin never (not tested, not clean)",
-                    rid not in fired and rid in skipped,
+                    rid not in fired and rid in skipped and rule_statuses(doc, {rid})[rid] == "skipped",
                     f"fired {sorted(fired)}; skipped {sorted(skipped)}")
     return ok_all
 
@@ -270,7 +288,8 @@ def large_body():
     finally:
         stop(p, l)
     return check("large-body (large finding set == small finding set)",
-                 large == small, f"large {sorted(large)}; small {sorted(small)}")
+                 large == small and bool(large & UNAUTH_FAMILY),
+                 f"large {sorted(large)}; small {sorted(small)}")
 
 
 def traversal():

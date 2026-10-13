@@ -9,6 +9,8 @@ import time
 import urllib.error
 import urllib.request
 
+from validation_outcomes import rule_statuses
+
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 FIXTURE = os.environ.get("BATESIAN_FIXTURE", "testdata/a2a_push_callback_auth_server.py")
 PORT = 7810
@@ -86,7 +88,7 @@ def scan():
     fired = {f["rule_id"] for f in doc.get("findings", [])}
     skipped = {s["rule_id"] for s in doc.get("skipped", [])}
     errors = {e["rule_id"] for e in doc.get("errors", [])}
-    return fired, skipped, errors
+    return fired, skipped, errors, rule_statuses(doc, {RULE})[RULE]
 
 
 def check(name, ok, detail):
@@ -100,23 +102,25 @@ def main():
     for posture, expect in [("unsigned", "fire"), ("signed", "silent")]:
         proc, log = start_fixture(posture)
         try:
-            fired, skipped, errors = scan()
+            fired, skipped, errors, status = scan()
         finally:
             stop_fixture(proc, log)
-        ran = RULE not in skipped and RULE not in errors
+        ran = status in {"findings", "no_findings"} and RULE not in skipped and RULE not in errors
         fires = RULE in fired
-        ok_all &= check(f"{posture} (must {expect})", ran and fires == (expect == "fire"),
+        expected_status = "findings" if expect == "fire" else "no_findings"
+        ok_all &= check(f"{posture} (must {expect})", ran and status == expected_status and
+                        fires == (expect == "fire"),
                         f"{RULE} {'fired' if fires else ('incomplete' if not ran else 'silent')}; "
                         f"skipped={RULE in skipped}; errors={RULE in errors}")
 
     proc, log = start_fixture("nocallback")
     try:
-        fired, skipped, errors = scan()
+        fired, skipped, errors, status = scan()
     finally:
         stop_fixture(proc, log)
     not_tested = RULE in skipped
     ok_all &= check("nocallback (not tested, never clean)",
-                    not_tested and RULE not in fired and RULE not in errors,
+                    not_tested and status == "skipped" and RULE not in fired and RULE not in errors,
                     f"fired {RULE in fired}; skipped {RULE in skipped}; errors {RULE in errors}")
 
     print()

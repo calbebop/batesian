@@ -96,24 +96,32 @@ The gate checks selected rules, not every rule in the catalog.
 
 ### Fail the build on findings above a severity threshold
 
-Batesian exits `0` whether or not findings are present (SARIF output is the
-primary mechanism). To fail the build, combine JSON output with `jq`:
+Batesian exits `0` whether or not findings are present. A severity filter alone
+does not prove the selected rules ran. Check coverage and severity together:
 
 ```yaml
-      - name: Run scan (fail on critical/high)
+      - name: Run scan
         run: |
           batesian scan \
             --target ${{ vars.AGENT_TARGET_URL }} \
+            --protocol a2a \
             --output json \
             --timeout 30 \
-          | jq -e '
-              (.findings // [])
-              | map(select(.severity == "critical" or .severity == "high"))
-              | length == 0
-            '
+            > scan-results.json
+
+      - name: Require coverage and no critical/high findings
+        run: |
+          jq -e '
+            .schema_version == 1 and
+            .ruleset.selected > 0 and
+            (.rule_outcomes | length) == .ruleset.selected and
+            all(.rule_outcomes[]; .status == "findings" or .status == "no_findings") and
+            ([.findings[] | select(.severity == "critical" or .severity == "high")] | length) == 0
+          ' scan-results.json
 ```
 
-This exits non-zero if any critical or high findings are present.
+This also fails if a selected rule was skipped or errored. Pin expected rule IDs
+or a count if a catalog change must not reduce the selection unnoticed.
 
 ### Check JSON report coverage
 

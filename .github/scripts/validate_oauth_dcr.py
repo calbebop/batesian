@@ -29,7 +29,7 @@ import tempfile
 import time
 import urllib.request
 
-from validation_outcomes import incomplete_rules
+from validation_outcomes import incomplete_rules, rule_statuses
 
 FIXTURE = os.environ.get("BATESIAN_FIXTURE", "testdata/mcp_oauth_dcr_server.py")
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
@@ -116,13 +116,16 @@ def main():
         detail = "scan leaves 0 clients via RFC 7592 cleanup" if posture == "managed" \
             else "3 registered clients left behind (oauth-dcr, confused-deputy, metadata-ssrf)"
         skipped, errors = incomplete_rules(scan_doc, DCR_RULES - {CALLBACK_RULE})
+        statuses = rule_statuses(scan_doc, DCR_RULES)
         callback_skips = [item for item in scan_doc["skipped"] if item["rule_id"] == CALLBACK_RULE]
         callback_pending = (len(callback_skips) == 1 and
                             "no metadata callback observed" in callback_skips[0].get("reason", ""))
         required_findings = DCR_RULES - {CALLBACK_RULE}
         ok &= check(f"oauth-dcr {posture} ({detail})",
                     count == expected and required_findings <= set(findings) and
-                    not skipped and not errors and not scan_doc["errors"] and callback_pending,
+                    not skipped and not errors and not scan_doc["errors"] and callback_pending and
+                    statuses[CALLBACK_RULE] == "skipped" and
+                    all(statuses[rid] == "findings" for rid in required_findings),
                     f"count={count} (expected {expected}); findings={findings}; "
                     f"skipped={skipped}; errors={scan_doc['errors']}; "
                     f"callback_pending={callback_pending}")
