@@ -79,7 +79,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			return valid && !hasError
 		}
 		denied := func(resp *attack.Response) bool {
-			if resp == nil || resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			if resp == nil || resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 {
 				return false
 			}
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {

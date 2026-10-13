@@ -426,6 +426,7 @@ func TestTaskIDOR_AnonymousCreationBaseline(t *testing.T) {
 	}{
 		{"unavailable", true},
 		{"unavailable-auth-body", true},
+		{"timeout-auth-body", true},
 		{"malformed", true},
 		{"wrong-id-success", true},
 		{"wrong-id-auth", true},
@@ -451,6 +452,9 @@ func TestTaskIDOR_AnonymousCreationBaseline(t *testing.T) {
 						w.WriteHeader(http.StatusServiceUnavailable)
 					case "unavailable-auth-body":
 						w.WriteHeader(http.StatusServiceUnavailable)
+						rpcErr(w, id, -32600, "authentication required")
+					case "timeout-auth-body":
+						w.WriteHeader(http.StatusRequestTimeout)
 						rpcErr(w, id, -32600, "authentication required")
 					case "malformed":
 						_, _ = w.Write([]byte("not json"))
