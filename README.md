@@ -167,6 +167,8 @@ In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment refe
 | `json` | Automation and custom policy gates |
 | `sarif` | GitHub code scanning and SARIF-compatible platforms |
 
+For A2A probes, JSON `agent_card` is a parsed, redacted view, not the original response bytes. `agent_card_provenance` records the fetched URL and SHA-256 of those bytes.
+
 A finding is marked `confirmed` only when the rule observes exploit evidence. An `indicator` identifies a risky condition without claiming successful exploitation.
 
 `scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.

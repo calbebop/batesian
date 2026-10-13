@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -187,7 +189,11 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 
 	switch format {
 	case report.FormatJSON:
-		return report.New(os.Stdout, false).PrintJSON(redactor.value(buildJSONOutput(card, result)))
+		doc, err := buildJSONOutput(cardResult, result, redactor)
+		if err != nil {
+			return err
+		}
+		return report.New(os.Stdout, false).PrintJSON(doc)
 	default:
 		printer.PrintProbeTable(result)
 	}
@@ -392,10 +398,18 @@ func listUnauthMCPResources(ctx context.Context, endpoint string, timeout time.D
 }
 
 // buildJSONOutput creates the JSON representation of a probe result.
-func buildJSONOutput(card *a2a.AgentCard, result *report.ProbeResult) map[string]any {
-	raw, _ := json.Marshal(card)
+func buildJSONOutput(cardResponse *a2a.ProbeResult, result *report.ProbeResult, redactor outputRedactor) (map[string]any, error) {
 	var cardMap map[string]any
-	_ = json.Unmarshal(raw, &cardMap)
+	decoder := json.NewDecoder(bytes.NewReader(cardResponse.Body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&cardMap); err != nil {
+		return nil, fmt.Errorf("decoding Agent Card response: %w", err)
+	}
+	if cardMap == nil {
+		return nil, fmt.Errorf("agent card response is not a JSON object")
+	}
+	cardMap = redactor.value(cardMap).(map[string]any)
+	digest := sha256.Sum256(cardResponse.Body)
 
 	flags := make([]map[string]string, 0, len(result.Flags))
 	for _, f := range result.Flags {
@@ -407,9 +421,14 @@ func buildJSONOutput(card *a2a.AgentCard, result *report.ProbeResult) map[string
 	}
 
 	return map[string]any{
-		"target":        result.URL,
-		"agent_card":    cardMap,
+		"target":     result.URL,
+		"agent_card": cardMap,
+		"agent_card_provenance": map[string]any{
+			"source_url":       redactor.url(cardResponse.URL),
+			"representation":   "parsed_redacted",
+			"retrieved_sha256": fmt.Sprintf("%x", digest),
+		},
 		"attack_flags":  flags,
 		"response_time": result.Elapsed.String(),
-	}
+	}, nil
 }
