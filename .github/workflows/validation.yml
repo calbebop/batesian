@@ -81,10 +81,13 @@ jobs:
           python-version: '3.12'
 
       - name: Install fixture dependencies
-        run: pip install starlette uvicorn
+        run: pip install starlette uvicorn httpx
 
       - name: Test validation gates
         run: python -m unittest discover -s .github/scripts -p 'test_validation_gates.py'
+
+      - name: Test fixture safety
+        run: python -m unittest discover -s .github/scripts -p 'test_fixture_safety.py'
 
       - name: Build batesian
         # Inject version and commit so validation scans do not use batesian/dev.

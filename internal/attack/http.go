@@ -513,19 +513,38 @@ func readSSEResponse(r io.Reader) ([]byte, error) {
 // errNoSSEResponse means no response candidate was found within the limits.
 var errNoSSEResponse = errors.New("stream carried no JSON-RPC response event")
 
-// marshalBody encodes body as JSON with template variable expansion applied to string values.
+// marshalBody expands template variables in JSON string values, then encodes the body.
 func marshalBody(body interface{}, vars Vars) ([]byte, error) {
 	if body == nil {
 		return nil, nil
 	}
-	// Encode to JSON, then decode back to interface{} so we can walk and expand strings.
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("encoding request body: %w", err)
 	}
-	// Expand template vars in the JSON string before re-encoding.
-	expanded := vars.Expand(string(raw))
-	return []byte(expanded), nil
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("decoding request body: %w", err)
+	}
+	return json.Marshal(expandJSONStrings(value, vars))
+}
+
+func expandJSONStrings(value any, vars Vars) any {
+	switch v := value.(type) {
+	case string:
+		return vars.Expand(v)
+	case []any:
+		for i := range v {
+			v[i] = expandJSONStrings(v[i], vars)
+		}
+	case map[string]any:
+		for key, child := range v {
+			v[key] = expandJSONStrings(child, vars)
+		}
+	}
+	return value
 }
 
 // Discovery returns the scan-scoped discovery cache this client carries, or

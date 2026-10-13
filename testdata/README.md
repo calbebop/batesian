@@ -6,6 +6,9 @@ mock server helper used to validate Batesian against live HTTP endpoints.
 **Do not deploy these servers in production or on a public network.** Some are
 intentionally misconfigured to be exploitable.
 
+The fixtures bind to `127.0.0.1`. The OAuth metadata SSRF fixture also blocks
+registrant-supplied URL fetches unless started with `--allow-metadata-fetch`.
+
 ---
 
 ## Prerequisites

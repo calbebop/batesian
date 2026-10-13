@@ -106,5 +106,7 @@ app.state.posture = "weak"
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         app.state.posture = sys.argv[1]
+    if app.state.posture not in ("weak", "clean"):
+        sys.exit(f"unknown posture {app.state.posture!r}; expected weak or clean")
     print(f"[*] MCP task-entropy fixture ({app.state.posture}) on port {PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

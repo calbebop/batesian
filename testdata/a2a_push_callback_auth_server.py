@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 PORT = 7810
+POSTURES = ("unsigned", "signed", "nocallback")
 
 
 async def jsonrpc(request: Request) -> JSONResponse:
@@ -67,5 +68,7 @@ app.state.posture = "unsigned"
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         app.state.posture = sys.argv[1]
+    if app.state.posture not in POSTURES:
+        sys.exit(f"unknown posture {app.state.posture!r}; expected one of {', '.join(POSTURES)}")
     print(f"[*] A2A push callback-auth fixture ({app.state.posture}) on port {PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

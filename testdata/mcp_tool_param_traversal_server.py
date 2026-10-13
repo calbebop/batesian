@@ -146,5 +146,7 @@ app = Starlette(routes=[Route("/", jsonrpc, methods=["POST"]), Route("/mcp", jso
 
 if __name__ == "__main__":
     app.state.posture = sys.argv[1] if len(sys.argv) > 1 else "vulnerable"
+    if app.state.posture not in ("vulnerable", "patched"):
+        sys.exit(f"unknown posture {app.state.posture!r}; expected vulnerable or patched")
     print(f"[*] MCP tool-param traversal fixture ({app.state.posture}) on port {PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

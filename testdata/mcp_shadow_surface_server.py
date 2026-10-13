@@ -98,6 +98,8 @@ def serve(app, port):
 
 if __name__ == "__main__":
     posture = sys.argv[1] if len(sys.argv) > 1 else "shadow-open"
+    if posture not in ("shadow-open", "shadow-hardened", "none"):
+        sys.exit(f"unknown posture {posture!r}; expected shadow-open, shadow-hardened, or none")
     print(f"[*] shadow-surface fixture ({posture}): named target on {MAIN_PORT}, "
           f"shadow listener on {SHADOW_PORT}", flush=True)
 
