@@ -72,13 +72,8 @@ func (e *ShadowSurfaceExecutor) Execute(ctx context.Context, target string, opts
 	}
 	if len(incomplete) > 0 {
 		ports := strings.Join(incomplete, ", ")
-		if len(findings) == 0 {
-			return nil, fmt.Errorf("%w: shadow-surface probes did not complete on port(s) %s",
-				attack.ErrInconclusive, ports)
-		}
-		for i := range findings {
-			findings[i].Evidence += "\nother adjacent-port probes incomplete: " + ports
-		}
+		return findings, fmt.Errorf("%w: shadow-surface probes did not complete on port(s) %s",
+			attack.ErrInconclusive, ports)
 	}
 	return findings, nil
 }

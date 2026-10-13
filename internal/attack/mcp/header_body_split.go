@@ -75,14 +75,14 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 			nameBlockedReason = nameBlocked
 		}
 	}
-	if len(findings) > 0 {
-		return findings, nil
-	}
 	if blockedReason != "" {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason)
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, blockedReason)
 	}
 	if nameBlockedReason != "" {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, nameBlockedReason)
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, nameBlockedReason)
+	}
+	if len(findings) > 0 {
+		return findings, nil
 	}
 	if anyTested {
 		return nil, nil

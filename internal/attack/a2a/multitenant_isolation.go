@@ -87,25 +87,23 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	if readB.location != "" && anonB.location == "" && !anonB.unknown && (anonB.denied || anonB.matched) {
 		findings = append(findings, e.finding(endpoint, a, b, taskB, markerB, readB))
 	}
-	if len(findings) == 0 {
-		var missing []string
-		for _, check := range []struct {
-			name  string
-			read  tenantRead
-			cross bool
-		}{
-			{"anonymous read of A", anonA, false}, {"anonymous read of B", anonB, false},
-			{"B reading A", readA, true}, {"A reading B", readB, true},
-		} {
-			if check.read.unknown || (check.cross && check.read.matched && check.read.location == "") ||
-				(!check.read.denied && !check.read.matched && check.read.location == "") {
-				missing = append(missing, check.name)
-			}
+	var missing []string
+	for _, check := range []struct {
+		name  string
+		read  tenantRead
+		cross bool
+	}{
+		{"anonymous read of A", anonA, false}, {"anonymous read of B", anonB, false},
+		{"B reading A", readA, true}, {"A reading B", readB, true},
+	} {
+		if check.read.unknown || (check.cross && check.read.matched && check.read.location == "") ||
+			(!check.read.denied && !check.read.matched && check.read.location == "") {
+			missing = append(missing, check.name)
 		}
-		if len(missing) > 0 {
-			return nil, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
-				attack.ErrInconclusive, strings.Join(missing, ", "))
-		}
+	}
+	if len(missing) > 0 {
+		return findings, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
+			attack.ErrInconclusive, strings.Join(missing, ", "))
 	}
 	return findings, nil
 }

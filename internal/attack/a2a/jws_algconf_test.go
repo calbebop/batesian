@@ -283,10 +283,10 @@ func TestJWSAlgConfExecutor_RetainsFindingsWithMalformedEntry(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
-	if err != nil || len(findings) == 0 {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) == 0 {
 		t.Fatalf("expected the valid signature's finding, got %d findings, err=%v", len(findings), err)
 	}
-	if !strings.Contains(findings[0].Evidence, "uninspected signature entries: [1]") {
-		t.Errorf("missing partial-coverage evidence: %s", findings[0].Evidence)
+	if !strings.Contains(err.Error(), "signature entries [1]") {
+		t.Errorf("missing partial-coverage outcome: %v", err)
 	}
 }

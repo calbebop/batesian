@@ -134,9 +134,6 @@ func (e *LogOptInExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 	}
 
-	if len(findings) > 0 {
-		return findings, nil
-	}
 	if !modernSeen {
 		// The field and its MUST NOT arrived with 2026-07-28. On an earlier wire the
 		// mechanism is logging/setLevel, which this rule is not about, so there is no
@@ -145,7 +142,10 @@ func (e *LogOptInExecutor) Execute(ctx context.Context, target string, opts atta
 			"no wire on that revision", attack.ErrInconclusive, modernEraVersion, vars.BaseURL)
 	}
 	if notObserved != "" {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, notObserved)
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, notObserved)
+	}
+	if len(findings) > 0 {
+		return findings, nil
 	}
 	// The control logged and the probe did not: the server demonstrably logs here and
 	// withheld the frames when they were not asked for. That is a tested clean result.

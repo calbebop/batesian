@@ -41,6 +41,9 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 		return result, reached
 	})
 	if len(findings) != 0 || err != nil {
+		if incomplete != nil {
+			return findings, incomplete
+		}
 		return findings, err
 	}
 	return nil, incomplete
@@ -150,7 +153,11 @@ func (e *BatchBypassExecutor) probeMethodGate(ctx context.Context, client *attac
 				"single %s: HTTP %d (rejected, unauthenticated)\n"+
 					"batch [%s]: HTTP %d (processed, returned a result)",
 				c.method, ctrl.StatusCode, c.method, test.StatusCode)
-			return e.finding(session.Endpoint, c.method, detail), nil
+			finding := e.finding(session.Endpoint, c.method, detail)
+			if len(incomplete) > 0 {
+				return finding, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+			}
+			return finding, nil
 		}
 		if ambiguousMCPBatchResponse(test, 2) {
 			incomplete = append(incomplete, c.method+" batch response was not judged")

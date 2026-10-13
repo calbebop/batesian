@@ -157,10 +157,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 
 	if len(unobserved) > 0 {
 		detail := "unobserved header probes: " + strings.Join(unobserved, "; ")
-		if len(findings) == 0 {
-			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
-		}
-		findings[0].Evidence += "\n" + detail
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
 	}
 	if len(findings) == 0 && !cardParsed {
 		return nil, fmt.Errorf("%w: no parseable agent card was served under %s for any injected "+

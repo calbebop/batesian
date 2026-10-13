@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -245,9 +246,9 @@ func TestShadow_FindingNotesOtherIncompletePort(t *testing.T) {
 
 	withShadowPorts(t, portOf(shadow.URL), portOf(limited.URL))
 	findings, err := runShadow(t, main.URL)
-	if err != nil || len(findings) != 1 ||
-		!strings.Contains(findings[0].Evidence, "other adjacent-port probes incomplete") {
-		t.Fatalf("finding must disclose the incomplete port: findings=%+v err=%v", findings, err)
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 ||
+		!strings.Contains(err.Error(), strconv.Itoa(portOf(limited.URL))) {
+		t.Fatalf("finding must retain the incomplete-port outcome: findings=%+v err=%v", findings, err)
 	}
 }
 

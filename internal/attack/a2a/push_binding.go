@@ -101,22 +101,23 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
 	attackerSet := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
 		taskID, attackerURL, "attacker-tok-"+vars.RandID, "attacker-"+vars.RandID, vars.RandID)
-	if attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write") {
+	attackerWriteVerified := attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write")
+	if attackerWriteVerified {
 		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed))
 	}
-	if attackerSet.accepted && len(findings) == 0 {
-		return nil, attack.ErrInconclusive
+	if attackerSet.accepted && !attackerWriteVerified {
+		return findings, attack.ErrInconclusive
 	}
-	if !openSet.accepted && !openSet.judged && len(findings) == 0 {
-		return nil, fmt.Errorf("%w: anonymous push-config write did not establish whether task %s was writable",
+	if !openSet.accepted && !openSet.judged {
+		return findings, fmt.Errorf("%w: anonymous push-config write did not establish whether task %s was writable",
 			attack.ErrInconclusive, taskID)
 	}
-	if !attackerSet.accepted && !attackerSet.judged && len(findings) == 0 {
-		return nil, fmt.Errorf("%w: principal %s's push-config write did not establish whether task %s was writable",
+	if !attackerSet.accepted && !attackerSet.judged {
+		return findings, fmt.Errorf("%w: principal %s's push-config write did not establish whether task %s was writable",
 			attack.ErrInconclusive, b.Name, taskID)
 	}
-	if !crossReadJudged && len(findings) == 0 {
-		return nil, fmt.Errorf("%w: principal %s's push-config read did not establish whether task %s was accessible",
+	if !crossReadJudged {
+		return findings, fmt.Errorf("%w: principal %s's push-config read did not establish whether task %s was accessible",
 			attack.ErrInconclusive, b.Name, taskID)
 	}
 	return findings, nil

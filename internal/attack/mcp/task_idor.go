@@ -261,8 +261,8 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		if containsTaskID(ids, taskID) {
 			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), true, auth))
 		}
-		if verdict == probeInconclusive && len(findings) == 0 {
-			return nil, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
+		if verdict == probeInconclusive {
+			return findings, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
 				attack.ErrInconclusive, princB.name, sessB.Endpoint)
 		}
 	}

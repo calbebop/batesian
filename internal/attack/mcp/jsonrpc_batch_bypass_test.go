@@ -18,12 +18,16 @@ import (
 // batchServer models an auth gate that may mishandle batch requests.
 func batchServer(mode string) *httptest.Server {
 	initResult := func(id interface{}) map[string]interface{} {
+		caps := map[string]interface{}{"tools": map[string]interface{}{"listChanged": false}}
+		if mode == "bypass-after-incomplete" {
+			caps["resources"] = map[string]interface{}{}
+		}
 		return map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
 			"result": map[string]interface{}{
 				"protocolVersion": "2025-03-26",
 				"serverInfo":      map[string]interface{}{"name": "batch-srv", "version": "1.0"},
-				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{"listChanged": false}},
+				"capabilities":    caps,
 			},
 		}
 	}
@@ -82,6 +86,9 @@ func batchServer(mode string) *httptest.Server {
 			case "notifications/initialized":
 				return nil, http.StatusAccepted
 			case "tools/list":
+				if mode == "bypass-after-incomplete" {
+					return nil, http.StatusServiceUnavailable
+				}
 				if (mode == "bypass-method" || mode == "unrelated-method" || mode == "null-method" || mode == "malformed-method" || mode == "secure") && enforce && !authed {
 					return nil, http.StatusUnauthorized
 				}
@@ -95,6 +102,12 @@ func batchServer(mode string) *httptest.Server {
 					return map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{}}, http.StatusOK
 				}
 				return toolsResult(id), http.StatusOK
+			case "resources/list":
+				if mode == "bypass-after-incomplete" && enforce && !authed {
+					return nil, http.StatusUnauthorized
+				}
+				return map[string]interface{}{"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{"resources": []interface{}{map[string]interface{}{"uri": "test://resource"}}}}, http.StatusOK
 			default:
 				return map[string]interface{}{"jsonrpc": "2.0", "id": id,
 					"error": map[string]interface{}{"code": -32601, "message": "method not found"}}, http.StatusOK
@@ -162,6 +175,17 @@ func TestBatchBypass_MethodGate(t *testing.T) {
 
 	if findings := runBatchBypass(t, srv); len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestBatchBypass_RetainsFindingAfterIncompleteMethod(t *testing.T) {
+	srv := batchServer("bypass-after-incomplete")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewBatchBypassExecutor(attack.RuleContext{ID: "mcp-jsonrpc-batch-bypass-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "tools/list") {
+		t.Fatalf("resource finding must survive incomplete tool control: findings=%+v err=%v", findings, err)
 	}
 }
 

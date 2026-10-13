@@ -86,6 +86,10 @@ func tenantServer(mode string) *httptest.Server {
 				rpcErr(w, id, -32001, "Task not found")
 				return
 			}
+			if mode == "one-direction-error" && tenant == "B" && own == "A" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			if mode == "one-read-error" {
 				if tenant == "" {
 					rpcErr(w, id, -32600, "authentication required")
@@ -207,6 +211,17 @@ func TestMultiTenant_UnjudgedReadsAreInconclusive(t *testing.T) {
 				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
 			}
 		})
+	}
+}
+
+func TestMultiTenant_RetainsFindingWhenOtherDirectionFails(t *testing.T) {
+	ts := tenantServer("one-direction-error")
+	defer ts.Close()
+
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "B reading A") {
+		t.Fatalf("one cross-tenant leak and one unreadable comparison must both survive: findings=%+v err=%v", findings, err)
 	}
 }
 

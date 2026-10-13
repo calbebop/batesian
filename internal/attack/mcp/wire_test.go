@@ -622,9 +622,7 @@ func TestRunOnEachWire_DeterminedWithNoFindingsIsClean(t *testing.T) {
 	}
 }
 
-// Findings survive an undetermined wire. A rule that confirmed something and then
-// failed a follow-up probe still found it, and reporting "not tested" would throw
-// away a real result.
+// Findings survive an undetermined wire while the rule outcome stays incomplete.
 func TestRunOnEachWire_FindingsSurviveAnUndeterminedWire(t *testing.T) {
 	srv, _ := wireServer(t, true, false)
 	defer srv.Close()
@@ -633,8 +631,8 @@ func TestRunOnEachWire_FindingsSurviveAnUndeterminedWire(t *testing.T) {
 		func(mcpSession) ([]attack.Finding, bool) {
 			return []attack.Finding{{Title: "surface exposed"}}, false
 		})
-	if err != nil {
-		t.Fatalf("findings must not be discarded as inconclusive: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("partial result must be incomplete: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected the finding to survive, got %d", len(findings))

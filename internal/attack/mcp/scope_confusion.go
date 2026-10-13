@@ -93,12 +93,7 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	}
 	if len(incomplete) > 0 {
 		reason := strings.Join(incomplete, "; ")
-		if len(findings) == 0 {
-			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, reason)
-		}
-		for i := range findings {
-			findings[i].Evidence += "\nadditional probe incomplete: " + reason
-		}
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, reason)
 	}
 	return findings, nil
 }

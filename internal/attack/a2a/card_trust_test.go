@@ -728,7 +728,7 @@ func TestCardTrust_UnobservedPrimaryRead(t *testing.T) {
 	}
 }
 
-func TestCardTrust_CacheFindingNotesUnobservedRead(t *testing.T) {
+func TestCardTrust_CacheFindingKeepsUnobservedReadIncomplete(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/agent-card.json" {
 			w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -740,10 +740,7 @@ func TestCardTrust_CacheFindingNotesUnobservedRead(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil || len(findings) != 1 {
-		t.Fatalf("want cache finding, got findings=%v err=%v", findings, err)
-	}
-	if !strings.Contains(findings[0].Evidence, "/.well-known/agent.json: HTTP 503") {
-		t.Fatalf("finding omitted unobserved read: %q", findings[0].Evidence)
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("want cache finding and incomplete read, got findings=%v err=%v", findings, err)
 	}
 }

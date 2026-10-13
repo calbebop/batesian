@@ -256,9 +256,6 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		break
 	}
 
-	if len(findings) > 0 {
-		return findings, nil
-	}
 	var missing []string
 	for i, p := range probes {
 		if legacyEstablished && !legacyJudged[i] {
@@ -273,7 +270,10 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		if notTestedReason != "" {
 			reason += "; " + notTestedReason
 		}
-		return nil, fmt.Errorf("%w: no token verdict for %s", attack.ErrInconclusive, reason)
+		return findings, fmt.Errorf("%w: no token verdict for %s", attack.ErrInconclusive, reason)
+	}
+	if len(findings) > 0 {
+		return findings, nil
 	}
 	if !legacyEstablished && !modernReady && notTestedReason != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, notTestedReason)

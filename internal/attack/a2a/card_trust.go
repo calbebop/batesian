@@ -80,10 +80,7 @@ func (e *CardTrustExecutor) Execute(ctx context.Context, target string, opts att
 	findings = append(findings, cacheFindings...)
 	if len(unobserved) > 0 {
 		detail := "unobserved card reads: " + strings.Join(unobserved, "; ")
-		if len(findings) == 0 {
-			return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
-		}
-		findings[0].Evidence += "\n" + detail
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, detail)
 	}
 	return findings, nil
 }

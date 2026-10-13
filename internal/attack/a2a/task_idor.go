@@ -266,23 +266,23 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 
 	list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
 	findings = append(findings, list.findings...)
-	if len(findings) == 0 && list.unverified {
-		return nil, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
+	if list.unverified {
+		return findings, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
 	}
-	if len(findings) == 0 && ownerProtected && (read.unknown || !read.denied) {
-		return nil, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
+	if ownerProtected && (read.unknown || !read.denied) && read.location == "" {
+		return findings, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
 			attack.ErrInconclusive, taskID)
 	}
-	if len(findings) == 0 && !ownerProtected {
+	if !ownerProtected {
 		switch {
 		case !authedClient.PresentsCredential(endpoint):
-			return nil, fmt.Errorf("%w: the owner request presented no credential at %s",
+			return findings, fmt.Errorf("%w: the owner request presented no credential at %s",
 				attack.ErrInconclusive, endpoint)
 		case anon.acceptedWire == 0 && !anon.deniedWire[owner.acceptedWire-1]:
-			return nil, fmt.Errorf("%w: anonymous task creation did not establish an auth rejection on the owner's send method",
+			return findings, fmt.Errorf("%w: anonymous task creation did not establish an auth rejection on the owner's send method",
 				attack.ErrInconclusive)
 		case anon.acceptedWire != 0 && anonTaskID == "":
-			return nil, fmt.Errorf("%w: anonymous send returned no task ID, so open task creation could not be established",
+			return findings, fmt.Errorf("%w: anonymous send returned no task ID, so open task creation could not be established",
 				attack.ErrInconclusive)
 		}
 	}

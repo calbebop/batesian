@@ -356,9 +356,10 @@ func TestPushBinding_AcknowledgedWriteWithoutMutation(t *testing.T) {
 	ts := pushServer("noop-write")
 	defer ts.Close()
 
-	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "readable") {
-		t.Fatalf("expected only a read finding, got %+v", findings)
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+	if len(findings) != 1 || !strings.Contains(findings[0].Title, "readable") || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected a read finding and incomplete write check, got findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -418,9 +419,10 @@ func TestPushBinding_ReplayedOwnerReadIsNotCrossRead(t *testing.T) {
 	ts := pushServer("replay-owner-read")
 	defer ts.Close()
 
-	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "writable") {
-		t.Fatalf("replayed owner read must not prove cross-principal read, got %+v", findings)
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+	if len(findings) != 1 || !strings.Contains(findings[0].Title, "writable") || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("replayed owner read must leave cross-principal read incomplete: findings=%+v err=%v", findings, err)
 	}
 }
 
