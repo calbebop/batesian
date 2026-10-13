@@ -146,12 +146,44 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		redactor.addURL(raw)
 	}
 	redactor.addSecret(clientSecret)
-	defer func() { runErr = redactor.err(runErr) }()
+	if token == "" {
+		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
+	}
+	redactor.addSecret(token)
+	for _, principal := range cfg.Principals {
+		if token, err := configPrincipalToken(principal.Token); err == nil {
+			redactor.addSecret(token)
+		}
+		for name, value := range principal.Headers {
+			redactor.addCredentialHeader(name, value)
+		}
+	}
+	scanStarted := false
+	defer func() {
+		if runErr != nil && configSource != "" && !scanStarted {
+			runErr = fmt.Errorf("scan with config %s: %w", redactor.text(configSource), runErr)
+		}
+		runErr = redactor.err(runErr)
+	}()
 	// Cobra's default cannot distinguish an omitted flag from explicit "table".
 	outputFmt = effectiveOutput(cmd.Flags().Changed("output"), outputFmt, cfg.Output)
 	format, err := report.ParseFormat(outputFmt)
 	if err != nil {
 		return err
+	}
+	statusOut := os.Stdout
+	if format == report.FormatJSON || format == report.FormatSARIF {
+		statusOut = os.Stderr
+	}
+	printer := report.New(statusOut, verbose)
+	printer.Banner()
+	switch {
+	case noConfig:
+		printer.Info("Config disabled (--no-config)")
+	case configSource != "":
+		printer.Info("Loaded config: " + redactor.text(configSource))
+	default:
+		printer.Info("No config file loaded")
 	}
 	if protocol == "" {
 		protocol = cfg.Protocol
@@ -168,10 +200,6 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if rulesDir == "" {
 		rulesDir = cfg.RulesDir
 	}
-	if token == "" {
-		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
-	}
-	redactor.addSecret(token)
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
 	timeout, err := requestTimeout(timeoutSecs)
 	if err != nil {
@@ -260,21 +288,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		}
 	}
 
-	statusOut := os.Stdout
-	if format == report.FormatJSON || format == report.FormatSARIF {
-		statusOut = os.Stderr
-	}
 	displayTarget := redactor.displayTarget()
-	printer := report.New(statusOut, verbose)
-	printer.Banner()
-	switch {
-	case noConfig:
-		printer.Info("Config disabled (--no-config)")
-	case configSource != "":
-		printer.Info("Loaded config: " + configSource)
-	default:
-		printer.Info("No config file loaded")
-	}
 	printer.ProbeHeader(displayTarget, coalesceProtocol(protocol))
 
 	printer.Info(fmt.Sprintf("Running %d rule(s) against %s", len(filtered), displayTarget))
@@ -307,6 +321,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 
 	eng := engine.New(opts)
 	ctx := cmd.Context()
+	scanStarted = true
 	results := eng.Run(ctx, target, filtered)
 
 	if dryRun {
