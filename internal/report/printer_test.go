@@ -2,6 +2,7 @@ package report_test
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,70 @@ import (
 	"github.com/calbebop/batesian/internal/report"
 	"github.com/calbebop/batesian/internal/rules"
 )
+
+func TestPrintScanSummary_VerboseShowsPrimaryDetails(t *testing.T) {
+	finding := attack.Finding{
+		RuleID: "r", Severity: "high", Title: "Access granted", TargetURL: "https://example.com",
+		Description: "Cross-tenant read", Evidence: "task returned", Remediation: "Check task ownership",
+		Chain: []attack.ChainStep{{Hop: 1, Principal: "tenant A", Action: "read task", Outcome: "tenant B data returned"}},
+	}
+	results := []engine.RunResult{{Rule: &rules.Rule{ID: "r"}, Findings: []attack.Finding{finding}}}
+	var verbose, compact bytes.Buffer
+	if err := report.New(&verbose, true).PrintScanSummary(results); err != nil {
+		t.Fatal(err)
+	}
+	if err := report.New(&compact, false).PrintScanSummary(results); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"description:", "Cross-tenant read", "evidence:", "task returned", "remediation:", "Check task ownership", "chain 1 (tenant A): read task -> tenant B data returned"} {
+		if !strings.Contains(verbose.String(), want) {
+			t.Errorf("verbose output lacks %q:\n%s", want, verbose.String())
+		}
+		if strings.Contains(compact.String(), want) {
+			t.Errorf("compact output contains %q:\n%s", want, compact.String())
+		}
+	}
+}
+
+type failAfterWriter struct {
+	writes int
+	after  int
+	err    error
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.writes >= w.after {
+		return 0, w.err
+	}
+	w.writes++
+	return len(p), nil
+}
+
+func TestTerminalTablesReturnWriteErrors(t *testing.T) {
+	want := errors.New("output failed")
+	tests := []struct {
+		name  string
+		print func(*report.Printer) error
+	}{
+		{"a2a probe", func(p *report.Printer) error { return p.PrintProbeTable(&report.ProbeResult{Name: "agent"}) }},
+		{"mcp probe", func(p *report.Printer) error {
+			return p.PrintMCPProbeTable(&report.MCPProbeResult{ServerName: "server"})
+		}},
+		{"scan", func(p *report.Printer) error {
+			return p.PrintScanSummary([]engine.RunResult{{Rule: &rules.Rule{ID: "r"}}})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, after := range []int{0, 1} {
+				w := &failAfterWriter{after: after, err: want}
+				if err := tt.print(report.New(w, true)); !errors.Is(err, want) {
+					t.Errorf("failure after %d writes: got %v, want %v", after, err, want)
+				}
+			}
+		})
+	}
+}
 
 // TestPrintScanSummary_RiskIndicatorTag verifies that a finding with
 // RiskIndicator confidence includes the "[indicator]" tag in output.

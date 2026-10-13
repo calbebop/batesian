@@ -195,9 +195,8 @@ func probeA2A(ctx context.Context, target, token string, timeout time.Duration, 
 		}
 		return report.New(os.Stdout, false).PrintJSON(doc)
 	default:
-		printer.PrintProbeTable(result)
+		return printer.PrintProbeTable(result)
 	}
-	return nil
 }
 
 // cardToProbeResult converts an AgentCard to a printable ProbeResult.
@@ -370,9 +369,8 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 	case report.FormatJSON:
 		return report.New(os.Stdout, false).PrintJSON(result)
 	default:
-		printer.PrintMCPProbeTable(result)
+		return printer.PrintMCPProbeTable(result)
 	}
-	return nil
 }
 
 func listUnauthMCPResources(ctx context.Context, endpoint string, timeout time.Duration, skipTLS bool, proxy string) ([]mcp.Resource, error) {
