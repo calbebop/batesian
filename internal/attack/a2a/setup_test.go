@@ -209,6 +209,7 @@ func TestTaskSetup_HTTPFailureWithUnsupportedBodyIsIncomplete(t *testing.T) {
 		status int
 		code   int
 	}{
+		{"request timeout", http.StatusRequestTimeout, -32601},
 		{"rate limited", http.StatusTooManyRequests, -32601},
 		{"service unavailable", http.StatusServiceUnavailable, -32004},
 	} {
