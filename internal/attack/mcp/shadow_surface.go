@@ -122,7 +122,7 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 			Evidence:    fmt.Sprintf("GET %s/ -> HTTP 200, body names %q\n%s", base, marker, probeEvidence),
 			Remediation: e.rule.Remediation,
 			TargetURL:   base + "/",
-		}, false
+		}, incomplete
 	}
 
 	endpoint := base + mcpPath
@@ -167,7 +167,7 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
-	}, false
+	}, incomplete || (!originOpen && !originRefused)
 }
 
 func shadowProbeIncomplete(resp *attack.Response, err error) bool {

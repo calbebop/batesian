@@ -60,7 +60,7 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	capabilityKnown := false
 	var incomplete []string
 	if sessErr != nil {
-		incomplete = append(incomplete, "legacy wire: "+sessErr.Error())
+		incomplete = append(incomplete, "wire discovery: "+sessErr.Error())
 	}
 
 	for _, sessA := range sessions {
@@ -128,6 +128,7 @@ func scopePrincipals(opts attack.Options) (a, b taskPrincipal, err error) {
 func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) ([]mcpSession, error) {
 	legacy, legacyErr := scopeHandshake(ctx, client, baseURL, p)
 	var out []mcpSession
+	var modernErr error
 	endpoints := endpointCandidates(baseURL)
 	if legacyErr == nil {
 		legacy.Era = EraLegacy
@@ -136,21 +137,23 @@ func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL stri
 	}
 
 	for _, ep := range endpoints {
-		if modern, ok := scopeDiscoverModern(ctx, client, ep, p); ok {
+		modern, ok, err := scopeDiscoverModern(ctx, client, ep, p)
+		modernErr = errors.Join(modernErr, err)
+		if ok {
 			out = append(out, modern)
 			break
 		}
 	}
 	if len(out) == 0 {
 		if errors.Is(legacyErr, attack.ErrInconclusive) {
-			return nil, legacyErr
+			return nil, errors.Join(legacyErr, modernErr)
 		}
-		return nil, inconclusive(legacyErr)
+		return nil, errors.Join(inconclusive(legacyErr), modernErr)
 	}
 	if errors.Is(legacyErr, attack.ErrInconclusive) {
-		return out, legacyErr
+		return out, errors.Join(legacyErr, modernErr)
 	}
-	return out, nil
+	return out, modernErr
 }
 
 type scopeNotificationFailure struct{ reason string }
@@ -158,25 +161,36 @@ type scopeNotificationFailure struct{ reason string }
 func (f scopeNotificationFailure) Error() string { return f.reason }
 func (f scopeNotificationFailure) Unwrap() error { return attack.ErrInconclusive }
 
-func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoint string, p taskPrincipal) (mcpSession, bool) {
+func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoint string, p taskPrincipal) (mcpSession, bool, error) {
 	const requestID = "batesian-scope-discover"
 	probe := mcpSession{Endpoint: endpoint, Era: EraModern}
 	resp, err := probe.postShaping(ctx, client, requestID, "server/discover", nil,
 		func(h map[string]string) { attachPrincipal(h, p) })
-	if err != nil || !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
-		return mcpSession{}, false
+	if err != nil || resp == nil {
+		return mcpSession{}, false, fmt.Errorf("%w: modern wire discovery for %q at %s did not answer",
+			attack.ErrInconclusive, p.name, endpoint)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError {
+		return mcpSession{}, false, fmt.Errorf("%w: modern wire discovery for %q at %s returned HTTP %d",
+			attack.ErrInconclusive, p.name, endpoint, resp.StatusCode)
+	}
+	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
+		return mcpSession{}, false, nil
 	}
 	var envelope map[string]interface{}
 	if json.Unmarshal(resp.Body, &envelope) != nil ||
 		envelope["jsonrpc"] != "2.0" || envelope["id"] != requestID {
-		return mcpSession{}, false
+		return mcpSession{}, false, fmt.Errorf("%w: modern wire discovery for %q at %s returned an unmatched response",
+			attack.ErrInconclusive, p.name, endpoint)
 	}
 	return mcpSession{
 		Endpoint:        endpoint,
 		Era:             EraModern,
 		ProtocolVersion: modernEraVersion,
 		RawInit:         resp.Body,
-	}, true
+	}, true, nil
 }
 
 func scopeHandshake(ctx context.Context, client *attack.HTTPClient, baseURL string, p taskPrincipal) (mcpSession, error) {

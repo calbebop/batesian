@@ -122,7 +122,7 @@ func TestShadow_UnobservedOriginDoesNotClaimRefusal(t *testing.T) {
 
 	withShadowPorts(t, portOf(shadow.URL))
 	findings, err := runShadow(t, main.URL)
-	if err != nil || len(findings) != 1 {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 	if findings[0].Severity != "medium" ||
@@ -174,9 +174,45 @@ func TestShadow_FingerprintWithIncompleteHandshake(t *testing.T) {
 
 	withShadowPorts(t, portOf(shadow.URL))
 	findings, err := runShadow(t, main.URL)
-	if err != nil || len(findings) != 1 || findings[0].Severity != "low" ||
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 || findings[0].Severity != "low" ||
 		!strings.Contains(findings[0].Evidence, "handshake probes incomplete") {
 		t.Fatalf("dashboard finding must retain incomplete handshake evidence: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_OpenSurfaceKeepsIncompletePeerProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{name: "dashboard read", handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			shadowMCPHandler(false)(w, r)
+		}},
+		{name: "alternate MCP path", handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/mcp" {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			shadowMCPHandler(false)(w, r)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main := httptest.NewServer(http.NotFoundHandler())
+			defer main.Close()
+			shadow := httptest.NewServer(tc.handler)
+			defer shadow.Close()
+
+			withShadowPorts(t, portOf(shadow.URL))
+			findings, err := runShadow(t, main.URL)
+			if len(findings) != 1 || findings[0].Severity != "high" ||
+				!errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want open-surface finding and incomplete peer probe: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
