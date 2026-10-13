@@ -89,6 +89,12 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 			tid, _ := params["taskId"].(string)
+			if (mode == "write-anon-timeout" && who == "") ||
+				(mode == "write-cross-timeout" && who == "tenant-b") {
+				w.WriteHeader(http.StatusRequestTimeout)
+				rpcErr("not task owner")
+				return
+			}
 			if method == "CreateTaskPushNotificationConfig" &&
 				((mode == "write-anon-mixed" && who == "") || (mode == "write-cross-mixed" && who == "tenant-b")) {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -460,10 +466,12 @@ func TestPushBinding_WriteOutcomes(t *testing.T) {
 		inconclusive bool
 	}{
 		{"write-anon-unavailable", true},
+		{"write-anon-timeout", true},
 		{"write-anon-malformed", true},
 		{"write-anon-generic-error", true},
 		{"write-anon-mixed", true},
 		{"write-cross-unavailable", true},
+		{"write-cross-timeout", true},
 		{"write-cross-malformed", true},
 		{"write-cross-wrong-id", true},
 		{"write-cross-mixed", true},

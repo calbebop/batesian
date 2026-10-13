@@ -250,7 +250,7 @@ func classifyPushWriteResponse(resp *attack.Response, err error, requestID strin
 	if resp.StatusCode == 404 || resp.StatusCode == 405 {
 		return pushWriteAbsent
 	}
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+	if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 {
 		return pushWriteUnjudged
 	}
 	_, code, hasError, valid := discoveryResponse(resp.Body, requestID)

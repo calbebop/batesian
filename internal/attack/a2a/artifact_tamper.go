@@ -139,7 +139,7 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 }
 
 func continuationRejected(resp *attack.Response) bool {
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+	if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 {
 		return false
 	}
 	message := strings.ToLower(jsonRPCErrorMessage(resp.Body))

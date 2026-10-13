@@ -77,7 +77,7 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 			continue
 		}
 		requestID, _ := s.obj["id"].(string)
-		if ctrl.StatusCode == 429 || ctrl.StatusCode >= 500 {
+		if ctrl.StatusCode == 408 || ctrl.StatusCode == 429 || ctrl.StatusCode >= 500 {
 			incomplete = append(incomplete, s.label+" control response was not judged")
 			continue
 		}
@@ -108,7 +108,8 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 }
 
 func ambiguousBatchResponse(resp *attack.Response, requestID string, batch bool) bool {
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+	if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 ||
+		resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return true
 	}
 	if !resp.IsSuccess() {

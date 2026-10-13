@@ -98,6 +98,8 @@ func TestWellKnownHostInject_UnobservedProbeOutcomes(t *testing.T) {
 		reason string
 	}{
 		{"server error", http.StatusServiceUnavailable, "", "HTTP 503"},
+		{"request timeout", http.StatusRequestTimeout, "", "HTTP 408"},
+		{"rate limited", http.StatusTooManyRequests, "", "HTTP 429"},
 		{"malformed JSON", http.StatusOK, "{", "invalid card JSON"},
 		{"non-card JSON", http.StatusOK, `{"status":"ok"}`, "invalid Agent Card"},
 		{"partial card", http.StatusOK, `{"name":"Agent"}`, "invalid Agent Card"},
