@@ -258,6 +258,49 @@ func TestBatchBypass_FailedBatchIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestBatchBypass_TimeoutIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"control", "batch"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(w, map[string]interface{}{
+						"name": "secure", "description": "d", "version": "1.0", "capabilities": map[string]interface{}{},
+						"skills": []interface{}{}, "supportedInterfaces": []interface{}{
+							map[string]string{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+						},
+					})
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				batch := strings.HasPrefix(strings.TrimSpace(string(body)), "[")
+				var request map[string]interface{}
+				_ = json.Unmarshal(body, &request)
+				if id, _ := request["id"].(string); strings.HasPrefix(id, "batesian-a2a-discovery-") {
+					rpcErr(w, id, -32001, "Task not found")
+					return
+				}
+				if (mode == "batch") == batch {
+					w.WriteHeader(http.StatusRequestTimeout)
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": nil,
+						"error": map[string]interface{}{"code": -32600, "message": "authentication required"}})
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			defer srv.Close()
+
+			exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("timeout must be incomplete, got findings=%+v err=%v", findings, err)
+			}
+			if mode == "control" && !strings.Contains(err.Error(), "control response") {
+				t.Fatalf("control timeout was not recorded: %v", err)
+			}
+		})
+	}
+}
+
 func TestBatchBypass_ExplicitProtocolRejectionIsClean(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {

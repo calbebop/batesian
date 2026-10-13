@@ -361,6 +361,10 @@ func TestArtifactTamper_UnjudgedContinuationIsInconclusive(t *testing.T) {
 		{"service unavailable", func(w http.ResponseWriter, _ interface{}) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}},
+		{"timeout with terminal error", func(w http.ResponseWriter, id interface{}) {
+			w.WriteHeader(http.StatusRequestTimeout)
+			rpcErr(w, id, -32002, "completed task")
+		}},
 		{"invalid params", func(w http.ResponseWriter, id interface{}) {
 			rpcErr(w, id, -32602, "Invalid params")
 		}},

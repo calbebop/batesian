@@ -76,7 +76,8 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 				continue
 			}
 			if !resp.IsSuccess() {
-				if resp.StatusCode < 400 || resp.StatusCode >= 500 {
+				if resp.StatusCode == 408 || resp.StatusCode == 429 ||
+					resp.StatusCode < 400 || resp.StatusCode >= 500 {
 					unobserved = append(unobserved, fmt.Sprintf("%s: HTTP %d", probeName, resp.StatusCode))
 				}
 				continue
