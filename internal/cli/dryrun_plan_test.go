@@ -100,6 +100,21 @@ func TestEndpointCandidateProbes_UsesOriginalBodyDigest(t *testing.T) {
 	}
 }
 
+func TestEndpointCandidateProbes_MarksFallbacksWithBodyDigest(t *testing.T) {
+	reqs := []attackpkg.RecordedRequest{
+		{RuleID: "r", Method: "POST", URL: "http://t/a", Body: `{"token":"redacted-a"}`, BodyDigest: "same"},
+		{RuleID: "r", Method: "POST", URL: "http://t/a", Body: `{"token":"redacted-a"}`, BodyDigest: "same"},
+		{RuleID: "r", Method: "POST", URL: "http://t/b", Body: `{"token":"redacted-b"}`, BodyDigest: "same"},
+		{RuleID: "r", Method: "POST", URL: "http://t/c", Body: `{"token":"redacted-c"}`, BodyDigest: "same"},
+	}
+	marked := endpointCandidateProbes(reqs)
+	for i := range reqs {
+		if marked[i] != (i >= 2) {
+			t.Errorf("request %d: fallback = %t, want %t", i, marked[i], i >= 2)
+		}
+	}
+}
+
 // The method is part of the grouping key, so a GET walk and a POST walk over the
 // same URLs are separate walks and each keeps its own first attempt. The plan
 // contains both: well-known card fetches are GETs, JSON-RPC probes are POSTs.

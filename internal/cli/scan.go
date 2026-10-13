@@ -356,9 +356,8 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		}
 		return report.New(os.Stdout, verbose).PrintJSON(doc)
 	default:
-		printer.PrintScanSummary(results)
+		return printer.PrintScanSummary(results)
 	}
-	return nil
 }
 
 // loadRules loads built-ins and optional supplements, rejecting incomplete packs.
@@ -771,13 +770,16 @@ func printDryRunPlan(out io.Writer, target string, rec *attackpkg.Recorder, reda
 // endpointCandidateProbes marks every repeated endpoint probe after the first.
 func endpointCandidateProbes(reqs []attackpkg.RecordedRequest) map[int]bool {
 	type probeKey struct{ rule, method, body string }
-	urlsFor := map[probeKey]map[string]bool{}
-	for _, r := range reqs {
+	keyFor := func(r attackpkg.RecordedRequest) probeKey {
 		body := r.BodyDigest
 		if body == "" {
 			body = r.Body
 		}
-		k := probeKey{r.RuleID, r.Method, body}
+		return probeKey{r.RuleID, r.Method, body}
+	}
+	urlsFor := map[probeKey]map[string]bool{}
+	for _, r := range reqs {
+		k := keyFor(r)
 		if urlsFor[k] == nil {
 			urlsFor[k] = map[string]bool{}
 		}
@@ -785,17 +787,17 @@ func endpointCandidateProbes(reqs []attackpkg.RecordedRequest) map[int]bool {
 	}
 
 	marked := map[int]bool{}
-	seenFirst := map[probeKey]bool{}
+	firstURL := map[probeKey]string{}
 	for i, r := range reqs {
-		k := probeKey{r.RuleID, r.Method, r.Body}
+		k := keyFor(r)
 		if len(urlsFor[k]) < 2 {
 			continue // a single URL is not a walk
 		}
-		if !seenFirst[k] {
-			seenFirst[k] = true
+		if _, seen := firstURL[k]; !seen {
+			firstURL[k] = r.URL
 			continue // the first attempt is the one that is actually sent
 		}
-		marked[i] = true
+		marked[i] = r.URL != firstURL[k]
 	}
 	return marked
 }
