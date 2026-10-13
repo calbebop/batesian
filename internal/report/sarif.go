@@ -29,9 +29,19 @@ type sarifLog struct {
 }
 
 type sarifRun struct {
-	Tool        sarifTool         `json:"tool"`
-	Invocations []sarifInvocation `json:"invocations"`
-	Results     []sarifResult     `json:"results"`
+	Tool        sarifTool          `json:"tool"`
+	Invocations []sarifInvocation  `json:"invocations"`
+	Artifacts   []sarifArtifact    `json:"artifacts"`
+	Results     []sarifResult      `json:"results"`
+	Properties  sarifRunProperties `json:"properties"`
+}
+
+type sarifArtifact struct {
+	Location sarifArtifactLocation `json:"location"`
+}
+
+type sarifRunProperties struct {
+	AssessedTargetURI string `json:"assessedTargetUri"`
 }
 
 type sarifInvocation struct {
@@ -122,8 +132,8 @@ type sarifArtifactLocation struct {
 }
 
 // WriteSARIF encodes the scan results as SARIF v2.1.0 JSON to w.
-func WriteSARIF(w io.Writer, results []engine.RunResult, toolVersion string) error {
-	doc := buildSARIF(results, toolVersion)
+func WriteSARIF(w io.Writer, results []engine.RunResult, toolVersion, assessedTarget string) error {
+	doc := buildSARIF(results, toolVersion, assessedTarget)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(doc); err != nil {
@@ -132,7 +142,7 @@ func WriteSARIF(w io.Writer, results []engine.RunResult, toolVersion string) err
 	return nil
 }
 
-func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
+func buildSARIF(results []engine.RunResult, toolVersion, assessedTarget string) sarifLog {
 	ruleMap := make(map[string]sarifRule)
 	// SARIF requires an array even when the scan finds nothing.
 	sarifResults := make([]sarifResult, 0, len(results))
@@ -155,9 +165,12 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 			}
 		}
 	}
+	occurrences := make(map[string]int)
 	for _, r := range results {
 		for _, f := range r.Findings {
-			result := findingToSARIF(f)
+			key := f.RuleID + "\x00" + fingerprintTarget(f.TargetURL)
+			result := findingToSARIF(f, occurrences[key])
+			occurrences[key]++
 			if base, ok := ruleMap[f.RuleID]; ok &&
 				(severity.Canonical(f.Severity) == "" || base.Properties.Severity != severityScore(f.Severity)) {
 				variant := base
@@ -205,7 +218,9 @@ func buildSARIF(results []engine.RunResult, toolVersion string) sarifLog {
 					},
 				},
 				Invocations: []sarifInvocation{invocation},
+				Artifacts:   []sarifArtifact{{Location: sarifArtifactLocation{URI: assessedTarget}}},
 				Results:     sarifResults,
+				Properties:  sarifRunProperties{AssessedTargetURI: assessedTarget},
 			},
 		},
 	}
@@ -247,7 +262,7 @@ func newSARIFNotification(result engine.RunResult, level, detail string) sarifNo
 }
 
 // findingToSARIF converts a Finding into a SARIF result.
-func findingToSARIF(f attackpkg.Finding) sarifResult {
+func findingToSARIF(f attackpkg.Finding, occurrence int) sarifResult {
 	confidence := string(f.EffectiveConfidence())
 	props := map[string]any{
 		"severity":     severity.CanonicalOrRaw(f.Severity),
@@ -285,14 +300,14 @@ func findingToSARIF(f attackpkg.Finding) sarifResult {
 			},
 		},
 		PartialFingerprints: map[string]string{
-			"findingIdentity/v1": fingerprint(f),
+			"findingIdentity/v2": fingerprint(f, occurrence),
 		},
 		Properties: props,
 	}
 }
 
-func fingerprint(f attackpkg.Finding) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{f.RuleID, f.Title, fingerprintTarget(f.TargetURL)}, "\x00")))
+func fingerprint(f attackpkg.Finding, occurrence int) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{f.RuleID, fingerprintTarget(f.TargetURL), fmt.Sprint(occurrence)}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 

@@ -37,7 +37,7 @@ func TestWriteSARIF_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
 	results := sarifFixture()
 	results[0].Findings[0].Evidence = ""
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 	var doc struct {
@@ -57,6 +57,14 @@ func TestWriteSARIF_ConfirmedWithoutEvidenceIsIndicator(t *testing.T) {
 
 type sarifDoc struct {
 	Runs []struct {
+		Properties struct {
+			AssessedTargetURI string `json:"assessedTargetUri"`
+		} `json:"properties"`
+		Artifacts []struct {
+			Location struct {
+				URI string `json:"uri"`
+			} `json:"location"`
+		} `json:"artifacts"`
 		Invocations []struct {
 			ExecutionSuccessful *bool `json:"executionSuccessful"`
 			Notifications       []struct {
@@ -87,7 +95,7 @@ type sarifDoc struct {
 
 func TestWriteSARIF_AbsoluteURIHasNoUriBaseId(t *testing.T) {
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, sarifFixture(), "test"); err != nil {
+	if err := report.WriteSARIF(&buf, sarifFixture(), "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 
@@ -125,7 +133,7 @@ func TestWriteSARIF_CleanScanEmptiesResultsArray(t *testing.T) {
 	clean := []engine.RunResult{{Rule: r}} // ran, found nothing
 
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, clean, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, clean, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 
@@ -143,6 +151,12 @@ func TestWriteSARIF_CleanScanEmptiesResultsArray(t *testing.T) {
 	if len(doc.Runs) != 1 || doc.Runs[0].Results == nil || len(doc.Runs[0].Results) != 0 {
 		t.Fatalf("expected one run with a non-nil empty results array; runs=%d results=%v",
 			len(doc.Runs), doc.Runs[0].Results)
+	}
+	if got := doc.Runs[0].Properties.AssessedTargetURI; got != "https://agent.example.com/mcp" {
+		t.Fatalf("assessed target = %q", got)
+	}
+	if artifacts := doc.Runs[0].Artifacts; len(artifacts) != 1 || artifacts[0].Location.URI != "https://agent.example.com/mcp" {
+		t.Fatalf("clean scan has no target artifact: %+v", artifacts)
 	}
 	invocation := doc.Runs[0].Invocations[0]
 	if invocation.ExecutionSuccessful == nil || !*invocation.ExecutionSuccessful {
@@ -169,7 +183,7 @@ func TestSARIF_HelpURIFromReferences(t *testing.T) {
 	results := []engine.RunResult{{Rule: r}}
 
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 
@@ -210,7 +224,7 @@ func TestSARIF_FingerprintDistinguishesFindingsAndIgnoresQuery(t *testing.T) {
 			}},
 		}}
 		var buf bytes.Buffer
-		if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+		if err := report.WriteSARIF(&buf, results, "test", target); err != nil {
 			t.Fatalf("WriteSARIF: %v", err)
 		}
 		var doc struct {
@@ -227,7 +241,7 @@ func TestSARIF_FingerprintDistinguishesFindingsAndIgnoresQuery(t *testing.T) {
 		if _, ok := fingerprints["primaryLocationLineHash"]; ok {
 			t.Fatal("network result must not claim to have a source line hash")
 		}
-		return fingerprints["findingIdentity/v1"]
+		return fingerprints["findingIdentity/v2"]
 	}
 
 	a := fp("mcp-x-001", "Same vulnerability", "A", "https://host.example/mcp?nonce=one")
@@ -238,11 +252,13 @@ func TestSARIF_FingerprintDistinguishesFindingsAndIgnoresQuery(t *testing.T) {
 	if c := fp("mcp-x-001", "Same vulnerability", "Reworded", "https://host.example/mcp"); c != a {
 		t.Fatalf("description edits must not change identity: %q vs %q", a, c)
 	}
+	if c := fp("mcp-x-001", "Renamed finding", "A", "https://host.example/mcp"); c != a {
+		t.Fatalf("title edits must not change identity: %q vs %q", a, c)
+	}
 	for _, tc := range []struct {
 		name, ruleID, title, description, target string
 	}{
 		{"rule", "mcp-x-002", "Same vulnerability", "A", "https://host.example/mcp"},
-		{"title", "mcp-x-001", "Different finding", "A", "https://host.example/mcp"},
 		{"host", "mcp-x-001", "Same vulnerability", "A", "https://other.example/mcp"},
 		{"path", "mcp-x-001", "Same vulnerability", "A", "https://host.example/other"},
 		{"port", "mcp-x-001", "Same vulnerability", "A", "https://host.example:8443/mcp"},
@@ -255,6 +271,32 @@ func TestSARIF_FingerprintDistinguishesFindingsAndIgnoresQuery(t *testing.T) {
 	}
 }
 
+func TestSARIF_FingerprintDistinguishesRepeatedRuleAndTarget(t *testing.T) {
+	results := sarifFixture()
+	results[0].Findings = append(results[0].Findings, results[0].Findings[0])
+	results[0].Findings[1].Title = "Second finding"
+
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				Fingerprints map[string]string `json:"partialFingerprints"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("decode SARIF: %v", err)
+	}
+	first := doc.Runs[0].Results[0].Fingerprints["findingIdentity/v2"]
+	second := doc.Runs[0].Results[1].Fingerprints["findingIdentity/v2"]
+	if first == "" || second == "" || first == second {
+		t.Fatalf("repeated findings share identity: %q, %q", first, second)
+	}
+}
+
 func TestWriteSARIF_PreservesEvidenceAndChain(t *testing.T) {
 	results := sarifFixture()
 	finding := &results[0].Findings[0]
@@ -263,7 +305,7 @@ func TestWriteSARIF_PreservesEvidenceAndChain(t *testing.T) {
 	finding.Chain = []attack.ChainStep{{Hop: 1, Principal: "tenant-a", Action: "request", Outcome: "accepted"}}
 
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 	var doc struct {
@@ -310,7 +352,7 @@ func TestWriteSARIF_SeverityMatchesReferencedRule(t *testing.T) {
 		attack.Finding{RuleID: "mcp-test-001", Severity: "sev1", Title: "Unknown finding", TargetURL: "https://agent.example.com/mcp"},
 	)
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 	var doc struct {
@@ -377,7 +419,7 @@ func TestWriteSARIF_ReportsIncompleteCoverage(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 
@@ -415,7 +457,7 @@ func TestWriteSARIF_PreservesFindingWithRuleError(t *testing.T) {
 	results[0].Err = errors.New("follow-up failed")
 
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, results, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 
@@ -430,7 +472,7 @@ func TestWriteSARIF_PreservesFindingWithRuleError(t *testing.T) {
 
 func TestWriteSARIF_NotificationWithoutRule(t *testing.T) {
 	var buf bytes.Buffer
-	if err := report.WriteSARIF(&buf, []engine.RunResult{{Skipped: true}}, "test"); err != nil {
+	if err := report.WriteSARIF(&buf, []engine.RunResult{{Skipped: true}}, "test", "https://agent.example.com/mcp"); err != nil {
 		t.Fatalf("WriteSARIF: %v", err)
 	}
 

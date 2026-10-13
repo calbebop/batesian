@@ -342,7 +342,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 
 	switch format {
 	case report.FormatSARIF:
-		return report.WriteSARIF(os.Stdout, results, attackpkg.Version)
+		return report.WriteSARIF(os.Stdout, results, attackpkg.Version, displayTarget)
 	case report.FormatJSON:
 		// The machine-readable payload always goes to stdout; status/banner
 		// output (above) goes to stderr so `batesian scan --output json | jq`
