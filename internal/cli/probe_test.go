@@ -642,7 +642,7 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 				case "server/discover":
 					w.WriteHeader(http.StatusNotFound)
 				case "initialize":
-					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"%s":{}}}}`, tc.capability)
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"%s":{}},"serverInfo":{"name":"fixture","version":"1"}}}`, tc.capability)
 				case "notifications/initialized":
 					w.WriteHeader(http.StatusAccepted)
 				case tc.method:

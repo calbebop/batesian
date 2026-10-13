@@ -73,9 +73,10 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 			if readErr != nil {
 				return nil, readErr
 			}
-			if legacyDiscoveryError(raw) {
-				return nil, fmt.Errorf("%w: discovery RPC rejected", errModernUnavailable)
+			if code, ok := discoveryErrorCode(raw); ok && (code == -32020 || code == -32021) {
+				return nil, fmt.Errorf("modern MCP discovery RPC error %d", code)
 			}
+			return nil, fmt.Errorf("%w: HTTP 400", errModernUnavailable)
 		}
 		return nil, fmt.Errorf("modern MCP discovery returned HTTP %d", resp.StatusCode)
 	}
@@ -134,13 +135,21 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 }
 
 func legacyDiscoveryError(raw []byte) bool {
+	code, ok := discoveryErrorCode(raw)
+	return ok && (code == -32601 || code == -32022)
+}
+
+func discoveryErrorCode(raw []byte) (int, bool) {
 	var envelope struct {
-		Error struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      string `json:"id"`
+		Error   *struct {
 			Code int `json:"code"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil {
-		return false
+	if json.Unmarshal(raw, &envelope) != nil || envelope.JSONRPC != "2.0" ||
+		envelope.ID != "batesian-probe-discover" || envelope.Error == nil {
+		return 0, false
 	}
-	return envelope.Error.Code == -32601 || envelope.Error.Code == -32022
+	return envelope.Error.Code, true
 }
