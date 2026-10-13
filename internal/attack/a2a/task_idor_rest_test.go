@@ -36,6 +36,12 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			card := map[string]interface{}{"protocolVersion": "1.0", "supportedInterfaces": []interface{}{
 				map[string]string{"protocolBinding": "HTTP+JSON", "url": baseURL},
 			}}
+			if mode == "first-rest-base-unavailable" {
+				card["supportedInterfaces"] = []interface{}{
+					map[string]string{"protocolBinding": "HTTP+JSON", "url": "http://" + r.Host + "/unavailable"},
+					map[string]string{"protocolBinding": "HTTP+JSON", "url": baseURL},
+				}
+			}
 			if dual {
 				card["supportedInterfaces"] = []interface{}{
 					map[string]string{"protocolBinding": "JSONRPC", "url": "http://" + r.Host + "/"},
@@ -48,6 +54,10 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			writeJSON(w, card)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/unavailable/") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if dual && r.Method == http.MethodPost && r.URL.Path == "/" {
 			method, id := decodeRPC(r)
 			switch method {
@@ -58,7 +68,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					rpcErr(w, id, -32600, "authentication required")
 				}
 			case "GetTask", "tasks/get":
-				if mode == "dual-rpc-read-error" {
+				if mode == "dual-rpc-read-error" || mode == "dual-rpc-read-error-leak" {
 					w.WriteHeader(http.StatusServiceUnavailable)
 					return
 				}
@@ -185,10 +195,12 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 		inconclusive bool
 	}{
 		{"REST-only leak", "leak", false, false, true, false},
+		{"later REST base leaks after first fails", "first-rest-base-unavailable", false, false, true, true},
 		{"legacy REST-only leak", "leak", true, false, true, false},
 		{"legacy REST redacted", "redacted", true, false, false, true},
 		{"legacy REST unrelated", "unrelated", true, false, false, true},
 		{"dual binding REST leak", "leak", false, true, true, false},
+		{"dual binding RPC read failed but REST leaked", "dual-rpc-read-error-leak", false, true, true, true},
 		{"dual binding RPC read failed", "dual-rpc-read-error", false, true, false, true},
 		{"off-origin card pinned", "off-origin", false, false, true, false},
 		{"task ID escaped", "escaped-id", false, false, true, false},

@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -121,6 +122,14 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 		return weak, true
 	}
 	return endpointpkg.AppendPath(baseURL, "/"), false
+}
+
+func advertisedJSONRPCUnavailable(ctx context.Context, client *attack.HTTPClient, baseURL string) error {
+	card, found := fetchDiscoveryCard(ctx, client, baseURL)
+	if found && len(jsonRPCInterfaces(card)) > 0 {
+		return fmt.Errorf("%w: advertised JSON-RPC interface did not answer", attack.ErrInconclusive)
+	}
+	return nil
 }
 
 // looksLikeMCPServer rejects weak A2A evidence when MCP discovery or resource

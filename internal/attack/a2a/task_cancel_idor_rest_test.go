@@ -59,7 +59,13 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 			return
 		}
 		if dual && r.Method == http.MethodPost && r.URL.Path == "/rpc" {
-			method, id := decodeRPC(r)
+			if mode == "rpc-unavailable" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			req := readBody(r)
+			method, _ := req["method"].(string)
+			id := req["id"]
 			switch method {
 			case "SendMessage", "message/send":
 				if caller == "a" {
@@ -68,6 +74,11 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 					rpcErr(w, id, -32600, "authentication required")
 				}
 			case "GetTask", "tasks/get":
+				params, _ := req["params"].(map[string]interface{})
+				if params["id"] != "rpc-owner-task" {
+					rpcErr(w, id, -32001, "Task not found")
+					return
+				}
 				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
 					"id": "rpc-owner-task", "status": map[string]string{"state": "submitted"},
 				}})
@@ -156,7 +167,7 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				}
-			} else if caller == "b" && mode != "cross-leak" && mode != "cross-mutate-403" && mode != "cross-unpersisted" && mode != "off-origin" && mode != "escaped-id" && mode != "no-cancel" {
+			} else if caller == "b" && mode != "cross-leak" && mode != "rpc-unavailable" && mode != "cross-mutate-403" && mode != "cross-unpersisted" && mode != "off-origin" && mode != "escaped-id" && mode != "no-cancel" {
 				if mode == "cross-ambiguous" {
 					w.WriteHeader(http.StatusInternalServerError)
 				} else {
@@ -199,6 +210,7 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 		{"REST-only anonymous cancel", "anonymous-leak", false, false, "without authentication", false},
 		{"legacy REST anonymous cancel", "anonymous-leak", true, false, "without authentication", false},
 		{"dual binding REST cancel", "cross-leak", false, true, "non-owning", false},
+		{"dual binding RPC unavailable", "rpc-unavailable", false, true, "non-owning", true},
 		{"REST-only cross-principal cancel", "cross-leak", false, false, "non-owning", false},
 		{"off-origin card pinned", "off-origin", false, false, "non-owning", false},
 		{"task ID escaped", "escaped-id", false, false, "non-owning", false},

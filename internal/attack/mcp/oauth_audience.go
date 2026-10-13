@@ -111,10 +111,7 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	anon := attack.NewUnauthHTTPClient(opts, vars)
 	endpoint, outcomes, legacyErr := runProbesAgainstEndpoint(ctx, client,
 		anon, vars.BaseURL, probes)
-	modernEndpoint, modernOutcomes, err := runModernAudienceProbes(ctx, anon, vars.BaseURL, probes)
-	if err != nil {
-		return nil, err
-	}
+	modernEndpoint, modernOutcomes, modernErr := runModernAudienceProbes(ctx, anon, vars.BaseURL, probes)
 	var findings []attack.Finding
 	if endpoint != "" {
 		if finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes); finding != nil {
@@ -126,14 +123,14 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 			findings = append(findings, labelEra(mcpSession{Era: EraModern}, []attack.Finding{*finding})...)
 		}
 	}
-	if len(findings) > 0 {
-		return findings, nil
-	}
 	if legacyErr != nil {
-		return nil, legacyErr
+		return findings, errors.Join(legacyErr, modernErr)
+	}
+	if modernErr != nil {
+		return findings, modernErr
 	}
 	if endpoint == "" && modernEndpoint == "" {
-		return nil, attack.ErrInconclusive
+		return findings, attack.ErrInconclusive
 	}
 
 	// A clean result needs every probe judged on each established wire. An
@@ -142,8 +139,11 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	legacyIncomplete := endpoint != "" && anyProbeInconclusive(outcomes) &&
 		(modernEndpoint == "" || !allProbeInconclusive(outcomes))
 	if legacyIncomplete || (modernEndpoint != "" && anyProbeInconclusive(modernOutcomes)) {
-		return nil, fmt.Errorf("%w: one or more credential-gated MCP requests did not judge an audience probe (legacy HTTP %s; modern HTTP %s)",
+		return findings, fmt.Errorf("%w: one or more credential-gated MCP requests did not judge an audience probe (legacy HTTP %s; modern HTTP %s)",
 			attack.ErrInconclusive, outcomeStatuses(outcomes), outcomeStatuses(modernOutcomes))
+	}
+	if len(findings) > 0 {
+		return findings, nil
 	}
 
 	// Nothing was accepted. That is only a clean result if the probes were built

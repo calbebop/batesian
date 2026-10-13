@@ -333,8 +333,8 @@ func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.
 
 	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
 		context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected a partial probe result, got %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected well-known fallback to drive one finding, got %d", len(findings))
@@ -369,11 +369,7 @@ func TestOAuthAudience_Ambiguous200(t *testing.T) {
 	}
 }
 
-// TestOAuthAudience_TrapAcceptedControlNonResult covers the rewritten
-// coalesceOutcomes path where a trap probe returns a clear result envelope
-// (accepted) but the negative control returns a 200 body with no result
-// envelope (inconclusive, not a clear rejection). The trap must still be
-// reported, downgraded to RiskIndicator (not confirmed, and not dropped).
+// An accepted trap with an unjudged control is a partial indicator.
 func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -399,8 +395,8 @@ func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
 	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("control probe was not judged: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 downgraded finding (trap accepted, control inconclusive), got %d: %+v", len(findings), findings)
@@ -410,11 +406,7 @@ func TestOAuthAudience_TrapAcceptedControlNonResult(t *testing.T) {
 	}
 }
 
-// A 429 is not a rejection. The negative control is what upgrades an accepted
-// trap to a confirmed finding: "the control was REJECTED, so the audience value
-// was the decisive factor". A rate limiter catching the control (plausible on
-// its own: the probes are a burst) made that argument out of a reply that said
-// nothing about the token, and every trap acceptance read as confirmed.
+// Rate limiting the control leaves the audience comparison unjudged.
 func TestOAuthAudience_RateLimitedControlDowngradesToIndicator(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -437,8 +429,8 @@ func TestOAuthAudience_RateLimitedControlDowngradesToIndicator(t *testing.T) {
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
 	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("rate-limited control probe was not judged: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected the accepted traps to survive a rate-limited control, got %d findings: %+v", len(findings), findings)

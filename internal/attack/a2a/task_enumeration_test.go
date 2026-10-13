@@ -519,3 +519,41 @@ func TestTaskEnumeration_ScopedListingWithOwnTasksIsClean(t *testing.T) {
 			len(findings), findings)
 	}
 }
+
+func TestTaskEnumeration_RESTFindingKeepsRPCFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/.well-known/"):
+			writeJSON(w, map[string]interface{}{
+				"name": "Dual", "description": "d", "version": "1.0.0", "protocolVersion": "1.0",
+				"capabilities": map[string]interface{}{}, "skills": []interface{}{},
+				"supportedInterfaces": []interface{}{
+					map[string]string{"url": "http://" + r.Host + "/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+					map[string]string{"url": "http://" + r.Host, "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"},
+				},
+			})
+		case r.URL.Path == "/rpc":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case r.Method == http.MethodPost && r.URL.Path == "/message:send":
+			if r.Header.Get("Authorization") != "Bearer tok-a" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "owner-task"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/tasks":
+			if r.Header.Get("Authorization") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, map[string]interface{}{"tasks": []interface{}{map[string]string{"id": "owner-task"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want REST finding and incomplete JSON-RPC probe, got findings=%+v err=%v", findings, err)
+	}
+}
