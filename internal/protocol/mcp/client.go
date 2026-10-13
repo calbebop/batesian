@@ -11,13 +11,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-
 	"strings"
 	"time"
 
-	"github.com/calbebop/batesian/internal/httpx"
-
 	"github.com/calbebop/batesian/internal/endpoint"
+	"github.com/calbebop/batesian/internal/httpx"
 	"github.com/calbebop/batesian/internal/sse"
 )
 
@@ -31,6 +29,7 @@ const (
 var candidatePaths = []string{"/mcp", "/", "/api", "/rpc"}
 
 var errModernUnavailable = errors.New("modern MCP discovery unavailable")
+var errInitializedRejected = errors.New("MCP initialized notification failed")
 
 // Client is a lightweight MCP protocol client for use by the probe command.
 type Client struct {
@@ -181,6 +180,9 @@ func (c *Client) Initialize(ctx context.Context) (*Session, error) {
 		if err == nil {
 			return session, nil
 		}
+		if errors.Is(err, errInitializedRejected) {
+			return nil, err
+		}
 	}
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
@@ -199,6 +201,8 @@ func (c *Client) Connect(ctx context.Context) (*Session, error) {
 		}
 		if session, err := c.tryInitialize(ctx, ep); err == nil {
 			return session, nil
+		} else if errors.Is(err, errInitializedRejected) {
+			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
@@ -336,6 +340,7 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 
 	sessionID := resp.Header.Get("Mcp-Session-Id")
 	respBody, err := readBody(resp)
+	_ = resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -345,21 +350,25 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		return nil, fmt.Errorf("non-JSON response from %s", ep)
 	}
 
-	result, _ := parsed["result"].(map[string]interface{})
-	if result == nil {
+	if parsed["jsonrpc"] != "2.0" || parsed["id"] != float64(1) || parsed["error"] != nil {
+		return nil, fmt.Errorf("invalid MCP initialize response from %s", ep)
+	}
+	result, ok := parsed["result"].(map[string]interface{})
+	if !ok {
 		return nil, fmt.Errorf("missing result in initialize response from %s", ep)
 	}
-	if _, ok := result["protocolVersion"]; !ok {
-		return nil, fmt.Errorf("response from %s is not an MCP initialize response", ep)
+	version := strField(result, "protocolVersion")
+	si, infoOK := result["serverInfo"].(map[string]interface{})
+	caps, capsOK := result["capabilities"].(map[string]interface{})
+	if !supportedLegacyVersion(version) || !infoOK || strField(si, "name") == "" ||
+		strField(si, "version") == "" || !capsOK {
+		return nil, fmt.Errorf("invalid MCP initialize result from %s", ep)
 	}
-
-	si, _ := result["serverInfo"].(map[string]interface{})
-	caps, _ := result["capabilities"].(map[string]interface{})
 
 	session := &Session{
 		Endpoint:        ep,
 		SessionID:       sessionID,
-		ProtocolVersion: strField(result, "protocolVersion"),
+		ProtocolVersion: version,
 		ServerInfo: ServerInfo{
 			Name:    strField(si, "name"),
 			Version: strField(si, "version"),
@@ -368,19 +377,37 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		Capabilities: caps,
 	}
 
-	// Send notifications/initialized (fire and forget; ignore errors).
 	notif, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
-	notifReq, _ := c.newRequest(ctx, ep, notif)
+	notifReq, err := c.newRequest(ctx, ep, notif)
+	if err != nil {
+		return nil, fmt.Errorf("%w: could not build request", errInitializedRejected)
+	}
 	session.setRequestHeaders(notifReq)
-	resp2, _ := c.http.Do(notifReq)
-	if resp2 != nil {
-		resp2.Body.Close()
+	resp2, err := c.http.Do(notifReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: %w", errInitializedRejected, ctx.Err())
+		}
+		return nil, fmt.Errorf("%w: transport error", errInitializedRejected)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusAccepted {
+		return nil, fmt.Errorf("%w: HTTP %d", errInitializedRejected, resp2.StatusCode)
 	}
 
 	return session, nil
+}
+
+func supportedLegacyVersion(version string) bool {
+	switch version {
+	case "2025-03-26", "2025-06-18", "2025-11-25":
+		return true
+	default:
+		return false
+	}
 }
 
 // post sends one request on the session's wire.

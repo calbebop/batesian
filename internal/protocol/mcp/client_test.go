@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -86,6 +87,7 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 		version   string
 		sessionID string
 	}{
+		{name: "earlier streamable revision", version: "2025-03-26", sessionID: "session-0"},
 		{name: "stateful older revision", version: "2025-06-18", sessionID: "session-1"},
 		{name: "stateless latest revision", version: "2025-11-25"},
 	} {
@@ -182,6 +184,7 @@ func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 		noDiscovery  bool
 		rpcErrorCode int
 		rpcStatus    int
+		rawDiscovery string
 		wantMethods  []string
 		wantVersion  string
 		wantTool     string
@@ -213,6 +216,22 @@ func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 		},
 		{
 			name: "legacy version rejected", legacy: true, rpcErrorCode: -32022, rpcStatus: http.StatusBadRequest,
+			wantMethods: []string{"server/discover", "initialize", "notifications/initialized", "tools/list"},
+			wantVersion: "2025-11-25", wantTool: "legacy-tool",
+		},
+		{
+			name: "plain HTTP 400", legacy: true, rpcStatus: http.StatusBadRequest,
+			rawDiscovery: "Bad Request",
+			wantMethods:  []string{"server/discover", "initialize", "notifications/initialized", "tools/list"},
+			wantVersion:  "2025-11-25", wantTool: "legacy-tool",
+		},
+		{
+			name: "empty HTTP 400", legacy: true, rpcStatus: http.StatusBadRequest,
+			wantMethods: []string{"server/discover", "initialize", "notifications/initialized", "tools/list"},
+			wantVersion: "2025-11-25", wantTool: "legacy-tool",
+		},
+		{
+			name: "unrecognized RPC error", legacy: true, rpcErrorCode: -32600, rpcStatus: http.StatusBadRequest,
 			wantMethods: []string{"server/discover", "initialize", "notifications/initialized", "tools/list"},
 			wantVersion: "2025-11-25", wantTool: "legacy-tool",
 		},
@@ -248,6 +267,11 @@ func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 				case "server/discover":
 					if tc.noDiscovery {
 						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					if tc.rpcStatus != 0 && tc.rpcErrorCode == 0 {
+						w.WriteHeader(tc.rpcStatus)
+						_, _ = w.Write([]byte(tc.rawDiscovery))
 						return
 					}
 					if tc.rpcErrorCode != 0 {
@@ -351,6 +375,10 @@ func TestConnectDoesNotDowngradeAfterDiscoveryFailure(t *testing.T) {
 			name: "header mismatch", status: http.StatusBadRequest,
 			body: `{"jsonrpc":"2.0","id":"batesian-probe-discover","error":{"code":-32020,"message":"Header mismatch"}}`,
 		},
+		{
+			name: "missing capability", status: http.StatusBadRequest,
+			body: `{"jsonrpc":"2.0","id":"batesian-probe-discover","error":{"code":-32021,"message":"Missing capability"}}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var methods []string
@@ -395,5 +423,195 @@ func TestConnectDoesNotDowngradeAfterDiscoveryFailure(t *testing.T) {
 				t.Errorf("methods = %v, want only modern discovery", methods)
 			}
 		})
+	}
+}
+
+func TestTryInitializeRejectsInvalidReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]interface{}, map[string]interface{})
+	}{
+		{"wrong JSON-RPC version", func(reply, _ map[string]interface{}) { reply["jsonrpc"] = "1.0" }},
+		{"wrong ID", func(reply, _ map[string]interface{}) { reply["id"] = 2 }},
+		{"error with result", func(reply, _ map[string]interface{}) {
+			reply["error"] = map[string]interface{}{"code": -32600, "message": "Rejected"}
+		}},
+		{"missing result", func(reply, _ map[string]interface{}) { delete(reply, "result") }},
+		{"missing version", func(_, result map[string]interface{}) { delete(result, "protocolVersion") }},
+		{"empty version", func(_, result map[string]interface{}) { result["protocolVersion"] = "" }},
+		{"non-string version", func(_, result map[string]interface{}) { result["protocolVersion"] = 123 }},
+		{"unsupported version", func(_, result map[string]interface{}) { result["protocolVersion"] = modernVersion }},
+		{"missing capabilities", func(_, result map[string]interface{}) { delete(result, "capabilities") }},
+		{"non-object capabilities", func(_, result map[string]interface{}) { result["capabilities"] = "tools" }},
+		{"missing server info", func(_, result map[string]interface{}) { delete(result, "serverInfo") }},
+		{"empty server name", func(_, result map[string]interface{}) {
+			result["serverInfo"] = map[string]interface{}{"name": "", "version": "1"}
+		}},
+		{"missing server version", func(_, result map[string]interface{}) {
+			result["serverInfo"] = map[string]interface{}{"name": "fixture"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := map[string]interface{}{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]interface{}{},
+				"serverInfo":      map[string]interface{}{"name": "fixture", "version": "1"},
+			}
+			reply := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result}
+			tc.change(reply, result)
+			var notifications int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Method string `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if request.Method == "notifications/initialized" {
+					notifications++
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(reply)
+			}))
+			defer srv.Close()
+			client, err := NewClient(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session, err := client.tryInitialize(context.Background(), srv.URL); err == nil || session != nil {
+				t.Fatalf("invalid initialize reply accepted: session=%+v, err=%v", session, err)
+			}
+			if notifications != 0 {
+				t.Fatalf("sent %d initialized notifications after invalid reply", notifications)
+			}
+		})
+	}
+}
+
+func TestInitializedNotificationFailureStopsHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"bad request", http.StatusBadRequest},
+		{"unauthorized", http.StatusUnauthorized},
+		{"server error", http.StatusInternalServerError},
+		{"unexpected success", http.StatusOK},
+	} {
+		for _, connect := range []bool{false, true} {
+			name := tc.name + "/initialize"
+			if connect {
+				name = tc.name + "/connect"
+			}
+			t.Run(name, func(t *testing.T) {
+				var methods []string
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var request struct {
+						Method string `json:"method"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Errorf("decode request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					methods = append(methods, request.Method)
+					switch request.Method {
+					case "server/discover":
+						w.WriteHeader(http.StatusNotFound)
+					case "initialize":
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": 1,
+							"result": map[string]interface{}{
+								"protocolVersion": "2025-11-25",
+								"capabilities":    map[string]interface{}{},
+								"serverInfo":      map[string]interface{}{"name": "fixture", "version": "1"},
+							},
+						})
+					case "notifications/initialized":
+						w.WriteHeader(tc.status)
+					default:
+						t.Errorf("unexpected request %q", request.Method)
+					}
+				}))
+				defer srv.Close()
+				client, err := NewClient(srv.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var session *Session
+				if connect {
+					session, err = client.Connect(context.Background())
+				} else {
+					session, err = client.Initialize(context.Background())
+				}
+				if session != nil || err == nil || !strings.Contains(err.Error(), "initialized notification failed") {
+					t.Fatalf("handshake result: session=%+v, err=%v", session, err)
+				}
+				want := []string{"initialize", "notifications/initialized"}
+				if connect {
+					want = append([]string{"server/discover"}, want...)
+				}
+				if !slices.Equal(methods, want) {
+					t.Errorf("methods = %v, want %v", methods, want)
+				}
+			})
+		}
+	}
+}
+
+func TestInitializedNotificationTransportFailure(t *testing.T) {
+	var methods []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		methods = append(methods, request.Method)
+		mu.Unlock()
+		switch request.Method {
+		case "server/discover":
+			w.WriteHeader(http.StatusNotFound)
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": 1,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-11-25",
+					"capabilities":    map[string]interface{}{},
+					"serverInfo":      map[string]interface{}{"name": "fixture", "version": "1"},
+				},
+			})
+		case "notifications/initialized":
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+		default:
+			t.Errorf("unexpected request %q", request.Method)
+		}
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, err := client.Connect(context.Background()); session != nil ||
+		err == nil || !strings.Contains(err.Error(), "initialized notification failed") {
+		t.Fatalf("handshake result: session=%+v, err=%v", session, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(methods, []string{"server/discover", "initialize", "notifications/initialized"}) {
+		t.Errorf("methods = %v", methods)
 	}
 }
