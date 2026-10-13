@@ -432,7 +432,8 @@ the `A2A-Extensions` header **omitted**. A **confirmed** finding is raised only
 when the omission is also accepted - the server does not enforce its own required
 extension, so its policy/capability guarantees can be bypassed by simply not
 sending the header. A server that rejects the un-activated request fails closed
-(no finding).
+(no finding). Malformed `capabilities.extensions` entries cannot establish the
+card's required-extension policy and make this check inconclusive.
 
 ---
 

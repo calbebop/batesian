@@ -86,6 +86,30 @@ func TestValidateAgentCardRequiredFields(t *testing.T) {
 		{"interface version", "supportedInterfaces", func(m map[string]any) {
 			delete(m["supportedInterfaces"].([]any)[0].(map[string]any), "protocolVersion")
 		}},
+		{"interface URL", "supportedInterfaces", func(m map[string]any) {
+			m["supportedInterfaces"].([]any)[0].(map[string]any)["url"] = "not-an-absolute-url"
+		}},
+		{"capability flag", "capabilities.streaming", func(m map[string]any) {
+			m["capabilities"].(map[string]any)["streaming"] = "yes"
+		}},
+		{"extension URI", "capabilities.extensions", func(m map[string]any) {
+			m["capabilities"].(map[string]any)["extensions"] = []any{map[string]any{"required": true}}
+		}},
+		{"extension required flag", "capabilities.extensions", func(m map[string]any) {
+			m["capabilities"].(map[string]any)["extensions"] = []any{map[string]any{"uri": "https://example.test/ext", "required": "true"}}
+		}},
+		{"extension params", "capabilities.extensions", func(m map[string]any) {
+			m["capabilities"].(map[string]any)["extensions"] = []any{map[string]any{"uri": "https://example.test/ext", "params": "invalid"}}
+		}},
+		{"extension description", "capabilities.extensions", func(m map[string]any) {
+			m["capabilities"].(map[string]any)["extensions"] = []any{map[string]any{"uri": "https://example.test/ext", "description": 3}}
+		}},
+		{"skill input modes", "inputModes", func(m map[string]any) {
+			m["skills"].([]any)[0].(map[string]any)["inputModes"] = "text/plain"
+		}},
+		{"provider", "provider", func(m map[string]any) {
+			m["provider"] = map[string]any{"organization": "Example"}
+		}},
 		{"later interface", "supportedInterfaces", func(m map[string]any) {
 			m["supportedInterfaces"] = append(m["supportedInterfaces"].([]any), map[string]any{"url": "https://agent.example.com/other", "protocolBinding": "JSONRPC"})
 		}},
@@ -106,6 +130,30 @@ func TestValidateAgentCardRequiredFields(t *testing.T) {
 			}
 			if IsCompleteAgentCard(body) {
 				t.Error("invalid card accepted as complete")
+			}
+		})
+	}
+}
+
+func TestRequiredCardExtensions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		want     []string
+		wantFail bool
+	}{
+		{"required", `{"capabilities":{"extensions":[{"uri":"https://example.test/ext","required":true}]}}`, []string{"https://example.test/ext"}, false},
+		{"optional", `{"capabilities":{"extensions":[{"uri":"https://example.test/ext"}]}}`, nil, false},
+		{"no extensions", `{"capabilities":{}}`, nil, false},
+		{"missing capabilities", `{}`, nil, true},
+		{"invalid flag", `{"capabilities":{"pushNotifications":"true"}}`, nil, true},
+		{"invalid extensions", `{"capabilities":{"extensions":"none"}}`, nil, true},
+		{"invalid required", `{"capabilities":{"extensions":[{"uri":"https://example.test/ext","required":"yes"}]}}`, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RequiredCardExtensions([]byte(tc.body))
+			if (err != nil) != tc.wantFail || !slices.Equal(got, tc.want) {
+				t.Fatalf("extensions = %v, err = %v; want %v, fail %v", got, err, tc.want, tc.wantFail)
 			}
 		})
 	}

@@ -2,13 +2,13 @@ package a2a
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
+	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
 // ExtensionDowngradeExecutor tests whether an A2A server fails OPEN on an
@@ -136,25 +136,16 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 			failures = append(failures, fmt.Sprintf("%s: HTTP %d", path, resp.StatusCode))
 			continue
 		}
-		var card struct {
-			Capabilities struct {
-				Extensions []struct {
-					URI      string `json:"uri"`
-					Required bool   `json:"required"`
-				} `json:"extensions"`
-			} `json:"capabilities"`
+		if !resp.IsJSON() {
+			failures = append(failures, path+": response is not JSON")
+			continue
 		}
-		if !resp.IsJSON() || json.Unmarshal(resp.Body, &card) != nil {
-			failures = append(failures, path+": invalid JSON")
+		out, err := protocola2a.RequiredCardExtensions(resp.Body)
+		if err != nil {
+			failures = append(failures, path+": "+err.Error())
 			continue
 		}
 		cardServed = true
-		var out []string
-		for _, ext := range card.Capabilities.Extensions {
-			if ext.Required && ext.URI != "" {
-				out = append(out, ext.URI)
-			}
-		}
 		if len(out) > 0 {
 			return out, true, strings.Join(failures, "; ")
 		}
