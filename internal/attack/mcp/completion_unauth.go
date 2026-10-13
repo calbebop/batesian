@@ -253,15 +253,16 @@ func (e *CompletionUnauthExecutor) discoverRefs(ctx context.Context, client *att
 	var refs []completionRef
 	complete := true
 	var outcomes []string
+	nextID := 8
 
 	if session.ServerSupports("prompts") {
-		found, verdict := promptRefs(ctx, client, session)
+		found, verdict := promptRefs(ctx, client, session, &nextID)
 		refs = append(refs, found...)
 		complete = complete && verdict != completionDiscoveryIncomplete
 		outcomes = append(outcomes, fmt.Sprintf("prompts/list: %s", completionDiscoveryOutcome(verdict)))
 	}
 	if session.ServerSupports("resources") {
-		found, verdict := resourceTemplateRefs(ctx, client, session)
+		found, verdict := resourceTemplateRefs(ctx, client, session, &nextID)
 		refs = append(refs, found...)
 		complete = complete && verdict != completionDiscoveryIncomplete
 		outcomes = append(outcomes, fmt.Sprintf("resources/templates/list: %s", completionDiscoveryOutcome(verdict)))
@@ -287,17 +288,13 @@ func completionDiscoveryOutcome(verdict completionDiscoveryVerdict) string {
 }
 
 // promptRefs lists prompts and builds a completion ref for every prompt argument.
-func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]completionRef, completionDiscoveryVerdict) {
-	body, verdict := rpcResult(ctx, client, session, "prompts/list")
-	if verdict != completionDiscoveryComplete {
+func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession, nextID *int) ([]completionRef, completionDiscoveryVerdict) {
+	prompts, verdict := completionListItems(ctx, client, session, nextID, "prompts/list", "prompts")
+	if verdict == completionDiscoveryAuthGated {
 		return nil, verdict
 	}
-	prompts, ok := body["prompts"].([]interface{})
-	if !ok {
-		return nil, completionDiscoveryIncomplete
-	}
 	var refs []completionRef
-	complete := body["nextCursor"] == nil
+	complete := verdict == completionDiscoveryComplete
 	for _, p := range prompts {
 		pm, ok := p.(map[string]interface{})
 		if !ok {
@@ -345,17 +342,13 @@ func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSessi
 
 // resourceTemplateRefs lists resource templates and builds a completion ref for
 // the first variable of every template that declares one.
-func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]completionRef, completionDiscoveryVerdict) {
-	body, verdict := rpcResult(ctx, client, session, "resources/templates/list")
-	if verdict != completionDiscoveryComplete {
+func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, session mcpSession, nextID *int) ([]completionRef, completionDiscoveryVerdict) {
+	templates, verdict := completionListItems(ctx, client, session, nextID, "resources/templates/list", "resourceTemplates")
+	if verdict == completionDiscoveryAuthGated {
 		return nil, verdict
 	}
-	templates, ok := body["resourceTemplates"].([]interface{})
-	if !ok {
-		return nil, completionDiscoveryIncomplete
-	}
 	var refs []completionRef
-	complete := body["nextCursor"] == nil
+	complete := verdict == completionDiscoveryComplete
 	for _, t := range templates {
 		tm, ok := t.(map[string]interface{})
 		if !ok {
@@ -384,10 +377,47 @@ func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, sessio
 	return refs, completionDiscoveryComplete
 }
 
+// completionListItems retains observed entries when a later page fails.
+func completionListItems(ctx context.Context, client *attack.HTTPClient, session mcpSession, nextID *int, method, field string) ([]interface{}, completionDiscoveryVerdict) {
+	const maxPages = 10
+	var items []interface{}
+	var params map[string]interface{}
+	seen := map[string]bool{}
+	for page := 0; page < maxPages; page++ {
+		id := *nextID
+		*nextID = id + 1
+		body, verdict := rpcResult(ctx, client, session, id, method, params)
+		if verdict != completionDiscoveryComplete {
+			if page == 0 {
+				return nil, verdict
+			}
+			return items, completionDiscoveryIncomplete
+		}
+		pageItems, ok := body[field].([]interface{})
+		if !ok {
+			return items, completionDiscoveryIncomplete
+		}
+		items = append(items, pageItems...)
+		cursor, more, valid := resourcesListCursor(body)
+		if !valid {
+			return items, completionDiscoveryIncomplete
+		}
+		if !more {
+			return items, completionDiscoveryComplete
+		}
+		if seen[cursor] {
+			return items, completionDiscoveryIncomplete
+		}
+		seen[cursor] = true
+		params = map[string]interface{}{"cursor": cursor}
+	}
+	return items, completionDiscoveryIncomplete
+}
+
 // rpcResult returns a correlated, complete result object from a list call.
-func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSession, method string) (map[string]interface{}, completionDiscoveryVerdict) {
-	resp, err := session.post(ctx, client, 6, method, nil)
-	verdict, body := classifyProbe(resp, err, 6)
+func rpcResult(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, method string, params map[string]interface{}) (map[string]interface{}, completionDiscoveryVerdict) {
+	resp, err := session.post(ctx, client, id, method, params)
+	verdict, body := classifyProbe(resp, err, id)
 	if verdict == probeRejected {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return nil, completionDiscoveryAuthGated

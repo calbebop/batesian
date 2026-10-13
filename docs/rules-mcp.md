@@ -344,8 +344,13 @@ non-authentication JSON-RPC error is a medium **indicator** because validation
 middleware may have produced it before method dispatch. Real suggestion values
 for a discovered prompt or resource template produce a high, confirmed disclosure
 finding. The rule falls back to a synthetic reference when discovery is unavailable.
-The probe is read-only and sends an empty prefix. A server that requires auth or
-does not advertise completions produces no finding.
+Prompt and resource-template discovery follows pagination for up to ten pages.
+Malformed entries, failed pages, repeated cursors, and the reference cap leave the
+inventory incomplete; observed disclosures remain findings with that limitation
+in evidence. If no probe establishes reachability, incomplete discovery is
+reported as inconclusive rather than clean. The probe is read-only and sends an
+empty prefix. A server that requires auth or does not advertise completions
+produces no finding.
 
 ---
 

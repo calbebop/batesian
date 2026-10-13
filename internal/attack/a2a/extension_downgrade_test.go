@@ -191,6 +191,30 @@ func TestExtDowngrade_UnreadableCard(t *testing.T) {
 	}
 }
 
+func TestExtDowngrade_InvalidNestedCapabilitiesAreIncomplete(t *testing.T) {
+	for _, body := range []string{
+		`{"capabilities":{"extensions":"invalid"}}`,
+		`{"capabilities":{"extensions":[{"uri":"https://example.test/ext","required":"true"}]}}`,
+		`{"capabilities":{"extensions":[{"required":true}]}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			})
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "capabilities.extensions") {
+				t.Fatalf("malformed card treated as clean: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 func TestExtDowngrade_PartialCardReadIsInconclusive(t *testing.T) {
 	for _, mode := range []string{"primary-failed-fallback", "legacy-failed"} {
 		t.Run(mode, func(t *testing.T) {

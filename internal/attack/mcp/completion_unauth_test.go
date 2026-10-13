@@ -45,6 +45,7 @@ func completionServer(mode string) *httptest.Server {
 			}
 			if mode == "oracle" || mode == "reachable-empty" || mode == "resource-oracle" ||
 				mode == "prompt-list-fails" || mode == "prompt-list-malformed" || mode == "prompt-list-paged" ||
+				mode == "prompt-paged" ||
 				mode == "real-probe-fails" || mode == "completion-server-error" || mode == "reference-limit" ||
 				mode == "partial-discovery-reachable" || mode == "partial-probe-reachable" ||
 				mode == "prompt-entry-malformed" || mode == "prompt-list-wrong-id" ||
@@ -52,7 +53,8 @@ func completionServer(mode string) *httptest.Server {
 				caps["prompts"] = map[string]interface{}{}
 			}
 			if mode == "resource-oracle" || mode == "template-list-fails" || mode == "partial-discovery-reachable" ||
-				mode == "template-entry-malformed" || mode == "template-list-unsupported" {
+				mode == "template-entry-malformed" || mode == "template-list-unsupported" ||
+				strings.HasPrefix(mode, "resource-paged") {
 				caps["resources"] = map[string]interface{}{}
 			}
 			enc(map[string]interface{}{
@@ -66,6 +68,25 @@ func completionServer(mode string) *httptest.Server {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "prompts/list":
+			if mode == "prompt-paged" {
+				cursor, paged := params["cursor"].(string)
+				if paged && cursor != "next" {
+					rpcErr(-32602, "unexpected cursor")
+					return
+				}
+				name, argument := "code_review", "language"
+				result := map[string]interface{}{}
+				if paged {
+					name, argument = "secret_query", "path"
+				} else {
+					result["nextCursor"] = "next"
+				}
+				result["prompts"] = []interface{}{map[string]interface{}{
+					"name": name, "arguments": []interface{}{map[string]interface{}{"name": argument}},
+				}}
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result})
+				return
+			}
 			if mode == "prompt-list-rpc-auth" {
 				rpcErr(-32001, "Unauthorized")
 				return
@@ -116,6 +137,35 @@ func completionServer(mode string) *httptest.Server {
 				"result": result,
 			})
 		case "resources/templates/list":
+			if strings.HasPrefix(mode, "resource-paged") {
+				cursor, paged := params["cursor"].(string)
+				if paged && cursor != "next" {
+					rpcErr(-32602, "unexpected cursor")
+					return
+				}
+				if paged && (mode == "resource-paged-fails" || mode == "resource-paged-partial-leak") {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				template := "file:///project/{path}"
+				result := map[string]interface{}{}
+				if paged {
+					template = "file:///secrets/{path}"
+					if mode == "resource-paged-loop" {
+						result["nextCursor"] = "next"
+					}
+				} else {
+					result["nextCursor"] = "next"
+					if mode == "resource-paged-badcursor" {
+						result["nextCursor"] = 7
+					}
+				}
+				result["resourceTemplates"] = []interface{}{map[string]interface{}{
+					"uriTemplate": template, "name": "files",
+				}}
+				enc(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result})
+				return
+			}
 			if mode == "template-list-unsupported" {
 				rpcErr(-32601, "Method not found")
 				return
@@ -187,6 +237,23 @@ func completionServer(mode string) *httptest.Server {
 				} else {
 					completion([]interface{}{})
 				}
+			case "resource-paged":
+				uri, _ := ref["uri"].(string)
+				if uri == "file:///secrets/{path}" {
+					completion([]interface{}{"prod.env"})
+				} else {
+					completion([]interface{}{})
+				}
+			case "resource-paged-partial-leak":
+				completion([]interface{}{"observed.txt"})
+			case "resource-paged-fails", "resource-paged-protected", "resource-paged-loop", "resource-paged-badcursor":
+				rpcErr(-32001, "Unauthorized")
+			case "prompt-paged":
+				if refName == "secret_query" {
+					completion([]interface{}{"prod.env"})
+				} else {
+					completion([]interface{}{})
+				}
 			default: // oracle
 				completion([]interface{}{"python", "pytorch", "pyside"})
 			}
@@ -254,6 +321,47 @@ func TestCompletionUnauth_ResourceOracle(t *testing.T) {
 	}
 	if !strings.Contains(high.Title, "resource template") {
 		t.Errorf("expected high finding to name the resource template, got %q", high.Title)
+	}
+}
+
+func TestCompletionUnauth_ResourceTemplatePagination(t *testing.T) {
+	srv := completionServer("resource-paged")
+	defer srv.Close()
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 2 || !strings.Contains(findings[1].Title, "resource template") ||
+		!strings.Contains(findings[1].Evidence, "prod.env") ||
+		!strings.Contains(findings[0].Evidence, "resources/templates/list: complete") {
+		t.Fatalf("second-page disclosure not reported: %+v", findings)
+	}
+}
+
+func TestCompletionUnauth_ResourceTemplatePaginationProtected(t *testing.T) {
+	srv := completionServer("resource-paged-protected")
+	defer srv.Close()
+	if findings := runCompletionUnauth(t, srv); len(findings) != 0 {
+		t.Fatalf("protected completion reported a finding: %+v", findings)
+	}
+}
+
+func TestCompletionUnauth_PromptPagination(t *testing.T) {
+	srv := completionServer("prompt-paged")
+	defer srv.Close()
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 2 || !strings.Contains(findings[1].Title, "secret_query") ||
+		!strings.Contains(findings[1].Evidence, "prod.env") ||
+		!strings.Contains(findings[0].Evidence, "prompts/list: complete") {
+		t.Fatalf("second-page prompt disclosure not reported: %+v", findings)
+	}
+}
+
+func TestCompletionUnauth_PartialTemplateInventoryRetainsDisclosure(t *testing.T) {
+	srv := completionServer("resource-paged-partial-leak")
+	defer srv.Close()
+	findings := runCompletionUnauth(t, srv)
+	if len(findings) != 2 || !strings.Contains(findings[0].Evidence, "resources/templates/list: incomplete") ||
+		!strings.Contains(findings[0].Evidence, "completion assessment incomplete") ||
+		!strings.Contains(findings[1].Evidence, "observed.txt") {
+		t.Fatalf("partial inventory lost observed disclosure: %+v", findings)
 	}
 }
 
@@ -335,6 +443,9 @@ func TestCompletionUnauth_IncompletePrerequisites(t *testing.T) {
 		"prompt-list-paged",
 		"template-list-fails",
 		"template-list-unsupported",
+		"resource-paged-fails",
+		"resource-paged-loop",
+		"resource-paged-badcursor",
 		"template-entry-malformed",
 		"real-probe-fails",
 		"completion-server-error",

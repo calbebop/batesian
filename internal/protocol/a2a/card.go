@@ -81,9 +81,19 @@ func ValidateAgentCard(body []byte) error {
 			return err
 		}
 	}
-	var capabilities map[string]json.RawMessage
-	if err := json.Unmarshal(fields["capabilities"], &capabilities); err != nil || capabilities == nil {
-		return fmt.Errorf("missing or invalid required field capabilities")
+	if _, err := RequiredCardExtensions(body); err != nil {
+		return err
+	}
+	if raw, present := fields["provider"]; present {
+		var provider map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &provider); err != nil || provider == nil {
+			return fmt.Errorf("invalid provider")
+		}
+		for _, key := range []string{"url", "organization"} {
+			if _, err := requiredCardString(provider, key); err != nil {
+				return fmt.Errorf("provider: %w", err)
+			}
+		}
 	}
 	_, modern := fields["supportedInterfaces"]
 	for _, key := range []string{"defaultInputModes", "defaultOutputModes"} {
@@ -116,6 +126,13 @@ func ValidateAgentCard(body []byte) error {
 				return fmt.Errorf("skill %d has an empty tag", i)
 			}
 		}
+		for _, key := range []string{"examples", "inputModes", "outputModes"} {
+			if raw, present := skill[key]; present {
+				if err := validateCardStringList(raw); err != nil {
+					return fmt.Errorf("skill %d has invalid %s", i, key)
+				}
+			}
+		}
 	}
 	if err := ValidateSecurityRequirements(body); err != nil {
 		return err
@@ -128,6 +145,9 @@ func ValidateAgentCard(body []byte) error {
 		for i, iface := range interfaces {
 			if strings.TrimSpace(iface.URL) == "" || strings.TrimSpace(iface.ProtocolBinding) == "" || strings.TrimSpace(iface.ProtocolVersion) == "" {
 				return fmt.Errorf("supportedInterfaces[%d] is missing a required field", i)
+			}
+			if (strings.EqualFold(iface.ProtocolBinding, "JSONRPC") || strings.EqualFold(iface.ProtocolBinding, "HTTP+JSON")) && !hasHTTPScheme(iface.URL) {
+				return fmt.Errorf("supportedInterfaces[%d] has an invalid HTTP URL", i)
 			}
 		}
 		return nil
@@ -147,6 +167,79 @@ func ValidateAgentCard(body []byte) error {
 		return fmt.Errorf("invalid required field url")
 	}
 	return nil
+}
+
+func validateCardStringList(raw json.RawMessage) error {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return fmt.Errorf("expected a string array")
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("empty entry")
+		}
+	}
+	return nil
+}
+
+// RequiredCardExtensions validates capability fields and returns required extension URIs.
+func RequiredCardExtensions(body []byte) ([]string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return nil, fmt.Errorf("invalid Agent Card JSON")
+	}
+	var capabilities map[string]json.RawMessage
+	if err := json.Unmarshal(fields["capabilities"], &capabilities); err != nil || capabilities == nil {
+		return nil, fmt.Errorf("missing or invalid required field capabilities")
+	}
+	for _, key := range []string{"streaming", "pushNotifications", "extendedAgentCard"} {
+		if raw, present := capabilities[key]; present {
+			var value bool
+			if string(raw) == "null" || json.Unmarshal(raw, &value) != nil {
+				return nil, fmt.Errorf("invalid capabilities.%s", key)
+			}
+		}
+	}
+	raw, present := capabilities["extensions"]
+	if !present {
+		return nil, nil
+	}
+	var extensions []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &extensions); err != nil || extensions == nil {
+		return nil, fmt.Errorf("invalid capabilities.extensions")
+	}
+	var required []string
+	for i, extension := range extensions {
+		if extension == nil {
+			return nil, fmt.Errorf("invalid capabilities.extensions[%d]", i)
+		}
+		uri, err := requiredCardString(extension, "uri")
+		if err != nil {
+			return nil, fmt.Errorf("capabilities.extensions[%d]: %w", i, err)
+		}
+		if raw, present := extension["description"]; present {
+			var description string
+			if string(raw) == "null" || json.Unmarshal(raw, &description) != nil {
+				return nil, fmt.Errorf("invalid capabilities.extensions[%d].description", i)
+			}
+		}
+		var isRequired bool
+		if raw, present := extension["required"]; present {
+			if string(raw) == "null" || json.Unmarshal(raw, &isRequired) != nil {
+				return nil, fmt.Errorf("invalid capabilities.extensions[%d].required", i)
+			}
+		}
+		if raw, present := extension["params"]; present {
+			var params map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &params); err != nil || params == nil {
+				return nil, fmt.Errorf("invalid capabilities.extensions[%d].params", i)
+			}
+		}
+		if isRequired {
+			required = append(required, uri)
+		}
+	}
+	return required, nil
 }
 
 // ValidateSecurityRequirements checks requirement shapes and scheme references.
