@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
@@ -15,7 +17,8 @@ import (
 	"github.com/calbebop/batesian/internal/severity"
 )
 
-// RunResult holds the findings and any error from executing a single rule.
+// RunResult holds findings and the outcome of one rule. Partial findings may
+// accompany a skipped or errored result.
 type RunResult struct {
 	Rule          *rules.Rule
 	Findings      []attackpkg.Finding
@@ -30,12 +33,20 @@ type Engine struct {
 	opts attackpkg.Options
 }
 
-// New creates an Engine with a scan-scoped discovery cache.
+// New copies caller-owned option slices and principal headers.
 func New(opts attackpkg.Options) *Engine {
-	if opts.Discovery == nil {
-		opts.Discovery = attackpkg.NewDiscoveryCache()
+	return &Engine{opts: cloneOptions(opts)}
+}
+
+func cloneOptions(opts attackpkg.Options) attackpkg.Options {
+	opts.OAuthOrigins = slices.Clone(opts.OAuthOrigins)
+	opts.MCPScopeTools = slices.Clone(opts.MCPScopeTools)
+	opts.MCPInvokeTools = slices.Clone(opts.MCPInvokeTools)
+	opts.Principals = slices.Clone(opts.Principals)
+	for i := range opts.Principals {
+		opts.Principals[i].Headers = maps.Clone(opts.Principals[i].Headers)
 	}
-	return &Engine{opts: opts}
+	return opts
 }
 
 // planEntry pairs a rule with its resolved executor (nil when the attack type
@@ -50,6 +61,10 @@ type planEntry struct {
 // Producers run before consumers against a shared blackboard. Rule errors are
 // captured in RunResult instead of aborting the scan.
 func (e *Engine) Run(ctx context.Context, target string, rs []*rules.Rule) []RunResult {
+	run := Engine{opts: cloneOptions(e.opts)}
+	if run.opts.Discovery == nil {
+		run.opts.Discovery = attackpkg.NewDiscoveryCache()
+	}
 	plan := make([]planEntry, 0, len(rs))
 	for _, r := range rs {
 		executor, err := resolveExecutor(r)
@@ -67,7 +82,7 @@ func (e *Engine) Run(ctx context.Context, target string, rs []*rules.Rule) []Run
 	bb := attackpkg.NewBlackboard()
 	results := make([]RunResult, 0, len(plan))
 	for _, entry := range plan {
-		results = append(results, e.runOne(ctx, target, entry, bb))
+		results = append(results, run.runOne(ctx, target, entry, bb))
 	}
 	return results
 }
@@ -94,7 +109,7 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	}
 
 	state := &attackpkg.TargetState{}
-	opts := e.opts
+	opts := cloneOptions(e.opts)
 	opts.TargetState = state
 	defer func() {
 		if p := recover(); p != nil {
@@ -118,23 +133,24 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	} else {
 		findings, err = entry.executor.Execute(ctx, target, opts)
 	}
-	// A rule that could not reach a testable endpoint is recorded as skipped, not
-	// as a (misleading) clean result and not as an error.
+	for i := range findings {
+		findings[i].Confidence = findings[i].EffectiveConfidence()
+	}
+	if err == nil && ctx.Err() != nil {
+		err = fmt.Errorf("%w: scan context %v", attackpkg.ErrInconclusive, ctx.Err())
+	}
+	// An incomplete rule can still return findings from completed subchecks.
 	if errors.Is(err, attackpkg.ErrInconclusive) {
-		// A specific reason replaces the generic reachability message because the
-		// target may have answered but remained untestable.
 		msg := "could not reach a testable endpoint"
 		if detail := inconclusiveDetail(err); detail != "" {
 			msg = "not tested: " + detail
 		}
 		return RunResult{
-			Rule:    r,
-			Skipped: true,
-			SkipMsg: msg,
+			Rule:     r,
+			Findings: findings,
+			Skipped:  true,
+			SkipMsg:  msg,
 		}
-	}
-	for i := range findings {
-		findings[i].Confidence = findings[i].EffectiveConfidence()
 	}
 	return RunResult{
 		Rule:     r,
