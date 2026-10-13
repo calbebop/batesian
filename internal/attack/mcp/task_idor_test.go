@@ -51,6 +51,7 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 	// taskID -> owning session id
 	owner := map[string]string{}
 	tasks := 0
+	bReads := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "not-mcp" {
@@ -179,6 +180,19 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 				rpcErr(-32602, "Task not found")
 				return
 			}
+			if (mode == "poll-503" || mode == "poll-503-rpc-error") && r.Header.Get("Authorization") == "Bearer tok-b" {
+				mu.Lock()
+				bReads++
+				reads := bReads
+				mu.Unlock()
+				if reads > 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					if mode == "poll-503-rpc-error" {
+						rpcErr(-32603, "server overloaded")
+					}
+					return
+				}
+			}
 			// Terminal immediately so the rule can proceed to tasks/result without
 			// burning its polling budget.
 			result(map[string]interface{}{
@@ -187,6 +201,23 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			})
 
 		case "tasks/result":
+			if r.Header.Get("Authorization") == "Bearer tok-b" {
+				switch mode {
+				case "result-rpc-error":
+					rpcErr(-32603, "server overloaded")
+					return
+				case "result-method-absent":
+					rpcErr(-32601, "Method not found")
+					return
+				}
+			}
+			if (mode == "result-503" || mode == "result-503-rpc-error") && r.Header.Get("Authorization") == "Bearer tok-b" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				if mode == "result-503-rpc-error" {
+					rpcErr(-32603, "server overloaded")
+				}
+				return
+			}
 			if mode == "create-open" && !authed {
 				rpcErr(-32001, "Unauthorized")
 				return
@@ -452,6 +483,32 @@ func TestTaskIDOR_MetadataOnly(t *testing.T) {
 	}
 	if findings[0].Severity != "high" {
 		t.Errorf("expected the high tasks/get finding, got %q", findings[0].Severity)
+	}
+}
+
+func TestTaskIDOR_ResultProbeFailureKeepsMetadataFinding(t *testing.T) {
+	for _, mode := range []string{"poll-503", "poll-503-rpc-error", "result-503", "result-503-rpc-error", "result-rpc-error", "result-method-absent"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := taskIDORServer(mode)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{
+					TimeoutSeconds: 5,
+					MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"},
+						{Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 2 {
+				t.Fatalf("want metadata and list findings with incomplete result read, got findings=%+v err=%v", findings, err)
+			}
+			for _, finding := range findings {
+				if strings.Contains(finding.Title, "tasks/result") {
+					t.Fatalf("unread result became a finding: %+v", finding)
+				}
+			}
+		})
 	}
 }
 

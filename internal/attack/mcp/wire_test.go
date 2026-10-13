@@ -251,8 +251,8 @@ func TestOpenSessions_AnonymousRejectionDoesNotHideAuthenticatedModernWire(t *te
 	vars := attack.NewVars(srv.URL, "")
 	anonymous := attack.NewUnauthHTTPClient(opts, vars)
 	sessions, err := openSessions(context.Background(), anonymous, srv.URL)
-	if err != nil || len(sessions) != 1 || sessions[0].Era != EraLegacy {
-		t.Fatalf("anonymous sessions = %+v, err = %v; want legacy only", sessions, err)
+	if !errors.Is(err, attack.ErrInconclusive) || len(sessions) != 1 || sessions[0].Era != EraLegacy {
+		t.Fatalf("anonymous sessions = %+v, err = %v; want legacy and incomplete modern discovery", sessions, err)
 	}
 
 	authenticated := attack.NewHTTPClient(opts, vars)
@@ -659,5 +659,127 @@ func TestRunOnEachWire_EachServedWireNeedsAVerdict(t *testing.T) {
 				t.Fatalf("both wires should be probed, got %d calls", calls)
 			}
 		})
+	}
+}
+
+func discoveryStatusServer(t *testing.T, status int, splitHeaders bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		method, _ := req["method"].(string)
+		id := req["id"]
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Mcp-Protocol-Version") == modernEraVersion {
+			if status == 0 {
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("test server cannot close the connection")
+					return
+				}
+				conn, _, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			w.WriteHeader(status)
+			return
+		}
+		switch method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-11-25",
+					"serverInfo":      map[string]string{"name": "partial-wire", "version": "1"},
+					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if splitHeaders && r.Header.Get("Mcp-Method") == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": headerMismatchCode, "message": "HeaderMismatch"},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"tools": []interface{}{map[string]string{"name": "echo"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestOpenSessions_ModernDiscoveryUnjudgedAfterLegacy(t *testing.T) {
+	for _, status := range []int{0, http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusBadRequest} {
+		name := http.StatusText(status)
+		if status == 0 {
+			name = "connection closed"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := discoveryStatusServer(t, status, false)
+			defer srv.Close()
+			sessions, err := openSessions(context.Background(), wireClient(), srv.URL)
+			if len(sessions) != 1 || sessions[0].Era != EraLegacy {
+				t.Fatalf("expected the legacy session, got %+v", sessions)
+			}
+			wantIncomplete := status != http.StatusBadRequest
+			if errors.Is(err, attack.ErrInconclusive) != wantIncomplete {
+				t.Fatalf("modern discovery HTTP %d: err=%v, want incomplete=%t", status, err, wantIncomplete)
+			}
+		})
+	}
+}
+
+func TestRunOnEachWire_PartialDiscoveryKeepsLegacyVerdict(t *testing.T) {
+	srv := discoveryStatusServer(t, http.StatusServiceUnavailable, false)
+	defer srv.Close()
+	for _, found := range []bool{false, true} {
+		findings, err := runOnEachWire(context.Background(), wireClient(), srv.URL,
+			func(s mcpSession) ([]attack.Finding, bool) {
+				if s.Era != EraLegacy {
+					t.Fatalf("unexpected wire: %s", s.Era)
+				}
+				if found {
+					return []attack.Finding{{Title: "legacy finding"}}, true
+				}
+				return nil, true
+			})
+		if len(findings) != map[bool]int{false: 0, true: 1}[found] || !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("found=%t: findings=%+v err=%v", found, findings, err)
+		}
+	}
+}
+
+func TestEraDowngrade_ModernDiscoveryTransientIsIncomplete(t *testing.T) {
+	srv := discoveryStatusServer(t, http.StatusServiceUnavailable, false)
+	defer srv.Close()
+	findings, err := NewEraDowngradeExecutor(attack.RuleContext{ID: "mcp-era-downgrade-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete comparison, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestHeaderBodySplit_PartialDiscoveryKeepsLegacyFinding(t *testing.T) {
+	srv := discoveryStatusServer(t, http.StatusServiceUnavailable, true)
+	defer srv.Close()
+	findings, err := NewHeaderBodySplitExecutor(attack.RuleContext{ID: "mcp-header-body-split-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want legacy finding and incomplete modern wire, got findings=%+v err=%v", findings, err)
 	}
 }

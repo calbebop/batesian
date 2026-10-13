@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -176,17 +177,8 @@ func modernMeta() map[string]interface{} {
 	}
 }
 
-// openSessions returns one session per wire the target serves, in the order a
-// rule should exercise them: legacy first, then modern.
-//
-// Both are returned when a server serves both, which is the default for a server
-// built on the current SDKs. A rule that only walked the first wire would report
-// on one era while the other went untested, and the two need not behave the same:
-// a server can enforce authorization on one and not the other, which is the shape
-// mcp-init-downgrade-001 already looks for across protocol versions.
-//
-// The error is ErrInconclusive when neither wire answered, carrying the reason
-// from the legacy attempt so a modern-era detail is not lost.
+// openSessions resolves both wires. An unjudged modern discovery leaves a
+// legacy session usable but makes the combined result incomplete.
 func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]mcpSession, error) {
 	var out []mcpSession
 
@@ -203,7 +195,11 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 	}
 
 	for _, ep := range endpoints {
-		if modern, ok := discoverModern(ctx, client, ep); ok {
+		modern, ok, discoverErr := discoverModern(ctx, client, ep)
+		if discoverErr != nil && len(out) > 0 {
+			return out, discoverErr
+		}
+		if ok {
 			out = append(out, modern)
 			break
 		}
@@ -226,20 +222,28 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 // in its own supportedVersions. Every server implements server/discover whatever
 // era it serves, so answering it proves nothing on its own; see
 // modernWireAdvertised for what treating the answer as proof cost.
-func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (mcpSession, bool) {
+func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (mcpSession, bool, error) {
 	// An earlier rule's refusal does not establish this rule's access.
 	probe := mcpSession{Endpoint: ep, Era: EraModern}
 	resp, err := probe.post(ctx, client, "batesian-discover", "server/discover", nil)
-	found := err == nil && resp.IsAccepted() && modernWireAdvertised(resp.Body)
-	if !found {
-		return mcpSession{}, false
+	if err != nil || resp == nil {
+		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery did not answer", attack.ErrInconclusive)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError {
+		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery returned HTTP %d",
+			attack.ErrInconclusive, resp.StatusCode)
+	}
+	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
+		return mcpSession{}, false, nil
 	}
 	return mcpSession{
 		Endpoint:        ep,
 		Era:             EraModern,
 		ProtocolVersion: modernEraVersion,
 		RawInit:         resp.Body,
-	}, true
+	}, true, nil
 }
 
 // runOnEachWire opens every wire the target serves and runs probe against each,
@@ -255,9 +259,9 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 // Findings survive an undetermined wire, but the rule outcome stays incomplete.
 func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
 	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
-	sessions, err := openSessions(ctx, client, baseURL)
-	if err != nil {
-		return nil, err
+	sessions, sessionErr := openSessions(ctx, client, baseURL)
+	if len(sessions) == 0 {
+		return nil, sessionErr
 	}
 	var out []attack.Finding
 	var undetermined []string
@@ -269,10 +273,10 @@ func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL strin
 		out = append(out, labelEra(s, findings)...)
 	}
 	if len(undetermined) > 0 {
-		return out, fmt.Errorf("%w: the MCP handshake succeeded at %s, but no protocol-level verdict "+
-			"from %s wire(s)", attack.ErrInconclusive, baseURL, strings.Join(undetermined, ", "))
+		return out, errors.Join(sessionErr, fmt.Errorf("%w: the MCP handshake succeeded at %s, but no protocol-level verdict "+
+			"from %s wire(s)", attack.ErrInconclusive, baseURL, strings.Join(undetermined, ", ")))
 	}
-	return out, nil
+	return out, sessionErr
 }
 
 // labelEra tags findings produced on the modern wire, so that on a server serving
