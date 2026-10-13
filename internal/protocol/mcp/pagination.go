@@ -10,15 +10,16 @@ func (c *Client) listPages(ctx context.Context, session *Session, id int, method
 	seen := make(map[string]bool)
 	var cursor *string
 	for page := 0; page < maxListPages; page++ {
+		requestID := session.listID(id)
 		params := map[string]interface{}{}
 		if cursor != nil {
 			params["cursor"] = *cursor
 		}
-		resp, err := c.post(ctx, session, id, method, params)
+		resp, err := c.post(ctx, session, requestID, method, params)
 		if err != nil {
 			return fmt.Errorf("%s: %w", method, err)
 		}
-		result, err := listResult(resp, id, session.Modern)
+		result, err := listResult(resp, requestID, session.Modern)
 		if err != nil {
 			return fmt.Errorf("%s: %w", method, err)
 		}

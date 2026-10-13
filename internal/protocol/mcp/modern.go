@@ -80,7 +80,7 @@ func (c *Client) tryDiscover(ctx context.Context, endpoint string) (*Session, er
 		}
 		return nil, fmt.Errorf("modern MCP discovery returned HTTP %d", resp.StatusCode)
 	}
-	raw, err := readBody(resp)
+	raw, err := readResponseBody(resp, requestID)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -125,6 +126,14 @@ type Session struct {
 	ServerInfo      ServerInfo
 	Capabilities    map[string]interface{}
 	Modern          bool
+	nextLegacyID    atomic.Int64
+}
+
+func (s *Session) listID(modernID int) int {
+	if s.Modern {
+		return modernID
+	}
+	return int(s.nextLegacyID.Add(1)) + 1 // initialize used ID 1
 }
 
 func (s *Session) setRequestHeaders(req *http.Request) {
@@ -339,7 +348,7 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 	}
 
 	sessionID := resp.Header.Get("Mcp-Session-Id")
-	respBody, err := readBody(resp)
+	respBody, err := readResponseBody(resp, 1)
 	_ = resp.Body.Close()
 	if err != nil {
 		return nil, err
@@ -425,7 +434,7 @@ func (c *Client) post(ctx context.Context, s *Session, id int, method string, pa
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, s.Endpoint)
 	}
-	b, err := readBody(resp)
+	b, err := readResponseBody(resp, id)
 	if err != nil {
 		return nil, err
 	}
@@ -468,18 +477,42 @@ func readBody(resp *http.Response) ([]byte, error) {
 	return b, nil
 }
 
-// readFirstSSEData returns the JSON-RPC response carried on an SSE stream,
-// rejoining a payload split across several "data:" lines. The stream is not
-// drained.
-//
-// It took the FIRST data event, which is wrong for MCP Streamable HTTP: the
-// binding permits the server to interleave notifications and server-initiated
-// requests on the POST response stream ahead of the response, so a progress
-// notification became the parsed handshake and probe reported the target as not an
-// MCP server. Same defect as the scan client had, same shared predicate.
-//
-// A read error still maps to a nil body here. The recon path treats a nil body as
-// "no usable answer" throughout, and changing that is a wider change than this.
+func readResponseBody(resp *http.Response, id interface{}) ([]byte, error) {
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		payload, found, err := sse.FirstMatching(resp.Body, maxBodyBytes, func(data []byte) bool {
+			return !json.Valid(data) || sse.IsJSONRPCResponse(data) && responseIDMatches(data, id)
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("no matching MCP response in event stream")
+		}
+		return payload, nil
+	}
+	return readBody(resp)
+}
+
+func responseIDMatches(raw []byte, expected interface{}) bool {
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return false
+	}
+	switch want := expected.(type) {
+	case int:
+		var got int
+		return json.Unmarshal(envelope.ID, &got) == nil && got == want
+	case string:
+		var got string
+		return json.Unmarshal(envelope.ID, &got) == nil && got == want
+	default:
+		return false
+	}
+}
+
+// readFirstSSEData returns the first JSON-RPC response on an SSE stream.
 func readFirstSSEData(r io.Reader) ([]byte, error) {
 	payload, _, err := sse.FirstMatching(r, maxBodyBytes, sse.IsJSONRPCResponse)
 	return payload, err
