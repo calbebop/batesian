@@ -97,6 +97,35 @@ func TestScanJSONMetadataAndOutcomes(t *testing.T) {
 	}
 }
 
+func TestPartialFindingKeepsSkippedOutcome(t *testing.T) {
+	rule := &rules.Rule{ID: "a2a-partial"}
+	results := []engine.RunResult{{
+		Rule: rule, Skipped: true, SkipMsg: "later comparison unavailable",
+		Findings: []attack.Finding{{RuleID: rule.ID, Severity: "high", Title: "Observed access"}},
+	}}
+	outcomes := buildRuleOutcomes(results)
+	if len(outcomes) != 1 || outcomes[0].Status != "skipped" || outcomes[0].FindingCount != 1 {
+		t.Fatalf("partial outcome = %+v", outcomes)
+	}
+	doc, err := buildScanJSON(scanJSONInput{
+		Target: "https://agent.example", Reported: results, Outcomes: outcomes, Loaded: []*rules.Rule{rule},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(doc["findings"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findings []map[string]any
+	if err := json.Unmarshal(encoded, &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0]["title"] != "Observed access" {
+		t.Fatalf("partial findings = %+v", findings)
+	}
+}
+
 func TestRuleCatalogSHA256StableAcrossOrder(t *testing.T) {
 	a := &rules.Rule{ID: "a", Info: rules.RuleInfo{Severity: "high"}}
 	b := &rules.Rule{ID: "b", Info: rules.RuleInfo{Severity: "low"}}

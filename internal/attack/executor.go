@@ -16,10 +16,8 @@ type Executor interface {
 	Execute(ctx context.Context, target string, opts Options) ([]Finding, error)
 }
 
-// ErrInconclusive signals that a rule could not reach a testable endpoint, so it
-// was not exercised. The engine surfaces this as a skipped result (neither a
-// finding nor an error) so reporting can distinguish "tested, nothing found"
-// from "could not test". Wrap it with %w to attach detail.
+// ErrInconclusive marks an incomplete rule. The engine reports it as skipped
+// and retains any findings from completed subchecks. Wrap it to add detail.
 var ErrInconclusive = errors.New("rule could not reach a testable endpoint")
 
 // RuleContext carries the metadata from a rule that executors need to populate findings.
@@ -91,10 +89,9 @@ type Options struct {
 	// when DryRun is set; the engine stamps the active rule onto it per rule.
 	Recorder *Recorder
 
-	// Discovery, when non-nil, lets MCP rules share endpoint-resolution
-	// results within one scan instead of each re-walking the same candidate
-	// paths. The engine allocates it per scan; nil keeps every rule walking
-	// independently (the behaviour direct executor use in tests expects).
+	// Discovery shares MCP endpoint resolution within a scan. Engine.Run creates
+	// a fresh cache per call when nil. A supplied cache is caller-owned and reused.
+	// Direct executor calls with nil discovery do not cache.
 	Discovery *DiscoveryCache
 
 	// TargetState records objects created on the target during a rule run.

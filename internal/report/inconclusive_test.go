@@ -29,6 +29,22 @@ func TestPrintScanSummary_InconclusiveNotClean(t *testing.T) {
 	}
 }
 
+func TestPrintScanSummary_PartialFindingRemainsIncomplete(t *testing.T) {
+	var buf bytes.Buffer
+	result := engine.RunResult{
+		Rule: &rules.Rule{ID: "a2a-partial"}, Skipped: true, SkipMsg: "not tested: later comparison unavailable",
+		Findings: []attackpkg.Finding{{RuleID: "a2a-partial", Severity: "high", Title: "Observed access"}},
+	}
+	if err := report.New(&buf, true).PrintScanSummary([]engine.RunResult{result}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Observed access", "did not complete", "later comparison unavailable"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("partial result lacks %q:\n%s", want, buf.String())
+		}
+	}
+}
+
 // The zero-findings branch used to return before printing any per-rule skip
 // reason, so on a scan that found nothing, which is exactly when an operator needs
 // to know what went untested, the reasons were unreachable even in verbose mode.
