@@ -434,12 +434,6 @@ func TestAgentCard_V1SecurityRequirementShapes(t *testing.T) {
 			wantScopes: []string{"read"},
 			why:        "the shapes are distinguished by structure, not by the key name",
 		},
-		{
-			name:      "entry is not an object",
-			entry:     `"bearerAuth"`,
-			wantEmpty: true,
-			why:       "one malformed optional field must not sink an otherwise valid card",
-		},
 	}
 
 	for _, tt := range tests {
@@ -477,6 +471,69 @@ func TestAgentCard_V1SecurityRequirementShapes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateAgentCardSecurityRequirements(t *testing.T) {
+	tests := []struct {
+		name     string
+		security string
+		skills   string
+		valid    bool
+	}{
+		{name: "v1 nested", security: `"securityRequirements":[{"schemes":{"bearerAuth":{"list":[]}}}]`, valid: true},
+		{name: "v1 nested whitespace", security: `"securityRequirements":[{"schemes" : {"bearerAuth":{"list":[]}}}]`, valid: true},
+		{name: "v0.3 flat", security: `"security":[{"bearerAuth":[]}]`, valid: true},
+		{name: "anonymous alternative", security: `"securityRequirements":[{}, {"schemes":{"bearerAuth":{"list":[]}}}]`, valid: true},
+		{name: "v1 empty schemes", security: `"securityRequirements":[{"schemes":{}}]`, valid: true},
+		{name: "non-object entry", security: `"securityRequirements":["bearerAuth"]`},
+		{name: "null entry", security: `"securityRequirements":[null]`},
+		{name: "wrong list type", security: `"securityRequirements":"bearerAuth"`},
+		{name: "flat scalar scopes", security: `"security":[{"bearerAuth":"read"}]`},
+		{name: "nested scalar scopes", security: `"securityRequirements":[{"schemes":{"bearerAuth":{"list":"read"}}}]`},
+		{name: "unknown StringList field", security: `"securityRequirements":[{"schemes":{"bearerAuth":{"scopes":[]}}}]`},
+		{name: "undefined scheme", security: `"securityRequirements":[{"missing":[]}]`},
+		{name: "mixed anonymous and malformed", security: `"securityRequirements":[{}, {"bearerAuth":null}]`},
+		{name: "malformed skill requirement", security: `"securityRequirements":[]`,
+			skills: `"skills":[{"id":"x","name":"x","description":"x","tags":[],"securityRequirements":[1]}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skills := `"skills":[]`
+			if tt.skills != "" {
+				skills = tt.skills
+			}
+			body := `{"name":"Agent","description":"d","version":"1.0.0","url":"https://agent.example.com",` +
+				`"capabilities":{},"defaultInputModes":[],"defaultOutputModes":[],` + skills + `,` +
+				`"securitySchemes":{"bearerAuth":{"httpAuthSecurityScheme":{"scheme":"bearer"}}},` + tt.security + `}`
+			err := ValidateAgentCard([]byte(body))
+			if (err == nil) != tt.valid {
+				t.Fatalf("ValidateAgentCard error = %v, want valid=%v", err, tt.valid)
+			}
+			if IsCompleteAgentCard([]byte(body)) != tt.valid {
+				t.Fatal("IsCompleteAgentCard disagrees with validation")
+			}
+		})
+	}
+}
+
+func TestFetchAgentCardRejectsMalformedSecurity(t *testing.T) {
+	const body = `{"name":"Agent","description":"d","version":"1.0.0",` +
+		`"supportedInterfaces":[{"url":"https://agent.example.com","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],` +
+		`"capabilities":{},"skills":[{"id":"x","name":"x","description":"x","tags":["x"]}],` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` +
+		`"securityRequirements":[null]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, _, err := client.FetchAgentCard(t.Context())
+	if card != nil || err == nil || !strings.Contains(err.Error(), "securityRequirements") {
+		t.Fatalf("malformed security must fail card fetch: card=%+v err=%v", card, err)
 	}
 }
 

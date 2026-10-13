@@ -117,6 +117,9 @@ func ValidateAgentCard(body []byte) error {
 			}
 		}
 	}
+	if err := ValidateSecurityRequirements(body); err != nil {
+		return err
+	}
 	if modern {
 		var interfaces []AgentInterface
 		if err := json.Unmarshal(fields["supportedInterfaces"], &interfaces); err != nil || len(interfaces) == 0 {
@@ -142,6 +145,61 @@ func ValidateAgentCard(body []byte) error {
 		}
 	} else if (transport == "" || strings.EqualFold(transport, "JSONRPC") || strings.EqualFold(transport, "HTTP+JSON")) && !hasHTTPScheme(legacyURL) {
 		return fmt.Errorf("invalid required field url")
+	}
+	return nil
+}
+
+// ValidateSecurityRequirements checks requirement shapes and scheme references.
+func ValidateSecurityRequirements(body []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return fmt.Errorf("invalid Agent Card JSON")
+	}
+	var schemes map[string]json.RawMessage
+	if raw, ok := fields["securitySchemes"]; ok {
+		if err := json.Unmarshal(raw, &schemes); err != nil || schemes == nil {
+			return fmt.Errorf("invalid securitySchemes")
+		}
+	}
+	for _, field := range []string{"securityRequirements", "security"} {
+		if raw, ok := fields[field]; ok {
+			if err := validateRequirementList(raw, schemes, field); err != nil {
+				return err
+			}
+		}
+	}
+	var skills []map[string]json.RawMessage
+	if err := json.Unmarshal(fields["skills"], &skills); err == nil {
+		for i, skill := range skills {
+			if raw, ok := skill["securityRequirements"]; ok {
+				if err := validateRequirementList(raw, schemes, fmt.Sprintf("skills[%d].securityRequirements", i)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateRequirementList(raw json.RawMessage, schemes map[string]json.RawMessage, field string) error {
+	var list []SecurityRequirement
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return fmt.Errorf("invalid %s: %w", field, err)
+	}
+	if list == nil {
+		return fmt.Errorf("invalid %s: expected an array", field)
+	}
+	for i, requirement := range list {
+		for name := range requirement {
+			scheme, ok := schemes[name]
+			if !ok {
+				return fmt.Errorf("invalid %s[%d]: undefined scheme %q", field, i, name)
+			}
+			var definition SecurityScheme
+			if err := json.Unmarshal(scheme, &definition); err != nil || definition.Type() == "unknown" {
+				return fmt.Errorf("invalid %s[%d]: unreadable scheme %q", field, i, name)
+			}
+		}
 	}
 	return nil
 }
@@ -295,54 +353,29 @@ func (c *AgentCard) SupportsExtendedCard() bool {
 // An empty slice means the scheme is required but no specific scopes are needed.
 type SecurityRequirement map[string][]string
 
-// UnmarshalJSON accepts both wire shapes a requirement entry appears in.
-//
-// v1.0 is proto-derived: SecurityRequirement is a message holding a single map
-// field named schemes, whose values are StringList messages, so an entry
-// serializes with the names one level down:
-//
-//	{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}
-//
-// v0.3 and OpenAPI put the names at the top level with scope arrays as values:
-//
-//	{"bearerAuth": ["a2a:invoke"]}
-//
-// Both official SDKs emit the first. Decoding straight into map[string][]string
-// accepted only the second, so json.Unmarshal failed on every real v1.0 card
-// that declared security, and because FetchAgentCard treats an unmarshal error
-// as fatal, probe reported those agents as not serving valid JSON. Agents that
-// declared nothing probed fine, so the failure landed only on the ones
-// configured correctly.
-//
-// The two are told apart by structure, not by which card field they came from: an
-// entry whose sole key is "schemes" mapping to an object is the proto shape. A
-// v0.3 card may declare a scheme actually named "schemes", but then its value is
-// a scope array rather than an object, so that card still reads correctly.
-//
-// A value that is neither a scope array nor a StringList map records the scheme
-// name with no scopes rather than failing. Refusing to decode would sink the
-// whole card over one optional field, which is the bug this method exists to
-// fix; a recon parser should show the operator what is there.
+// UnmarshalJSON accepts v1.0's nested schemes map and v0.3's flat map.
+// Malformed entries are rejected so they cannot become anonymous alternatives.
 func (s *SecurityRequirement) UnmarshalJSON(data []byte) error {
 	var entry map[string]json.RawMessage
-	if err := json.Unmarshal(data, &entry); err != nil {
-		// Not an object at all. Leave the requirement empty rather than failing
-		// the card: an entry that names no scheme requires nothing, which is
-		// also what an empty object means.
-		*s = SecurityRequirement{}
-		return nil
+	if err := json.Unmarshal(data, &entry); err != nil || entry == nil {
+		return fmt.Errorf("security requirement must be an object")
 	}
 
-	if inner, ok := protoSchemeMap(entry); ok {
+	if inner, ok, err := protoSchemeMap(entry); err != nil {
+		return err
+	} else if ok {
 		*s = inner
 		return nil
 	}
 
 	out := make(SecurityRequirement, len(entry))
 	for name, raw := range entry {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("security requirement has an empty scheme name")
+		}
 		var scopes []string
-		if err := json.Unmarshal(raw, &scopes); err != nil {
-			scopes = nil
+		if err := json.Unmarshal(raw, &scopes); err != nil || scopes == nil {
+			return fmt.Errorf("security requirement %q must have a scope array", name)
 		}
 		out[name] = scopes
 	}
@@ -350,27 +383,39 @@ func (s *SecurityRequirement) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// protoSchemeMap reads the v1.0 nested shape, returning ok false when entry is
-// not that shape and should be read as a flat OpenAPI-style requirement.
-func protoSchemeMap(entry map[string]json.RawMessage) (SecurityRequirement, bool) {
+// protoSchemeMap reads the v1.0 shape; a flat scheme named "schemes" is distinct.
+func protoSchemeMap(entry map[string]json.RawMessage) (SecurityRequirement, bool, error) {
 	if len(entry) != 1 {
-		return nil, false
+		return nil, false, nil
 	}
 	raw, present := entry["schemes"]
 	if !present {
-		return nil, false
+		return nil, false, nil
 	}
-	var schemes map[string]struct {
-		List []string `json:"list"`
-	}
-	if err := json.Unmarshal(raw, &schemes); err != nil {
-		return nil, false
+	var schemes map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &schemes); err != nil || schemes == nil {
+		return nil, false, nil
 	}
 	out := make(SecurityRequirement, len(schemes))
-	for name, list := range schemes {
-		out[name] = list.List
+	for name, rawList := range schemes {
+		if strings.TrimSpace(name) == "" {
+			return nil, true, fmt.Errorf("security requirement has an empty scheme name")
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawList, &fields); err != nil || fields == nil || len(fields) > 1 {
+			return nil, true, fmt.Errorf("security requirement %q must have a StringList", name)
+		}
+		var scopes []string
+		if rawScopes, ok := fields["list"]; ok {
+			if err := json.Unmarshal(rawScopes, &scopes); err != nil || scopes == nil {
+				return nil, true, fmt.Errorf("security requirement %q must have a scope array", name)
+			}
+		} else if len(fields) != 0 {
+			return nil, true, fmt.Errorf("security requirement %q must have a StringList", name)
+		}
+		out[name] = scopes
 	}
-	return out, true
+	return out, true, nil
 }
 
 // SecurityScheme is a discriminated union - exactly one nested scheme object is populated.
