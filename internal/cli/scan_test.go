@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -504,6 +505,44 @@ func TestLoadRules_AppendsValidExtraRules(t *testing.T) {
 	}
 }
 
+func TestLoadRules_RejectsDuplicateIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		builtInID string
+		extraIDs  []string
+	}{
+		{name: "built-in exact", builtInID: "a2a-cli-test-001"},
+		{name: "built-in case", builtInID: "A2A-CLI-TEST-001"},
+		{name: "supplemental exact", extraIDs: []string{"extra-001", "extra-001"}},
+		{name: "supplemental case", extraIDs: []string{"extra-001", "EXTRA-001"}},
+		{name: "across catalogs", extraIDs: []string{"a2a-cli-test-001"}},
+		{name: "across catalogs case", extraIDs: []string{"A2A-CLI-TEST-001"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builtins := fstest.MapFS{"first.yaml": {Data: []byte(cliRuleYAML)}}
+			if tc.builtInID != "" {
+				builtins["second.yaml"] = &fstest.MapFile{Data: []byte(strings.Replace(cliRuleYAML,
+					"a2a-cli-test-001", tc.builtInID, 1))}
+			}
+			extraDir := ""
+			if len(tc.extraIDs) > 0 {
+				extraDir = t.TempDir()
+				for i, id := range tc.extraIDs {
+					data := strings.Replace(cliRuleYAML, "a2a-cli-test-001", id, 1)
+					path := filepath.Join(extraDir, fmt.Sprintf("extra-%d.yaml", i))
+					if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if loaded, err := loadRules(builtins, extraDir); err == nil || loaded != nil ||
+				!strings.Contains(err.Error(), "duplicate rule ID") {
+				t.Fatalf("loadRules returned %d rules, error %v", len(loaded), err)
+			}
+		})
+	}
+}
+
 func TestScan_InvalidRulePackStopsBeforeNetwork(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "invalid.yaml"), []byte(cliRuleYAML+"unexpected: true\n"), 0o644); err != nil {
@@ -544,6 +583,48 @@ func TestScan_InvalidRulePackStopsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestScan_DuplicateRuleIDStopsBeforeSelectionAndNetwork(t *testing.T) {
+	dir := t.TempDir()
+	data := strings.Replace(cliRuleYAML, "a2a-cli-test-001", "A2A-ARTIFACT-TAMPER-001", 1)
+	if err := os.WriteFile(filepath.Join(dir, "collision.yaml"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var oauthHits, targetHits atomic.Int32
+	oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		oauthHits.Add(1)
+	}))
+	defer oauth.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+	t.Setenv("BATESIAN_TOKEN", "")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "rules-dir", dir)
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "protocol", "mcp")
+	setScanSliceFlag(t, "rule-ids", []string{"mcp-resources-unauth-001"})
+	setScanFlag(t, "output", "sarif")
+	setScanFlag(t, "token", "")
+	setScanFlag(t, "client-id", "client")
+	setScanFlag(t, "token-url", oauth.URL)
+	setScanFlag(t, "dry-run", "false")
+
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(), "duplicate rule ID") {
+		t.Fatalf("expected duplicate rule ID before filtered SARIF output, got %v", err)
+	}
+	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
+		t.Fatalf("network calls before rule validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+	}
+}
+
 func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 	loaded := []*rules.Rule{
 		{ID: "a2a-test", Info: rules.RuleInfo{Severity: "high", Tags: []string{"auth"}}, Attack: rules.AttackBlock{Protocol: "a2a"}},
@@ -570,6 +651,18 @@ func TestSelectScanRules_RejectsEmptySelection(t *testing.T) {
 				t.Fatalf("expected empty selection error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestSelectScanRules_RejectsDuplicatesBeforeFilters(t *testing.T) {
+	loaded := []*rules.Rule{
+		{ID: "A2A-DUP", Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "a2a-dup", Attack: rules.AttackBlock{Protocol: "a2a"}},
+		{ID: "mcp-unique", Attack: rules.AttackBlock{Protocol: "mcp"}},
+	}
+	if _, err := selectScanRules(loaded, "mcp", nil, nil, []string{"mcp-unique"}); err == nil ||
+		!strings.Contains(err.Error(), "duplicate rule ID") {
+		t.Fatalf("filtered duplicate was accepted: %v", err)
 	}
 }
 
