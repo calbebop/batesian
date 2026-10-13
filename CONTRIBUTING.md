@@ -97,8 +97,9 @@ type Executor interface {
 
 Rules for executors:
 
-1. Return `nil, nil` (not an error) if the target is not the right protocol or
-   the precondition is not met. Errors are for unexpected failures, not clean skips.
+1. Return `nil, nil` only when the rule completed and found no issue. Return
+   `attack.ErrInconclusive` (with a reason when useful) when the target could not
+   be tested. The engine reports this as `skipped`; an unexpected failure is an error.
 2. Set `Confidence` explicitly on every `Finding`:
    - `attack.ConfirmedExploit`: the attack demonstrably succeeded.
    - `attack.RiskIndicator`: a suspicious pattern detected, but exploitability
@@ -144,8 +145,9 @@ Required test cases for every rule:
   the expected findings fire with the correct severity and `Confidence` value.
 - **Secure server**: mock server where auth is enforced or the vulnerability is
   absent. Assert that zero findings (or zero `ConfirmedExploit` findings) are returned.
-- **Precondition not met**: server that doesn't support the relevant capability.
-  Assert clean skip (zero findings, no error).
+- **Precondition not met**: server that cannot exercise the rule. Assert zero
+  findings and `errors.Is(err, attack.ErrInconclusive)`. If the test establishes
+  that a vulnerability is absent, assert zero findings and no error instead.
 
 Run tests: `go test ./internal/attack/...`
 

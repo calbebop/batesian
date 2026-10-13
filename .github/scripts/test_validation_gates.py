@@ -1,7 +1,9 @@
 import contextlib
 import io
+import json
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import validate_fastmcp
@@ -9,26 +11,74 @@ import validate_mcp_fixtures
 import validate_oauth_dcr
 import validate_push_callback_auth
 import validate_secured_agent
-from validation_outcomes import incomplete_rules
+from validation_outcomes import incomplete_rules, rule_statuses
 
 
-def report(*, findings=(), skipped=(), errors=()):
+def report(*, findings=(), skipped=(), errors=(), outcomes=()):
+    statuses = {rid: "no_findings" for rid in outcomes}
+    statuses.update({rid: "findings" for rid in findings})
+    statuses.update({rid: "skipped" for rid in skipped})
+    statuses.update({rid: "error" for rid in errors})
     return {
         "findings": [{"rule_id": rid} for rid in findings],
         "skipped": [{"rule_id": rid} for rid in skipped],
         "errors": [{"rule_id": rid} for rid in errors],
+        "rule_outcomes": [{"rule_id": rid, "status": status}
+                          for rid, status in sorted(statuses.items())],
         "summary": {"total": len(findings)},
     }
 
 
 class OutcomeTests(unittest.TestCase):
     def test_incomplete_rules_ignores_unrelated_skips(self):
-        doc = report(skipped=["other", "expected"], errors=["expected"])
-        self.assertEqual(incomplete_rules(doc, {"expected"}), (["expected"], ["expected"]))
+        doc = report(skipped=["other", "expected"])
+        self.assertEqual(incomplete_rules(doc, {"expected"}), (["expected"], []))
 
     def test_incomplete_rules_requires_outcome_fields(self):
         with self.assertRaises(ValueError):
             incomplete_rules({"findings": []}, {"expected"})
+
+    def test_outcomes_require_every_expected_rule(self):
+        with self.assertRaisesRegex(ValueError, "missing outcomes for expected"):
+            rule_statuses(report(outcomes=["other"]), {"expected"})
+        doc = report(outcomes=["expected"])
+        doc["ruleset"] = {"selected": 2}
+        with self.assertRaisesRegex(ValueError, "outcome count"):
+            rule_statuses(doc, {"expected"})
+
+    def test_outcomes_reject_malformed_and_duplicate_entries(self):
+        malformed = [None, {}, {"rule_id": "expected", "status": "unknown"},
+                     {"rule_id": 1, "status": "no_findings"},
+                     {"rule_id": "expected", "status": []}]
+        for item in malformed:
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, "malformed"):
+                rule_statuses({"rule_outcomes": [item]}, {"expected"})
+        duplicate = report(outcomes=["expected"])
+        duplicate["rule_outcomes"].append(duplicate["rule_outcomes"][0])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            rule_statuses(duplicate, {"expected"})
+
+    def test_clean_fixture_rejects_missing_outcome(self):
+        with self.assertRaisesRegex(ValueError, "missing outcomes"):
+            validate_mcp_fixtures.clean_rule(report(), "mcp-token-replay-001")
+
+    def test_push_callback_scan_rejects_missing_outcome(self):
+        for skipped in ([], [validate_push_callback_auth.RULE]):
+            with self.subTest(skipped=skipped):
+                doc = report(skipped=skipped)
+                doc["rule_outcomes"] = []
+                result = CompletedProcess([], 0, json.dumps(doc), "")
+                with patch.object(validate_push_callback_auth.subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(ValueError, "missing outcomes"):
+                        validate_push_callback_auth.scan()
+
+    def test_mcp_negative_control_rejects_malformed_outcome(self):
+        doc = report(skipped=["mcp-log-optin-001"])
+        doc["rule_outcomes"][0]["status"] = "unknown"
+        result = CompletedProcess([], 0, json.dumps(doc), "")
+        with patch.object(validate_mcp_fixtures.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                validate_mcp_fixtures.scan(7804)
 
     def test_control_rule_ids_exist(self):
         known = {path.read_text(encoding="utf-8").splitlines()[0].removeprefix("id: ")
@@ -46,7 +96,8 @@ class OutcomeTests(unittest.TestCase):
         read = report(findings=[rid])
         for field in ("skipped", "errors"):
             with self.subTest(field=field):
-                secured = report(**{field: [rid]})
+                secured = report(outcomes=validate_secured_agent.SECURED_RULES,
+                                 **{field: [rid]})
                 scans = [(set(), secured), (set(validate_secured_agent.IDOR_RULES), positive),
                          ({"a2a-task-enumeration-001"}, paged), ({rid}, read)]
                 with patch.object(validate_secured_agent, "scan_posture", side_effect=scans):
@@ -82,8 +133,10 @@ class OutcomeTests(unittest.TestCase):
         rid = validate_push_callback_auth.RULE
         for field in ("skipped", "errors"):
             with self.subTest(field=field):
-                signed = (set(), {rid}, set()) if field == "skipped" else (set(), set(), {rid})
-                scans = [({rid}, set(), set()), signed, (set(), {rid}, set())]
+                signed = (set(), {rid}, set(), "skipped") if field == "skipped" \
+                    else (set(), set(), {rid}, "error")
+                scans = [({rid}, set(), set(), "findings"), signed,
+                         (set(), {rid}, set(), "skipped")]
                 with patch.object(validate_push_callback_auth, "start_fixture", return_value=(None, None)), \
                      patch.object(validate_push_callback_auth, "stop_fixture"), \
                      patch.object(validate_push_callback_auth, "scan", side_effect=scans):

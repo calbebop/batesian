@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 
-from validation_outcomes import incomplete_rules
+from validation_outcomes import incomplete_rules, rule_statuses
 
 HOST = "127.0.0.1"
 PORT = 7805
@@ -94,13 +94,16 @@ def main():
 
     ok = True
     # Anonymous MCP rules legitimately skip when FastMCP refuses initialize.
-    fp_ok = not unauth and not unauth_doc["errors"]
+    unauth_statuses = rule_statuses(unauth_doc)
+    fp_ok = not unauth and not unauth_doc["errors"] and \
+        all(status != "error" for status in unauth_statuses.values())
     print(f"[{'PASS' if fp_ok else 'FAIL'}] FastMCP unauthenticated (false-positive gate): "
           f"findings={sorted(unauth)}; errors={unauth_doc['errors']}")
     ok &= fp_ok
 
     # This tracks FastMCP's current Origin-protection default.
-    cred_ok = "mcp-dns-rebind-origin-001" in cred
+    dns_rule = "mcp-dns-rebind-origin-001"
+    cred_ok = dns_rule in cred and rule_statuses(cred_doc, {dns_rule})[dns_rule] == "findings"
     print(f"[{'PASS' if cred_ok else 'FAIL'}] FastMCP authenticated (dns-rebind true positive): "
           f"mcp-dns-rebind-origin-001 {'present' if cred_ok else 'ABSENT'}; fired {sorted(cred)}")
     ok &= cred_ok

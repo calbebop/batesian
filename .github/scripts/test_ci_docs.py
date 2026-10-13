@@ -101,6 +101,20 @@ class CIDocumentationTests(unittest.TestCase):
                 critical["findings"] = [{"severity": "critical"}]
                 self.assertFalse(accepts(filter_text, critical))
 
+        severity_filter = documented_filter("docs/ci-cd.md", "scan-results.json")
+        clean = copy.deepcopy(complete)
+        clean["findings"] = []
+        self.assertTrue(accepts(severity_filter, clean))
+        for name, changes in (
+            ("high finding", {"findings": [{"severity": "high"}]}),
+            ("missing outcome", {"rule_outcomes": [{"status": "no_findings"}]}),
+            ("skipped rule", {"rule_outcomes": [{"status": "no_findings"}, {"status": "skipped"}]}),
+        ):
+            report = copy.deepcopy(clean)
+            report.update(changes)
+            with self.subTest(case=name):
+                self.assertFalse(accepts(severity_filter, report))
+
 
 if __name__ == "__main__":
     unittest.main()

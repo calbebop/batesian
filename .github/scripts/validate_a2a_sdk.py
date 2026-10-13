@@ -11,6 +11,8 @@ import urllib.request
 from importlib.metadata import version
 from uuid import uuid4
 
+from validation_outcomes import rule_statuses
+
 
 PORT = 3120
 BASE = f"http://127.0.0.1:{PORT}"
@@ -109,6 +111,8 @@ def validate(card):
         "scan", "--target", BASE, "--protocol", "a2a", "--rule-ids",
         "a2a-session-smuggle-001", "--output", "json", "--timeout", "10"
     )
+    if rule_statuses(scanned, {"a2a-session-smuggle-001"})["a2a-session-smuggle-001"] != "findings":
+        raise AssertionError("A2A rule did not complete with findings against the SDK")
     skipped = scanned.get("skipped", [])
     errors = scanned.get("errors", [])
     if skipped or errors:
