@@ -744,3 +744,62 @@ func TestCardTrust_CacheFindingKeepsUnobservedReadIncomplete(t *testing.T) {
 		t.Fatalf("want cache finding and incomplete read, got findings=%v err=%v", findings, err)
 	}
 }
+
+func TestCardTrust_VersionFallbackKeepsUnobservedReadIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		cacheControl string
+		wantFindings int
+	}{
+		{"no-store", 0},
+		{"public, max-age=86400", 1},
+	} {
+		t.Run(tc.cacheControl, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/agent-card.json" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.Header().Set("Cache-Control", tc.cacheControl)
+				_ = json.NewEncoder(w).Encode(unsignedCard())
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != tc.wantFindings || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
+				t.Fatalf("want %d findings and incomplete versioned read, got findings=%v err=%v", tc.wantFindings, findings, err)
+			}
+		})
+	}
+}
+
+func TestCardTrust_UnansweredVersionFallbackIsIncomplete(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			if r.Header.Get("A2A-Version") == "1.0" {
+				http.NotFound(w, r)
+				return
+			}
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack connection: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(unsignedCard())
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewCardTrustExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "/.well-known/agent-card.json: no response") {
+		t.Fatalf("want incomplete fallback read, got findings=%v err=%v", findings, err)
+	}
+}

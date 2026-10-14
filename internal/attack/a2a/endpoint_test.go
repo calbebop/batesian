@@ -930,6 +930,69 @@ func TestFetchCard_PreservesHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestFetchCard_VersionFallbackKeepsEarlierOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		reason string
+	}{
+		{http.StatusServiceUnavailable, "HTTP 503"},
+		{http.StatusUnauthorized, "HTTP 401"},
+		{http.StatusNotFound, ""},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			versions := make(chan string, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				versions <- r.Header.Get("A2A-Version")
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(tc.status)
+					return
+				}
+				_, _ = io.WriteString(w, `{"name":"Fallback Agent"}`)
+			}))
+			defer server.Close()
+
+			body, _, ok, reason := fetchCardWithOutcome(t.Context(), newClient(server.URL), server.URL+cardPathPrimary)
+			if !ok || !strings.Contains(string(body), "Fallback Agent") || reason != tc.reason {
+				t.Fatalf("card=%s found=%v reason=%q, want %q", body, ok, reason, tc.reason)
+			}
+			if got := []string{<-versions, <-versions}; !slices.Equal(got, []string{"1.0", ""}) {
+				t.Fatalf("A2A-Version sequence=%v", got)
+			}
+		})
+	}
+}
+
+func TestFetchCard_UnansweredVersionFallbackIsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		reason string
+	}{
+		{http.StatusNotFound, "no response"},
+		{http.StatusServiceUnavailable, "HTTP 503; no response"},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(tc.status)
+					return
+				}
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack connection: %v", err)
+					return
+				}
+				_ = conn.Close()
+			}))
+			defer server.Close()
+
+			_, _, ok, reason := fetchCardWithOutcome(t.Context(), newClient(server.URL), server.URL+cardPathPrimary)
+			if ok || reason != tc.reason {
+				t.Fatalf("found=%v reason=%q, want %q", ok, reason, tc.reason)
+			}
+		})
+	}
+}
+
 func TestVersionedCardRuleReaders(t *testing.T) {
 	const card = `{
 		"name":"Versioned Agent",

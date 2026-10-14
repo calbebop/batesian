@@ -72,6 +72,11 @@ func cardSecServer(mode string) *httptest.Server {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
+			if (mode == "version-fallback-vuln" || mode == "version-fallback-secure") &&
+				r.Header.Get("A2A-Version") == "1.0" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, card())
 			return
@@ -105,7 +110,7 @@ func cardSecServer(mode string) *httptest.Server {
 		}
 
 		// In secure mode every method requires a bearer token.
-		if (mode == "secure" || mode == "fallback-secure") && !hasToken {
+		if (mode == "secure" || mode == "fallback-secure" || mode == "version-fallback-secure") && !hasToken {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -464,5 +469,29 @@ func TestCardSecurity_SecureFallbackIsIncomplete(t *testing.T) {
 	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
 		!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
 		t.Fatalf("want incomplete result for the unreadable primary card, got findings=%v err=%v", findings, err)
+	}
+}
+
+func TestCardSecurity_VersionFallbackKeepsUnobservedReadIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFindings int
+	}{
+		{"version-fallback-vuln", 1},
+		{"version-fallback-secure", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := cardSecServer(tc.mode)
+			defer srv.Close()
+
+			findings, err := runCardSec(t, srv)
+			if len(findings) != tc.wantFindings || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
+				t.Fatalf("want %d findings and incomplete versioned read, got findings=%v err=%v", tc.wantFindings, findings, err)
+			}
+			if tc.wantFindings > 0 && !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
+				t.Fatalf("finding omitted failed versioned read: %q", findings[0].Evidence)
+			}
+		})
 	}
 }

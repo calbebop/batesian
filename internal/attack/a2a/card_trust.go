@@ -271,10 +271,10 @@ func fetchCardWithOutcome(ctx context.Context, client *attack.HTTPClient, url st
 	for _, attempt := range attempts {
 		resp, err := client.GET(ctx, url, attempt)
 		if err != nil || resp == nil {
-			if bestPriority >= 0 {
-				return nil, cardCacheHeaders{}, false, reason
+			if reason != "" {
+				reason += "; "
 			}
-			return nil, cardCacheHeaders{}, false, "no response"
+			return nil, cardCacheHeaders{}, false, reason + "no response"
 		}
 		if !resp.IsSuccess() {
 			priority := cardReadFailurePriority(resp.StatusCode)
@@ -296,7 +296,7 @@ func fetchCardWithOutcome(ctx context.Context, client *attack.HTTPClient, url st
 			expires:    resp.Headers.Get("Expires"),
 			date:       resp.Headers.Get("Date"),
 			receivedAt: time.Now(),
-		}, true, ""
+		}, true, reason
 	}
 	return nil, cardCacheHeaders{}, false, reason
 }
