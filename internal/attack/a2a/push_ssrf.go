@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -28,7 +29,7 @@ func NewPushSSRFExecutor(r attack.RuleContext) *PushSSRFExecutor {
 }
 
 // Execute runs the push-notification SSRF test.
-func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts attack.Options) (_ []attack.Finding, err error) {
 	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 
@@ -70,6 +71,12 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	var taskAccepted bool
 	var registrationConfirmed bool
 	var acceptedBinding string
+	var obs pushSetupObservation
+	defer func() {
+		if taskAccepted {
+			err = errors.Join(err, obs.partialErr())
+		}
+	}()
 
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
@@ -93,10 +100,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// Why no binding accepted a push registration. Classified from the responses the
 	// attempts below already have, so a refused credential is not reported as "this
 	// agent does not fetch attacker-controlled callbacks".
-	var obs setupObservation
 	credentialed := client.PresentsCredential(endpoint)
 	if err != nil || sendResp == nil || !sendResp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
+		obs.observe(classifyPushTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
 	}
 	if err == nil && sendResp != nil && sendResp.IsAccepted() {
 		// Got a task - try to register push notification config for it
@@ -125,6 +131,8 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			} else {
 				obs.observe(classifyPushRegistration("CreateTaskPushNotificationConfig", pushResp))
 			}
+		} else {
+			obs.observe(classifyPushTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
 		}
 	}
 
@@ -142,7 +150,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			reached = true
 		}
 		if err2 != nil || sendResp2 == nil || !sendResp2.IsAccepted() {
-			obs.observe(classifyTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
+			obs.observe(classifyPushTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
 		}
 		if err2 == nil && sendResp2 != nil && sendResp2.IsAccepted() {
 			// A task id is what makes this a registration rather than a plain
@@ -173,6 +181,8 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				} else {
 					obs.observe(classifyPushRegistration("tasks/pushNotificationConfig/set", setResp))
 				}
+			} else {
+				obs.observe(classifyPushTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
 			}
 		}
 	}

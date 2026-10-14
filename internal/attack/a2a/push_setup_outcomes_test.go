@@ -54,13 +54,23 @@ func pushSetupServer(mode string) *httptest.Server {
 				}
 				return
 			}
+			if mode == "v1-send-gateway-v03-confirm" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if mode == "v1-message-v03-confirm" {
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{
+					"kind": "message", "messageId": "reply", "role": "agent", "parts": []any{},
+				}})
+				return
+			}
 			if mode == "v03-set-gateway" || mode == "v03-inline-callback" || mode == "rest-config-gateway" {
 				rpcErr(w, id, -32601, "Method not found")
 				return
 			}
 			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"id": "task-setup"}})
 		case "CreateTaskPushNotificationConfig":
-			if mode == "v1-config-unsupported" {
+			if mode == "v1-config-unsupported" || mode == "v1-unsupported-v03-confirm" {
 				rpcErr(w, id, -32003, "Push notifications not supported")
 				return
 			}
@@ -70,7 +80,9 @@ func pushSetupServer(mode string) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusBadGateway)
 		case "message/send":
-			if mode == "v03-set-gateway" || mode == "v03-inline-callback" {
+			if mode == "v03-set-gateway" || mode == "v03-inline-callback" ||
+				mode == "v1-send-gateway-v03-confirm" || mode == "v1-config-gateway-v03-confirm" ||
+				mode == "v1-message-v03-confirm" || mode == "v1-unsupported-v03-confirm" {
 				if mode == "v03-inline-callback" {
 					params, _ := req["params"].(map[string]any)
 					config, _ := params["configuration"].(map[string]any)
@@ -89,6 +101,11 @@ func pushSetupServer(mode string) *httptest.Server {
 			}
 			rpcErr(w, id, -32601, "Method not found")
 		case "tasks/pushNotificationConfig/set":
+			if mode == "v1-send-gateway-v03-confirm" || mode == "v1-config-gateway-v03-confirm" ||
+				mode == "v1-message-v03-confirm" || mode == "v1-unsupported-v03-confirm" {
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"taskId": "task-setup"}})
+				return
+			}
 			w.WriteHeader(http.StatusBadGateway)
 		default:
 			rpcErr(w, id, -32601, "Method not found")
@@ -160,8 +177,97 @@ func TestPushSetup_InlineCallbackConfirmsFinding(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			findings, err := rule.exec.Execute(ctx, srv.URL, attack.Options{TimeoutSeconds: 5})
-			if len(findings) != 1 || err != nil || findings[0].Confidence != attack.ConfirmedExploit {
-				t.Fatalf("observed inline callback must retain the finding: findings=%+v err=%v", findings, err)
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || findings[0].Confidence != attack.ConfirmedExploit {
+				t.Fatalf("observed callback must retain the finding and failed set attempt: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestPushSetup_FallbackRetainsUnjudgedAttempts(t *testing.T) {
+	for _, mode := range []string{
+		"v1-send-gateway-v03-confirm", "v1-config-gateway-v03-confirm",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			srv := pushSetupServer(mode)
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
+						!errors.Is(err, attack.ErrInconclusive) {
+						t.Fatalf("fallback must retain the indicator and incomplete setup: findings=%+v err=%v", findings, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPushSetup_UnsupportedFallbackStaysConclusive(t *testing.T) {
+	for _, mode := range []string{"v1-unsupported-v03-confirm", "v1-message-v03-confirm"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := pushSetupServer(mode)
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 1 || err != nil || findings[0].Confidence != attack.RiskIndicator {
+						t.Fatalf("unsupported v1 push setup must not make v0.3 incomplete: findings=%+v err=%v", findings, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPushSetup_RESTFallbackRetainsUnjudgedAttempts(t *testing.T) {
+	for _, failedStep := range []string{"send", "config"} {
+		t.Run(failedStep, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/agent-card.json":
+					writeJSON(w, map[string]any{
+						"name": "REST fallback agent",
+						"supportedInterfaces": []map[string]string{
+							{"url": "http://" + r.Host + "/old", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"},
+							{"url": "http://" + r.Host + "/api", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"},
+						},
+					})
+				case "/old/message:send":
+					if failedStep == "send" {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
+				case "/old/tasks/task-setup/pushNotificationConfigs":
+					w.WriteHeader(http.StatusBadGateway)
+				case "/api/message:send":
+					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
+				case "/api/tasks/task-setup/pushNotificationConfigs":
+					writeJSON(w, map[string]any{"taskId": "task-setup", "url": "registered"})
+				case "/":
+					req := readBody(r)
+					rpcErr(w, req["id"], -32601, "Method not found")
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
+						!errors.Is(err, attack.ErrInconclusive) {
+						t.Fatalf("REST fallback must retain the indicator and failed setup: findings=%+v err=%v", findings, err)
+					}
+				})
 			}
 		})
 	}
