@@ -75,6 +75,10 @@ func extensionServer(mode string, required bool) *httptest.Server {
 			writeErr(-32001, "Task not found")
 			return
 		}
+		if mode == "control-fallback-open" && request["method"] == "SendMessage" && activated {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		switch mode {
 		case "noauth-msg":
 			writeErr(-32600, "authentication required")
@@ -233,9 +237,22 @@ func TestExtDowngrade_PartialCardReadIsInconclusive(t *testing.T) {
 func TestExtDowngrade_FindingNotesUnobservedCard(t *testing.T) {
 	ts := extensionServer("primary-failed-fallback", true)
 	defer ts.Close()
-	findings := runExtDowngrade(t, ts)
-	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
-		t.Fatalf("finding omitted failed card read: %+v", findings)
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
+		t.Fatalf("finding and failed card read must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestExtDowngrade_FindingRetainsIncompleteControlVersion(t *testing.T) {
+	ts := extensionServer("control-fallback-open", true)
+	defer ts.Close()
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("finding and failed control version must both survive: findings=%+v err=%v", findings, err)
 	}
 }
 

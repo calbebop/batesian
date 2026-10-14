@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -39,6 +41,14 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 
 	invalidToken := "batesian-invalid-" + vars.RandID
 	var best *attack.Finding
+	var incomplete []string
+	incompleteErr := func() error {
+		if len(incomplete) == 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: extended card reads were not judged: %s", attack.ErrInconclusive,
+			strings.Join(incomplete, "; "))
+	}
 	record := func(transport, target, token string, resp *attack.Response) bool {
 		finding := e.finding(transport, target, token, resp)
 		if best == nil || token != "" {
@@ -53,12 +63,19 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 	for _, ep := range []string{jsonrpcEP, endpoint.AppendPath(vars.BaseURL, "/v1/message:send")} {
 		for _, version := range []string{"1.0", "0.3.0"} {
 			for _, token := range []string{invalidToken, ""} {
-				resp, usable := e.probeJSONRPC(ctx, unauthClient, ep, token, vars.RandID, version)
+				resp, usable, reason := e.probeJSONRPC(ctx, unauthClient, ep, token, vars.RandID, version)
+				if reason != "" {
+					credential := "anonymous"
+					if token != "" {
+						credential = "invalid token"
+					}
+					incomplete = append(incomplete, fmt.Sprintf("JSON-RPC %s %s: %s", version, credential, reason))
+				}
 				if resp != nil && resp.StatusCode != 404 {
 					reached = true
 				}
 				if usable && record("JSON-RPC", ep, token, resp) {
-					return []attack.Finding{*best}, nil
+					return []attack.Finding{*best}, incompleteErr()
 				}
 			}
 		}
@@ -80,18 +97,30 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 					headers["Authorization"] = "Bearer " + token
 				}
 				resp, err := unauthClient.GET(ctx, extURL, headers)
-				if err == nil && resp.StatusCode != 404 {
+				if err != nil || resp == nil {
+					incomplete = append(incomplete, route.path+": no response")
+					continue
+				}
+				if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+					resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+					incomplete = append(incomplete, fmt.Sprintf("%s: HTTP %d", route.path, resp.StatusCode))
+					continue
+				}
+				if resp.StatusCode != 404 {
 					reached = true
 				}
-				if err == nil && extCardDisclosed(resp) && record("HTTP GET", extURL, token, resp) {
-					return []attack.Finding{*best}, nil
+				if extCardDisclosed(resp) && record("HTTP GET", extURL, token, resp) {
+					return []attack.Finding{*best}, incompleteErr()
 				}
 			}
 		}
 	}
 
 	if best != nil {
-		return []attack.Finding{*best}, nil
+		return []attack.Finding{*best}, incompleteErr()
+	}
+	if err := incompleteErr(); err != nil {
+		return nil, err
 	}
 	if !reached {
 		return nil, attack.ErrInconclusive
@@ -136,7 +165,7 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 }
 
 // probeJSONRPC accepts only a matching reply containing a complete Agent Card.
-func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPClient, endpoint, token, randID, version string) (*attack.Response, bool) {
+func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPClient, endpoint, token, randID, version string) (*attack.Response, bool, string) {
 	requestID := "batesian-" + randID
 	headers := restVersionHeaders(version, nil)
 	method := "GetExtendedAgentCard"
@@ -152,14 +181,29 @@ func (e *ExtCardExecutor) probeJSONRPC(ctx context.Context, client *attack.HTTPC
 		"method":  method,
 		"params":  map[string]interface{}{},
 	})
-	if err != nil {
-		return nil, false
+	if err != nil || resp == nil {
+		return nil, false, "no response"
+	}
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return resp, false, fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
 	if !resp.IsSuccess() {
-		return resp, false
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+			resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			return resp, false, ""
+		}
+		_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if valid && hasError {
+			return resp, false, ""
+		}
+		return resp, false, fmt.Sprintf("HTTP %d without a correlated refusal", resp.StatusCode)
 	}
 	result, _, hasError, valid := discoveryResponse(resp.Body, requestID)
-	return resp, valid && !hasError && protocola2a.IsCompleteAgentCard(result)
+	if !valid {
+		return resp, false, "invalid JSON-RPC response"
+	}
+	return resp, !hasError && protocola2a.IsCompleteAgentCard(result), ""
 }
 
 // isJSONRPCError returns true if the body contains a JSON-RPC error object.

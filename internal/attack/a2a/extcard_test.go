@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -106,6 +107,51 @@ func TestExtCardExecutor_Vulnerable(t *testing.T) {
 	}
 	if !hasCritical {
 		t.Errorf("expected a critical finding for fabricated-token acceptance, got: %+v", findings)
+	}
+}
+
+func TestExtCardExecutor_FindingRetainsFailedJSONRPCRead(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		request := readBody(r)
+		if request["method"] == "GetExtendedAgentCard" && r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": request["id"], "result": extendedCard(),
+		})
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "JSON-RPC 1.0") || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("finding and failed JSON-RPC read must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestExtCardExecutor_FindingRetainsFailedHTTPRead(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/extendedAgentCard" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, extendedCard())
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "/extendedAgentCard: HTTP 502") {
+		t.Fatalf("finding and failed HTTP read must both survive: findings=%+v err=%v", findings, err)
 	}
 }
 
