@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,7 +45,7 @@ func (e *DelegationIntegrityExecutor) Execute(ctx context.Context, target string
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 
-func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
+func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
 	// Cross-principal checks require two identities.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
@@ -70,6 +71,9 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	if taskID == "" {
 		// No owner task means the boundary was not tested.
 		return nil, obs.err()
+	}
+	if !consumed {
+		defer func() { err = errors.Join(err, obs.partialErr()) }()
 	}
 
 	// Exclude endpoints that persist unauthenticated continuations.

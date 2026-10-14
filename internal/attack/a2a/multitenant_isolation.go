@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,6 +67,7 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 		obs.observe(obsB)
 		return nil, obs.err()
 	}
+	setupErr := errors.Join(obsA.partialErr(), obsB.partialErr())
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: a.Token, Principal: a.Name, Producer: e.rule.ID})
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: b.Token, Principal: b.Name, Producer: e.rule.ID})
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactTaskID, Value: taskA, Principal: a.Name, Producer: e.rule.ID, Meta: map[string]string{"contextId": ctxA}})
@@ -102,10 +104,10 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 		}
 	}
 	if len(missing) > 0 {
-		return findings, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
-			attack.ErrInconclusive, strings.Join(missing, ", "))
+		return findings, errors.Join(setupErr, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
+			attack.ErrInconclusive, strings.Join(missing, ", ")))
 	}
-	return findings, nil
+	return findings, setupErr
 }
 
 // createTask tries v1 and v0.3 and keeps setup diagnostics from both.
