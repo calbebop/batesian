@@ -48,6 +48,10 @@ func delegationServer(mode string) *httptest.Server {
 		id := req["id"]
 		tenant := tenantOf(r)
 		contID := continuationTaskID(req)
+		if mode == "v1-create-unavailable" && method == "SendMessage" && contID == "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if mode == "legacy-only" && !strings.Contains(method, "/") {
 			rpcErr(w, id, -32601, "Method not found")
 			return
@@ -246,6 +250,17 @@ func TestDelegation_Vulnerable(t *testing.T) {
 	}
 	if len(f.Chain) != 2 || f.Chain[1].Principal != "tenant-b" {
 		t.Errorf("expected 2-hop chain with tenant-b continuing, got %+v", f.Chain)
+	}
+}
+
+func TestDelegation_PartialTaskCreationRetainsFinding(t *testing.T) {
+	ts := delegationServer("v1-create-unavailable")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want delegation finding and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
 	}
 }
 

@@ -60,6 +60,14 @@ func (s setupObservation) err() error {
 	}
 }
 
+// partialErr keeps an unjudged setup attempt when a later wire creates a task.
+func (s setupObservation) partialErr() error {
+	if s.rank != setupOtherRefusal {
+		return nil
+	}
+	return fmt.Errorf("%w: an earlier task-creation attempt was unjudged before fallback created a task", attack.ErrInconclusive)
+}
+
 // A2A's own error codes for a surface the agent does not offer. A rule cannot test
 // what is not implemented, and reporting that as clean is the same call the OAuth
 // rules make for a server with no OAuth.

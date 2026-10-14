@@ -48,6 +48,8 @@ type enumAgentConfig struct {
 	requireTenant    bool
 	ownerListStatus  int
 	ownerListCode    int
+	v1CreateStatus   int
+	v1CreateAbsent   bool
 }
 
 func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
@@ -102,6 +104,14 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 
 		switch method {
 		case "SendMessage", "message/send":
+			if method == "SendMessage" && config.v1CreateStatus != 0 {
+				w.WriteHeader(config.v1CreateStatus)
+				return
+			}
+			if method == "SendMessage" && config.v1CreateAbsent {
+				rpcErr(-32601, "Method not found")
+				return
+			}
 			if config.requireImmediate {
 				params, _ := req["params"].(map[string]interface{})
 				configuration, _ := params["configuration"].(map[string]interface{})
@@ -234,6 +244,36 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 	}
 	if strings.Contains(f.Description, "no claim") || strings.Contains(f.Description, "every task") {
 		t.Errorf("finding overstates the observed access: %s", f.Description)
+	}
+}
+
+func TestTaskEnumeration_PartialTaskCreationRetainsFinding(t *testing.T) {
+	srv := enumAgent(t, enumUnscoped, enumAgentConfig{v1CreateStatus: http.StatusServiceUnavailable})
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want enumeration finding and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskEnumeration_PartialTaskCreationWithoutFinding(t *testing.T) {
+	srv := enumAgent(t, enumAbsent, enumAgentConfig{v1CreateStatus: http.StatusServiceUnavailable})
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want no finding and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskEnumeration_UnsupportedWireIsNotPartial(t *testing.T) {
+	srv := enumAgent(t, enumUnscoped, enumAgentConfig{v1CreateAbsent: true})
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 1 || err != nil {
+		t.Fatalf("want enumeration finding without an incomplete unsupported wire, got findings=%+v err=%v", findings, err)
 	}
 }
 

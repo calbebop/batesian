@@ -91,7 +91,8 @@ func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, ra
 	list := func(c *attack.HTTPClient, headers map[string]string) ([]string, listOutcome) {
 		return e.listTasks(ctx, c, endpoint, headers, randID, taskID)
 	}
-	return e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
+	findings, err := e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
+	return findings, errors.Join(obs.partialErr(), err)
 }
 
 func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listURL, version, randID string,
