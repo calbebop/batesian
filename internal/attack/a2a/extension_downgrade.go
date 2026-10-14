@@ -93,6 +93,9 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 			observed.observe(ctrlObs)
 			continue
 		}
+		if ctrlObs.rank >= setupOtherRefusal {
+			observed.observe(ctrlObs)
+		}
 		// Test: omit the extension header and reuse the shape that worked.
 		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
 		if omitted {
@@ -100,7 +103,11 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 			if cardReadReason != "" {
 				finding.Evidence += "\nunobserved Agent Card read: " + cardReadReason
 			}
-			return []attack.Finding{finding}, nil
+			var incomplete error
+			if observed.rank >= setupOtherRefusal {
+				incomplete = observed.err()
+			}
+			return []attack.Finding{finding}, withCardReadReason(incomplete)
 		}
 		if rejectedRequired {
 			tested = true
@@ -191,7 +198,7 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 			"params":  params,
 		})
 		if err == nil && resp != nil && resp.IsAccepted() {
-			return true, v.name, setupObservation{}, false
+			return true, v.name, obs, false
 		}
 		if forceShape != "" && err == nil && resp != nil {
 			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
