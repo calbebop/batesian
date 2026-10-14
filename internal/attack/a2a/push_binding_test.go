@@ -55,9 +55,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID, "result": res})
 		}
 		rpcErr := func(msg string) {
+			code := -32600
+			if msg == "method not found" {
+				code = -32601
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID,
-				"error": map[string]interface{}{"code": -32600, "message": msg}})
+				"error": map[string]interface{}{"code": code, "message": msg}})
 		}
 
 		if v1Only && strings.Contains(method, "/") {
@@ -80,6 +84,10 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if method == "SendMessage" && (mode == "v1-create-unavailable" || mode == "v1-create-unavailable-bound") {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			if who == "" {
 				rpcErr("auth required")
 				return
@@ -88,6 +96,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			taskOwner[tid] = who
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
+			if method == "CreateTaskPushNotificationConfig" &&
+				((mode == "v1-owner-set-unavailable" && who == "tenant-a") ||
+					(mode == "v1-attacker-set-unavailable" && who == "tenant-b") ||
+					(mode == "v1-anon-set-unavailable-open" && who == "")) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			tid, _ := params["taskId"].(string)
 			if (mode == "write-anon-timeout" && who == "") ||
 				(mode == "write-cross-timeout" && who == "tenant-b") {
@@ -138,11 +153,12 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("invalid params")
 				return
 			}
-			if mode != "open" && mode != "noop-anon" && who == "" {
+			if mode != "open" && mode != "v1-anon-set-unavailable-open" &&
+				mode != "open-anon-readback-unavailable" && mode != "noop-anon" && who == "" {
 				rpcErr("auth required")
 				return
 			}
-			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && who != "" && taskOwner[tid] != who {
+			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && who != "" && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -168,6 +184,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			lastSetID = reqID
 			result(lastSetResult)
 		case "GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get":
+			if method == "GetTaskPushNotificationConfig" && mode == "open-anon-readback-unavailable" && who == "tenant-a" {
+				configID, _ := params["id"].(string)
+				if strings.HasPrefix(configID, "open-") {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+			}
 			if who == "tenant-b" {
 				switch mode {
 				case "cross-read-unavailable":
@@ -217,7 +240,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("read denied")
 				return
 			}
-			if (mode == "bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && taskOwner[tid] != who {
+			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && taskOwner[tid] != who {
 				rpcErr("not task owner")
 				return
 			}
@@ -306,6 +329,39 @@ func TestPushBinding_Unbound(t *testing.T) {
 	titles := findings[0].Title + "|" + findings[1].Title
 	if !strings.Contains(titles, "writable") || !strings.Contains(titles, "readable") {
 		t.Errorf("expected one write and one read finding, got: %s", titles)
+	}
+}
+
+func TestPushBinding_PartialFallbackOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		findings int
+	}{
+		{"v1-create-unavailable", 2},
+		{"v1-create-unavailable-bound", 0},
+		{"v1-owner-set-unavailable", 2},
+		{"v1-attacker-set-unavailable", 2},
+		{"v1-anon-set-unavailable-open", 1},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := pushServer(tc.mode)
+			defer ts.Close()
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+			if len(findings) != tc.findings || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want %d findings and incomplete fallback, got findings=%+v err=%v", tc.findings, findings, err)
+			}
+		})
+	}
+}
+
+func TestPushBinding_UnjudgedAnonymousReadbackRetainsCrossFindings(t *testing.T) {
+	ts := pushServer("open-anon-readback-unavailable")
+	defer ts.Close()
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+	if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want cross-principal findings and incomplete anonymous readback, got findings=%+v err=%v", findings, err)
 	}
 }
 

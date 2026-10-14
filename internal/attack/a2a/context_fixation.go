@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -51,7 +52,7 @@ func (e *ContextFixationExecutor) Execute(ctx context.Context, target string, op
 }
 
 // ExecuteChained runs the context-fixation check.
-func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
+func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
 	// Two distinct identities are this rule's premise; without them it cannot run.
 	// See twoPrincipals: all five cross-principal rules used to report clean here,
 	// so a scan with no --principal flags called 29 percent of the A2A set secure
@@ -66,6 +67,8 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
+	var incomplete error
+	defer func() { err = errors.Join(err, incomplete) }()
 
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
@@ -81,6 +84,7 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	if ownerSend.taskID == "" {
 		return nil, ownerSend.obs.err()
 	}
+	incomplete = errors.Join(incomplete, ownerSend.partialErr("owner send"))
 	if ownerSend.contextID == "" {
 		return nil, fmt.Errorf("%w: the owner's task response omitted its contextId",
 			attack.ErrInconclusive)
@@ -97,6 +101,7 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// auth at all (not fixation).
 	anonSend := e.sendUnderContext(ctx, unauthClient, endpoint, nil, fixedCtx,
 		"batesian anon "+vars.RandID, vars.RandID+"-anon", "sending an unauthenticated message")
+	incomplete = errors.Join(incomplete, anonSend.partialErr("anonymous send"))
 	if anonSend.accepted {
 		return nil, nil
 	}
@@ -108,6 +113,7 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Step 3: as victim B, send a secret marker under the SAME fixed context.
 	victimSend := e.sendUnderContext(ctx, clientB, endpoint, b.Headers, fixedCtx, marker, vars.RandID+"-victim",
 		"sending the victim's message as principal "+b.Name)
+	incomplete = errors.Join(incomplete, victimSend.partialErr("victim send"))
 	if victimSend.taskID == "" {
 		if err := victimSend.obs.err(); err != nil {
 			return nil, err
@@ -129,7 +135,10 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// found" in a history that was never fetched says nothing about the merge.
 	// a2a-artifact-tamper-001 reports the identical unreadable-read-back as not
 	// tested; this step used to return clean.
-	read, contains, readObs := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, ownerSend.taskID, marker, vars.RandID+"-victim")
+	read, contains, readObs, readPartial := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers, ownerSend.taskID, marker, vars.RandID+"-victim")
+	if readPartial && read {
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: a task-history read was unjudged before another returned the task", attack.ErrInconclusive))
+	}
 	if !read {
 		if err := readObs.err(); err != nil {
 			return nil, err
@@ -138,8 +147,11 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 			attack.ErrInconclusive)
 	}
 	if !contains {
-		ownRead, ownFound, _ := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers,
+		ownRead, ownFound, _, ownPartial := e.taskHistoryContains(ctx, clientA, endpoint, a.Headers,
 			ownerSend.taskID, ownerMarker, vars.RandID+"-owner")
+		if ownPartial && ownRead {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: an owner-marker read was unjudged before another returned the task", attack.ErrInconclusive))
+		}
 		if !ownRead || !ownFound {
 			return nil, fmt.Errorf("%w: the owner's task history did not include its own probe message",
 				attack.ErrInconclusive)
@@ -153,9 +165,17 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 type contextSendResult struct {
 	taskID, contextID string
 	accepted          bool
+	partial           bool
 	wire              int
 	denied            [2]bool
 	obs               setupObservation
+}
+
+func (r contextSendResult) partialErr(what string) error {
+	if !r.partial {
+		return nil
+	}
+	return fmt.Errorf("%w: %s had an unjudged wire attempt", attack.ErrInconclusive, what)
 }
 
 // sendUnderContext tries v1.0 and v0.3 while retaining each wire's auth result.
@@ -184,6 +204,11 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
 		return resp.IsSuccess() && valid && hasError && attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body))
 	}
+	observe := func(resp *attack.Response) {
+		outcome := classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp)
+		result.obs.observe(outcome)
+		result.partial = result.partial || outcome.rank == setupOtherRefusal
+	}
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
@@ -203,7 +228,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		result.wire = 1
 	} else {
 		result.denied[0] = authRejected(resp)
-		result.obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
+		observe(resp)
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -222,7 +247,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 			result.wire = 2
 		} else {
 			result.denied[1] = authRejected(resp)
-			result.obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
+			observe(resp)
 			return result
 		}
 	}
@@ -241,7 +266,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 // explains why (and contains is meaningless). Callers must not read a false
 // contains as "marker absent" without checking read first.
 func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	extraHeaders map[string]string, taskID, marker, randID string) (read, contains bool, obs setupObservation) {
+	extraHeaders map[string]string, taskID, marker, randID string) (read, contains bool, obs setupObservation, partial bool) {
 	what := "reading the task history back"
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
@@ -263,17 +288,20 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 			readable, found := contextTaskHistoryHasText(resp.Body, requestID, taskID, marker)
 			read = read || readable
 			if found {
-				return true, true, setupObservation{}
+				return true, true, obs, partial
 			}
 			if !readable {
+				partial = true
 				obs.observe(setupObservation{setupOtherRefusal,
 					fmt.Sprintf("%s at %s did not return task %s with a usable history", what, endpoint, taskID)})
 			}
 			continue
 		}
-		obs.observe(classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp))
+		outcome := classifyTaskSetup(what, endpoint, principalCredentialPresent(c, endpoint, extraHeaders), resp)
+		obs.observe(outcome)
+		partial = partial || outcome.rank == setupOtherRefusal
 	}
-	return read, false, obs
+	return read, false, obs, partial
 }
 
 func contextTaskHistoryHasText(body []byte, requestID, taskID, marker string) (readable, found bool) {
