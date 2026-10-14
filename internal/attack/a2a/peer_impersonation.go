@@ -53,13 +53,19 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	// published, and its service URL is the audience the server expects.
 	agentName := "trusted-orchestrator"
 	var card *protoa2a.AgentCard
-	if body, ok := fetchAgentCardBody(ctx, client, vars.BaseURL); ok {
+	body, cardOK, cardReadReason := fetchAgentCardBodyWithOutcome(ctx, client, vars.BaseURL)
+	if cardOK {
 		var parsed protoa2a.AgentCard
-		if json.Unmarshal(body, &parsed) == nil {
+		if err := json.Unmarshal(body, &parsed); err == nil {
 			card = &parsed
 			if parsed.Name != "" {
 				agentName = parsed.Name
 			}
+		} else {
+			if cardReadReason != "" {
+				cardReadReason += "; "
+			}
+			cardReadReason += "Agent Card fields could not be parsed"
 		}
 	}
 
@@ -75,9 +81,12 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	// and the unauthenticated baseline, and keep the first pair where the send
 	// method exists. The baseline uses unauthClient so opts.Token is not injected.
 	forgedResp, baselineResp, wire, incomplete, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
+	if cardReadReason != "" {
+		incomplete = append(incomplete, "Agent Card prerequisite: "+cardReadReason)
+	}
 	if !ok {
 		if len(incomplete) > 0 {
-			return nil, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+			return nil, fmt.Errorf("%w: peer assessment incomplete: %s", attack.ErrInconclusive,
 				strings.Join(incomplete, "; "))
 		}
 		return nil, fmt.Errorf("%w: no revision's send method is implemented at %s "+
@@ -104,7 +113,7 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	}
 	findingObserved := forgedOK && (baselineOK || baselineDenied)
 	if len(incomplete) > 0 && !findingObserved {
-		return nil, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+		return nil, fmt.Errorf("%w: peer assessment incomplete: %s", attack.ErrInconclusive,
 			strings.Join(incomplete, "; "))
 	}
 
@@ -158,8 +167,13 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 
 	}
 
+	if cardReadReason != "" {
+		for i := range findings {
+			findings[i].Evidence += "\nunobserved Agent Card prerequisite: " + cardReadReason
+		}
+	}
 	if len(incomplete) > 0 {
-		return findings, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+		return findings, fmt.Errorf("%w: peer assessment incomplete: %s", attack.ErrInconclusive,
 			strings.Join(incomplete, "; "))
 	}
 	return findings, nil

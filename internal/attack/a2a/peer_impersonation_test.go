@@ -237,6 +237,66 @@ func TestPeerImpersonation_FindingRetainsEarlierIncompleteVersion(t *testing.T) 
 	}
 }
 
+func TestPeerImpersonation_CardPrerequisiteOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		versionStatus  int
+		card           map[string]interface{}
+		acceptForged   bool
+		wantFindings   int
+		wantIncomplete bool
+		wantReason     string
+	}{
+		{"failed version, forged accepted", http.StatusServiceUnavailable, cardWithIssuer("peer-agent"), true, 1, true, "HTTP 503"},
+		{"failed version, forged refused", http.StatusServiceUnavailable, cardWithIssuer("peer-agent"), false, 0, true, "HTTP 503"},
+		{"absent version, forged refused", http.StatusNotFound, cardWithIssuer("peer-agent"), false, 0, false, ""},
+		{"malformed card fields, forged accepted", 0, map[string]interface{}{"name": "peer-agent", "securitySchemes": []string{"invalid"}}, true, 1, true, "Agent Card fields could not be parsed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/agent-card.json" {
+					if r.Header.Get("A2A-Version") == "1.0" && tc.versionStatus != 0 {
+						w.WriteHeader(tc.versionStatus)
+						return
+					}
+					writeJSON(w, tc.card)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				if request["method"] == "GetTask" || request["method"] == "tasks/get" {
+					rpcErr(w, request["id"], -32001, "Task not found")
+					return
+				}
+				if !tc.acceptForged || r.Header.Get("Authorization") == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": request["id"],
+					"result": map[string]interface{}{"id": "task-1", "status": map[string]interface{}{"state": "completed"}},
+				})
+			}))
+			defer ts.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), ts.URL, testOpts())
+			if len(findings) != tc.wantFindings || errors.Is(err, attack.ErrInconclusive) != tc.wantIncomplete {
+				t.Fatalf("want %d findings, incomplete=%v; got findings=%v err=%v", tc.wantFindings, tc.wantIncomplete, findings, err)
+			}
+			if tc.wantReason != "" && !strings.Contains(err.Error(), tc.wantReason) {
+				t.Fatalf("missing card prerequisite %q: %v", tc.wantReason, err)
+			}
+			if tc.wantReason != "" && len(findings) > 0 && !strings.Contains(findings[0].Evidence, tc.wantReason) {
+				t.Fatalf("finding omitted card prerequisite %q: %q", tc.wantReason, findings[0].Evidence)
+			}
+		})
+	}
+}
+
 // TestPeerImpersonation_UnauthAllowed verifies a medium-severity finding is
 // emitted when the server accepts requests without any authentication.
 func TestPeerImpersonation_UnauthAllowed(t *testing.T) {
