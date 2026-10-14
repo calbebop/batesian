@@ -158,6 +158,10 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 
 	}
 
+	if len(incomplete) > 0 {
+		return findings, fmt.Errorf("%w: peer send probes were incomplete: %s", attack.ErrInconclusive,
+			strings.Join(incomplete, "; "))
+	}
 	return findings, nil
 }
 
