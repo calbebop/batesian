@@ -27,9 +27,7 @@ run records its assessed target, including runs with no findings.
 name: Agent Security Scan
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
   schedule:
     # Run daily at midnight UTC
     - cron: '0 0 * * *'
@@ -66,7 +64,7 @@ jobs:
           BATESIAN_TOKEN: ${{ secrets.AGENT_TOKEN }}
 
       - name: Upload SARIF to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
           category: batesian
@@ -87,6 +85,9 @@ jobs:
               .properties.rulesErrored == 0)
           ' results.sarif
 ```
+
+The workflow runs manually or on a schedule against the configured target. Do
+not pass deployment credentials to a workflow that executes pull-request code.
 
 Skipped and errored rules are stored as SARIF invocation notifications, not
 alerts. GitHub accepts these fields but does not display them, so the explicit

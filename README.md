@@ -5,22 +5,24 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/calbebop/batesian/badge)](https://scorecard.dev/viewer/?uri=github.com/calbebop/batesian)
 
-**Protocol-aware adversarial testing for A2A and MCP.**
+**Protocol-aware security testing for A2A and MCP.**
 
 Batesian is a single-binary CLI that tests deployed AI agent infrastructure with real protocol traffic. It exercises authorization, identity, discovery, task isolation, callbacks, sessions, and tool boundaries, then reports evidence as a confirmed exploit or a risk indicator. Table, JSON, and SARIF output support local testing and CI.
 
 This README describes the current `main` branch, which may be ahead of the latest release. Use a release tag for its exact behavior and see the [changelog](CHANGELOG.md) for changes since v1.7.0.
 
-![Batesian demo](docs/demo.gif)
-
 > [!CAUTION]
 > Run Batesian only against systems you own or have explicit written permission to test. Scans send attack-shaped traffic and some rules can change server-side state. Use `scan --dry-run` to inspect the request plan without sending traffic.
+
+![Batesian probing a local A2A fixture and confirming unenforced authentication](docs/demo.gif)
+
+The recording uses a deliberately vulnerable local fixture. Recreate it with `./docs/render-demo.ps1` from PowerShell; the [demo tape](docs/demo.tape) defines the capture. The script removes its containers and temporary binary when it finishes.
 
 ## Highlights
 
 - **48 bundled rules:** 19 A2A and 29 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
-- **Evidence-aware results:** confirmed exploits are separated from indicators that require manual validation.
+- **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
 - **CI-ready output:** SARIF 2.1.0 integrates with GitHub code scanning; JSON supports custom pipelines.
 - **Controlled execution:** dry runs, exact rule filters, proxy support, strict configuration, and explicit approval for mutating MCP tools.
@@ -172,7 +174,7 @@ For A2A probes, JSON `agent_card` is a parsed, redacted view, not the original r
 
 A finding is marked `confirmed` only when the rule observes exploit evidence. An `indicator` identifies a risky condition without claiming successful exploitation.
 
-`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
+`scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. Check rule outcomes in JSON or SARIF before treating a scan as complete; a zero exit code alone is not a clean bill of health. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 
 ## CI integration
 
@@ -181,7 +183,7 @@ The following workflow uses current `main` coverage metadata to upload A2A findi
 ```yaml
 name: Batesian
 
-on: [push, pull_request]
+on: workflow_dispatch
 
 jobs:
   scan:
@@ -216,7 +218,7 @@ jobs:
           ' results.sarif
 ```
 
-Pin a reviewed commit or release tag instead of `@main` in real CI. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
+Pin a reviewed commit or release tag instead of `@main` in real CI. This example uses a manual trigger so credentials are not exposed to pull-request code. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
 
 ## Configuration and rule packs
 
