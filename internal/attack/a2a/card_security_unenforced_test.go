@@ -179,6 +179,10 @@ func cardSecServer(mode string) *httptest.Server {
 				rpcErr(-32001, "Task not found")
 				return
 			}
+			if mode == "readback-gateway" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			result(map[string]interface{}{"id": taskID, "contextId": "ctx-" + taskID,
 				"status": map[string]interface{}{"state": "submitted"}})
 		default:
@@ -386,8 +390,20 @@ func TestCardSecurity_FindingSurvivesFailedFirstMethod(t *testing.T) {
 	srv := cardSecServer("setup-fallback-success")
 	defer srv.Close()
 	findings, err := runCardSec(t, srv)
-	if len(findings) != 1 || err != nil {
-		t.Fatalf("v0.3 task creation should retain the finding: findings=%+v err=%v", findings, err)
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "SendMessage") {
+		t.Fatalf("v0.3 finding and failed v1.0 probe must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestCardSecurity_FindingRetainsUnreadableReadback(t *testing.T) {
+	srv := cardSecServer("readback-gateway")
+	defer srv.Close()
+	findings, err := runCardSec(t, srv)
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "GetTask returned HTTP 502") ||
+		!strings.Contains(err.Error(), "tasks/get returned HTTP 502") {
+		t.Fatalf("finding and unreadable task readback must both survive: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -432,7 +448,7 @@ func TestCardSecurity_FindingNotesUnobservedCard(t *testing.T) {
 	defer srv.Close()
 
 	findings, err := runCardSec(t, srv)
-	if err != nil || len(findings) != 1 {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 {
 		t.Fatalf("want a finding from the fallback card, got findings=%v err=%v", findings, err)
 	}
 	if !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
