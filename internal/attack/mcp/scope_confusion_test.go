@@ -42,6 +42,8 @@ type scopeServer struct {
 	extraTool               bool
 	modernOnly              bool
 	dual                    bool
+	modernDiscoveryStatus   int
+	modernDiscoveryBadID    bool
 	modernLimitedListStatus int
 	headerParam             bool
 	headerMismatchStatus    int
@@ -326,8 +328,16 @@ func (s *scopeServer) handler() http.HandlerFunc {
 				rpcErr(-32601, "Method not found", http.StatusOK)
 				return
 			}
+			if s.modernDiscoveryStatus != 0 {
+				w.WriteHeader(s.modernDiscoveryStatus)
+				return
+			}
+			id := interface{}(req.ID)
+			if s.modernDiscoveryBadID {
+				id = "unmatched"
+			}
 			reply(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
+				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"resultType":        "complete",
 					"supportedVersions": []string{"2026-07-28"},
@@ -705,7 +715,7 @@ func TestScope_DualWireInitializedFailureIsReported(t *testing.T) {
 
 			findings, err := runScope(t, ts)
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
-				!strings.Contains(err.Error(), "legacy wire") || s.toolCalls.Load() != 2 {
+				!strings.Contains(err.Error(), "wire discovery") || s.toolCalls.Load() != 2 {
 				t.Fatalf("want incomplete legacy handshake after modern comparison, got findings=%+v err=%v calls=%d",
 					findings, err, s.toolCalls.Load())
 			}
@@ -720,9 +730,42 @@ func TestScope_DualWireFindingKeepsIncompleteHandshake(t *testing.T) {
 
 	findings, err := runScope(t, ts)
 	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 ||
-		!strings.Contains(err.Error(), "legacy wire") ||
+		!strings.Contains(err.Error(), "wire discovery") ||
 		!strings.Contains(err.Error(), "initialized notification") {
 		t.Fatalf("want modern finding with incomplete legacy outcome, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestScope_DualWireModernDiscoveryIncompleteKeepsLegacyFinding(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout,
+		http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusBadRequest} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			s := &scopeServer{dual: true, auth: true, modernDiscoveryStatus: status}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+
+			findings, err := runScope(t, ts)
+			wantIncomplete := status != http.StatusBadRequest
+			if len(findings) != 1 || errors.Is(err, attack.ErrInconclusive) != wantIncomplete {
+				t.Fatalf("status=%d: legacy finding=%+v err=%v, want incomplete=%t",
+					status, findings, err, wantIncomplete)
+			}
+			if wantIncomplete && !strings.Contains(err.Error(), "modern wire discovery") {
+				t.Fatalf("modern discovery failure was not identified: %v", err)
+			}
+		})
+	}
+}
+
+func TestScope_UnmatchedModernDiscoveryKeepsLegacyFinding(t *testing.T) {
+	s := &scopeServer{dual: true, auth: true, modernDiscoveryBadID: true}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "unmatched response") {
+		t.Fatalf("want legacy finding and incomplete modern discovery: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -741,8 +784,10 @@ func TestScope_PrincipalBoundSessions(t *testing.T) {
 			defer ts.Close()
 
 			findings, err := runScope(t, ts)
-			if err != nil || len(findings) != tc.wantFindings || !s.limitedInitialized.Load() {
-				t.Fatalf("expected %d findings with both principals initialized, got findings=%+v err=%v limited=%t",
+			if !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "modern wire discovery") ||
+				len(findings) != tc.wantFindings || !s.limitedInitialized.Load() {
+				t.Fatalf("expected %d findings with incomplete modern discovery, got findings=%+v err=%v limited=%t",
 					tc.wantFindings, findings, err, s.limitedInitialized.Load())
 			}
 		})
