@@ -53,6 +53,14 @@ func tenantServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if method == "SendMessage" && mode == "v1-create-unavailable" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if method == "SendMessage" && mode == "legacy-only" {
+				rpcErr(w, id, -32601, "Method not found")
+				return
+			}
 			if mode != "open" && tenant == "" {
 				rpcErr(w, id, -32600, "authentication required") // creation is auth-gated
 				return
@@ -183,6 +191,28 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 			!strings.Contains(f.Evidence, "response: ") {
 			t.Errorf("expected probe and response evidence, got %q", f.Evidence)
 		}
+	}
+}
+
+func TestMultiTenant_PartialTaskCreationRetainsFindings(t *testing.T) {
+	ts := tenantServer("v1-create-unavailable")
+	defer ts.Close()
+
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want two findings and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestMultiTenant_UnsupportedWireIsNotPartial(t *testing.T) {
+	ts := tenantServer("legacy-only")
+	defer ts.Close()
+
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 2 || err != nil {
+		t.Fatalf("want two findings without an incomplete unsupported wire, got findings=%+v err=%v", findings, err)
 	}
 }
 
