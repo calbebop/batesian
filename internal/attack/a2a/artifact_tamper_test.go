@@ -714,7 +714,7 @@ func TestArtifactTamper_NoTaskCreatedIsNotTested(t *testing.T) {
 // SendMessage; a gate keyed on !IsSuccess() sees HTTP 200 and stops, so the walk
 // never reaches the wire this server actually speaks. Gating on !IsAccepted()
 // treats the error envelope as a non-answer and advances.
-func legacyOnlyOverwritingServer(t *testing.T) *httptest.Server {
+func legacyOnlyOverwritingServer(t *testing.T, gateway bool) *httptest.Server {
 	t.Helper()
 	stored := map[string]string{}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -731,6 +731,12 @@ func legacyOnlyOverwritingServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch method {
+		case "SendMessage", "GetTask":
+			if gateway {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			rpcErr(w, req["id"], -32601, "Method not found")
 		case "tasks/send":
 			id, _ := params["id"].(string)
 			msg, _ := params["message"].(map[string]interface{})
@@ -769,7 +775,7 @@ func legacyOnlyOverwritingServer(t *testing.T) *httptest.Server {
 // shape that made the rule silent: gating the fallback on HTTP status meant the
 // first attempt "succeeded" and the wire the server actually speaks was never tried.
 func TestArtifactTamper_JSONRPCErrorAdvancesToTheNextWire(t *testing.T) {
-	srv := legacyOnlyOverwritingServer(t)
+	srv := legacyOnlyOverwritingServer(t, false)
 	defer srv.Close()
 
 	exec := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"})
@@ -782,5 +788,18 @@ func TestArtifactTamper_JSONRPCErrorAdvancesToTheNextWire(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "v0.2 tasks/send") {
 		t.Errorf("evidence should name the wire that worked, got: %s", findings[0].Evidence)
+	}
+}
+
+func TestArtifactTamper_FallbackRetainsIncompleteAttempts(t *testing.T) {
+	srv := legacyOnlyOverwritingServer(t, true)
+	defer srv.Close()
+
+	findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit ||
+		!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "SendMessage") ||
+		!strings.Contains(err.Error(), "GetTask") {
+		t.Fatalf("overwrite and incomplete setup and reads must survive: findings=%+v err=%v", findings, err)
 	}
 }

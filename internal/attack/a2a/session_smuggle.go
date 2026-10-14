@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -126,7 +127,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		// task history back and checking how the marker message is stored.
 		f, evalErr := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars)
 		if f != nil {
-			return []attack.Finding{*f}, incomplete
+			return []attack.Finding{*f}, errors.Join(incomplete, evalErr)
 		}
 		if evalErr != nil {
 			return nil, errors.Join(incomplete, evalErr)
@@ -188,6 +189,7 @@ func classifyRoleProbe(resp *attack.Response, err error, requestID string) roleP
 func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client *attack.HTTPClient, ep string,
 	headers map[string]string, sendBody []byte, marker string, vars attack.Vars) (*attack.Finding, error) {
 	taskID, _ := extractTaskContext(sendBody)
+	var incomplete error
 
 	confirmed := attack.Finding{
 		RuleID:     e.rule.ID,
@@ -213,11 +215,12 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		pollCtx, cancel := context.WithTimeout(ctx, sessionHistoryPollBudget)
 		defer cancel()
 		for attempt := 0; attempt < sessionHistoryPollAttempts; attempt++ {
-			body, ok := readTaskHistory(pollCtx, client, ep, headers, taskID, vars)
+			body, ok, readErr := readTaskHistory(pollCtx, client, ep, headers, taskID, vars)
+			incomplete = errors.Join(incomplete, readErr)
 			if !ok {
 				if err := ctx.Err(); err != nil {
-					return nil, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
-						attack.ErrInconclusive, ep, err)
+					return nil, errors.Join(incomplete, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
+						attack.ErrInconclusive, ep, err))
 				}
 				why = "the task history could not be read back"
 				break
@@ -235,12 +238,12 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 				switch classifyHistoryMarker(history, marker) {
 				case historyMarkerAgent:
 					confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(body, 400))
-					return &confirmed, nil
+					return &confirmed, incomplete
 				case historyMarkerUser:
 					// Marker present but not as an agent message: the server normalized the
 					// role. Injection neutralized, and a real result: the history was read
 					// and the role had been rewritten.
-					return nil, nil
+					return nil, incomplete
 				case historyMarkerUnknown:
 					why = "the injected marker was returned with an unrecognized role"
 				case historyMarkerAbsent:
@@ -254,8 +257,8 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 			}
 			if err := waitForSessionHistory(pollCtx); err != nil {
 				if parentErr := ctx.Err(); parentErr != nil {
-					return nil, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
-						attack.ErrInconclusive, ep, parentErr)
+					return nil, errors.Join(incomplete, fmt.Errorf("%w: %s accepted the message, but history polling stopped: %w",
+						attack.ErrInconclusive, ep, parentErr))
 				}
 				break
 			}
@@ -271,10 +274,10 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		// there is no history to inspect at all.
 		why = "the reply carried no task id, so there is no history to inspect"
 	}
-	return nil, fmt.Errorf("%w: %s accepted a message carrying the agent role, but %s, so whether "+
+	return nil, errors.Join(incomplete, fmt.Errorf("%w: %s accepted a message carrying the agent role, but %s, so whether "+
 		"the turn is stored as an agent turn could not be established; what this rule reports is the "+
 		"stored turn, not the acceptance",
-		attack.ErrInconclusive, ep, why)
+		attack.ErrInconclusive, ep, why))
 }
 
 func waitForSessionHistory(ctx context.Context) error {
@@ -323,27 +326,45 @@ func taskHistory(body []byte) ([]interface{}, taskHistoryState) {
 	return history, taskHistoryPresent
 }
 
-// readTaskHistory fetches a task via GetTask or tasks/get. ok reports whether
-// either request was accepted; callers inspect the raw body.
-func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string, taskID string, vars attack.Vars) (body []byte, ok bool) {
+// readTaskHistory returns the first accepted task and any unjudged prior read.
+func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string, taskID string, vars attack.Vars) (body []byte, ok bool, incomplete error) {
 	resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "batesian-get-" + vars.RandID,
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
 	})
-	if err != nil || !resp.IsAccepted() {
-		resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      "batesian-get-" + vars.RandID,
-			"method":  "tasks/get",
-			"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
-		})
+	if err == nil && resp != nil && resp.IsAccepted() {
+		return resp.Body, true, nil
 	}
-	if err != nil || !resp.IsAccepted() {
-		return nil, false
+	incomplete = taskHistoryReadError("GetTask", ep, resp, err)
+	resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "batesian-get-" + vars.RandID,
+		"method":  "tasks/get",
+		"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
+	})
+	if err != nil || resp == nil || !resp.IsAccepted() {
+		return nil, false, errors.Join(incomplete, taskHistoryReadError("tasks/get", ep, resp, err))
 	}
-	return resp.Body, true
+	return resp.Body, true, incomplete
+}
+
+func taskHistoryReadError(method, ep string, resp *attack.Response, requestErr error) error {
+	if requestErr != nil {
+		return fmt.Errorf("%w: %s at %s received no answer: %v", attack.ErrInconclusive, method, ep, requestErr)
+	}
+	if resp == nil {
+		return fmt.Errorf("%w: %s at %s returned no response", attack.ErrInconclusive, method, ep)
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil
+	}
+	if code, ok := jsonRPCErrorCode(resp.Body); resp.IsSuccess() && ok &&
+		(code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s at %s returned HTTP %d without task history", attack.ErrInconclusive, method, ep, resp.StatusCode)
 }
 
 type historyMarkerState int

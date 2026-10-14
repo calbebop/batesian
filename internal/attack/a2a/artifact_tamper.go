@@ -3,7 +3,9 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -25,7 +27,7 @@ func NewArtifactTamperExecutor(r attack.RuleContext) *ArtifactTamperExecutor {
 	return &ArtifactTamperExecutor{rule: r}
 }
 
-func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opts attack.Options) (_ []attack.Finding, err error) {
 	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
@@ -39,17 +41,17 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	tamperedText := "batesian-tampered-" + vars.RandID
 
 	// Step 1: create a task carrying the original marker.
-	taskID, wire, ok := e.createTask(ctx, client, endpoint, originalText, vars.RandID)
+	taskID, wire, ok, createErr := e.createTask(ctx, client, endpoint, originalText, vars.RandID)
 	if !ok {
-		// No task exists to tamper with, so immutability was never exercised. This
-		// path used to return clean with the comment "not an A2A server", which
-		// resolveA2AEndpoint has already ruled out, and which meant a stale v0.2-only
-		// method name reported every real agent secure.
-		return nil, fmt.Errorf("%w: the agent at %s accepted no task-creating request "+
+		// No task was created, so immutability was not tested.
+		return nil, errors.Join(fmt.Errorf("%w: the agent at %s accepted no task-creating request "+
 			"(SendMessage, message/send or tasks/send), so there was no task whose immutability "+
-			"could be tested", attack.ErrInconclusive, endpoint)
+			"could be tested", attack.ErrInconclusive, endpoint), createErr)
 	}
-	baselineBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	incomplete := createErr
+	defer func() { err = errors.Join(err, incomplete) }()
+	baselineBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
 		return nil, fmt.Errorf("%w: task %s was created, but its original content could not be read back",
 			attack.ErrInconclusive, taskID)
@@ -77,7 +79,8 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	}
 
 	// Read back even when the send reports an error.
-	getBody, ok := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	getBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
 		return nil, fmt.Errorf("%w: task %s was re-submitted, but reading it back "+
 			"returned no task content, so whether the stored artifact changed could not be "+
@@ -249,7 +252,7 @@ type tamperWire struct {
 // createTask submits the original marker, trying each revision until one is
 // accepted, and returns the task id together with the wire that worked.
 func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.HTTPClient,
-	endpoint, text, randID string) (string, tamperWire, bool) {
+	endpoint, text, randID string) (string, tamperWire, bool, error) {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 
 	attempts := []struct {
@@ -329,21 +332,37 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 		},
 	}
 
+	var incomplete error
+	credentialed := client.PresentsCredential(endpoint)
 	for _, a := range attempts {
 		resp, err := client.POST(ctx, endpoint, a.wire.headers, a.create)
 		// IsAccepted, not IsSuccess: a -32601 for a method this revision does not
 		// define arrives at HTTP 200, and gating on status alone left the fallback
 		// unreachable.
-		if err != nil || !resp.IsAccepted() {
+		if err != nil {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s task creation at %s received no answer: %v",
+				attack.ErrInconclusive, a.wire.name, endpoint, err))
+			continue
+		}
+		if resp == nil || !resp.IsAccepted() {
+			if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed) {
+				continue
+			}
+			outcome := classifyTaskSetup("creating a task on the "+a.wire.name+" wire", endpoint, credentialed, resp)
+			if outcome.rank == setupOtherRefusal {
+				incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s", attack.ErrInconclusive, outcome.reason))
+			}
 			continue
 		}
 		var body map[string]interface{}
 		_ = json.Unmarshal(resp.Body, &body)
 		if id := extractTaskID(body); id != "" {
-			return id, a.wire, true
+			return id, a.wire, true, incomplete
 		}
+		outcome := classifyTaskSetup("creating a task on the "+a.wire.name+" wire", endpoint, credentialed, resp)
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s", attack.ErrInconclusive, outcome.reason))
 	}
-	return "", tamperWire{}, false
+	return "", tamperWire{}, false, incomplete
 }
 
 // jsonRPCCall builds a JSON-RPC request object with a fixed id, which is all these
