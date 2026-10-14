@@ -237,7 +237,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	meta, readVerdict := e.getTask(ctx, client, sessB, princB, taskID)
 	switch readVerdict {
 	case probeInconclusive:
-		return nil, fmt.Errorf("%w: principal %s's read of principal %s's task %s at %s returned no "+
+		incomplete = fmt.Errorf("%w: principal %s's read of principal %s's task %s at %s returned no "+
 			"verdict, so whether the task is bound to its creating context was never observed",
 			attack.ErrInconclusive, princB.name, princA.name, taskID, sessA.Endpoint)
 	case probeAnswered:
@@ -392,15 +392,9 @@ func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPCli
 		"method":  "tasks/list",
 		"params":  map[string]interface{}{},
 	})
-	if resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
-		return nil, probeInconclusive
-	}
-	verdict, body := classifyProbe(resp, err, 6)
+	verdict, body := classifyTaskRead(resp, err, 6, false)
 	if verdict != probeAnswered {
 		return nil, verdict
-	}
-	if _, hasError := body["error"]; hasError {
-		return nil, probeRejected
 	}
 	result, ok := body["result"].(map[string]interface{})
 	if !ok {
@@ -429,6 +423,32 @@ func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPCli
 		}
 	}
 	return ids, probeAnswered
+}
+
+func classifyTaskRead(resp *attack.Response, err error, id int, taskNotFoundIsRefusal bool) (probeVerdict, map[string]interface{}) {
+	if resp != nil && (resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= http.StatusInternalServerError) {
+		return probeInconclusive, nil
+	}
+	verdict, body := classifyProbe(resp, err, id)
+	if verdict == probeInconclusive || resp == nil {
+		return verdict, body
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return probeRejected, nil
+	}
+	if body == nil {
+		body, _ = parseResponseBody(resp.Body)
+	}
+	if errorBody, ok := body["error"].(map[string]interface{}); ok {
+		message, _ := errorBody["message"].(string)
+		if attack.AuthFlavoredMessage(message) ||
+			taskNotFoundIsRefusal && rpcErrorCode(errorBody["code"]) == -32602 {
+			return probeRejected, body
+		}
+		return probeInconclusive, body
+	}
+	return verdict, body
 }
 
 // containsTaskID reports whether the enumerated list includes the target task.
@@ -573,20 +593,15 @@ func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClien
 		"method":  "tasks/get",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	verdict, _ := classifyProbe(resp, err, 4)
+	verdict, _ := classifyTaskRead(resp, err, 4, true)
 	if verdict != probeAnswered {
 		return taskState{}, verdict
 	}
 	var body struct {
-		Result *taskState             `json:"result"`
-		Error  map[string]interface{} `json:"error"`
+		Result *taskState `json:"result"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		return taskState{}, probeInconclusive
-	}
-	// A JSON-RPC error at HTTP 200 is the spec'd refusal shape, so it is a real answer.
-	if body.Error != nil {
-		return taskState{}, probeRejected
 	}
 	if body.Result == nil || body.Result.Status == "" {
 		// 2xx, no error, and no task: nothing was refused and nothing was disclosed.
@@ -625,28 +640,14 @@ func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPCli
 		"method":  "tasks/result",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	if resp != nil && (resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
-		resp.StatusCode >= http.StatusInternalServerError) {
-		return "", probeInconclusive
-	}
-	verdict, _ := classifyProbe(resp, err, 5)
+	verdict, _ := classifyTaskRead(resp, err, 5, true)
 	if verdict != probeAnswered {
 		return "", verdict
 	}
 	var body struct {
 		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		return "", probeInconclusive
-	}
-	if body.Error != nil {
-		if body.Error.Code == -32602 || attack.AuthFlavoredMessage(body.Error.Message) {
-			return "", probeRejected
-		}
 		return "", probeInconclusive
 	}
 	if len(body.Result) == 0 {
