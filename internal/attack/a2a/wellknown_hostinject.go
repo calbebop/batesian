@@ -64,32 +64,10 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 	for _, path := range cardPaths {
 		for _, probe := range probes {
 			cardURL := endpoint.AppendPath(vars.BaseURL, path)
-			headers := cardVersionHeaders(cardURL)
-			if headers == nil {
-				headers = map[string]string{}
-			}
-			headers[probe.header] = probe.value
-			resp, err := client.GET(ctx, cardURL, headers)
 			probeName := path + " " + probe.header
-			if err != nil || resp == nil {
-				unobserved = append(unobserved, probeName+": no response")
-				continue
-			}
-			if !resp.IsSuccess() {
-				if resp.StatusCode == 408 || resp.StatusCode == 429 ||
-					resp.StatusCode < 400 || resp.StatusCode >= 500 {
-					unobserved = append(unobserved, fmt.Sprintf("%s: HTTP %d", probeName, resp.StatusCode))
-				}
-				continue
-			}
-
-			var card map[string]interface{}
-			if err := json.Unmarshal(resp.Body, &card); err != nil {
-				unobserved = append(unobserved, probeName+": invalid card JSON")
-				continue
-			}
-			if err := protocola2a.ValidateAgentCard(resp.Body); err != nil {
-				unobserved = append(unobserved, probeName+": invalid Agent Card")
+			card, resp, probeUnobserved := fetchInjectedCardWithOutcome(ctx, client, cardURL, probeName, probe)
+			unobserved = append(unobserved, probeUnobserved...)
+			if resp == nil {
 				continue
 			}
 			cardParsed = true
@@ -165,6 +143,44 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 			attack.ErrInconclusive, vars.BaseURL)
 	}
 	return findings, nil
+}
+
+func fetchInjectedCardWithOutcome(ctx context.Context, client *attack.HTTPClient, cardURL, probeName string,
+	probe headerProbe) (card map[string]interface{}, response *attack.Response, unobserved []string) {
+	versionHeaders := cardVersionHeaders(cardURL)
+	attempts := []map[string]string{versionHeaders}
+	if len(versionHeaders) > 0 {
+		attempts = append(attempts, nil)
+	}
+	for _, attempt := range attempts {
+		headers := map[string]string{probe.header: probe.value}
+		for name, value := range attempt {
+			headers[name] = value
+		}
+		resp, err := client.GET(ctx, cardURL, headers)
+		if err != nil || resp == nil {
+			unobserved = append(unobserved, probeName+": no response")
+			continue
+		}
+		if !resp.IsSuccess() {
+			if resp.StatusCode == 408 || resp.StatusCode == 429 ||
+				resp.StatusCode < 400 || resp.StatusCode >= 500 {
+				unobserved = append(unobserved, fmt.Sprintf("%s: HTTP %d", probeName, resp.StatusCode))
+			}
+			continue
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+			unobserved = append(unobserved, probeName+": invalid card JSON")
+			continue
+		}
+		if err := protocola2a.ValidateAgentCard(resp.Body); err != nil {
+			unobserved = append(unobserved, probeName+": invalid Agent Card")
+			continue
+		}
+		return parsed, resp, unobserved
+	}
+	return nil, nil, unobserved
 }
 
 // reflection records where the canary was found and the value it appeared in.

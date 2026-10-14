@@ -178,6 +178,50 @@ func TestWellKnownHostInject_PartialFindingKeepsUnobservedProbeIncomplete(t *tes
 	}
 }
 
+func TestWellKnownHostInject_CanonicalVersionFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		versionCode  int
+		reflect      bool
+		wantFindings int
+		incomplete   bool
+	}{
+		{"legacy reflection", http.StatusNotFound, true, 1, false},
+		{"legacy hardcoded", http.StatusNotFound, false, 0, false},
+		{"failed version, reflection", http.StatusServiceUnavailable, true, 1, true},
+		{"failed version, hardcoded", http.StatusServiceUnavailable, false, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/agent-card.json" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(tc.versionCode)
+					return
+				}
+				url := "https://agent.example.com/"
+				if tc.reflect && r.Header.Get("X-Forwarded-Host") != "" {
+					url = "https://" + r.Header.Get("X-Forwarded-Host") + "/"
+				}
+				_ = json.NewEncoder(w).Encode(hostInjectCard(url))
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{
+				ID: "a2a-wellknown-hostinject-001",
+			}).Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != tc.wantFindings || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("want %d findings, incomplete=%v; got findings=%v err=%v", tc.wantFindings, tc.incomplete, findings, err)
+			}
+			if tc.incomplete && !strings.Contains(err.Error(), "X-Forwarded-Host: HTTP 503") {
+				t.Fatalf("missing failed versioned probe: %v", err)
+			}
+		})
+	}
+}
+
 // TestWellKnownHostInject_HostHeaderReflected verifies the forged Host header
 // actually reaches the server (req.Host plumbing) and a reflection into the url
 // field is reported as a high/RiskIndicator (reflection is proven; the

@@ -193,6 +193,65 @@ func TestJWSAlgConfExecutor_NotFound(t *testing.T) {
 	}
 }
 
+func TestJWSAlgConfExecutor_CanonicalVersionFallback(t *testing.T) {
+	weakCard := map[string]interface{}{
+		"name": "Test Agent",
+		"signatures": []interface{}{
+			map[string]interface{}{"protected": buildProtectedHeader(map[string]interface{}{"alg": "none"}), "signature": ""},
+		},
+	}
+	strongCard := map[string]interface{}{
+		"name": "Test Agent",
+		"signatures": []interface{}{
+			map[string]interface{}{"protected": buildProtectedHeader(map[string]interface{}{"alg": "ES256"}), "signature": "c2ln"},
+		},
+	}
+	for _, tc := range []struct {
+		name         string
+		status       int
+		card         map[string]interface{}
+		wantFindings int
+		incomplete   bool
+		wantReason   string
+	}{
+		{"legacy weak card", http.StatusNotFound, weakCard, 1, false, ""},
+		{"legacy sound card", http.StatusNotFound, strongCard, 0, false, ""},
+		{"failed version, weak card", http.StatusServiceUnavailable, weakCard, 1, true, "HTTP 503"},
+		{"failed version, sound card", http.StatusServiceUnavailable, strongCard, 0, true, "HTTP 503"},
+		{"failed version, no fallback card", http.StatusServiceUnavailable, nil, 0, true, "HTTP 503"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/agent-card.json" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(tc.status)
+					return
+				}
+				if tc.card == nil {
+					http.NotFound(w, r)
+					return
+				}
+				writeJSON(w, tc.card)
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+			if len(findings) != tc.wantFindings || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("want %d findings, incomplete=%v; got findings=%v err=%v", tc.wantFindings, tc.incomplete, findings, err)
+			}
+			if tc.wantReason != "" && !strings.Contains(err.Error(), tc.wantReason) {
+				t.Fatalf("missing failed card read %q: %v", tc.wantReason, err)
+			}
+			if tc.wantReason != "" && len(findings) > 0 && !strings.Contains(findings[0].Evidence, tc.wantReason) {
+				t.Fatalf("finding omitted failed card read: %q", findings[0].Evidence)
+			}
+		})
+	}
+}
+
 func TestJWSAlgConfExecutor_MalformedSignaturesIncomplete(t *testing.T) {
 	validHeader := buildProtectedHeader(map[string]interface{}{"alg": "ES256"})
 	tests := []struct {
