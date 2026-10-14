@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -125,10 +126,10 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		// task history back and checking how the marker message is stored.
 		f, evalErr := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars)
 		if f != nil {
-			return []attack.Finding{*f}, nil
+			return []attack.Finding{*f}, incomplete
 		}
 		if evalErr != nil {
-			return nil, evalErr
+			return nil, errors.Join(incomplete, evalErr)
 		}
 		normalized = true
 	}

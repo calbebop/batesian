@@ -258,6 +258,44 @@ func TestBatchBypass_FailedBatchIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestBatchBypass_FindingRetainsEarlierIncompleteVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "batch-agent", "version": "1.0"})
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if len(bytes.TrimSpace(raw)) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if bytes.TrimSpace(raw)[0] == '[' {
+			var requests []map[string]interface{}
+			_ = json.Unmarshal(raw, &requests)
+			writeJSON(w, []interface{}{map[string]interface{}{
+				"jsonrpc": "2.0", "id": requests[0]["id"],
+				"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+			}})
+			return
+		}
+		var request map[string]interface{}
+		_ = json.Unmarshal(raw, &request)
+		if request["method"] == "GetTask" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "v0.3") ||
+		!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "v1.0 GetTask") {
+		t.Fatalf("finding and incomplete version must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestBatchBypass_TimeoutIsIncomplete(t *testing.T) {
 	for _, mode := range []string{"control", "batch"} {
 		t.Run(mode, func(t *testing.T) {

@@ -95,6 +95,9 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 			continue
 		}
 		if test.IsSuccess() && a2aBatchDispatched(test.Body, requestID) {
+			if len(incomplete) != 0 {
+				return e.finding(endpoint, s.label, ctrl, test), fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+			}
 			return e.finding(endpoint, s.label, ctrl, test), nil
 		}
 		if ambiguousBatchResponse(test, requestID, true) {

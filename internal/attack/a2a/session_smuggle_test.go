@@ -137,6 +137,43 @@ func TestSessionSmuggle_V03OnlyFallback(t *testing.T) {
 	}
 }
 
+func TestSessionSmuggle_FindingRetainsIncompleteVersion(t *testing.T) {
+	var stored map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		body := readBody(r)
+		id := body["id"]
+		switch body["method"] {
+		case "SendMessage":
+			w.WriteHeader(http.StatusBadGateway)
+		case "message/send":
+			params, _ := body["params"].(map[string]interface{})
+			stored, _ = params["message"].(map[string]interface{})
+			taskResult(w, id, "task-smuggle-v03", "ctx-smuggle-v03")
+		case "GetTask", "tasks/get":
+			writeJSON(w, map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{
+					"id": "task-smuggle-v03", "contextId": "ctx-smuggle-v03",
+					"history": []interface{}{stored},
+				},
+			})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "SendMessage") {
+		t.Fatalf("finding and incomplete version must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestSessionSmuggle_PollsDelayedHistory(t *testing.T) {
 	var reads atomic.Int32
 	var stored map[string]interface{}

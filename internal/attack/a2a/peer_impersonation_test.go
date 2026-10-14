@@ -203,6 +203,40 @@ func TestPeerImpersonation_ForgedJWTAccepted(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_FindingRetainsEarlierIncompleteVersion(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("peer-agent"))
+			return
+		}
+		request := readBody(r)
+		if request["method"] == "SendMessage" {
+			if r.Header.Get("Authorization") != "" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			rpcErr(w, request["id"], -32601, "Method not found")
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": request["id"],
+			"result": map[string]interface{}{"id": "task-001", "status": map[string]interface{}{"state": "completed"}},
+		})
+	}))
+	defer ts.Close()
+
+	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
+	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "v0.3 message/send") ||
+		!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "v1.0 SendMessage") {
+		t.Fatalf("finding and incomplete version must both survive: findings=%+v err=%v", findings, err)
+	}
+}
+
 // TestPeerImpersonation_UnauthAllowed verifies a medium-severity finding is
 // emitted when the server accepts requests without any authentication.
 func TestPeerImpersonation_UnauthAllowed(t *testing.T) {
@@ -627,8 +661,9 @@ func TestPeerImpersonation_FindingSurvivesMismatchedWire(t *testing.T) {
 
 	exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
 	findings, err := exec.Execute(context.Background(), ts.URL, testOpts())
-	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
-		t.Fatalf("want high finding from v0.3 probe, got findings=%v err=%v", findings, err)
+	if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "method availability differed") ||
+		len(findings) != 1 || findings[0].Severity != "high" {
+		t.Fatalf("want finding and incomplete v1.0 probe, got findings=%v err=%v", findings, err)
 	}
 }
 
