@@ -270,6 +270,9 @@ func fetchAgentCardBodyWithOutcome(ctx context.Context, client *attack.HTTPClien
 	primaryURL := endpoint.AppendPath(baseURL, cardPathPrimary)
 	primaryBody, _, primaryOK, primaryReason := fetchCardWithOutcome(ctx, client, primaryURL)
 	if primaryOK {
+		if primaryReason != "" {
+			return primaryBody, true, primaryURL + ": " + primaryReason
+		}
 		return primaryBody, true, ""
 	}
 	legacyURL := endpoint.AppendPath(baseURL, cardPathLegacy)
