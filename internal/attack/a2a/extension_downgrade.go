@@ -131,30 +131,38 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 	var failures []string
 	for _, path := range []string{cardPathPrimary, cardPathLegacy} {
 		cardURL := endpoint.AppendPath(baseURL, path)
-		resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
-		if err != nil || resp == nil {
-			failures = append(failures, path+": request failed")
-			continue
+		headers := cardVersionHeaders(cardURL)
+		attempts := []map[string]string{headers}
+		if len(headers) > 0 {
+			attempts = append(attempts, nil)
 		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue
-		}
-		if !resp.IsSuccess() {
-			failures = append(failures, fmt.Sprintf("%s: HTTP %d", path, resp.StatusCode))
-			continue
-		}
-		if !resp.IsJSON() {
-			failures = append(failures, path+": response is not JSON")
-			continue
-		}
-		out, err := protocola2a.RequiredCardExtensions(resp.Body)
-		if err != nil {
-			failures = append(failures, path+": "+err.Error())
-			continue
-		}
-		cardServed = true
-		if len(out) > 0 {
-			return out, true, strings.Join(failures, "; ")
+		for _, attempt := range attempts {
+			resp, err := client.GET(ctx, cardURL, attempt)
+			if err != nil || resp == nil {
+				failures = append(failures, path+": request failed")
+				continue
+			}
+			if resp.StatusCode == http.StatusNotFound {
+				continue
+			}
+			if !resp.IsSuccess() {
+				failures = append(failures, fmt.Sprintf("%s: HTTP %d", path, resp.StatusCode))
+				continue
+			}
+			if !resp.IsJSON() {
+				failures = append(failures, path+": response is not JSON")
+				continue
+			}
+			out, err := protocola2a.RequiredCardExtensions(resp.Body)
+			if err != nil {
+				failures = append(failures, path+": "+err.Error())
+				continue
+			}
+			cardServed = true
+			if len(out) > 0 {
+				return out, true, strings.Join(failures, "; ")
+			}
+			break
 		}
 	}
 	return nil, cardServed, strings.Join(failures, "; ")

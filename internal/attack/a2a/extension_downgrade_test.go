@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,6 +37,23 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		if mode == "unreadable-card" || mode == "primary-failed-fallback" || mode == "primary-failed-fallback-closed" {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
+		}
+		if r.Header.Get("A2A-Version") == "1.0" {
+			switch mode {
+			case "canonical-v03-open", "canonical-v03-closed":
+				http.NotFound(w, r)
+				return
+			case "canonical-version-error-open", "canonical-version-error-closed":
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			case "canonical-version-auth-open":
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			case "canonical-version-invalid-open":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("{"))
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(card)
@@ -82,7 +100,8 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		switch mode {
 		case "noauth-msg":
 			writeErr(-32600, "authentication required")
-		case "failclosed", "failclosed-http", "primary-failed-fallback-closed":
+		case "failclosed", "failclosed-http", "primary-failed-fallback-closed",
+			"canonical-v03-closed", "canonical-version-error-closed":
 			if !activated {
 				if mode == "failclosed-http" {
 					w.WriteHeader(http.StatusBadRequest)
@@ -264,6 +283,41 @@ func TestExtDowngrade_FallbackClosedIsInconclusive(t *testing.T) {
 	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
 		!strings.Contains(err.Error(), "/.well-known/agent-card.json: HTTP 503") {
 		t.Fatalf("want incomplete primary card read, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestExtDowngrade_CanonicalVersionFallback(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		required     bool
+		wantFindings int
+		incomplete   bool
+		wantReason   string
+	}{
+		{"canonical-v03-open", true, 1, false, ""},
+		{"canonical-v03-closed", true, 0, false, ""},
+		{"canonical-version-error-open", true, 1, true, "HTTP 503"},
+		{"canonical-version-error-closed", true, 0, true, "HTTP 503"},
+		{"canonical-version-error-open", false, 0, true, "HTTP 503"},
+		{"canonical-version-auth-open", true, 1, true, "HTTP 401"},
+		{"canonical-version-invalid-open", true, 1, true, "response is not JSON"},
+	} {
+		t.Run(tc.mode+"/required="+strconv.FormatBool(tc.required), func(t *testing.T) {
+			ts := extensionServer(tc.mode, tc.required)
+			defer ts.Close()
+
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != tc.wantFindings || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("want %d findings, incomplete=%v; got findings=%v err=%v", tc.wantFindings, tc.incomplete, findings, err)
+			}
+			if tc.incomplete && !strings.Contains(err.Error(), "/.well-known/agent-card.json: "+tc.wantReason) {
+				t.Fatalf("missing failed versioned card read: %v", err)
+			}
+			if tc.incomplete && len(findings) > 0 && !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: "+tc.wantReason) {
+				t.Fatalf("finding omitted failed card read: %q", findings[0].Evidence)
+			}
+		})
 	}
 }
 

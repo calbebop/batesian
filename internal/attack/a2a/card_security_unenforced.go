@@ -260,12 +260,6 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 	}
 }
 
-// fetchAgentCardBody falls back to the older agent.json path when needed.
-func fetchAgentCardBody(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]byte, bool) {
-	body, ok, _ := fetchAgentCardBodyWithOutcome(ctx, client, baseURL)
-	return body, ok
-}
-
 func fetchAgentCardBodyWithOutcome(ctx context.Context, client *attack.HTTPClient, baseURL string) ([]byte, bool, string) {
 	primaryURL := endpoint.AppendPath(baseURL, cardPathPrimary)
 	primaryBody, _, primaryOK, primaryReason := fetchCardWithOutcome(ctx, client, primaryURL)
