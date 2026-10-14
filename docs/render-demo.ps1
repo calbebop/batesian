@@ -18,7 +18,7 @@ foreach ($name in $containers) {
 try {
     docker run --rm --name batesian-demo-build -v "${repo}:/src" -w /src golang:1.26.9 sh -c 'export PATH=/usr/local/go/bin:$PATH; go build -o bin/batesian-demo ./cmd/batesian'
     if ($LASTEXITCODE -ne 0) { throw 'Could not build the demo CLI.' }
-    docker run --rm -d --name $fixture -v "${repo}:/src:ro" -w /src python:3.12-slim sh -c 'pip install --quiet starlette uvicorn && python testdata/a2a_card_security_unenforced_server.py'
+    docker run --rm -d --name $fixture -v "${repo}:/src:ro" -w /src python:3.12-slim sh -c 'pip install --quiet starlette==1.8.0 uvicorn==0.54.0 && python testdata/a2a_card_security_unenforced_server.py'
     if ($LASTEXITCODE -ne 0) { throw 'Could not start the demo fixture.' }
 
     $ready = $false
@@ -31,7 +31,7 @@ try {
     }
     if (-not $ready) { throw 'The demo fixture did not become ready.' }
 
-    docker run --rm --name batesian-demo-record --network "container:$fixture" -v "${repo}:/vhs" ghcr.io/charmbracelet/vhs:latest docs/demo.tape
+    docker run --rm --name batesian-demo-record --network "container:$fixture" -v "${repo}:/vhs" ghcr.io/charmbracelet/vhs:v0.12.1 docs/demo.tape
     if ($LASTEXITCODE -ne 0) { throw 'Could not render docs/demo.gif.' }
 }
 finally {
