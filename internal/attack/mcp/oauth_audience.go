@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -73,7 +74,10 @@ type probeOutcome struct {
 }
 
 // Execute runs the audience-matching probes against the target.
-func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts attack.Options) (findings []attack.Finding, resultErr error) {
+	var discoveryErr error
+	defer func() { resultErr = errors.Join(resultErr, discoveryErr) }()
+
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
@@ -82,9 +86,10 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	if !operatorSupplied {
 		discovered, mcpReached, observed, err := discoverExpectedAudience(ctx, client,
 			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-		if err != nil {
+		if err != nil && discovered == "" {
 			return nil, err
 		}
+		discoveryErr = err
 		if discovered == "" {
 			// Precondition not met: no operator input and no discoverable
 			// resource metadata. Operators who want this rule to run should pass
@@ -112,7 +117,6 @@ func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts
 	endpoint, outcomes, legacyErr := runProbesAgainstEndpoint(ctx, client,
 		anon, vars.BaseURL, probes)
 	modernEndpoint, modernOutcomes, modernErr := runModernAudienceProbes(ctx, anon, vars.BaseURL, probes)
-	var findings []attack.Finding
 	if endpoint != "" {
 		if finding := coalesceOutcomes(e.rule, endpoint, expected, outcomes); finding != nil {
 			findings = append(findings, *finding)
@@ -322,24 +326,28 @@ func hasUpper(s string) bool {
 //  2. GET that URL and read `resource`.
 //  3. Fall back to GET {base}/.well-known/oauth-protected-resource.
 //
-// Returns the resource URI on success, or an empty string if nothing
-// usable was found (caller treats that as "skip").
+// Returns the resource URI and any failed metadata reads. A missing well-known
+// document is optional, but a broken response is not a clean result.
 // metaClient is unauthenticated because step 2 follows a URL the target chose.
 func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient,
 	baseURL string) (audience string, mcpReached bool, observed initObservation, err error) {
 	metaURL, mcpReached, observed := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
+	var incomplete error
 	if metaURL != "" {
-		resource, err := fetchResourceFromMetadata(ctx, metaClient, metaURL)
+		resource, err := fetchResourceFromMetadata(ctx, metaClient, metaURL, false)
 		if err != nil {
-			return "", mcpReached, observed, err
+			incomplete = fmt.Errorf("advertised protected-resource metadata: %w", err)
 		}
 		if resource != "" {
-			return resource, mcpReached, observed, nil
+			return resource, mcpReached, observed, incomplete
 		}
 	}
 	wellKnown := endpoint.AppendPath(baseURL, "/.well-known/oauth-protected-resource")
-	resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown)
-	return resource, mcpReached, observed, err
+	resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown, true)
+	if err != nil {
+		err = fmt.Errorf("well-known protected-resource metadata: %w", err)
+	}
+	return resource, mcpReached, observed, errors.Join(incomplete, err)
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to
@@ -433,24 +441,30 @@ func parseResourceMetadataURL(header string) string {
 // that points resource_metadata at a host it controls must not be handed the
 // operator's bearer token. The transport enforces this as well, so this is
 // defence in depth plus a statement of intent at the call site.
-func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string) (string, error) {
+func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string, optional bool) (string, error) {
 	resp, err := client.GETOAuth(ctx, metaURL, nil)
 	if err != nil {
 		if errors.Is(err, attack.ErrInconclusive) {
 			return "", err
 		}
+		return "", fmt.Errorf("%w: request failed", attack.ErrInconclusive)
+	}
+	if optional && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
 		return "", nil
 	}
-	if !resp.IsSuccess() {
-		return "", nil
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: returned HTTP %d", attack.ErrInconclusive, resp.StatusCode)
+	}
+	if !resp.IsJSON() {
+		return "", fmt.Errorf("%w: invalid JSON", attack.ErrInconclusive)
 	}
 	resource := resp.JSONField("resource")
 	if resource == "" {
-		return "", nil
+		return "", fmt.Errorf("%w: missing resource identifier", attack.ErrInconclusive)
 	}
 	parsed, err := url.Parse(resource)
 	if err != nil || !parsed.IsAbs() {
-		return "", nil
+		return "", fmt.Errorf("%w: invalid resource identifier", attack.ErrInconclusive)
 	}
 	return parsed.String(), nil
 }

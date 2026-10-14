@@ -243,6 +243,55 @@ func TestOAuthAudience_PreconditionNotMet_MCPServerWithoutMetadata(t *testing.T)
 	}
 }
 
+func TestOAuthAudience_UnusableWellKnownMetadataIsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"server error", http.StatusServiceUnavailable, ""},
+		{"rate limited", http.StatusTooManyRequests, ""},
+		{"invalid JSON", http.StatusOK, "not JSON"},
+		{"missing resource", http.StatusOK, `{}`},
+		{"invalid resource", http.StatusOK, `{"resource":"/relative"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				initializeOK(w)
+			})
+			mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+				context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete discovery without findings, got findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestOAuthAudience_AdvertisedMetadataNotFoundIsIncomplete(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="http://%s/missing"`, r.Host))
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete discovery without findings, got findings=%+v err=%v", findings, err)
+	}
+}
+
 // A target where nothing answers was never exercised. Reporting clean there says
 // the audience handling is sound about a host the rule never reached.
 func TestOAuthAudience_NothingReachableIsNotTested(t *testing.T) {
