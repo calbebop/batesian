@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -84,32 +85,31 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	// Step 1 (non-mutating): can an unauthenticated read even reach the handler?
 	// A read of a random non-existent id cannot return a task, so this only tells
 	// us whether the read path rejects at the auth layer (evidence, not verdict).
-	readReachable := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID) != probeAuthRejected
+	readOutcome, readErr := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID)
+	readReachable := readOutcome != probeAuthRejected
 
 	// Step 2 (definitive): unauthenticated create. A returned task proves a core
 	// write executed with no credentials despite the card requiring them.
-	createdTaskID, err := e.createProbe(ctx, client, endpoint, vars.RandID)
-	if err != nil {
-		return nil, withCardReadReason(err)
-	}
+	createdTaskID, createErr := e.createProbe(ctx, client, endpoint, vars.RandID)
 	if createdTaskID == "" {
-		return nil, withCardReadReason(nil)
+		return nil, withCardReadReason(errors.Join(readErr, createErr))
 	}
 
 	// Strengthen: read the just-created task back with no credentials. If that also
 	// returns the task, both the write and the read paths ignore the declared auth.
-	readBack := createdTaskID != "" && e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID) == probeProcessedResult
+	readBackOutcome, readBackErr := e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID)
+	readBack := readBackOutcome == probeProcessedResult
 
 	finding := e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)
 	if cardReadReason != "" {
 		finding.Evidence += "\nunobserved card read: " + cardReadReason
 	}
-	return []attack.Finding{finding}, nil
+	return []attack.Finding{finding}, withCardReadReason(errors.Join(readErr, createErr, readBackErr))
 }
 
 // readTask issues an unauthenticated tasks/get for taskID (v1.0 GetTask then v0.3
 // tasks/get) and classifies the strongest outcome seen.
-func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint, taskID, randID string) probeOutcome {
+func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint, taskID, randID string) (probeOutcome, error) {
 	shapes := []struct {
 		method  string
 		headers map[string]string
@@ -118,6 +118,7 @@ func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack
 		{"tasks/get", nil},
 	}
 	outcome := probeAuthRejected
+	var incomplete []string
 	for _, s := range shapes {
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -125,14 +126,24 @@ func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack
 			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 		})
-		if err != nil {
+		if err != nil || resp == nil {
+			incomplete = append(incomplete, s.method+" did not answer")
+			continue
+		}
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d", s.method, resp.StatusCode))
 			continue
 		}
 		if o := classifyProbe(resp); o > outcome {
 			outcome = o
 		}
 	}
-	return outcome
+	if len(incomplete) > 0 {
+		return outcome, fmt.Errorf("%w: anonymous task read was not judged: %s", attack.ErrInconclusive,
+			strings.Join(incomplete, "; "))
+	}
+	return outcome, nil
 }
 
 // createProbe issues an unauthenticated message/send (v1.0 SendMessage then v0.3
@@ -177,6 +188,10 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 		if resp.IsAccepted() {
 			taskID, _ := extractTaskContext(resp.Body)
 			if taskID != "" {
+				if len(incomplete) > 0 {
+					return taskID, fmt.Errorf("%w: anonymous task creation was not judged: %s",
+						attack.ErrInconclusive, strings.Join(incomplete, "; "))
+				}
 				return taskID, nil
 			}
 			incomplete = append(incomplete, s.method+" returned no task ID")
