@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -35,7 +36,7 @@ func (e *PushBindingExecutor) Execute(ctx context.Context, target string, opts a
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 
-func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
+func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
 	if len(opts.Principals) == 0 || len(principalHeaders(opts.Principals[0])) == 0 {
 		return nil, fmt.Errorf("%w: an authenticated task owner is required", attack.ErrInconclusive)
 	}
@@ -59,6 +60,11 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		// No owner task means the binding was not tested.
 		return nil, obs.err()
 	}
+	var incomplete error
+	defer func() { err = errors.Join(err, incomplete) }()
+	if !consumed {
+		incomplete = obs.partialErr()
+	}
 
 	// Require a stored owner config before testing access by B.
 	markerURL := "https://batesian-victim-" + vars.RandID + ".example/cb"
@@ -68,6 +74,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if !ownerSet.accepted {
 		return nil, ownerSet.obs.err()
 	}
+	incomplete = errors.Join(incomplete, ownerSet.partialErr("owner push configuration"))
 	if !e.getPush(ctx, clientA, endpoint, a.Headers, taskID, ownerSet, markerURL, vars.RandID+"-owner") {
 		return nil, attack.ErrInconclusive
 	}
@@ -76,8 +83,15 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	openURL := "https://batesian-open-" + vars.RandID + ".example/cb"
 	openSet := e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
 		taskID, openURL, "x", "open-"+vars.RandID, vars.RandID)
-	if openSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open") {
-		return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed)}, nil
+	if openSet.accepted {
+		incomplete = errors.Join(incomplete, openSet.partialErr("anonymous push configuration"))
+		matched, judged := e.getPushOutcome(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open")
+		if matched {
+			return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed)}, nil
+		}
+		if !judged {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous push-config write readback was unjudged", attack.ErrInconclusive))
+		}
 	}
 	if !e.getPush(ctx, clientA, endpoint, a.Headers, taskID, ownerSet, markerURL, vars.RandID+"-baseline") {
 		return nil, attack.ErrInconclusive
@@ -92,7 +106,6 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	clientB := principalClient(opts, vars, b)
 
 	// Read before writing so B can observe A's original config.
-	var findings []attack.Finding
 	crossRead, crossReadJudged := e.getPushOutcome(ctx, clientB, endpoint, b.Headers, taskID,
 		ownerSet, markerURL, vars.RandID+"-cross-read")
 	if crossRead {
@@ -101,6 +114,9 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
 	attackerSet := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
 		taskID, attackerURL, "attacker-tok-"+vars.RandID, "attacker-"+vars.RandID, vars.RandID)
+	if attackerSet.accepted {
+		incomplete = errors.Join(incomplete, attackerSet.partialErr("cross-principal push configuration"))
+	}
 	attackerWriteVerified := attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write")
 	if attackerWriteVerified {
 		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed))
@@ -182,9 +198,17 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 type pushSet struct {
 	accepted bool
 	judged   bool
+	partial  bool
 	v1       bool
 	id       string
 	obs      setupObservation
+}
+
+func (s pushSet) partialErr(what string) error {
+	if !s.partial {
+		return nil
+	}
+	return fmt.Errorf("%w: %s had an unjudged attempt before fallback succeeded", attack.ErrInconclusive, what)
 }
 
 // setPush tries v1 first, then v0.3. It keeps setup failures for the owner control.
@@ -211,7 +235,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 		})
 		if err == nil && resp != nil && resp.IsAccepted() {
 			if returned := pushResult(resp.Body, requestID); returned != nil {
-				set := pushSet{accepted: true, judged: true, v1: at.method == "CreateTaskPushNotificationConfig", id: configID}
+				set := pushSet{accepted: true, judged: true, partial: unjudged, v1: at.method == "CreateTaskPushNotificationConfig", id: configID}
 				if id, _ := returned["id"].(string); id != "" {
 					set.id = id
 				} else if nested, ok := returned["pushNotificationConfig"].(map[string]interface{}); ok {

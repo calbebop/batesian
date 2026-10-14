@@ -47,11 +47,18 @@ func contextServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if method == "SendMessage" &&
+				((mode == "owner-v1-unavailable" && tenant == "A") ||
+					(mode == "victim-v1-unavailable" && tenant == "B") ||
+					(mode == "legacy-v1-anon-unavailable" && tenant == "")) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			if mode == "victim-no-send" && tenant == "B" {
 				rpcErr(w, id, -32601, "Method not found")
 				return
 			}
-			if (mode == "legacy-only" || mode == "legacy-wire-auth-mismatch") && method == "SendMessage" && tenant != "" {
+			if (mode == "legacy-only" || mode == "legacy-wire-auth-mismatch" || mode == "legacy-v1-anon-unavailable") && method == "SendMessage" && tenant != "" {
 				rpcErr(w, id, -32601, "Method not found")
 				return
 			}
@@ -142,6 +149,10 @@ func contextServer(mode string) *httptest.Server {
 			}
 			taskResult(w, id, taskID, ctxID)
 		case "GetTask", "tasks/get":
+			if method == "GetTask" && (mode == "read-v1-unavailable" || mode == "isolated-read-v1-unavailable") {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			if mode == "read-absent" {
 				rpcErr(w, id, -32601, "Method not found")
 				return
@@ -165,7 +176,7 @@ func contextServer(mode string) *httptest.Server {
 				if m.tenant == "B" {
 					victimText, victimTask = m.text, m.taskID
 				}
-				if (mode == "isolated" || mode == "metadata-echo" || mode == "artifact-echo" ||
+				if (mode == "isolated" || mode == "isolated-read-v1-unavailable" || mode == "metadata-echo" || mode == "artifact-echo" ||
 					mode == "status-echo" || mode == "history-metadata") && m.taskID != taskID {
 					continue // task-scoped: no cross-principal merge
 				}
@@ -286,6 +297,29 @@ func TestContextFixation_Vulnerable(t *testing.T) {
 	}
 	if len(f.Chain) != 3 || f.Chain[2].Principal != "tenant-a" {
 		t.Errorf("expected a 3-hop chain ending with the attacker reading, got %+v", f.Chain)
+	}
+}
+
+func TestContextFixation_PartialWireOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		findings int
+	}{
+		{"owner-v1-unavailable", 1},
+		{"victim-v1-unavailable", 1},
+		{"legacy-v1-anon-unavailable", 1},
+		{"read-v1-unavailable", 1},
+		{"isolated-read-v1-unavailable", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := contextServer(tc.mode)
+			defer ts.Close()
+			findings, err := a2a.NewContextFixationExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if len(findings) != tc.findings || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want %d findings and incomplete wire outcome, got findings=%+v err=%v", tc.findings, findings, err)
+			}
+		})
 	}
 }
 
