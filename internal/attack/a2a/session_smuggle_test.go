@@ -174,6 +174,69 @@ func TestSessionSmuggle_FindingRetainsIncompleteVersion(t *testing.T) {
 	}
 }
 
+func TestSessionSmuggle_HistoryFallbackRetainsIncomplete(t *testing.T) {
+	for _, mode := range []string{"honored", "normalized", "unsupported", "gateway-rpc-error"} {
+		t.Run(mode, func(t *testing.T) {
+			var stored map[string]interface{}
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				body := readBody(r)
+				id := body["id"]
+				switch body["method"] {
+				case "SendMessage":
+					params, _ := body["params"].(map[string]interface{})
+					stored, _ = params["message"].(map[string]interface{})
+					taskResult(w, id, "task-history-fallback", "ctx-history-fallback")
+				case "GetTask":
+					if mode == "unsupported" {
+						rpcErr(w, id, -32601, "Method not found")
+					} else if mode == "gateway-rpc-error" {
+						w.WriteHeader(http.StatusBadGateway)
+						rpcErr(w, id, -32601, "Method not found")
+					} else {
+						w.WriteHeader(http.StatusBadGateway)
+					}
+				case "tasks/get":
+					message := stored
+					if mode == "normalized" {
+						message = make(map[string]interface{}, len(stored))
+						for key, value := range stored {
+							message[key] = value
+						}
+						message["role"] = "user"
+					}
+					writeJSON(w, map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{
+							"id": "task-history-fallback", "history": []interface{}{message},
+						},
+					})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+			wantFindings := 1
+			if mode == "normalized" {
+				wantFindings = 0
+			}
+			wantIncomplete := mode != "unsupported"
+			if len(findings) != wantFindings || errors.Is(err, attack.ErrInconclusive) != wantIncomplete ||
+				(!wantIncomplete && err != nil) {
+				t.Fatalf("want %d findings, incomplete=%t: findings=%+v err=%v", wantFindings, wantIncomplete, findings, err)
+			}
+			if wantIncomplete && !strings.Contains(err.Error(), "GetTask") {
+				t.Fatalf("missing failed read: %v", err)
+			}
+		})
+	}
+}
+
 func TestSessionSmuggle_PollsDelayedHistory(t *testing.T) {
 	var reads atomic.Int32
 	var stored map[string]interface{}
