@@ -262,56 +262,44 @@ func fetchCard(ctx context.Context, client *attack.HTTPClient, url string) (body
 }
 
 func fetchCardWithOutcome(ctx context.Context, client *attack.HTTPClient, url string) (body []byte, cache cardCacheHeaders, ok bool, reason string) {
+	resp, reason := fetchCardResponseWithOutcome(ctx, client, url)
+	if resp == nil {
+		return nil, cardCacheHeaders{}, false, reason
+	}
+	return resp.Body, cardCacheHeaders{
+		control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
+		expires:    resp.Headers.Get("Expires"),
+		date:       resp.Headers.Get("Date"),
+		receivedAt: time.Now(),
+	}, true, reason
+}
+
+func fetchCardResponseWithOutcome(ctx context.Context, client *attack.HTTPClient, url string) (response *attack.Response, reason string) {
 	headers := cardVersionHeaders(url)
 	attempts := []map[string]string{headers}
 	if len(headers) > 0 {
 		attempts = append(attempts, nil)
 	}
-	bestPriority := -1
+	var failures []string
 	for _, attempt := range attempts {
 		resp, err := client.GET(ctx, url, attempt)
 		if err != nil || resp == nil {
-			if reason != "" {
-				reason += "; "
-			}
-			return nil, cardCacheHeaders{}, false, reason + "no response"
+			failures = append(failures, "no response")
+			return nil, strings.Join(failures, "; ")
 		}
 		if !resp.IsSuccess() {
-			priority := cardReadFailurePriority(resp.StatusCode)
-			if priority > bestPriority {
-				bestPriority = priority
-				if resp.StatusCode == http.StatusNotFound {
-					reason = ""
-				} else {
-					reason = fmt.Sprintf("HTTP %d", resp.StatusCode)
-				}
+			if resp.StatusCode != http.StatusNotFound {
+				failures = append(failures, fmt.Sprintf("HTTP %d", resp.StatusCode))
 			}
 			continue
 		}
 		if _, parsed := parseCard(resp.Body); !parsed {
-			return nil, cardCacheHeaders{}, false, "invalid Agent Card"
+			failures = append(failures, "invalid Agent Card")
+			return nil, strings.Join(failures, "; ")
 		}
-		return resp.Body, cardCacheHeaders{
-			control:    strings.Join(resp.Headers.Values("Cache-Control"), ","),
-			expires:    resp.Headers.Get("Expires"),
-			date:       resp.Headers.Get("Date"),
-			receivedAt: time.Now(),
-		}, true, reason
+		return resp, strings.Join(failures, "; ")
 	}
-	return nil, cardCacheHeaders{}, false, reason
-}
-
-func cardReadFailurePriority(status int) int {
-	switch {
-	case status >= 500:
-		return 3
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return 2
-	case status == http.StatusNotFound:
-		return 0
-	default:
-		return 1
-	}
+	return nil, strings.Join(failures, "; ")
 }
 
 func parseCard(body []byte) (map[string]interface{}, bool) {

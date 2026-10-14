@@ -993,6 +993,35 @@ func TestFetchCard_UnansweredVersionFallbackIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestFetchCard_ReportsBothFailedVersionAttempts(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		fallbackStatus int
+		fallbackBody   string
+		reason         string
+	}{
+		{"two HTTP failures", http.StatusUnauthorized, "", "HTTP 503; HTTP 401"},
+		{"invalid fallback card", http.StatusOK, `{"status":"invalid"}`, "HTTP 503; invalid Agent Card"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("A2A-Version") == "1.0" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(tc.fallbackStatus)
+				_, _ = io.WriteString(w, tc.fallbackBody)
+			}))
+			defer server.Close()
+
+			_, _, ok, reason := fetchCardWithOutcome(t.Context(), newClient(server.URL), server.URL+cardPathPrimary)
+			if ok || reason != tc.reason {
+				t.Fatalf("found=%v reason=%q, want %q", ok, reason, tc.reason)
+			}
+		})
+	}
+}
+
 func TestVersionedCardRuleReaders(t *testing.T) {
 	const card = `{
 		"name":"Versioned Agent",

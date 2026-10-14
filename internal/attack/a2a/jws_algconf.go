@@ -27,13 +27,24 @@ func NewJWSAlgConfExecutor(r attack.RuleContext) *JWSAlgConfExecutor {
 	return &JWSAlgConfExecutor{rule: r}
 }
 
-func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts attack.Options) (findings []attack.Finding, err error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
 	cardURL := endpoint.AppendPath(vars.BaseURL, "/.well-known/agent-card.json")
-	resp, err := client.GET(ctx, cardURL, cardVersionHeaders(cardURL))
-	if err != nil || !resp.IsSuccess() {
+	resp, cardReadReason := fetchCardResponseWithOutcome(ctx, client, cardURL)
+	if cardReadReason != "" {
+		defer func() {
+			for i := range findings {
+				findings[i].Evidence += "\nunobserved Agent Card read at " + cardURL + ": " + cardReadReason
+			}
+			if err == nil {
+				err = attack.ErrInconclusive
+			}
+			err = fmt.Errorf("%w: unobserved Agent Card read at %s: %s", err, cardURL, cardReadReason)
+		}()
+	}
+	if resp == nil {
 		// The rule analyses signatures on the card. Without one it was not
 		// exercised, and reporting clean would read as "the signatures are
 		// sound" for a target that served no card at all. This holds even when
@@ -54,7 +65,6 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 			attack.ErrInconclusive, cardURL)
 	}
 
-	var findings []attack.Finding
 	agentHost := hostOnly(vars.BaseURL)
 
 	var sigsRaw []interface{}
