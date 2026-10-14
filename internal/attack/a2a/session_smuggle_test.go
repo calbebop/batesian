@@ -191,12 +191,13 @@ func TestSessionSmuggle_HistoryFallbackRetainsIncomplete(t *testing.T) {
 					stored, _ = params["message"].(map[string]interface{})
 					taskResult(w, id, "task-history-fallback", "ctx-history-fallback")
 				case "GetTask":
-					if mode == "unsupported" {
+					switch mode {
+					case "unsupported":
 						rpcErr(w, id, -32601, "Method not found")
-					} else if mode == "gateway-rpc-error" {
+					case "gateway-rpc-error":
 						w.WriteHeader(http.StatusBadGateway)
 						rpcErr(w, id, -32601, "Method not found")
-					} else {
+					default:
 						w.WriteHeader(http.StatusBadGateway)
 					}
 				case "tasks/get":
