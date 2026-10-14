@@ -172,11 +172,51 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 				rpcErr(-32001, "Unauthorized")
 				return
 			}
+			if r.Header.Get("Authorization") == "Bearer tok-b" {
+				switch mode {
+				case "get-b-503", "get-and-list-incomplete":
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				case "get-b-503-rpc-error":
+					w.WriteHeader(http.StatusServiceUnavailable)
+					rpcErr(-32603, "server overloaded")
+					return
+				case "get-b-400-rpc-error":
+					w.WriteHeader(http.StatusBadRequest)
+					rpcErr(-32603, "server overloaded")
+					return
+				case "get-b-400-not-found":
+					w.WriteHeader(http.StatusBadRequest)
+					rpcErr(-32602, "Task not found")
+					return
+				case "get-b-408-rpc-error":
+					w.WriteHeader(http.StatusRequestTimeout)
+					rpcErr(-32602, "Task not found")
+					return
+				case "get-b-429-rpc-error":
+					w.WriteHeader(http.StatusTooManyRequests)
+					rpcErr(-32602, "Task not found")
+					return
+				case "get-b-rpc-error":
+					rpcErr(-32603, "server overloaded")
+					return
+				case "get-b-method-absent":
+					rpcErr(-32601, "Method not found")
+					return
+				}
+			}
 			tid, _ := params["taskId"].(string)
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
-			if !exists || ((mode == "secure" || mode == "list-only" || mode == "list-failed" || mode == "list-rpc-failed" || mode == "list-denied" || mode == "list-incomplete" || mode == "list-malformed") && own != sid) {
+			scopedGet := false
+			switch mode {
+			case "secure", "list-only", "list-failed", "list-rpc-failed", "list-denied",
+				"list-denied-envelope", "list-rpc-error", "list-400-rpc-error",
+				"list-method-absent", "list-408-rpc-error", "list-incomplete", "list-malformed":
+				scopedGet = true
+			}
+			if !exists || (scopedGet && own != sid) {
 				rpcErr(-32602, "Task not found")
 				return
 			}
@@ -205,6 +245,14 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 				switch mode {
 				case "result-rpc-error":
 					rpcErr(-32603, "server overloaded")
+					return
+				case "result-400-rpc-error":
+					w.WriteHeader(http.StatusBadRequest)
+					rpcErr(-32603, "server overloaded")
+					return
+				case "result-400-denied":
+					w.WriteHeader(http.StatusBadRequest)
+					rpcErr(-32602, "Task not found")
 					return
 				case "result-method-absent":
 					rpcErr(-32601, "Method not found")
@@ -236,8 +284,30 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			})
 
 		case "tasks/list":
-			if mode == "list-failed" {
+			if mode == "list-failed" || mode == "get-and-list-incomplete" {
 				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if mode == "list-rpc-error" {
+				rpcErr(-32603, "server overloaded")
+				return
+			}
+			if mode == "list-400-rpc-error" {
+				w.WriteHeader(http.StatusBadRequest)
+				rpcErr(-32603, "server overloaded")
+				return
+			}
+			if mode == "list-method-absent" {
+				rpcErr(-32601, "Method not found")
+				return
+			}
+			if mode == "list-408-rpc-error" {
+				w.WriteHeader(http.StatusRequestTimeout)
+				rpcErr(-32602, "Invalid params")
+				return
+			}
+			if mode == "list-denied-envelope" {
+				rpcErr(-32001, "Unauthorized")
 				return
 			}
 			if mode == "list-rpc-failed" {
@@ -333,9 +403,14 @@ func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
 	}{
 		{mode: "list-failed", inconclusive: true},
 		{mode: "list-rpc-failed", inconclusive: true},
+		{mode: "list-rpc-error", inconclusive: true},
+		{mode: "list-400-rpc-error", inconclusive: true},
+		{mode: "list-method-absent", inconclusive: true},
+		{mode: "list-408-rpc-error", inconclusive: true},
 		{mode: "list-incomplete", inconclusive: true},
 		{mode: "list-malformed", inconclusive: true},
 		{mode: "list-denied"},
+		{mode: "list-denied-envelope"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			srv := taskIDORServer(tc.mode)
@@ -354,6 +429,64 @@ func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
 				t.Fatalf("want incomplete=%t, got findings=%+v err=%v", tc.inconclusive, findings, err)
 			}
 		})
+	}
+}
+
+func TestTaskIDOR_UnjudgedGetStillChecksList(t *testing.T) {
+	for _, mode := range []string{"get-b-503", "get-b-503-rpc-error", "get-b-400-rpc-error", "get-b-408-rpc-error",
+		"get-b-429-rpc-error", "get-b-rpc-error", "get-b-method-absent"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := taskIDORServer(mode)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{
+					TimeoutSeconds: 5,
+					MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"},
+						{Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if len(findings) != 1 || !strings.Contains(findings[0].Title, "tasks/list") ||
+				!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "read of") {
+				t.Fatalf("want list finding and incomplete task read: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_GetExplicitRefusalStillChecksList(t *testing.T) {
+	srv := taskIDORServer("get-b-400-not-found")
+	defer srv.Close()
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{
+			TimeoutSeconds: 5,
+			MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"},
+				{Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Title, "tasks/list") {
+		t.Fatalf("want only list finding after explicit get refusal: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskIDOR_UnjudgedGetAndListAreBothReported(t *testing.T) {
+	srv := taskIDORServer("get-and-list-incomplete")
+	defer srv.Close()
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{
+			TimeoutSeconds: 5,
+			MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"},
+				{Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "read of") || !strings.Contains(err.Error(), "tasks/list") {
+		t.Fatalf("want both incomplete reads: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -487,7 +620,7 @@ func TestTaskIDOR_MetadataOnly(t *testing.T) {
 }
 
 func TestTaskIDOR_ResultProbeFailureKeepsMetadataFinding(t *testing.T) {
-	for _, mode := range []string{"poll-503", "poll-503-rpc-error", "result-503", "result-503-rpc-error", "result-rpc-error", "result-method-absent"} {
+	for _, mode := range []string{"poll-503", "poll-503-rpc-error", "result-503", "result-503-rpc-error", "result-rpc-error", "result-400-rpc-error", "result-method-absent"} {
 		t.Run(mode, func(t *testing.T) {
 			srv := taskIDORServer(mode)
 			defer srv.Close()
@@ -509,6 +642,28 @@ func TestTaskIDOR_ResultProbeFailureKeepsMetadataFinding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTaskIDOR_ResultHTTP400RefusalKeepsOtherFindings(t *testing.T) {
+	srv := taskIDORServer("result-400-denied")
+	defer srv.Close()
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{
+			TimeoutSeconds: 5,
+			MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"},
+				{Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("want metadata and list findings after explicit result refusal: findings=%+v err=%v", findings, err)
+	}
+	for _, finding := range findings {
+		if strings.Contains(finding.Title, "tasks/result") {
+			t.Fatalf("refused result became a finding: %+v", finding)
+		}
 	}
 }
 
