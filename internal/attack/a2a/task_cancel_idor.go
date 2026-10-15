@@ -36,8 +36,15 @@ const (
 )
 
 type cancelProbe struct {
-	outcome cancelOutcome
-	method  string
+	outcome    cancelOutcome
+	method     string
+	incomplete bool
+}
+
+type taskStateRead struct {
+	state      string
+	seen       bool
+	incomplete bool
 }
 
 func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
@@ -86,40 +93,47 @@ func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, ran
 	if taskID == "" {
 		return nil, obs.err()
 	}
-	baseline, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID)
-	if !seen || !activeTaskState(baseline) {
-		return nil, fmt.Errorf("%w: owner task %s was not confirmed in a cancelable state", attack.ErrInconclusive, taskID)
+	partial := obs.partialErr()
+	baseline := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID, "baseline")
+	if baseline.incomplete {
+		partial = errors.Join(partial, fmt.Errorf("%w: the owner task baseline read was incomplete", attack.ErrInconclusive))
+	}
+	if !baseline.seen || !activeTaskState(baseline.state) {
+		return nil, errors.Join(partial, fmt.Errorf("%w: owner task %s was not confirmed in a cancelable state", attack.ErrInconclusive, taskID))
 	}
 
-	anon := e.cancelTask(ctx, unauthClient, clientA, endpoint, nil, a.Headers, taskID, randID)
+	anon := e.cancelTask(ctx, unauthClient, clientA, endpoint, nil, a.Headers, taskID, randID, "anonymous")
+	if anon.incomplete {
+		partial = errors.Join(partial, fmt.Errorf("%w: anonymous cancellation had an unjudged reply or readback", attack.ErrInconclusive))
+	}
 	switch anon.outcome {
 	case cancelCanceled:
-		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline, anon.method)}, nil
+		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline.state, anon.method)}, partial
 	case cancelOther:
-		return nil, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID)
+		return nil, errors.Join(partial, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID))
 	}
-	preBState, seen := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID)
-	if !seen || !activeTaskState(preBState) {
-		return nil, fmt.Errorf("%w: owner task %s was no longer live before the cross-principal cancel", attack.ErrInconclusive, taskID)
+	preBState := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID, "before-cross")
+	if preBState.incomplete {
+		partial = errors.Join(partial, fmt.Errorf("%w: the pre-cross-principal task read was incomplete", attack.ErrInconclusive))
+	}
+	if !preBState.seen || !activeTaskState(preBState.state) {
+		return nil, errors.Join(partial, fmt.Errorf("%w: owner task %s was no longer live before the cross-principal cancel", attack.ErrInconclusive, taskID))
 	}
 
-	wrongOwner := e.cancelTask(ctx, clientB, clientA, endpoint, b.Headers, a.Headers, taskID, randID)
+	wrongOwner := e.cancelTask(ctx, clientB, clientA, endpoint, b.Headers, a.Headers, taskID, randID, "cross")
+	if wrongOwner.incomplete {
+		partial = errors.Join(partial, fmt.Errorf("%w: cross-principal cancellation had an unjudged reply or readback", attack.ErrInconclusive))
+	}
 	switch wrongOwner.outcome {
 	case cancelCanceled:
-		return []attack.Finding{e.idorFinding(endpoint, a, b, taskID, preBState, wrongOwner.method)}, nil
+		return []attack.Finding{e.idorFinding(endpoint, a, b, taskID, preBState.state, wrongOwner.method)}, partial
 	case cancelDenied, cancelAbsent:
-		return nil, nil
+		return nil, partial
 	}
-	return nil, fmt.Errorf("%w: cancellation of task %s was not confirmed or denied on every available method", attack.ErrInconclusive, taskID)
+	return nil, errors.Join(partial, fmt.Errorf("%w: cancellation of task %s was not confirmed or denied on every available method", attack.ErrInconclusive, taskID))
 }
 
-// createTask creates a task as the given principal, trying the A2A v1.0 shape
-// first and falling back to the v0.3 slash-method shape. Returns the created task
-// id, or empty if creation was not accepted.
-// The observation is returned so a caller that got no task can say why. Both wires
-// are classified, because losing the first would let a v1.0-only agent that refuses
-// for auth reasons look like an agent with no task surface: the v0.3 fallback
-// answers -32601, and that maps to a clean result.
+// createTask tries both wire shapes and retains their setup outcomes.
 func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (string, setupObservation) {
 	var obs setupObservation
@@ -173,7 +187,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 
 // cancelTask checks both wire names and confirms changes with an owner read.
 func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attack.HTTPClient, endpoint string,
-	extraHeaders, ownerHeaders map[string]string, taskID, randID string) cancelProbe {
+	extraHeaders, ownerHeaders map[string]string, taskID, randID, phase string) cancelProbe {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
@@ -190,22 +204,34 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 	uncertain := false
 	priorUncertain := false
 	for _, s := range shapes {
+		requestID := "batesian-cancel-" + randID + "-" + phase + "-" + s.method
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-cancel-" + randID,
+			"id":      requestID,
 			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID},
 		})
-		state, seen := e.readTaskState(ctx, owner, endpoint, ownerHeaders, taskID, randID)
-		if seen && isCanceledState(state) {
+		var code int
+		var hasErr, valid bool
+		if err == nil && resp != nil {
+			_, code, hasErr, valid = discoveryResponse(resp.Body, requestID)
+		}
+		replyUnjudged := err != nil || resp == nil ||
+			(resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden &&
+				(resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+					resp.StatusCode >= http.StatusInternalServerError || !valid))
+		read := e.readTaskState(ctx, owner, endpoint, ownerHeaders, taskID, randID, phase+"-"+s.method)
+		if read.seen && isCanceledState(read.state) {
 			method := s.method
 			if priorUncertain {
 				method = "CancelTask or tasks/cancel"
 			}
-			return cancelProbe{outcome: cancelCanceled, method: method}
+			return cancelProbe{outcome: cancelCanceled, method: method,
+				incomplete: uncertain || read.incomplete || replyUnjudged}
 		}
-		if !seen {
+		if !read.seen || read.incomplete {
 			uncertain = true
+			priorUncertain = true
 		}
 		if err != nil || resp == nil {
 			uncertain = true
@@ -218,24 +244,28 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 			priorUncertain = true
 			continue
 		}
-		if isA2AAuthRejection(resp) {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			denied++
 			continue
 		}
-		if resp.IsAccepted() {
+		if !valid {
 			uncertain = true
 			priorUncertain = true
 			continue
 		}
-		if code, hasErr := jsonRPCErrorCode(resp.Body); hasErr {
+		if hasErr {
 			switch code {
 			case jsonRPCMethodNotFound, a2aUnsupportedOperation:
 				unsupported++
 			case -32001: // TaskNotFound can conceal an unauthorized task.
 				denied++
 			default:
-				uncertain = true
-				priorUncertain = true
+				if errMessageIsAuth(resp.Body) {
+					denied++
+				} else {
+					uncertain = true
+					priorUncertain = true
+				}
 			}
 		} else {
 			uncertain = true
@@ -248,11 +278,11 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 	if !uncertain && denied > 0 && denied+unsupported == len(shapes) {
 		return cancelProbe{outcome: cancelDenied}
 	}
-	return cancelProbe{outcome: cancelOther}
+	return cancelProbe{outcome: cancelOther, incomplete: uncertain}
 }
 
 // readTaskState checks both read methods and prefers a canceled observation.
-func (e *TaskCancelIDORExecutor) readTaskState(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID string) (string, bool) {
+func (e *TaskCancelIDORExecutor) readTaskState(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID, phase string) taskStateRead {
 	v1Headers := map[string]string{"A2A-Version": "1.0"}
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
@@ -264,29 +294,53 @@ func (e *TaskCancelIDORExecutor) readTaskState(ctx context.Context, c *attack.HT
 		{"GetTask", v1Headers},
 		{"tasks/get", extraHeaders},
 	}
-	var state string
+	var read taskStateRead
 	for _, s := range shapes {
+		requestID := "batesian-cancel-get-" + randID + "-" + phase + "-" + s.method
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-cancel-get-" + randID,
+			"id":      requestID,
 			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 		})
-		if err != nil || resp == nil || !resp.IsAccepted() {
+		if err != nil || resp == nil {
+			read.incomplete = true
+			continue
+		}
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			continue
+		}
+		if !resp.IsSuccess() {
+			read.incomplete = true
+			continue
+		}
+		_, code, hasErr, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			read.incomplete = true
+			continue
+		}
+		if hasErr {
+			if code != jsonRPCMethodNotFound && code != a2aUnsupportedOperation {
+				read.incomplete = true
+			}
 			continue
 		}
 		current, matched := taskStateForID(resp.Body, taskID)
 		if !matched || current == "" {
+			read.incomplete = true
 			continue
 		}
 		if isCanceledState(current) {
-			return current, true
+			read.state = current
+			read.seen = true
+			return read
 		}
-		if state == "" {
-			state = current
+		if !read.seen {
+			read.state = current
+			read.seen = true
 		}
 	}
-	return state, state != ""
+	return read
 }
 
 func taskStateForID(body []byte, taskID string) (string, bool) {
