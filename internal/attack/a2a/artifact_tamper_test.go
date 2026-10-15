@@ -247,6 +247,55 @@ func TestArtifactTamper_AcceptedButPreserved(t *testing.T) {
 	}
 }
 
+func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"create", "history", "continuation"} {
+		t.Run(mode, func(t *testing.T) {
+			var original string
+			var sends int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req := readBody(r)
+				id := req["id"]
+				switch req["method"] {
+				case "SendMessage":
+					sends++
+					if sends == 1 {
+						params, _ := req["params"].(map[string]interface{})
+						message, _ := params["message"].(map[string]interface{})
+						parts, _ := message["parts"].([]interface{})
+						part, _ := parts[0].(map[string]interface{})
+						original, _ = part["text"].(string)
+					}
+					if (mode == "create" && sends == 1) || (mode == "continuation" && sends == 2) {
+						id = 2
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1", "status": map[string]string{"state": "completed"}}}})
+				case "GetTask", "tasks/get":
+					if original == "" {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					if mode == "history" && req["method"] == "GetTask" {
+						id = "other-request"
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"id": "task-1", "status": map[string]string{"state": "completed"},
+							"artifacts": storedArtifact(original)}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unmatched %s reply must not report clean: findings=%+v err=%v", mode, findings, err)
+			}
+		})
+	}
+}
+
 func TestArtifactTamper_TruncatedHistoryDoesNotProveOverwrite(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

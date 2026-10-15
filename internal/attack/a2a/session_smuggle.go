@@ -328,29 +328,39 @@ func taskHistory(body []byte) ([]interface{}, taskHistoryState) {
 
 // readTaskHistory returns the first accepted task and any unjudged prior read.
 func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string, taskID string, vars attack.Vars) (body []byte, ok bool, incomplete error) {
+	requestID := "batesian-get-" + vars.RandID
 	resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-get-" + vars.RandID,
+		"id":      requestID,
 		"method":  "GetTask",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
 	})
-	if err == nil && resp != nil && resp.IsAccepted() {
+	if err == nil && taskHistoryReplyAccepted(resp, requestID) {
 		return resp.Body, true, nil
 	}
-	incomplete = taskHistoryReadError("GetTask", ep, resp, err)
+	incomplete = taskHistoryReadError("GetTask", ep, resp, err, requestID)
+	requestID += "-v03"
 	resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-get-" + vars.RandID,
+		"id":      requestID,
 		"method":  "tasks/get",
 		"params":  map[string]interface{}{"id": taskID, "historyLength": 20},
 	})
-	if err != nil || resp == nil || !resp.IsAccepted() {
-		return nil, false, errors.Join(incomplete, taskHistoryReadError("tasks/get", ep, resp, err))
+	if err != nil || !taskHistoryReplyAccepted(resp, requestID) {
+		return nil, false, errors.Join(incomplete, taskHistoryReadError("tasks/get", ep, resp, err, requestID))
 	}
 	return resp.Body, true, incomplete
 }
 
-func taskHistoryReadError(method, ep string, resp *attack.Response, requestErr error) error {
+func taskHistoryReplyAccepted(resp *attack.Response, requestID string) bool {
+	if resp == nil || !resp.IsSuccess() {
+		return false
+	}
+	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return valid && !hasError
+}
+
+func taskHistoryReadError(method, ep string, resp *attack.Response, requestErr error, requestID string) error {
 	if requestErr != nil {
 		return fmt.Errorf("%w: %s at %s received no answer: %v", attack.ErrInconclusive, method, ep, requestErr)
 	}
@@ -360,7 +370,8 @@ func taskHistoryReadError(method, ep string, resp *attack.Response, requestErr e
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		return nil
 	}
-	if code, ok := jsonRPCErrorCode(resp.Body); resp.IsSuccess() && ok &&
+	_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+	if resp.IsSuccess() && valid && hasError &&
 		(code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation) {
 		return nil
 	}
