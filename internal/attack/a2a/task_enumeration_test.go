@@ -50,6 +50,7 @@ type enumAgentConfig struct {
 	ownerListCode    int
 	v1CreateStatus   int
 	v1CreateAbsent   bool
+	listReplyMode    string
 }
 
 func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
@@ -78,6 +79,7 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 		id := req["id"]
+		requestID, _ := id.(string)
 		w.Header().Set("Content-Type", "application/json")
 
 		caller := ""
@@ -135,6 +137,38 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				}},
 			})
 		case "ListTasks", "tasks/list":
+			switch config.listReplyMode {
+			case "wrong-owner-result":
+				if caller == "a" {
+					id = "other-request"
+				}
+			case "wrong-anon-auth":
+				if caller == "" {
+					id = "other-request"
+					rpcErr(-32600, "not authorized to list tasks")
+					return
+				}
+			case "replay-owner-result":
+				if caller == "b" {
+					id = strings.Replace(requestID, "-other-", "-owner-", 1)
+				}
+			case "wrong-v1-owner-result":
+				if caller == "a" && method == "ListTasks" {
+					id = "other-request"
+				}
+			case "wrong-v1-other-result":
+				if caller == "b" && method == "ListTasks" {
+					id = "other-request"
+				}
+			case "replay-v1-on-legacy":
+				if method == "ListTasks" {
+					rpcErr(-32601, "Method not found")
+					return
+				}
+				if caller == "a" {
+					id = strings.Replace(requestID, "tasks/list", "ListTasks", 1)
+				}
+			}
 			if method == "ListTasks" && caller == "a" && config.ownerListStatus != 0 {
 				w.WriteHeader(config.ownerListStatus)
 				rpcErr(config.ownerListCode, "Method not found")
@@ -458,6 +492,34 @@ func TestTaskEnumeration_UncorrelatedPageIsNotClean(t *testing.T) {
 	findings, err := runEnum(t, srv, enumOpts())
 	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected an incomplete-list result, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskEnumeration_MismatchedListingsAreIncomplete(t *testing.T) {
+	for _, mode := range []string{
+		"wrong-owner-result", "wrong-anon-auth", "replay-owner-result", "replay-v1-on-legacy",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			srv := enumAgent(t, enumUnscoped, enumAgentConfig{listReplyMode: mode})
+			defer srv.Close()
+			findings, err := runEnum(t, srv, enumOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("mismatched listing must be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskEnumeration_MismatchedFallbackRetainsFinding(t *testing.T) {
+	for _, mode := range []string{"wrong-v1-owner-result", "wrong-v1-other-result"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := enumAgent(t, enumUnscoped, enumAgentConfig{listReplyMode: mode})
+			defer srv.Close()
+			findings, err := runEnum(t, srv, enumOpts())
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want a legacy finding and incomplete v1 listing: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
