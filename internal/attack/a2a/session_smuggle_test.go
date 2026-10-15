@@ -88,6 +88,33 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 	}
 }
 
+func TestSessionSmuggle_WrongHistoryReplyIDIsIncomplete(t *testing.T) {
+	var stored map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		id := body["id"]
+		switch body["method"] {
+		case "SendMessage":
+			params, _ := body["params"].(map[string]interface{})
+			stored, _ = params["message"].(map[string]interface{})
+			taskResult(w, id, "task-smuggle-1", "ctx-smuggle-1")
+		case "GetTask":
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": "other-request",
+				"result": map[string]interface{}{"id": "task-smuggle-1", "history": []interface{}{stored}}})
+		case "tasks/get":
+			rpcErr(w, id, -32601, "Method not found")
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unmatched history reply must not confirm injection: findings=%+v err=%v", findings, err)
+	}
+}
+
 // TestSessionSmuggle_V03OnlyFallback: a server that implements only the legacy
 // v0.3 message/send method, answering the v1.0 SendMessage with -32601. Before
 // the fallback-trigger fix the rule never tried message/send here (the v1.0
@@ -175,7 +202,7 @@ func TestSessionSmuggle_FindingRetainsIncompleteVersion(t *testing.T) {
 }
 
 func TestSessionSmuggle_HistoryFallbackRetainsIncomplete(t *testing.T) {
-	for _, mode := range []string{"honored", "normalized", "unsupported", "gateway-rpc-error"} {
+	for _, mode := range []string{"honored", "normalized", "unsupported", "gateway-rpc-error", "wrong-id"} {
 		t.Run(mode, func(t *testing.T) {
 			var stored map[string]interface{}
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +224,9 @@ func TestSessionSmuggle_HistoryFallbackRetainsIncomplete(t *testing.T) {
 					case "gateway-rpc-error":
 						w.WriteHeader(http.StatusBadGateway)
 						rpcErr(w, id, -32601, "Method not found")
+					case "wrong-id":
+						writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": "other-request",
+							"result": map[string]interface{}{"id": "task-history-fallback", "history": []interface{}{stored}}})
 					default:
 						w.WriteHeader(http.StatusBadGateway)
 					}

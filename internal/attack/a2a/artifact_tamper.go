@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -70,8 +71,13 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	// Step 2: re-submit against the SAME task ID with different content, on the
 	// wire that created it.
 	tamperResp, sendErr := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
-	accepted := sendErr == nil && tamperResp != nil && tamperResp.IsAccepted()
-	rejected := sendErr == nil && tamperResp != nil && continuationRejected(tamperResp)
+	correlated := tamperReplyCorrelated(tamperResp)
+	accepted := sendErr == nil && correlated && tamperResp.IsAccepted()
+	rejected := sendErr == nil && correlated && continuationRejected(tamperResp)
+	if sendErr == nil && tamperResp != nil && tamperResp.IsSuccess() && !correlated {
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: task %s continuation reply did not match its request ID",
+			attack.ErrInconclusive, taskID))
+	}
 	var continuation taskContent
 	var hasTask bool
 	if accepted {
@@ -155,6 +161,18 @@ func continuationRejected(resp *attack.Response) bool {
 		}
 	}
 	return false
+}
+
+func tamperReplyCorrelated(resp *attack.Response) bool {
+	if resp == nil {
+		return false
+	}
+	var reply struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(resp.Body, &reply) == nil && reply.JSONRPC == "2.0" &&
+		bytes.Equal(bytes.TrimSpace(reply.ID), []byte("1"))
 }
 
 type taskContent struct {
@@ -342,6 +360,11 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 		if err != nil {
 			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s task creation at %s received no answer: %v",
 				attack.ErrInconclusive, a.wire.name, endpoint, err))
+			continue
+		}
+		if resp != nil && resp.IsSuccess() && !tamperReplyCorrelated(resp) {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s task-creation reply did not match its request ID",
+				attack.ErrInconclusive, a.wire.name))
 			continue
 		}
 		if resp == nil || !resp.IsAccepted() {
