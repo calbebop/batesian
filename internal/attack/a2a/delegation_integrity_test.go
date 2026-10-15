@@ -103,11 +103,18 @@ func delegationServer(mode string) *httptest.Server {
 					history[taskID] = []map[string]interface{}{}
 				}
 				mu.Unlock()
+				if tenant == "A" && (mode == "owner-create-wrong-id" || mode == "v1-create-wrong-id" && method == "SendMessage") {
+					taskResult(w, "other", taskID, "ctx-"+tn)
+					return
+				}
 				taskResult(w, id, taskID, "ctx-"+tn)
 				return
 			}
 			if tenant == "B" {
 				switch mode {
+				case "anon-unavailable-b-denied":
+					w.WriteHeader(http.StatusForbidden)
+					return
 				case "b-unavailable":
 					w.WriteHeader(http.StatusServiceUnavailable)
 					return
@@ -140,6 +147,19 @@ func delegationServer(mode string) *httptest.Server {
 			mu.Lock()
 			own := owner[contID]
 			mu.Unlock()
+			if tenant == "" {
+				switch mode {
+				case "anon-unavailable", "anon-unavailable-b-denied":
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				case "anon-unsupported":
+					rpcErr(w, id, -32601, "Method not found")
+					return
+				case "anon-wrong-id":
+					taskResult(w, "other", contID, "ctx-"+own)
+					return
+				}
+			}
 			switch mode {
 			case "open":
 				mu.Lock()
@@ -264,6 +284,28 @@ func TestDelegation_PartialTaskCreationRetainsFinding(t *testing.T) {
 	}
 }
 
+func TestDelegation_OwnerSetupWrongIDIsIncomplete(t *testing.T) {
+	ts := delegationServer("owner-create-wrong-id")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete owner setup without findings, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_PartialOwnerSetupWrongIDRetainsFinding(t *testing.T) {
+	ts := delegationServer("v1-create-wrong-id")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want partial delegation finding, got findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestDelegation_AcknowledgedWithoutMutation(t *testing.T) {
 	ts := delegationServer("no-op")
 	defer ts.Close()
@@ -349,6 +391,39 @@ func TestDelegation_AnonymousErrorAfterWrite(t *testing.T) {
 		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("stored anonymous continuation must suppress delegation finding: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDelegation_UnjudgedAnonymousControlRetainsFinding(t *testing.T) {
+	for _, tc := range []struct{ mode, evidence string }{
+		{"anon-unavailable", "unobserved; no stored message observed"},
+		{"anon-unsupported", "unsupported; no stored message observed"},
+		{"anon-wrong-id", "unobserved; no stored message observed"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := delegationServer(tc.mode)
+			defer ts.Close()
+
+			findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want partial delegation finding, got findings=%+v err=%v", findings, err)
+			}
+			if !strings.Contains(findings[0].Evidence, "unauthenticated continuation: "+tc.evidence) {
+				t.Fatalf("anonymous control outcome missing from evidence: %s", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestDelegation_UnjudgedAnonymousControlPreventsCleanResult(t *testing.T) {
+	ts := delegationServer("anon-unavailable-b-denied")
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want incomplete result without findings, got findings=%+v err=%v", findings, err)
 	}
 }
 

@@ -72,8 +72,10 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 		// No owner task means the boundary was not tested.
 		return nil, obs.err()
 	}
+	var incomplete error
+	defer func() { err = errors.Join(err, incomplete) }()
 	if !consumed {
-		defer func() { err = errors.Join(err, obs.partialErr()) }()
+		incomplete = errors.Join(incomplete, obs.partialErr())
 	}
 
 	// Exclude endpoints that persist unauthenticated continuations.
@@ -85,6 +87,12 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	}
 	if found {
 		return nil, nil
+	}
+	switch anonymousOutcome {
+	case continuationUnobserved:
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous continuation returned no verdict", attack.ErrInconclusive))
+	case continuationUnsupported:
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous continuation was unsupported, so the control was not tested", attack.ErrInconclusive))
 	}
 
 	marker := "cross-" + vars.RandID
@@ -109,9 +117,14 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	if !readable {
 		return nil, fmt.Errorf("%w: owner task history was unavailable on anonymous recheck", attack.ErrInconclusive)
 	}
-	anonymousEvidence := "no accepted response; no stored message observed"
-	if anonymousOutcome == continuationAccepted {
+	anonymousEvidence := "denied; no stored message observed"
+	switch anonymousOutcome {
+	case continuationAccepted:
 		anonymousEvidence = "accepted; no stored message observed"
+	case continuationUnobserved:
+		anonymousEvidence = "unobserved; no stored message observed"
+	case continuationUnsupported:
+		anonymousEvidence = "unsupported; no stored message observed"
 	}
 	return []attack.Finding{e.finding(endpoint, a, b, taskID, contextID, marker, anonymousEvidence, consumed)}, nil
 }
@@ -134,9 +147,21 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	for k, v := range p.Headers {
 		v1Headers[k] = v
 	}
+	requestID := "batesian-deleg-create-" + p.Name + "-" + randID
+	observe := func(resp *attack.Response) {
+		outcome := classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp)
+		if resp != nil && resp.IsSuccess() {
+			_, _, _, valid := discoveryResponse(resp.Body, requestID)
+			if !valid {
+				outcome = setupObservation{setupOtherRefusal, "task-creation reply did not match its request"}
+			}
+		}
+		obs.observe(outcome)
+	}
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -147,12 +172,11 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !delegationResult(resp, requestID) {
+		observe(resp)
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-deleg-create-" + p.Name + "-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -163,17 +187,23 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 			},
 		})
 	}
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !delegationResult(resp, requestID) {
+		observe(resp)
 		return "", "", false, obs
 	}
 	taskID, contextID = extractTaskContext(resp.Body)
 	if taskID == "" {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+		observe(resp)
 	}
 	return taskID, contextID, taskID != "", obs
+}
+
+func delegationResult(resp *attack.Response, requestID string) bool {
+	if resp == nil || !resp.IsSuccess() {
+		return false
+	}
+	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return valid && !hasError
 }
 
 // continueTask distinguishes denial from an unanswered probe.
@@ -233,7 +263,7 @@ func classifyContinuation(resp *attack.Response, err error, requestID string) co
 	if err != nil || resp == nil {
 		return continuationUnobserved
 	}
-	if resp.IsAccepted() {
+	if delegationResult(resp, requestID) {
 		return continuationAccepted
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
