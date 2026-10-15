@@ -97,15 +97,28 @@ func cardSecServer(mode string) *httptest.Server {
 		_ = json.Unmarshal(body, &req)
 		method, _ := req["method"].(string)
 		id := req["id"]
+		requestID, _ := id.(string)
+		createProbe := strings.HasPrefix(requestID, "batesian-cardsec-send-")
+		readProbe := strings.HasPrefix(requestID, "batesian-cardsec-get-")
 		params, _ := req["params"].(map[string]interface{})
 		hasToken := strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
 		w.Header().Set("Content-Type", "application/json")
 
 		result := func(res map[string]interface{}) {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": res})
+			replyID := id
+			if (mode == "wrong-create-id" && createProbe) ||
+				(mode == "wrong-v1-create-id" && createProbe && method == "SendMessage") ||
+				(mode == "wrong-read-id" && readProbe) {
+				replyID = "other-request"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": replyID, "result": res})
 		}
 		rpcErr := func(code int, msg string) {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id,
+			replyID := id
+			if (mode == "wrong-create-error-id" || mode == "wrong-http-error-id") && createProbe {
+				replyID = "other-request"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": replyID,
 				"error": map[string]interface{}{"code": code, "message": msg}})
 		}
 
@@ -118,6 +131,13 @@ func cardSecServer(mode string) *httptest.Server {
 		switch method {
 		case "SendMessage", "message/send":
 			switch mode {
+			case "wrong-create-error-id":
+				rpcErr(-32000, "unauthorized")
+				return
+			case "wrong-http-error-id":
+				w.WriteHeader(http.StatusNotFound)
+				rpcErr(-32601, "Method not found")
+				return
 			case "setup-drop":
 				if method == "SendMessage" {
 					conn, _, err := w.(http.Hijacker).Hijack()
@@ -188,7 +208,11 @@ func cardSecServer(mode string) *httptest.Server {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			result(map[string]interface{}{"id": taskID, "contextId": "ctx-" + taskID,
+			returnedID := taskID
+			if mode == "wrong-read-task" && readProbe {
+				returnedID = "other-task"
+			}
+			result(map[string]interface{}{"id": returnedID, "contextId": "ctx-" + taskID,
 				"status": map[string]interface{}{"state": "submitted"}})
 		default:
 			rpcErr(-32601, "method not found")
@@ -491,6 +515,36 @@ func TestCardSecurity_VersionFallbackKeepsUnobservedReadIncomplete(t *testing.T)
 			}
 			if tc.wantFindings > 0 && !strings.Contains(findings[0].Evidence, "/.well-known/agent-card.json: HTTP 503") {
 				t.Fatalf("finding omitted failed versioned read: %q", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestCardSecurity_CorrelatesProbeReplies(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFindings int
+		wantReason   string
+	}{
+		{"wrong-create-id", 0, "reply did not match its request ID"},
+		{"wrong-create-error-id", 0, "reply did not match its request ID"},
+		{"wrong-http-error-id", 0, "reply did not match its request ID"},
+		{"wrong-v1-create-id", 1, "SendMessage reply did not match its request ID"},
+		{"wrong-read-id", 1, "reply did not match its request ID"},
+		{"wrong-read-task", 1, "returned a different task"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := cardSecServer(tc.mode)
+			defer srv.Close()
+
+			findings, err := runCardSec(t, srv)
+			if len(findings) != tc.wantFindings || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), tc.wantReason) {
+				t.Fatalf("findings=%+v err=%v, want %d findings and %q", findings, err, tc.wantFindings, tc.wantReason)
+			}
+			if len(findings) > 0 && tc.mode != "wrong-v1-create-id" &&
+				strings.Contains(findings[0].Evidence, "task returned") {
+				t.Fatalf("unobserved readback appeared in evidence: %s", findings[0].Evidence)
 			}
 		})
 	}

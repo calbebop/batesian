@@ -43,7 +43,7 @@ func jwtAcceptingServer(t *testing.T) *httptest.Server {
 		}
 		writeJSON(w, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      1,
+			"id":      readBody(r)["id"],
 			"result": map[string]interface{}{
 				"id":     "task-001",
 				"status": map[string]interface{}{"state": "completed"},
@@ -169,7 +169,7 @@ func issuerAllowlistServer(t *testing.T) *httptest.Server {
 		}
 		writeJSON(w, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      1,
+			"id":      readBody(r)["id"],
 			"result": map[string]interface{}{
 				"id":     "task-003",
 				"status": map[string]interface{}{"state": "completed"},
@@ -503,7 +503,7 @@ func v03IssuerAllowlistServer(t *testing.T, methodStatus int) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req.ID,
 			"result": map[string]interface{}{"id": "task-v03", "status": map[string]interface{}{"state": "completed"}}})
 	}))
 }
@@ -544,7 +544,7 @@ func TestPeerImpersonation_NoSendMethodIsInconclusive(t *testing.T) {
 			writeJSON(w, cardWithIssuer("no-send"))
 			return
 		}
-		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": readBody(r)["id"],
 			"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
 	}))
 	defer ts.Close()
@@ -727,6 +727,64 @@ func TestPeerImpersonation_FindingSurvivesMismatchedWire(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_CorrelatesProbeReplies(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFindings int
+		wantWire     string
+	}{
+		{"wrong forged v1", 1, "v0.3 message/send"},
+		{"wrong anonymous v1", 1, "v0.3 message/send"},
+		{"wrong error v1", 1, "v0.3 message/send"},
+		{"both wrong", 0, ""},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				v1 := req["method"] == "SendMessage"
+				forged := r.Header.Get("Authorization") != ""
+				id := req["id"]
+				if v1 && tc.mode == "wrong error v1" {
+					rpcErr(w, "other-request", -32601, "Method not found")
+					return
+				}
+				if (v1 && tc.mode == "wrong forged v1" && forged) ||
+					(v1 && tc.mode == "wrong anonymous v1" && !forged) ||
+					tc.mode == "both wrong" && forged {
+					id = "other-request"
+				}
+				if !forged && id == req["id"] {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{"id": "task-1", "status": map[string]interface{}{"state": "completed"}},
+				})
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				context.Background(), srv.URL, testOpts())
+			if len(findings) != tc.wantFindings || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "reply did not match its request ID") {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if tc.wantWire != "" && !strings.Contains(findings[0].Evidence, tc.wantWire) {
+				t.Fatalf("fallback wire missing from evidence: %s", findings[0].Evidence)
+			}
+		})
+	}
+}
+
 // Both the forged token's issuer and the finding's evidence come from a walk over
 // the card's securitySchemes map, and Go randomizes map order. A card declaring two
 // issuer-bearing schemes is normal during an IdP migration. Measured before the
@@ -758,7 +816,7 @@ func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": 1,
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": readBody(r)["id"],
 			"result": map[string]interface{}{"id": "t", "status": map[string]interface{}{"state": "completed"}}})
 	}))
 	defer srv.Close()
