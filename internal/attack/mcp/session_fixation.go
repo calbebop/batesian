@@ -145,11 +145,14 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	}
 
 	crossPrincipal := ""
+	crossPrincipalResult := ""
+	var crossPrincipalErr error
 	if p, ok := crossPrincipalFor(opts); ok {
 		o := opts
 		o.Token = p.Token
 		pClient := attack.NewHTTPClient(o, vars)
-		if e.sessionAccepted(ctx, pClient, seeded, p.Headers) == accessGranted {
+		switch e.sessionAccepted(ctx, pClient, seeded, p.Headers) {
+		case accessGranted:
 			crossPrincipal = p.Name
 			chain = append(chain, attack.ChainStep{
 				Hop:       4,
@@ -157,10 +160,19 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 				Action:    "present the pre-seeded id as a different principal",
 				Outcome:   "accepted - borrowed the fixed session across principals",
 			})
+		case accessRefused:
+			crossPrincipalResult = fmt.Sprintf("cross-principal borrow (%s): refused", p.Name)
+		case accessUndetermined:
+			crossPrincipalResult = fmt.Sprintf("cross-principal borrow (%s): unobserved", p.Name)
+			crossPrincipalErr = fmt.Errorf("%w: cross-principal session check returned no verdict", attack.ErrInconclusive)
 		}
 	}
 
-	return []attack.Finding{e.finding(ep, fixed, crossPrincipal, chain)}, nil
+	finding := e.finding(ep, fixed, crossPrincipal, chain)
+	if crossPrincipalResult != "" {
+		finding.Evidence += "\n" + crossPrincipalResult
+	}
+	return []attack.Finding{finding}, crossPrincipalErr
 }
 
 // initWithSession distinguishes an explicit session refusal from an unknown outcome.
@@ -202,11 +214,8 @@ func sessionRefusalError(body []byte) bool {
 }
 
 // sessionAccepted reports whether a follow-up call presenting sessionID is
-// accepted as a valid session. Per spec an unrecognized session yields HTTP 404,
-// so any non-2xx response counts as rejection. A 2xx response counts as accepted
-// UNLESS it carries a JSON-RPC error that references the session (e.g. "session
-// not found"); a method-not-found error still means the session passed
-// validation and reached method dispatch.
+// accepted as a valid session. An unrecognized session yields HTTP 404. A 2xx
+// response needs a matching JSON-RPC result; an unrelated error proves nothing.
 func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *attack.HTTPClient, session mcpSession, extraHeaders map[string]string) accessVerdict {
 	headers := session.header()
 	for k, v := range extraHeaders {
@@ -221,12 +230,9 @@ func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *a
 	if err != nil || resp == nil {
 		return accessUndetermined
 	}
-	body := resp.BodyString()
-	sessionRefusal := false
-	if isJSONRPCError(body) {
-		low := strings.ToLower(body)
-		sessionRefusal = strings.Contains(low, "session") || strings.Contains(low, "not initialized")
-	}
+	response, parsed := parseResponseBody(resp.Body)
+	matched := parsed && matchesRPCID(response, 2)
+	sessionRefusal := sessionRefusalError(resp.Body)
 	if !resp.IsSuccess() {
 		// 404 is the shape the transport prescribes for an unknown session; an auth
 		// status, or any status carrying a session-flavoured error, is also a real
@@ -240,12 +246,16 @@ func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *a
 		}
 		return accessUndetermined
 	}
-	if sessionRefusal {
+	if !matched {
+		return accessUndetermined
+	}
+	if validRPCError(response) && sessionRefusal {
 		return accessRefused
 	}
-	// A JSON-RPC error that is not about the session still means the session was
-	// accepted: the request reached dispatch.
-	return accessGranted
+	if validRPCResult(response) {
+		return accessGranted
+	}
+	return accessUndetermined
 }
 
 // finding builds the confirmed session-fixation finding.

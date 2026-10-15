@@ -94,7 +94,8 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 				}
 				counter++
 				sid = fmt.Sprintf("srv-%d", counter)
-			case "fixable", "notify-502", "notify-rpc-error":
+			case "fixable", "notify-502", "notify-rpc-error", "followup-plain-200", "followup-wrong-id", "followup-rpc-error",
+				"cross-principal-502", "cross-principal-plain-200", "cross-principal-refused":
 				if supplied != "" {
 					sid = supplied // VULNERABLE: trusts the client-chosen id
 				} else {
@@ -136,6 +137,19 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			if r.Header.Get("Authorization") == "Bearer victim-token" {
+				switch mode {
+				case "cross-principal-502":
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				case "cross-principal-plain-200":
+					_, _ = w.Write([]byte("ok"))
+					return
+				case "cross-principal-refused":
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
 			if mode == "sessionless" {
 				writeToolsResult(w, id) // accepts regardless of session
 				return
@@ -146,6 +160,22 @@ func fixationServer(t *testing.T, mode string) *httptest.Server {
 			if !known {
 				w.WriteHeader(http.StatusNotFound) // spec: unknown session => 404
 				return
+			}
+			if strings.HasPrefix(supplied, "batesian-fixed-") {
+				switch mode {
+				case "followup-plain-200":
+					_, _ = w.Write([]byte("ok"))
+					return
+				case "followup-wrong-id":
+					writeToolsResult(w, 99)
+					return
+				case "followup-rpc-error":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"error": map[string]interface{}{"code": -32603, "message": "backend unavailable"},
+					})
+					return
+				}
 			}
 			writeToolsResult(w, id)
 		default:
@@ -297,5 +327,56 @@ func TestSessionFixation_CrossPrincipal(t *testing.T) {
 	}
 	if findings[0].Chain[3].Principal != "victim" {
 		t.Errorf("expected hop 4 by principal 'victim', got %q", findings[0].Chain[3].Principal)
+	}
+}
+
+func TestSessionFixation_UnjudgedFollowUp(t *testing.T) {
+	for _, mode := range []string{"followup-plain-200", "followup-wrong-id", "followup-rpc-error"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := fixationServer(t, mode)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
+				Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete follow-up without findings, got findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestSessionFixation_UnjudgedCrossPrincipal(t *testing.T) {
+	for _, mode := range []string{"cross-principal-502", "cross-principal-plain-200"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := fixationServer(t, mode)
+			defer srv.Close()
+
+			opts := testOpts()
+			opts.Principals = []attack.Principal{{Name: "victim", Token: "victim-token"}}
+			findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
+				Execute(context.Background(), srv.URL, opts)
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want partial fixation finding, got findings=%+v err=%v", findings, err)
+			}
+			if len(findings[0].Chain) != 3 || !strings.Contains(findings[0].Evidence, "cross-principal borrow (victim): unobserved") {
+				t.Fatalf("cross-principal borrow was not established: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestSessionFixation_RefusedCrossPrincipal(t *testing.T) {
+	srv := fixationServer(t, "cross-principal-refused")
+	defer srv.Close()
+
+	opts := testOpts()
+	opts.Principals = []attack.Principal{{Name: "victim", Token: "victim-token"}}
+	findings, err := mcpattack.NewSessionFixationExecutor(sfRuleCtx()).
+		Execute(context.Background(), srv.URL, opts)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("want fixation finding with refused cross-principal check, got findings=%+v err=%v", findings, err)
+	}
+	if len(findings[0].Chain) != 3 || !strings.Contains(findings[0].Evidence, "cross-principal borrow (victim): refused") {
+		t.Fatalf("cross-principal refusal was not recorded: %+v", findings[0])
 	}
 }
