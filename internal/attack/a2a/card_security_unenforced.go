@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -85,7 +86,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	// Step 1 (non-mutating): can an unauthenticated read even reach the handler?
 	// A read of a random non-existent id cannot return a task, so this only tells
 	// us whether the read path rejects at the auth layer (evidence, not verdict).
-	readOutcome, readErr := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID)
+	readOutcome, readErr := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID+"-missing")
 	readReachable := readOutcome != probeAuthRejected
 
 	// Step 2 (definitive): unauthenticated create. A returned task proves a core
@@ -97,7 +98,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 
 	// Strengthen: read the just-created task back with no credentials. If that also
 	// returns the task, both the write and the read paths ignore the declared auth.
-	readBackOutcome, readBackErr := e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID)
+	readBackOutcome, readBackErr := e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID+"-created")
 	readBack := readBackOutcome == probeProcessedResult
 
 	finding := e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)
@@ -113,16 +114,18 @@ func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack
 	shapes := []struct {
 		method  string
 		headers map[string]string
+		version string
 	}{
-		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
-		{"tasks/get", nil},
+		{"GetTask", map[string]string{"A2A-Version": "1.0"}, "v1"},
+		{"tasks/get", nil, "v03"},
 	}
 	outcome := probeAuthRejected
 	var incomplete []string
 	for _, s := range shapes {
+		requestID := "batesian-cardsec-get-" + randID + "-" + s.version
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-cardsec-get-" + randID,
+			"id":      requestID,
 			"method":  s.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 1},
 		})
@@ -130,14 +133,35 @@ func (e *CardSecurityUnenforcedExecutor) readTask(ctx context.Context, c *attack
 			incomplete = append(incomplete, s.method+" did not answer")
 			continue
 		}
-		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			continue
+		}
+		if !resp.IsSuccess() {
 			incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d", s.method, resp.StatusCode))
 			continue
 		}
-		if o := classifyProbe(resp); o > outcome {
-			outcome = o
+		result, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			incomplete = append(incomplete, s.method+" reply did not match its request ID")
+			continue
 		}
+		if hasError {
+			if errMessageIsAuth(resp.Body) || code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation {
+				continue
+			}
+			if outcome < probeProcessedError {
+				outcome = probeProcessedError
+			}
+			continue
+		}
+		var task struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(result, &task) != nil || task.ID != taskID {
+			incomplete = append(incomplete, s.method+" returned a different task")
+			continue
+		}
+		outcome = probeProcessedResult
 	}
 	if len(incomplete) > 0 {
 		return outcome, fmt.Errorf("%w: anonymous task read was not judged: %s", attack.ErrInconclusive,
@@ -153,27 +177,29 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 		method  string
 		headers map[string]string
 		message map[string]interface{}
+		version string
 	}{
 		{"SendMessage", map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
 			"role":      1,
 			"parts":     []interface{}{map[string]string{"text": "batesian card-security probe " + randID}},
 			"messageId": "batesian-cardsec-" + randID,
-		}},
+		}, "v1"},
 		{"message/send", nil, map[string]interface{}{
 			"role":      "user",
 			"parts":     []interface{}{map[string]string{"kind": "text", "text": "batesian card-security probe " + randID}},
 			"messageId": "batesian-cardsec-" + randID,
-		}},
+		}, "v03"},
 	}
 	var incomplete []string
 	for _, s := range shapes {
+		requestID := "batesian-cardsec-send-" + randID + "-" + s.version
 		params := map[string]interface{}{"message": s.message}
 		if s.method == "SendMessage" {
 			params["configuration"] = map[string]interface{}{"returnImmediately": true}
 		}
 		resp, err := c.POST(ctx, endpoint, s.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-cardsec-send-" + randID,
+			"id":      requestID,
 			"method":  s.method,
 			"params":  params,
 		})
@@ -181,28 +207,32 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 			incomplete = append(incomplete, s.method+" did not answer")
 			continue
 		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
-			(resp.IsSuccess() && errMessageIsAuth(resp.Body)) {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			continue
 		}
-		if resp.IsAccepted() {
-			taskID, _ := extractTaskContext(resp.Body)
-			if taskID != "" {
-				if len(incomplete) > 0 {
-					return taskID, fmt.Errorf("%w: anonymous task creation was not judged: %s",
-						attack.ErrInconclusive, strings.Join(incomplete, "; "))
-				}
-				return taskID, nil
+		if (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed) &&
+			!json.Valid(resp.Body) {
+			continue
+		}
+		if resp.IsSuccess() || json.Valid(resp.Body) {
+			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+			if !valid {
+				incomplete = append(incomplete, s.method+" reply did not match its request ID")
+				continue
 			}
-			incomplete = append(incomplete, s.method+" returned no task ID")
-			continue
-		}
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-			continue
-		}
-		if resp.IsSuccess() {
-			if code, ok := jsonRPCErrorCode(resp.Body); ok &&
-				(code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation) {
+			if hasError && (errMessageIsAuth(resp.Body) || code == jsonRPCMethodNotFound || code == a2aUnsupportedOperation) {
+				continue
+			}
+			if !hasError && resp.IsSuccess() {
+				taskID, _ := extractTaskContext(resp.Body)
+				if taskID != "" {
+					if len(incomplete) > 0 {
+						return taskID, fmt.Errorf("%w: anonymous task creation was not judged: %s",
+							attack.ErrInconclusive, strings.Join(incomplete, "; "))
+					}
+					return taskID, nil
+				}
+				incomplete = append(incomplete, s.method+" returned no task ID")
 				continue
 			}
 		}
@@ -212,24 +242,6 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 		return "", fmt.Errorf("%w: anonymous task creation was not judged: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 	}
 	return "", nil
-}
-
-// classifyProbe maps an unauthenticated response to a probeOutcome. An auth
-// rejection (HTTP 401/403 or auth-flavored error) means auth is enforced; an
-// HTTP 200 with a JSON-RPC result envelope means the handler processed the
-// anonymous request and returned data; anything else in between (HTTP 200 with a
-// non-auth application error) means the handler was reached but errored.
-func classifyProbe(resp *attack.Response) probeOutcome {
-	if isA2AAuthRejection(resp) {
-		return probeAuthRejected
-	}
-	if resp.IsAccepted() {
-		return probeProcessedResult
-	}
-	if resp.IsSuccess() {
-		return probeProcessedError
-	}
-	return probeAuthRejected
 }
 
 func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []string, taskID string, readReachable, readBack bool) attack.Finding {

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -231,19 +232,29 @@ func impersonationWires(randID string) []impersonationWire {
 // probeWires skips unsupported methods and records unobserved comparisons.
 func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
 	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, incomplete []string, ok bool) {
-	for _, w := range impersonationWires(randID) {
+	for i, w := range impersonationWires(randID) {
+		requestID := fmt.Sprintf("batesian-peer-%s-%d", randID, i)
 		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
 		for k, v := range w.headers {
 			forgedHeaders[k] = v
 		}
-		fResp, err := client.POST(ctx, endpoint, forgedHeaders, w.body)
+		forgedBody := maps.Clone(w.body)
+		forgedBody["id"] = requestID + "-forged"
+		fResp, err := client.POST(ctx, endpoint, forgedHeaders, forgedBody)
 		if err != nil {
 			incomplete = append(incomplete, w.name+" forged request failed")
 			continue
 		}
-		bResp, err := unauthClient.POST(ctx, endpoint, w.headers, w.body)
+		baselineBody := maps.Clone(w.body)
+		baselineBody["id"] = requestID + "-anonymous"
+		bResp, err := unauthClient.POST(ctx, endpoint, w.headers, baselineBody)
 		if err != nil {
 			incomplete = append(incomplete, w.name+" anonymous request failed")
+			continue
+		}
+		if !peerReplyCorrelated(fResp, requestID+"-forged") ||
+			!peerReplyCorrelated(bResp, requestID+"-anonymous") {
+			incomplete = append(incomplete, w.name+" reply did not match its request ID")
 			continue
 		}
 		if methodAbsent(fResp) && methodAbsent(bResp) {
@@ -256,6 +267,20 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 		return fResp, bResp, w.name, incomplete, true
 	}
 	return nil, nil, "", incomplete, false
+}
+
+func peerReplyCorrelated(resp *attack.Response, requestID string) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return true
+	}
+	if !resp.IsSuccess() && !json.Valid(resp.Body) {
+		return true
+	}
+	_, _, _, valid := discoveryResponse(resp.Body, requestID)
+	return valid
 }
 
 // methodAbsent accepts method-not-found only with an observed RPC response.
