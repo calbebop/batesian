@@ -28,8 +28,7 @@ func TestOwnerTaskSetupCorrelatesReplies(t *testing.T) {
 			return taskID, obs
 		}},
 		{"task enumeration", func(ctx context.Context, c *attack.HTTPClient, ep string, p attack.Principal, id string) (string, setupObservation) {
-			taskID, _, _, obs := (&TaskEnumerationExecutor{}).createTask(ctx, c, ep, p, id)
-			return taskID, obs
+			return (&TaskEnumerationExecutor{}).createTask(ctx, c, ep, p, id)
 		}},
 	}
 	for _, mode := range []string{"valid", "wrong result", "wrong error", "both wrong"} {
