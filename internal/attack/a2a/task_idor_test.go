@@ -173,6 +173,71 @@ func TestTaskIDOR_EmptyTaskResultIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_CorrelatesTaskReplies(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFindings int
+	}{
+		{"wrong-read-result", 0},
+		{"wrong-read-error", 0},
+		{"wrong-v1-read", 1},
+		{"wrong-v1-create", 1},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var mu sync.Mutex
+			ownerText := ""
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				req := readBody(r)
+				method, _ := req["method"].(string)
+				id := req["id"]
+				switch method {
+				case "SendMessage", "message/send":
+					if !hasOwnerAuth(r) {
+						rpcErr(w, id, -32600, "authentication required")
+						return
+					}
+					mu.Lock()
+					ownerText = rpcMessageText(req)
+					mu.Unlock()
+					if tc.mode == "wrong-v1-create" && method == "SendMessage" {
+						id = "other-request"
+					}
+					taskResult(w, id, "task-owner", "ctx-owner")
+				case "GetTask", "tasks/get":
+					requestID, _ := id.(string)
+					if !strings.HasPrefix(requestID, "batesian-get-") {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					if tc.mode == "wrong-read-error" {
+						rpcErr(w, "other-request", -32001, "Task not found")
+						return
+					}
+					if tc.mode == "wrong-read-result" || tc.mode == "wrong-v1-read" && method == "GetTask" {
+						id = "other-request"
+					}
+					mu.Lock()
+					text := ownerText
+					mu.Unlock()
+					taskWithHistory(w, id, "task-owner", "ctx-owner", text)
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), srv.URL, idorOpts())
+			if len(findings) != tc.wantFindings || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v, want %d findings and incomplete outcome", findings, err, tc.wantFindings)
+			}
+		})
+	}
+}
+
 // TestTaskIDOR_Vulnerable_V03Only verifies the rule still fires against a server
 // that speaks only the v0.3 slash-method binding: it rejects the v1.0 PascalCase
 // methods (SendMessage, GetTask) with a JSON-RPC error over HTTP 200 and accepts
