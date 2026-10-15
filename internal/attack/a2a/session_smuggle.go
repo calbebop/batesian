@@ -61,12 +61,11 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
 
 	marker := "batesian-roleinj-" + vars.RandID
-	requestID := "batesian-" + vars.RandID
 
 	reached := false
 	normalized := false
 	var incomplete error
-	observe := func(ep, method string, resp *attack.Response, err error) roleProbeOutcome {
+	observe := func(ep, method, requestID string, resp *attack.Response, err error) roleProbeOutcome {
 		outcome := classifyRoleProbe(resp, err, requestID)
 		if resp != nil && resp.StatusCode != 404 && resp.StatusCode != 405 {
 			reached = true
@@ -87,9 +86,10 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 		}
 		return outcome
 	}
-	for _, ep := range endpoints {
+	for epIndex, ep := range endpoints {
 		// Try both the v1.0 PascalCase method (SDK >=1.0.0) and the legacy slash
 		// method (SDK v0.3 compat), each carrying the marker as the message text.
+		requestID := fmt.Sprintf("batesian-role-%s-%d-v1", vars.RandID, epIndex)
 		resp, err := client.POST(ctx, ep, a2aHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -103,8 +103,9 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 				},
 			},
 		})
-		outcome := observe(ep, "SendMessage", resp, err)
+		outcome := observe(ep, "SendMessage", requestID, resp, err)
 		if outcome != roleProbeAccepted {
+			requestID = fmt.Sprintf("batesian-role-%s-%d-v03", vars.RandID, epIndex)
 			resp, err = client.POST(ctx, ep, nil, map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      requestID,
@@ -117,7 +118,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 					},
 				},
 			})
-			outcome = observe(ep, "message/send", resp, err)
+			outcome = observe(ep, "message/send", requestID, resp, err)
 		}
 		if outcome != roleProbeAccepted {
 			continue
@@ -125,7 +126,7 @@ func (e *SessionSmuggleExecutor) Execute(ctx context.Context, target string, opt
 
 		// Accepted. Confirm whether the agent role was honored by reading the
 		// task history back and checking how the marker message is stored.
-		f, evalErr := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars)
+		f, evalErr := e.evaluateAcceptance(ctx, client, ep, a2aHeaders, resp.Body, marker, vars, epIndex)
 		if f != nil {
 			return []attack.Finding{*f}, errors.Join(incomplete, evalErr)
 		}
@@ -187,7 +188,7 @@ func classifyRoleProbe(resp *attack.Response, err error, requestID string) roleP
 // evaluateAcceptance reports only when task history contains the marker under a
 // known role. Missing, partial, or malformed history is inconclusive.
 func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client *attack.HTTPClient, ep string,
-	headers map[string]string, sendBody []byte, marker string, vars attack.Vars) (*attack.Finding, error) {
+	headers map[string]string, sendBody []byte, marker string, vars attack.Vars, epIndex int) (*attack.Finding, error) {
 	taskID, _ := extractTaskContext(sendBody)
 	var incomplete error
 
@@ -215,7 +216,8 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 		pollCtx, cancel := context.WithTimeout(ctx, sessionHistoryPollBudget)
 		defer cancel()
 		for attempt := 0; attempt < sessionHistoryPollAttempts; attempt++ {
-			body, ok, readErr := readTaskHistory(pollCtx, client, ep, headers, taskID, vars)
+			body, ok, readErr := readTaskHistory(pollCtx, client, ep, headers, taskID, vars,
+				fmt.Sprintf("role-%d-poll-%d", epIndex, attempt))
 			incomplete = errors.Join(incomplete, readErr)
 			if !ok {
 				if err := ctx.Err(); err != nil {
@@ -327,8 +329,9 @@ func taskHistory(body []byte) ([]interface{}, taskHistoryState) {
 }
 
 // readTaskHistory returns the first accepted task and any unjudged prior read.
-func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string, taskID string, vars attack.Vars) (body []byte, ok bool, incomplete error) {
-	requestID := "batesian-get-" + vars.RandID
+func readTaskHistory(ctx context.Context, client *attack.HTTPClient, ep string, headers map[string]string,
+	taskID string, vars attack.Vars, phase string) (body []byte, ok bool, incomplete error) {
+	requestID := "batesian-get-" + vars.RandID + "-" + phase
 	resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,

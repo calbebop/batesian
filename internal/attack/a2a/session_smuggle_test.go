@@ -115,6 +115,111 @@ func TestSessionSmuggle_WrongHistoryReplyIDIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestSessionSmuggle_ReplayedSendReplyIsIncomplete(t *testing.T) {
+	var mu sync.Mutex
+	var v1ID, v03ID, marker string
+	var historyReads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "role-agent", "version": "1.0"})
+			return
+		}
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		req := readBody(r)
+		id, _ := req["id"].(string)
+		mu.Lock()
+		defer mu.Unlock()
+		switch req["method"] {
+		case "SendMessage":
+			v1ID = id
+			rpcErr(w, id, -32601, "Method not found")
+		case "message/send":
+			v03ID, marker = id, textOf(req)
+			taskResult(w, v1ID, "task-replay", "ctx-replay")
+		case "GetTask", "tasks/get":
+			if !strings.HasPrefix(id, "batesian-get-") {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			historyReads++
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"id": "task-replay", "history": []interface{}{
+					map[string]interface{}{"role": "agent", "parts": []interface{}{map[string]string{"text": marker}}},
+				}}})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(t.Context(), srv.URL, testOpts())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || v1ID == "" ||
+		v03ID == "" || v1ID == v03ID || historyReads != 0 {
+		t.Fatalf("replayed send reply: findings=%+v err=%v ids=%q %q reads=%d",
+			findings, err, v1ID, v03ID, historyReads)
+	}
+}
+
+func TestSessionSmuggle_ReplayedHistoryPollIsIncomplete(t *testing.T) {
+	var mu sync.Mutex
+	var firstReadID, secondReadID string
+	var stored map[string]interface{}
+	var reads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "role-agent", "version": "1.0"})
+			return
+		}
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		req := readBody(r)
+		id, _ := req["id"].(string)
+		mu.Lock()
+		defer mu.Unlock()
+		switch req["method"] {
+		case "SendMessage":
+			params, _ := req["params"].(map[string]interface{})
+			stored, _ = params["message"].(map[string]interface{})
+			taskResult(w, id, "task-poll", "ctx-poll")
+		case "GetTask":
+			if !strings.HasPrefix(id, "batesian-get-") {
+				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			reads++
+			history := []interface{}{}
+			if reads == 1 {
+				firstReadID = id
+			} else {
+				secondReadID = id
+				id = firstReadID
+				history = append(history, stored)
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"id": "task-poll", "history": history}})
+		default:
+			rpcErr(w, id, -32601, "Method not found")
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := a2a.NewSessionSmuggleExecutor(testRuleCtx()).Execute(t.Context(), srv.URL, testOpts())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || reads != 2 ||
+		firstReadID == "" || secondReadID == "" || firstReadID == secondReadID {
+		t.Fatalf("replayed history poll: findings=%+v err=%v reads=%d ids=%q %q",
+			findings, err, reads, firstReadID, secondReadID)
+	}
+}
+
 // TestSessionSmuggle_V03OnlyFallback: a server that implements only the legacy
 // v0.3 message/send method, answering the v1.0 SendMessage with -32601. Before
 // the fallback-trigger fix the rule never tried message/send here (the v1.0
