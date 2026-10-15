@@ -122,7 +122,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
-| `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
+| `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium | indicator or confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
@@ -456,22 +456,17 @@ The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
 
 ### a2a-jsonrpc-batch-bypass-001
 
-**JSON-RPC Batch Authentication Bypass** | Severity: High | CWE-288
+**JSON-RPC Batch Authentication Bypass** | Severity: Medium baseline, High when confirmed | CWE-288
 
-Tests whether authentication can be bypassed by wrapping a request in a JSON-RPC
-batch array. The gate inspects the top-level request object, but a batch is an
-array with no top-level method, so the check does not fire and the dispatcher runs
-each element. A2A enforces auth at the HTTP layer, so the bypass shows up as a
-single request rejected at the transport (HTTP 401/403) while the identical
-request, batch-wrapped, reaches HTTP 200 and is dispatched. Detection sends the
-**identical** request twice (single object then one-element array) for each
-protocol shape (v1.0 `GetTask`, then the v0.3 `tasks/get` fallback). A
-**confirmed** finding is raised only when the single object is rejected with
-401/403 but the batch reaches 200 and the dispatcher ran (the batch response
-carries a result or a non-auth application error such as `TaskNotFound`). The
-probe is a read-only `GetTask` for a non-existent task id, so nothing is sent,
-created, or mutated. A2A does not define batching, so a correct server should
-reject the array rather than dispatch it unauthenticated (CWE-288).
+The rule sends the same unauthenticated `GetTask` request as a single object and
+as a one-element batch. It probes v1.0 `GetTask` and then v0.3 `tasks/get`, using
+distinct IDs for each shape. The control must return HTTP 401/403 or a correlated
+JSON-RPC auth error. A batch reply with a correlated task object confirms access
+despite that refusal. A correlated `TaskNotFound` is only a risk indicator because
+A2A also uses it for inaccessible tasks. The probe uses a random, non-existent
+task ID and does not mutate state. [JSON-RPC 2.0 permits batches](https://www.jsonrpc.org/specification#batch);
+servers that accept them must apply the same authentication and authorization
+checks as for single requests.
 
 ---
 

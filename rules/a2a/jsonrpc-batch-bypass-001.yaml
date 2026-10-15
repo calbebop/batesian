@@ -2,40 +2,20 @@ id: a2a-jsonrpc-batch-bypass-001
 info:
   name: A2A JSON-RPC Batch Authentication Bypass
   author: batesian
-  severity: high
+  severity: medium
   description: |
-    Tests whether an A2A server's authentication can be bypassed by wrapping a
-    request in a JSON-RPC batch array.
+    Compares an unauthenticated GetTask request with the same request wrapped in
+    a one-element JSON-RPC batch. The control must return HTTP 401/403 or a
+    correlated JSON-RPC authentication error. The batch reply must match the
+    request ID and contain exactly one response.
 
-    The classic JSON-RPC batch bypass: an auth gate inspects the top-level request
-    object, but a JSON-RPC batch is an array and has no top-level method, so the
-    gate's check does not fire and the array is handed to the dispatcher, which
-    runs each element (CWE-288, authentication bypass via an alternate channel).
-    A2A enforces authentication at the HTTP layer (a rejected request returns HTTP
-    401/403), so the bypass shows up as a single request being rejected at the
-    transport while the identical request, batch-wrapped, reaches HTTP 200 and is
-    dispatched.
+    A returned task object confirms access despite the control's auth refusal
+    (CWE-288). TaskNotFound is a risk indicator only: A2A also uses it when a
+    task is inaccessible. Rejected batches produce no finding.
 
-    Detection sends the IDENTICAL request twice, differing only in batch wrapping,
-    for each protocol shape (A2A v1.0 GetTask, then the v0.3 tasks/get fallback):
-
-      1. Control: a plain JSON-RPC object, unauthenticated. It must be rejected
-         with HTTP 401/403 for there to be an auth gate to bypass.
-      2. Test: the same object as a one-element batch array, unauthenticated. A
-         CONFIRMED finding is raised only when it reaches HTTP 200 and the
-         dispatcher ran (the batch response carries a result or a non-auth
-         application error such as TaskNotFound).
-
-    A server that rejects the batch the same way, or rejects the array outright,
-    produces no finding.
-
-    SAFETY: the probe is a read-only GetTask for a guaranteed non-existent task id.
-    It never sends a message, creates, or mutates a task.
-
-    Currency: A2A v1.0 does not define JSON-RPC batching, so behaviour is
-    implementation-dependent; a generic JSON-RPC library processes batches unless
-    explicitly disabled. The rule applies to any A2A server that dispatches a batch
-    it received without authentication.
+    The probe reads a random, non-existent task ID and does not mutate state.
+    JSON-RPC 2.0 permits batches. If a server accepts them, it must apply the
+    same authentication and authorization checks as for single requests.
 
   references:
     - https://www.jsonrpc.org/specification#batch
@@ -55,9 +35,6 @@ attack:
   type: a2a-jsonrpc-batch-bypass
 
 remediation: |
-  1. Reject JSON-RPC batch arrays unless batching is explicitly supported and
-     every element is independently authenticated and authorized.
-  2. Enforce authentication in a layer that runs before request-shape parsing, so a
-     single object and a batch array are subject to the same gate.
-  3. Do not gate on the top-level request method; an array has none, and per-method
-     checks must run per element.
+  Apply the same authentication and authorization checks to single requests and
+  each element of an accepted batch. Reject batch arrays before dispatch if the
+  server does not support them.

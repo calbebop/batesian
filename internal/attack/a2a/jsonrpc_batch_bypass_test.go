@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -85,11 +87,11 @@ func TestBatchBypass_Bypassed(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
+	if f.Confidence != attack.RiskIndicator {
+		t.Errorf("expected RiskIndicator, got %v", f.Confidence)
 	}
-	if f.Severity != "high" {
-		t.Errorf("expected high severity, got %q", f.Severity)
+	if f.Severity != "medium" {
+		t.Errorf("expected medium severity, got %q", f.Severity)
 	}
 }
 
@@ -190,6 +192,46 @@ func TestBatchBypass_RequiresCorrelatedTaskResponse(t *testing.T) {
 				return map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
 					"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+				}
+			},
+		},
+		{
+			name:         "missing JSON-RPC version",
+			inconclusive: true,
+			response: func(id interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"id":    id,
+					"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+				}
+			},
+		},
+		{
+			name:         "internal batch error",
+			inconclusive: true,
+			response: func(id interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32603, "message": "Internal error"},
+				}
+			},
+		},
+		{
+			name:         "malformed task not found",
+			inconclusive: true,
+			response: func(id interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32001},
+				}
+			},
+		},
+		{
+			name:         "partial task result",
+			inconclusive: true,
+			response: func(id interface{}) map[string]interface{} {
+				return map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{"id": "placeholder"},
 				}
 			},
 		},
@@ -359,5 +401,177 @@ func TestBatchBypass_ExplicitProtocolRejectionIsClean(t *testing.T) {
 
 	if findings := runBatchBypass(t, srv); len(findings) != 0 {
 		t.Fatalf("rejected batch: findings=%+v", findings)
+	}
+}
+
+func TestBatchBypass_ExtraBatchRepliesAreIncomplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var requests []map[string]interface{}
+		_ = json.Unmarshal(body, &requests)
+		writeJSON(w, []interface{}{
+			map[string]interface{}{
+				"jsonrpc": "2.0", "id": requests[0]["id"],
+				"error": map[string]interface{}{"code": -32600, "message": "Invalid Request"},
+			},
+			map[string]interface{}{
+				"jsonrpc": "2.0", "id": "unrelated",
+				"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("extra batch replies: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestBatchBypass_WrongIDAuthControlIsIncomplete(t *testing.T) {
+	var batchCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			batchCalls.Add(1)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": "stale-response",
+			"error": map[string]interface{}{"code": -32000, "message": "Authentication required"},
+		})
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || batchCalls.Load() != 0 {
+		t.Fatalf("wrong-ID control: findings=%+v err=%v batchCalls=%d", findings, err, batchCalls.Load())
+	}
+}
+
+func TestBatchBypass_CorrelatedJSONRPCAuthControl(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		batch := strings.HasPrefix(strings.TrimSpace(string(body)), "[")
+		var request map[string]interface{}
+		if batch {
+			var requests []map[string]interface{}
+			_ = json.Unmarshal(body, &requests)
+			request = requests[0]
+		} else {
+			_ = json.Unmarshal(body, &request)
+		}
+		response := map[string]interface{}{"jsonrpc": "2.0", "id": request["id"]}
+		if batch {
+			response["error"] = map[string]interface{}{"code": -32001, "message": "Task not found"}
+			writeJSON(w, []interface{}{response})
+			return
+		}
+		response["error"] = map[string]interface{}{"code": -32000, "message": "Authentication required"}
+		writeJSON(w, response)
+	}))
+	defer srv.Close()
+
+	findings := runBatchBypass(t, srv)
+	if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
+		!strings.Contains(findings[0].Evidence, "correlated JSON-RPC authentication error") {
+		t.Fatalf("correlated JSON-RPC auth refusal: findings=%+v", findings)
+	}
+}
+
+func TestBatchBypass_TaskResultConfirmsBypass(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var requests []map[string]interface{}
+		_ = json.Unmarshal(body, &requests)
+		writeJSON(w, []interface{}{map[string]interface{}{
+			"jsonrpc": "2.0", "id": requests[0]["id"],
+			"result": map[string]interface{}{
+				"id": "exposed-task", "contextId": "exposed-context",
+				"status": map[string]interface{}{"state": "TASK_STATE_WORKING"},
+			},
+		}})
+	}))
+	defer srv.Close()
+
+	findings := runBatchBypass(t, srv)
+	if len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
+		t.Fatalf("task result should confirm bypass: findings=%+v", findings)
+	}
+}
+
+func TestBatchBypass_ProtocolShapesUseDistinctIDs(t *testing.T) {
+	var mu sync.Mutex
+	var v1ID, v03ID string
+	batchCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+			mu.Lock()
+			batchCalls++
+			mu.Unlock()
+			return
+		}
+		var request map[string]interface{}
+		_ = json.Unmarshal(body, &request)
+		id, _ := request["id"].(string)
+		mu.Lock()
+		switch request["method"] {
+		case "GetTask":
+			v1ID = id
+		case "tasks/get":
+			v03ID = id
+			id = v1ID // Replay the earlier shape's auth error.
+		}
+		mu.Unlock()
+		message := "Task not found"
+		if request["method"] == "tasks/get" {
+			message = "Authentication required"
+		}
+		writeJSON(w, map[string]interface{}{
+			"jsonrpc": "2.0", "id": id,
+			"error": map[string]interface{}{"code": -32001, "message": message},
+		})
+	}))
+	defer srv.Close()
+
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	mu.Lock()
+	defer mu.Unlock()
+	if v1ID == "" || v03ID == "" || v1ID == v03ID || batchCalls != 0 ||
+		len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("shape reply replay: v1=%q v0.3=%q batches=%d findings=%+v err=%v",
+			v1ID, v03ID, batchCalls, findings, err)
 	}
 }
