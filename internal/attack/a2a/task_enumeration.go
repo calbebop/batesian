@@ -88,8 +88,8 @@ func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, ra
 	if taskID == "" {
 		return nil, obs.err()
 	}
-	list := func(c *attack.HTTPClient, headers map[string]string) ([]string, listOutcome) {
-		return e.listTasks(ctx, c, endpoint, headers, randID, taskID)
+	list := func(c *attack.HTTPClient, headers map[string]string, phase string) taskListing {
+		return e.listTasks(ctx, c, endpoint, headers, randID, taskID, phase)
 	}
 	findings, err := e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
 	return findings, errors.Join(obs.partialErr(), err)
@@ -118,8 +118,9 @@ func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listUR
 		return nil, classifyTaskSetup("creating a REST probe task as principal "+a.Name,
 			sendURL, principalCredentialPresent(clientA, sendURL, a.Headers), resp).err(), false
 	}
-	list := func(c *attack.HTTPClient, principalHeaders map[string]string) ([]string, listOutcome) {
-		return e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
+	list := func(c *attack.HTTPClient, principalHeaders map[string]string, _ string) taskListing {
+		ids, outcome := e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
+		return taskListing{ids: ids, outcome: outcome}
 	}
 	findings, err := e.probeListing(listURL, taskID, a, b, clientA, clientB, unauthClient, list)
 	return findings, err, true
@@ -138,53 +139,61 @@ func restVersionHeaders(version string, extra map[string]string) map[string]stri
 
 func (e *TaskEnumerationExecutor) probeListing(endpoint, taskID string, a, b attack.Principal,
 	clientA, clientB, unauthClient *attack.HTTPClient,
-	list func(*attack.HTTPClient, map[string]string) ([]string, listOutcome)) ([]attack.Finding, error) {
+	list func(*attack.HTTPClient, map[string]string, string) taskListing) ([]attack.Finding, error) {
 
-	ownList, ownOutcome := list(clientA, a.Headers)
-	switch ownOutcome {
-	case listAbsent:
-		// No list method here. Nothing to scope, and nothing wrong: the same call the
-		// OAuth-gated rules make for a server exposing no OAuth.
-		return nil, nil
-	case listRefused:
-		return nil, fmt.Errorf("%w: ListTasks at %s was refused for the task's own owner (%s), "+
-			"so whether the listing is scoped to the caller could not be established",
-			attack.ErrInconclusive, endpoint, a.Name)
-	case listIncomplete:
-		return nil, fmt.Errorf("%w: ListTasks at %s could not complete the owner's listing",
-			attack.ErrInconclusive, endpoint)
+	partial := false
+	finish := func(findings []attack.Finding, err error) ([]attack.Finding, error) {
+		if partial {
+			err = errors.Join(err, fmt.Errorf("%w: an earlier ListTasks reply was unjudged", attack.ErrInconclusive))
+		}
+		return findings, err
 	}
-	if !containsTaskID(ownList, taskID) {
+	ownList := list(clientA, a.Headers, "owner")
+	partial = partial || ownList.partial
+	switch ownList.outcome {
+	case listAbsent:
+		return finish(nil, nil)
+	case listRefused:
+		return finish(nil, fmt.Errorf("%w: ListTasks at %s was refused for the task's own owner (%s), "+
+			"so whether the listing is scoped to the caller could not be established",
+			attack.ErrInconclusive, endpoint, a.Name))
+	case listIncomplete:
+		return finish(nil, fmt.Errorf("%w: ListTasks at %s could not complete the owner's listing",
+			attack.ErrInconclusive, endpoint))
+	}
+	if !containsTaskID(ownList.ids, taskID) {
 		// The owner cannot see their own task, so this listing does not enumerate what
 		// the rule assumes it enumerates and B seeing nothing would prove nothing.
-		return nil, fmt.Errorf("%w: ListTasks at %s did not return principal %s's own task %s, "+
+		return finish(nil, fmt.Errorf("%w: ListTasks at %s did not return principal %s's own task %s, "+
 			"so the listing does not enumerate the tasks this rule compares against",
-			attack.ErrInconclusive, endpoint, a.Name, taskID)
+			attack.ErrInconclusive, endpoint, a.Name, taskID))
 	}
 
-	anonList, anonOutcome := list(unauthClient, nil)
-	if anonOutcome == listIncomplete {
-		return nil, fmt.Errorf("%w: anonymous ListTasks at %s could not complete its listing",
-			attack.ErrInconclusive, endpoint)
+	anonList := list(unauthClient, nil, "anonymous")
+	partial = partial || anonList.partial
+	if anonList.outcome == listIncomplete {
+		return finish(nil, fmt.Errorf("%w: anonymous ListTasks at %s could not complete its listing",
+			attack.ErrInconclusive, endpoint))
 	}
-	if anonOutcome == listOK && containsTaskID(anonList, taskID) {
-		return nil, nil
+	if anonList.outcome == listOK && containsTaskID(anonList.ids, taskID) {
+		return finish(nil, nil)
 	}
 
-	otherList, otherOutcome := list(clientB, b.Headers)
-	if otherOutcome == listIncomplete {
-		return nil, fmt.Errorf("%w: ListTasks at %s could not complete principal %s's listing",
-			attack.ErrInconclusive, endpoint, b.Name)
+	otherList := list(clientB, b.Headers, "other")
+	partial = partial || otherList.partial
+	if otherList.outcome == listIncomplete {
+		return finish(nil, fmt.Errorf("%w: ListTasks at %s could not complete principal %s's listing",
+			attack.ErrInconclusive, endpoint, b.Name))
 	}
-	if otherOutcome != listOK {
+	if otherList.outcome != listOK {
 		// B cannot list at all, which is one legitimate way to scope the surface.
-		return nil, nil
+		return finish(nil, nil)
 	}
-	if !containsTaskID(otherList, taskID) {
-		return nil, nil // scoped: B's listing does not include A's task
+	if !containsTaskID(otherList.ids, taskID) {
+		return finish(nil, nil)
 	}
 
-	return []attack.Finding{e.finding(endpoint, a, b, taskID, otherList)}, nil
+	return finish([]attack.Finding{e.finding(endpoint, a, b, taskID, otherList.ids)}, nil)
 }
 
 // listOutcome distinguishes complete, absent, refused, and incomplete listings.
@@ -202,9 +211,15 @@ const (
 
 const maxTaskListPages = 10
 
+type taskListing struct {
+	ids     []string
+	outcome listOutcome
+	partial bool
+}
+
 // listTasks walks bounded pages until the task is found or the list ends.
 func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	extraHeaders map[string]string, randID, wantedID string) ([]string, listOutcome) {
+	extraHeaders map[string]string, randID, wantedID, phase string) taskListing {
 	attempts := []struct {
 		method  string
 		headers map[string]string
@@ -217,7 +232,7 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 	}
 
 	absentEverywhere := true
-	incompleteFirstPage := false
+	partial := false
 	for _, at := range attempts {
 		next := ""
 		seen := map[string]bool{}
@@ -227,57 +242,58 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 			if next != "" {
 				params["pageToken"] = next
 			}
-			requestID := fmt.Sprintf("batesian-enum-%s-%d", randID, page)
+			requestID := fmt.Sprintf("batesian-enum-%s-%s-%s-%d", randID, phase, at.method, page)
 			resp, err := c.POST(ctx, endpoint, at.headers, map[string]interface{}{
 				"jsonrpc": "2.0", "id": requestID, "method": at.method, "params": params,
 			})
-			if err != nil {
+			if err != nil || resp == nil {
 				if page > 0 {
-					return nil, listIncomplete
+					return taskListing{outcome: listIncomplete}
 				}
 				absentEverywhere = false
-				incompleteFirstPage = true
+				partial = true
 				break
 			}
 			result, code, hasError, valid := discoveryResponse(resp.Body, requestID)
 			if !resp.IsSuccess() || !valid || hasError {
 				if page > 0 {
-					return nil, listIncomplete
+					return taskListing{outcome: listIncomplete}
 				}
 				if resp.IsSuccess() && valid && hasError && code == jsonRPCMethodNotFound {
 					break
 				}
 				absentEverywhere = false
-				if !isA2AAuthRejection(resp) {
-					incompleteFirstPage = true
+				authError := resp.IsSuccess() && valid && hasError && errMessageIsAuth(resp.Body)
+				if resp.StatusCode != 401 && resp.StatusCode != 403 && !authError {
+					partial = true
 				}
 				break
 			}
 			pageIDs, token, ok := parseTaskListPage(result)
 			if !ok {
-				return nil, listIncomplete
+				return taskListing{outcome: listIncomplete}
 			}
 			ids = append(ids, pageIDs...)
 			if containsTaskID(pageIDs, wantedID) || token == "" {
-				return ids, listOK
+				return taskListing{ids: ids, outcome: listOK, partial: partial}
 			}
 			if seen[token] {
-				return nil, listIncomplete
+				return taskListing{outcome: listIncomplete}
 			}
 			seen[token] = true
 			next = token
 		}
 		if next != "" {
-			return nil, listIncomplete
+			return taskListing{outcome: listIncomplete}
 		}
 	}
-	if incompleteFirstPage {
-		return nil, listIncomplete
+	if partial {
+		return taskListing{outcome: listIncomplete}
 	}
 	if absentEverywhere {
-		return nil, listAbsent
+		return taskListing{outcome: listAbsent}
 	}
-	return nil, listRefused
+	return taskListing{outcome: listRefused}
 }
 
 func (e *TaskEnumerationExecutor) listRESTTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
