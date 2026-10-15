@@ -51,6 +51,27 @@ func cancelServer(mode string) *httptest.Server {
 		_ = json.Unmarshal(body, &req)
 		method, _ := req["method"].(string)
 		id := req["id"]
+		requestID, _ := id.(string)
+		if strings.HasPrefix(requestID, "batesian-cancel-get-") {
+			switch mode {
+			case "wrong-baseline-read":
+				if strings.Contains(requestID, "-baseline-") {
+					id = "other-request"
+				}
+			case "wrong-anon-read":
+				if strings.Contains(requestID, "-anonymous-") {
+					id = "other-request"
+				}
+			case "wrong-cross-read":
+				if strings.Contains(requestID, "-cross-") {
+					id = "other-request"
+				}
+			case "wrong-v1-read-fallback":
+				if method == "GetTask" && strings.Contains(requestID, "-cross-") {
+					id = "other-request"
+				}
+			}
+		}
 		params, _ := req["params"].(map[string]interface{})
 		tok := bearer(r)
 		w.Header().Set("Content-Type", "application/json")
@@ -66,6 +87,9 @@ func cancelServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if mode == "wrong-v1-create" && method == "SendMessage" {
+				id = "other-request"
+			}
 			mu.Lock()
 			counter++
 			tid := fmt.Sprintf("task-%d", counter)
@@ -79,6 +103,19 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			if strings.HasPrefix(requestID, "batesian-cancel-") {
+				if mode == "wrong-anon-cancel-error" && tok == "" ||
+					mode == "wrong-cross-cancel-error" && tok == "tok-b" {
+					id = "other-request"
+					rpcErr(-32001, "Task not found")
+					return
+				}
+				if mode == "wrong-v1-cancel-legacy-open" && tok == "" && method == "CancelTask" {
+					id = "other-request"
+					rpcErr(-32601, "Method not found")
+					return
+				}
+			}
 			if mode == "http-error-b-503" && tok == "tok-b" {
 				if method == "CancelTask" {
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -172,7 +209,7 @@ func cancelServer(mode string) *httptest.Server {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			if mode != "no-auth" && mode != "v1-deny-legacy-open" && mode != "empty-success" &&
+			if mode != "no-auth" && mode != "v1-deny-legacy-open" && mode != "wrong-v1-cancel-legacy-open" && mode != "empty-success" &&
 				mode != "misleading-response" && mode != "wrong-task-response" && mode != "unpersisted" && tok == "" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -344,6 +381,35 @@ func TestTaskCancelIDOR_HTTPErrorBodyIsIncomplete(t *testing.T) {
 			findings, err := runTaskCancel(t, srv)
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("findings=%+v err=%v, want incomplete", findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskCancelIDOR_MismatchedRepliesAreIncomplete(t *testing.T) {
+	for _, mode := range []string{
+		"wrong-baseline-read", "wrong-anon-read", "wrong-cross-read",
+		"wrong-anon-cancel-error", "wrong-cross-cancel-error",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+			findings, err := runTaskCancel(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("mismatched reply must be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskCancelIDOR_MismatchedFallbackRetainsFinding(t *testing.T) {
+	for _, mode := range []string{"wrong-v1-create", "wrong-v1-read-fallback", "wrong-v1-cancel-legacy-open"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := cancelServer(mode)
+			defer srv.Close()
+			findings, err := runTaskCancel(t, srv)
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want a valid fallback finding and incomplete outcome: findings=%+v err=%v", findings, err)
 			}
 		})
 	}
