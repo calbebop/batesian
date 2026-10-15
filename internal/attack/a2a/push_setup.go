@@ -29,6 +29,34 @@ func (s pushSetupObservation) partialErr() error {
 	return s.incomplete
 }
 
+func pushReplyAccepted(resp *attack.Response, requestID string) bool {
+	if resp == nil || !resp.IsSuccess() {
+		return false
+	}
+	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return valid && !hasError
+}
+
+func pushTaskSetupOutcome(what, endpoint string, credentialed bool, resp *attack.Response, requestID string) setupObservation {
+	if resp != nil && resp.IsSuccess() {
+		_, _, _, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			return setupObservation{setupOtherRefusal, what + " reply did not match its request ID"}
+		}
+	}
+	return classifyPushTaskSetup(what, endpoint, credentialed, resp)
+}
+
+func pushRegistrationOutcome(method string, resp *attack.Response, requestID string) setupObservation {
+	if resp != nil && resp.IsSuccess() {
+		_, _, _, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			return setupObservation{setupOtherRefusal, method + " reply did not match its request ID"}
+		}
+	}
+	return classifyPushRegistration(method, resp)
+}
+
 func classifyPushTaskSetup(what, endpoint string, credentialed bool, resp *attack.Response) setupObservation {
 	if resp != nil {
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
