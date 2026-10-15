@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -66,6 +67,25 @@ func (s setupObservation) partialErr() error {
 		return nil
 	}
 	return fmt.Errorf("%w: an earlier task-creation attempt was unjudged before fallback created a task", attack.ErrInconclusive)
+}
+
+func taskSetupReplyAccepted(resp *attack.Response, requestID string) bool {
+	if resp == nil || !resp.IsSuccess() {
+		return false
+	}
+	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return valid && !hasError
+}
+
+func correlatedTaskSetup(what, endpoint string, credentialed bool, resp *attack.Response, requestID string) setupObservation {
+	if resp != nil && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden &&
+		resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed && json.Valid(resp.Body) {
+		_, _, _, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			return setupObservation{setupOtherRefusal, what + " reply did not match its request ID"}
+		}
+	}
+	return classifyTaskSetup(what, endpoint, credentialed, resp)
 }
 
 // A2A's own error codes for a surface the agent does not offer. A rule cannot test

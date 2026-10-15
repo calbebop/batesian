@@ -127,9 +127,10 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 	for k, v := range p.Headers {
 		v1Headers[k] = v
 	}
+	requestID := "batesian-cancel-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -140,12 +141,13 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
+		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-cancel-create-" + p.Name + "-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -156,15 +158,15 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 			},
 		})
 	}
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
 	if taskID == "" {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 	}
 	return taskID, obs
 }
