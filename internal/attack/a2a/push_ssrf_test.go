@@ -110,7 +110,7 @@ func v03PushServer(t *testing.T) *httptest.Server {
 		default:
 			// Covers SendMessage and tasks/send alike: a v0.3-only server knows
 			// neither.
-			writeJSON(w, jsonRPCError(-32601, "Method not found"))
+			rpcErr(w, id, -32601, "Method not found")
 		}
 	}))
 }

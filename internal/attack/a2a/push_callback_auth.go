@@ -68,6 +68,10 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	}
 	credential := hex.EncodeToString(secret)
 	a2aHeaders := map[string]string{"A2A-Version": "1.0"}
+	sendID := "batesian-sm-" + vars.RandID
+	pushID := "batesian-push-" + vars.RandID
+	legacyID := "batesian-" + vars.RandID
+	setID := "batesian-set-" + vars.RandID
 
 	var obs pushSetupObservation
 	credentialed := client.PresentsCredential(endpoint)
@@ -84,7 +88,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	// v1.0: create a task, then register its push configuration.
 	sendResp, err := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-sm-" + vars.RandID,
+		"id":      sendID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -98,14 +102,14 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	if err == nil && sendResp != nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
-	if err != nil || sendResp == nil || !sendResp.IsAccepted() {
-		obs.observe(classifyPushTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
+	if err != nil || !pushReplyAccepted(sendResp, sendID) {
+		obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
 	}
-	if err == nil && sendResp != nil && sendResp.IsAccepted() {
+	if err == nil && pushReplyAccepted(sendResp, sendID) {
 		if taskID, _ := extractTaskContext(sendResp.Body); taskID != "" {
 			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
 				"jsonrpc": "2.0",
-				"id":      "batesian-push-" + vars.RandID,
+				"id":      pushID,
 				"method":  "CreateTaskPushNotificationConfig",
 				"params": map[string]interface{}{
 					"taskId": taskID,
@@ -116,17 +120,17 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					},
 				},
 			})
-			if pushErr == nil && pushResp != nil && pushResp.IsAccepted() {
+			if pushErr == nil && pushReplyAccepted(pushResp, pushID) {
 				taskAccepted = true
 				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
 				acceptedTaskID = taskID
 				recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
 			} else {
-				obs.observe(classifyPushRegistration("CreateTaskPushNotificationConfig", pushResp))
+				obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID))
 			}
 		} else {
-			obs.observe(classifyPushTaskSetup("creating a task to attach a push config to", endpoint, credentialed, sendResp))
+			obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
 		}
 	}
 
@@ -137,10 +141,10 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 		if err2 == nil && sendResp2 != nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 != nil || sendResp2 == nil || !sendResp2.IsAccepted() {
-			obs.observe(classifyPushTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
+		if err2 != nil || !pushReplyAccepted(sendResp2, legacyID) {
+			obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
 		}
-		if err2 == nil && sendResp2 != nil && sendResp2.IsAccepted() {
+		if err2 == nil && pushReplyAccepted(sendResp2, legacyID) {
 			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
 				taskAccepted = true
 				acceptedBinding = "JSONRPC/v0.3-message-send"
@@ -148,7 +152,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 				recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
 				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      "batesian-set-" + vars.RandID,
+					"id":      setID,
 					"method":  "tasks/pushNotificationConfig/set",
 					"params": map[string]interface{}{
 						"taskId": taskID,
@@ -161,15 +165,15 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 						},
 					},
 				})
-				if setErr == nil && setResp != nil && setResp.IsAccepted() {
+				if setErr == nil && pushReplyAccepted(setResp, setID) {
 					registrationConfirmed = true
 					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
 					recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
 				} else {
-					obs.observe(classifyPushRegistration("tasks/pushNotificationConfig/set", setResp))
+					obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID))
 				}
 			} else {
-				obs.observe(classifyPushTaskSetup("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2))
+				obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
 			}
 		}
 	}
