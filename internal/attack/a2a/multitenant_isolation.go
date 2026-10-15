@@ -76,16 +76,16 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	markerA := "batesian mt probe " + a.Name + " " + vars.RandID
 	markerB := "batesian mt probe " + b.Name + " " + vars.RandID
 	// Anonymous disclosure belongs to the task IDOR rule.
-	anonA := e.readTask(ctx, unauthClient, endpoint, nil, taskA, markerA, vars.RandID)
-	anonB := e.readTask(ctx, unauthClient, endpoint, nil, taskB, markerB, vars.RandID)
+	anonA := e.readTask(ctx, unauthClient, endpoint, nil, taskA, markerA, vars.RandID, "anon-a")
+	anonB := e.readTask(ctx, unauthClient, endpoint, nil, taskB, markerB, vars.RandID, "anon-b")
 
 	// Check both directions for the owner's probe content.
 	var findings []attack.Finding
-	readA := e.readTask(ctx, clientB, endpoint, b.Headers, taskA, markerA, vars.RandID)
+	readA := e.readTask(ctx, clientB, endpoint, b.Headers, taskA, markerA, vars.RandID, "cross-a")
 	if readA.location != "" && anonA.location == "" && !anonA.unknown && (anonA.denied || anonA.matched) {
 		findings = append(findings, e.finding(endpoint, b, a, taskA, markerA, readA))
 	}
-	readB := e.readTask(ctx, clientA, endpoint, a.Headers, taskB, markerB, vars.RandID)
+	readB := e.readTask(ctx, clientA, endpoint, a.Headers, taskB, markerB, vars.RandID, "cross-b")
 	if readB.location != "" && anonB.location == "" && !anonB.unknown && (anonB.denied || anonB.matched) {
 		findings = append(findings, e.finding(endpoint, a, b, taskB, markerB, readB))
 	}
@@ -175,7 +175,7 @@ type tenantRead struct {
 }
 
 // readTask checks both method names until owner content is found.
-func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID string) tenantRead {
+func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID, phase string) tenantRead {
 	shapes := []struct {
 		method  string
 		headers map[string]string
@@ -188,9 +188,10 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 	}
 	var result tenantRead
 	for _, shape := range shapes {
+		requestID := "batesian-mt-get-" + randID + "-" + phase + "-" + shape.method
 		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-mt-get-" + randID,
+			"id":      requestID,
 			"method":  shape.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
 		})
@@ -198,7 +199,7 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			result.unknown = true
 			continue
 		}
-		if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
+		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
 			result.denied = true
 			continue
 		}
@@ -206,22 +207,23 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			result.unknown = true
 			continue
 		}
-		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
-			if code == -32001 {
+		_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			result.unknown = true
+			continue
+		}
+		if hasError {
+			if code == -32001 || errMessageIsAuth(resp.Body) {
 				result.denied = true
 			} else if code != jsonRPCMethodNotFound {
 				result.unknown = true
 			}
 			continue
 		}
-		if !resp.IsAccepted() {
-			result.unknown = true
-			continue
-		}
 		location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
 		result.matched = result.matched || matched
 		if location != "" {
-			return tenantRead{method: shape.method, location: location, response: snippet(resp.Body, 500), matched: true}
+			return tenantRead{method: shape.method, location: location, response: snippet(resp.Body, 500), matched: true, unknown: result.unknown}
 		}
 		if !matched {
 			result.unknown = true

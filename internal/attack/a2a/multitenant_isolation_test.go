@@ -85,6 +85,28 @@ func tenantServer(mode string) *httptest.Server {
 				rpcErr(w, id, -32001, "Task not found")
 				return
 			}
+			requestID, _ := id.(string)
+			if strings.HasPrefix(requestID, "batesian-mt-get-") {
+				if mode == "wrong-anon-error" && tenant == "" {
+					rpcErr(w, "other-request", -32600, "authentication required")
+					return
+				}
+				if tenant != "" && tenant != own {
+					switch mode {
+					case "wrong-cross-result":
+						taskWithHistory(w, "other-request", taskID, "ctx-"+own, text)
+						return
+					case "wrong-cross-v1-result":
+						if method == "GetTask" {
+							taskWithHistory(w, "other-request", taskID, "ctx-"+own, text)
+							return
+						}
+					case "wrong-cross-error":
+						rpcErr(w, "other-request", -32001, "Task not found")
+						return
+					}
+				}
+			}
 			if mode == "anon-read-error" && tenant == "" {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
@@ -241,6 +263,30 @@ func TestMultiTenant_UnjudgedReadsAreInconclusive(t *testing.T) {
 				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
 			}
 		})
+	}
+}
+
+func TestMultiTenant_MismatchedReadRepliesAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"wrong-cross-result", "wrong-cross-error", "wrong-anon-error"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := tenantServer(mode)
+			defer srv.Close()
+			findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+				Execute(context.Background(), srv.URL, mtOpts(tenantPrincipals()...))
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("mismatched reply must not establish a comparison: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestMultiTenant_MismatchedV1ReplyRetainsLegacyFinding(t *testing.T) {
+	srv := tenantServer("wrong-cross-v1-result")
+	defer srv.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), srv.URL, mtOpts(tenantPrincipals()...))
+	if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want two legacy findings and incomplete v1 reads, got findings=%+v err=%v", findings, err)
 	}
 }
 

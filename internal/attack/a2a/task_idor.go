@@ -97,8 +97,8 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 					fmt.Sprintf("task creation at %s returned HTTP %d", endpoint, resp.StatusCode)})
 				return
 			}
-			probe.setup.observe(classifyTaskSetup("creating a probe task", endpoint,
-				c.PresentsCredential(endpoint), resp))
+			probe.setup.observe(correlatedTaskSetup("creating a probe task", endpoint,
+				c.PresentsCredential(endpoint), resp, requestID))
 		}
 		resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -120,6 +120,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		}
 		probe.deniedWire[0] = err == nil && denied(resp)
 		observeFailure(resp, err)
+		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, nil, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -175,6 +176,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if anon.acceptedWire != 0 {
 		anonTaskID, _ = extractTaskContext(anon.response.Body)
 	}
+	partial := errors.Join(owner.setup.partialErr(), anon.setup.partialErr())
 
 	// Try both task-read method names before judging a redacted response.
 	marker := "batesian idor probe " + vars.RandID
@@ -189,9 +191,10 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	}
 	readTask := func(method string, headers map[string]string) readProbe {
 		probe := readProbe{method: method}
+		requestID := "batesian-get-" + vars.RandID + "-" + method
 		resp, err := unauthClient.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-get-" + vars.RandID,
+			"id":      requestID,
 			"method":  method,
 			"params":  getParams,
 		})
@@ -200,7 +203,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			return probe
 		}
 		probe.response = resp
-		if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
+		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
 			probe.denied = true
 			return probe
 		}
@@ -208,28 +211,26 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			probe.unknown = true
 			return probe
 		}
-		if code, hasError := jsonRPCErrorCode(resp.Body); hasError {
-			if code == -32001 {
+		result, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+		if !valid {
+			probe.unknown = true
+			return probe
+		}
+		if hasError {
+			if code == -32001 || errMessageIsAuth(resp.Body) {
 				probe.denied = true
 			} else if code != jsonRPCMethodNotFound {
 				probe.unknown = true
 			}
 			return probe
 		}
-		if !resp.IsAccepted() {
-			probe.unknown = true
-			return probe
-		}
-		var envelope struct {
-			Result json.RawMessage `json:"result"`
-		}
-		if json.Unmarshal(resp.Body, &envelope) == nil && strings.TrimSpace(string(envelope.Result)) == "null" {
+		if strings.TrimSpace(string(result)) == "null" {
 			probe.denied = true
 			return probe
 		}
 		probe.location, probe.matched = taskReadMarkerLocation(resp.Body, taskID, marker)
 		if probe.location == "" {
-			if !probe.matched && redactedTaskStub(envelope.Result, taskID, marker) {
+			if !probe.matched && redactedTaskStub(result, taskID, marker) {
 				probe.denied = true
 			} else {
 				probe.unknown = true
@@ -241,12 +242,17 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if read.location == "" {
 		legacy := readTask("tasks/get", nil)
 		if legacy.location != "" {
+			legacy.unknown = legacy.unknown || (read.unknown && !read.matched)
 			read = legacy
 		} else {
 			read.matched = read.matched || legacy.matched
 			read.denied = read.denied || legacy.denied
 			read.unknown = read.unknown || legacy.unknown
 		}
+	}
+	if read.location != "" && read.unknown {
+		partial = errors.Join(partial, fmt.Errorf("%w: an earlier anonymous task read was unjudged before fallback returned task content",
+			attack.ErrInconclusive))
 	}
 	if ownerProtected && read.location != "" {
 		findings = append(findings, attack.Finding{
@@ -267,26 +273,26 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
 	findings = append(findings, list.findings...)
 	if list.unverified {
-		return findings, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive)
+		return findings, errors.Join(partial, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive))
 	}
 	if ownerProtected && (read.unknown || !read.denied) && read.location == "" {
-		return findings, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
-			attack.ErrInconclusive, taskID)
+		return findings, errors.Join(partial, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
+			attack.ErrInconclusive, taskID))
 	}
 	if !ownerProtected {
 		switch {
 		case !authedClient.PresentsCredential(endpoint):
-			return findings, fmt.Errorf("%w: the owner request presented no credential at %s",
-				attack.ErrInconclusive, endpoint)
+			return findings, errors.Join(partial, fmt.Errorf("%w: the owner request presented no credential at %s",
+				attack.ErrInconclusive, endpoint))
 		case anon.acceptedWire == 0 && !anon.deniedWire[owner.acceptedWire-1]:
-			return findings, fmt.Errorf("%w: anonymous task creation did not establish an auth rejection on the owner's send method",
-				attack.ErrInconclusive)
+			return findings, errors.Join(partial, fmt.Errorf("%w: anonymous task creation did not establish an auth rejection on the owner's send method",
+				attack.ErrInconclusive))
 		case anon.acceptedWire != 0 && anonTaskID == "":
-			return findings, fmt.Errorf("%w: anonymous send returned no task ID, so open task creation could not be established",
-				attack.ErrInconclusive)
+			return findings, errors.Join(partial, fmt.Errorf("%w: anonymous send returned no task ID, so open task creation could not be established",
+				attack.ErrInconclusive))
 		}
 	}
-	return findings, nil
+	return findings, partial
 }
 
 func redactedTaskStub(result json.RawMessage, taskID, marker string) bool {
