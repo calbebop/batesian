@@ -84,7 +84,7 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 
 func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
-	taskID, _, _, obs := e.createTask(ctx, clientA, endpoint, a, randID)
+	taskID, obs := e.createTask(ctx, clientA, endpoint, a, randID)
 	if taskID == "" {
 		return nil, obs.err()
 	}
@@ -367,10 +367,11 @@ func withV1Version(extra map[string]string) map[string]string {
 // one. The observation is returned so a caller that got no task can say why rather
 // than reporting a scoped listing it never tested.
 func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
+	p attack.Principal, randID string) (taskID string, obs setupObservation) {
+	requestID := "batesian-enum-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, withV1Version(p.Headers), map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-enum-create-" + p.Name + "-" + randID,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -381,12 +382,13 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
+		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-enum-create-" + p.Name + "-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -397,17 +399,17 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 			},
 		})
 	}
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
-		return "", "", false, obs
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
+		return "", obs
 	}
-	taskID, contextID = extractTaskContext(resp.Body)
+	taskID, _ = extractTaskContext(resp.Body)
 	if taskID == "" {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 	}
-	return taskID, contextID, taskID != "", obs
+	return taskID, obs
 }
 
 func (e *TaskEnumerationExecutor) finding(endpoint string, a, b attack.Principal,

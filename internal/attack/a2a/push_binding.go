@@ -153,9 +153,10 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 	p attack.Principal, randID string) (string, setupObservation) {
 	var obs setupObservation
 	headers := pushBindingHeaders(p.Headers, true)
+	requestID := "batesian-pb-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      "batesian-pb-create-" + p.Name + "-" + randID,
+		"id":      requestID,
 		"method":  "SendMessage",
 		"params": map[string]interface{}{
 			"configuration": map[string]interface{}{"returnImmediately": true},
@@ -166,12 +167,13 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 			},
 		},
 	})
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
+		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, pushBindingHeaders(p.Headers, false), map[string]interface{}{
 			"jsonrpc": "2.0",
-			"id":      "batesian-pb-create-" + p.Name + "-" + randID,
+			"id":      requestID,
 			"method":  "message/send",
 			"params": map[string]interface{}{
 				"message": map[string]interface{}{
@@ -182,15 +184,15 @@ func (e *PushBindingExecutor) createTask(ctx context.Context, c *attack.HTTPClie
 			},
 		})
 	}
-	if err != nil || !resp.IsAccepted() {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 		return "", obs
 	}
 	taskID, _ := extractTaskContext(resp.Body)
 	if taskID == "" {
-		obs.observe(classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
-			principalCredentialPresent(c, endpoint, p.Headers), resp))
+		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
+			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 	}
 	return taskID, obs
 }
