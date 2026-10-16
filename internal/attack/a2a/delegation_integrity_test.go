@@ -55,6 +55,14 @@ func delegationServer(mode string, observeRequest ...func(string, string)) *http
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		if (mode == "v1-create-null" || mode == "v1-create-empty") && method == "SendMessage" && contID == "" {
+			var result any
+			if mode == "v1-create-empty" {
+				result = map[string]any{}
+			}
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+			return
+		}
 		if mode == "legacy-only" && !strings.Contains(method, "/") {
 			rpcErr(w, id, -32601, "Method not found")
 			return
@@ -152,6 +160,15 @@ func delegationServer(mode string, observeRequest ...func(string, string)) *http
 			mu.Unlock()
 			if tenant == "" {
 				switch mode {
+				case "anon-v1-null-v03-open", "anon-v1-empty-v03-open":
+					if method == "SendMessage" {
+						var result any
+						if mode == "anon-v1-empty-v03-open" {
+							result = map[string]any{}
+						}
+						writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+						return
+					}
 				case "anon-unavailable", "anon-unavailable-b-denied":
 					w.WriteHeader(http.StatusServiceUnavailable)
 					return
@@ -164,7 +181,7 @@ func delegationServer(mode string, observeRequest ...func(string, string)) *http
 				}
 			}
 			switch mode {
-			case "open":
+			case "open", "anon-v1-null-v03-open", "anon-v1-empty-v03-open":
 				mu.Lock()
 				history[contID] = append(history[contID], continuationMessage(req))
 				mu.Unlock()
@@ -308,13 +325,17 @@ func TestDelegationHistoryReadsUseFreshIDs(t *testing.T) {
 }
 
 func TestDelegation_PartialTaskCreationRetainsFinding(t *testing.T) {
-	ts := delegationServer("v1-create-unavailable")
-	defer ts.Close()
+	for _, mode := range []string{"v1-create-unavailable", "v1-create-null", "v1-create-empty"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := delegationServer(mode)
+			defer ts.Close()
 
-	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
-		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
-	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
-		t.Fatalf("want delegation finding and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
+			findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want delegation finding and incomplete v1 task setup, got findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
@@ -540,6 +561,21 @@ func TestDelegation_OpenServerIsNotADelegationBreak(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against a fully-open server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestDelegation_EmptyV1ControlFallsBackToOpenV03(t *testing.T) {
+	for _, mode := range []string{"anon-v1-null-v03-open", "anon-v1-empty-v03-open"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := delegationServer(mode)
+			defer ts.Close()
+
+			findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+				Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("open v0.3 anonymous continuation must suppress delegation finding: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 

@@ -204,7 +204,7 @@ func delegationResult(resp *attack.Response, requestID string) bool {
 		return false
 	}
 	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
-	return valid && !hasError
+	return valid && !hasError && sendReplyHasResult(resp)
 }
 
 // continueTask distinguishes denial from an unanswered probe.
