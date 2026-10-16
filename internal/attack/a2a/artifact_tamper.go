@@ -1,7 +1,6 @@
 package a2a
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,7 +50,7 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	}
 	incomplete := createErr
 	defer func() { err = errors.Join(err, incomplete) }()
-	baselineBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	baselineBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars, "baseline")
 	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
 		return nil, fmt.Errorf("%w: task %s was created, but its original content could not be read back",
@@ -70,8 +69,10 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 
 	// Step 2: re-submit against the SAME task ID with different content, on the
 	// wire that created it.
-	tamperResp, sendErr := client.POST(ctx, endpoint, wire.headers, wire.continuePayload(taskID, tamperedText, vars.RandID))
-	correlated := tamperReplyCorrelated(tamperResp)
+	tamperRequest := wire.continuePayload(taskID, tamperedText, vars.RandID)
+	tamperID, _ := tamperRequest["id"].(string)
+	tamperResp, sendErr := client.POST(ctx, endpoint, wire.headers, tamperRequest)
+	correlated := tamperReplyCorrelated(tamperResp, tamperID)
 	accepted := sendErr == nil && correlated && tamperResp.IsAccepted()
 	rejected := sendErr == nil && correlated && continuationRejected(tamperResp)
 	if sendErr == nil && tamperResp != nil && tamperResp.IsSuccess() && !correlated {
@@ -85,7 +86,7 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	}
 
 	// Read back even when the send reports an error.
-	getBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars)
+	getBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars, "after")
 	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
 		return nil, fmt.Errorf("%w: task %s was re-submitted, but reading it back "+
@@ -163,16 +164,12 @@ func continuationRejected(resp *attack.Response) bool {
 	return false
 }
 
-func tamperReplyCorrelated(resp *attack.Response) bool {
+func tamperReplyCorrelated(resp *attack.Response, requestID string) bool {
 	if resp == nil {
 		return false
 	}
-	var reply struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-	}
-	return json.Unmarshal(resp.Body, &reply) == nil && reply.JSONRPC == "2.0" &&
-		bytes.Equal(bytes.TrimSpace(reply.ID), []byte("1"))
+	_, _, _, valid := discoveryResponse(resp.Body, requestID)
+	return valid
 }
 
 type taskContent struct {
@@ -284,7 +281,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 				name:    "v1.0 SendMessage",
 				headers: v1Headers,
 				continuePayload: func(taskID, text, randID string) map[string]interface{} {
-					return jsonRPCCall("SendMessage", map[string]interface{}{
+					return jsonRPCCall("batesian-at-"+randID+"-continue-v1", "SendMessage", map[string]interface{}{
 						"message": map[string]interface{}{
 							"messageId": "batesian-at-tamper-" + randID,
 							"role":      "ROLE_USER",
@@ -294,7 +291,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 					})
 				},
 			},
-			create: jsonRPCCall("SendMessage", map[string]interface{}{
+			create: jsonRPCCall("batesian-at-"+randID+"-create-v1", "SendMessage", map[string]interface{}{
 				"message": map[string]interface{}{
 					"messageId": "batesian-at-create-" + randID,
 					"role":      "ROLE_USER",
@@ -307,7 +304,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 			wire: tamperWire{
 				name: "v0.3 message/send",
 				continuePayload: func(taskID, text, randID string) map[string]interface{} {
-					return jsonRPCCall("message/send", map[string]interface{}{
+					return jsonRPCCall("batesian-at-"+randID+"-continue-v03", "message/send", map[string]interface{}{
 						"message": map[string]interface{}{
 							"messageId": "batesian-at-tamper-" + randID,
 							"role":      "user",
@@ -317,7 +314,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 					})
 				},
 			},
-			create: jsonRPCCall("message/send", map[string]interface{}{
+			create: jsonRPCCall("batesian-at-"+randID+"-create-v03", "message/send", map[string]interface{}{
 				"message": map[string]interface{}{
 					"messageId": "batesian-at-create-" + randID,
 					"role":      "user",
@@ -331,7 +328,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 			wire: tamperWire{
 				name: "v0.2 tasks/send",
 				continuePayload: func(taskID, text, randID string) map[string]interface{} {
-					return jsonRPCCall("tasks/send", map[string]interface{}{
+					return jsonRPCCall("batesian-at-"+randID+"-continue-v02", "tasks/send", map[string]interface{}{
 						"id": taskID,
 						"message": map[string]interface{}{
 							"role":  "user",
@@ -340,7 +337,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 					})
 				},
 			},
-			create: jsonRPCCall("tasks/send", map[string]interface{}{
+			create: jsonRPCCall("batesian-at-"+randID+"-create-v02", "tasks/send", map[string]interface{}{
 				"id": "batesian-task-" + randID,
 				"message": map[string]interface{}{
 					"role":  "user",
@@ -353,6 +350,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 	var incomplete error
 	credentialed := client.PresentsCredential(endpoint)
 	for _, a := range attempts {
+		requestID, _ := a.create["id"].(string)
 		resp, err := client.POST(ctx, endpoint, a.wire.headers, a.create)
 		// IsAccepted, not IsSuccess: a -32601 for a method this revision does not
 		// define arrives at HTTP 200, and gating on status alone left the fallback
@@ -362,7 +360,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 				attack.ErrInconclusive, a.wire.name, endpoint, err))
 			continue
 		}
-		if resp != nil && resp.IsSuccess() && !tamperReplyCorrelated(resp) {
+		if resp != nil && resp.IsSuccess() && !tamperReplyCorrelated(resp, requestID) {
 			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s task-creation reply did not match its request ID",
 				attack.ErrInconclusive, a.wire.name))
 			continue
@@ -388,12 +386,10 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 	return "", tamperWire{}, false, incomplete
 }
 
-// jsonRPCCall builds a JSON-RPC request object with a fixed id, which is all these
-// probes need.
-func jsonRPCCall(method string, params map[string]interface{}) map[string]interface{} {
+func jsonRPCCall(requestID, method string, params map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      1,
+		"id":      requestID,
 		"method":  method,
 		"params":  params,
 	}

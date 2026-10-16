@@ -296,6 +296,74 @@ func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestArtifactTamper_ReplayedRepliesAreIncomplete(t *testing.T) {
+	for _, mode := range []string{"continuation", "readback"} {
+		t.Run(mode, func(t *testing.T) {
+			var mu sync.Mutex
+			var createID, continueID, baselineID, afterID, original string
+			var sends, reads int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(w, map[string]interface{}{"name": "artifact-agent", "version": "1.0"})
+					return
+				}
+				req := readBody(r)
+				id, _ := req["id"].(string)
+				mu.Lock()
+				defer mu.Unlock()
+				switch req["method"] {
+				case "SendMessage":
+					sends++
+					if sends == 1 {
+						createID, original = id, textOf(req)
+					} else {
+						continueID = id
+						if mode == "continuation" {
+							id = createID
+						}
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"task": map[string]interface{}{
+							"id": "task-replay", "status": map[string]string{"state": "completed"},
+						}}})
+				case "GetTask":
+					if !strings.HasPrefix(id, "batesian-get-") {
+						rpcErr(w, id, -32001, "Task not found")
+						return
+					}
+					reads++
+					if reads == 1 {
+						baselineID = id
+					} else {
+						afterID = id
+						if mode == "readback" {
+							id = baselineID
+						}
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{
+							"id": "task-replay", "status": map[string]string{"state": "completed"},
+							"artifacts": storedArtifact(original),
+						}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+				Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			mu.Lock()
+			defer mu.Unlock()
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || sends != 2 || reads != 2 ||
+				createID == continueID || baselineID == afterID {
+				t.Fatalf("replayed %s reply: findings=%+v err=%v sends=%d reads=%d ids=%q %q %q %q",
+					mode, findings, err, sends, reads, createID, continueID, baselineID, afterID)
+			}
+		})
+	}
+}
+
 func TestArtifactTamper_TruncatedHistoryDoesNotProveOverwrite(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

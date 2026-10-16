@@ -205,7 +205,7 @@ func impersonationWires(randID string) []impersonationWire {
 		{
 			name:    "v1.0 SendMessage",
 			headers: map[string]string{"A2A-Version": "1.0"},
-			body: jsonRPCCall("SendMessage", map[string]interface{}{
+			body: jsonRPCCall("batesian-peer-"+randID+"-v1", "SendMessage", map[string]interface{}{
 				"configuration": map[string]interface{}{"returnImmediately": true},
 				"message": map[string]interface{}{
 					"messageId": "batesian-pi-" + randID,
@@ -218,7 +218,7 @@ func impersonationWires(randID string) []impersonationWire {
 			// v0.3: slash method, lowercase role, and parts carry a kind. messageId
 			// is required by the Message schema, which the previous body omitted.
 			name: "v0.3 message/send",
-			body: jsonRPCCall("message/send", map[string]interface{}{
+			body: jsonRPCCall("batesian-peer-"+randID+"-v03", "message/send", map[string]interface{}{
 				"message": map[string]interface{}{
 					"messageId": "batesian-pi-" + randID,
 					"role":      "user",
