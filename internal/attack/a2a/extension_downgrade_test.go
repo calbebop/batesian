@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -24,6 +25,9 @@ const reqExtURI = "https://ext.example/required-policy/v1"
 //   - "noauth-msg": SendMessage is always rejected (control can't succeed).
 func extensionServer(mode string, required bool) *httptest.Server {
 	mux := http.NewServeMux()
+	var mu sync.Mutex
+	var controlID interface{}
+	seenMessages := map[string]bool{}
 	card := map[string]interface{}{
 		"name": "Ext Agent",
 		"url":  "https://agent.example/",
@@ -80,10 +84,11 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		var request map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		reqID := request["id"]
-		writeRPC := func(result interface{}) {
+		writeRPCWithID := func(id, result interface{}) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID, "result": result})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
 		}
+		writeRPC := func(result interface{}) { writeRPCWithID(reqID, result) }
 		writeErr := func(code int, msg string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID,
@@ -91,6 +96,52 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		}
 		if request["method"] == "GetTask" || request["method"] == "tasks/get" {
 			writeErr(-32001, "Task not found")
+			return
+		}
+		task := map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"}
+		switch mode {
+		case "control-wrong-id":
+			if activated {
+				writeRPCWithID("other-request", task)
+			} else {
+				writeErr(-32008, "extension support required")
+			}
+			return
+		case "omitted-wrong-id":
+			if activated {
+				writeRPC(task)
+			} else {
+				writeRPCWithID("other-request", task)
+			}
+			return
+		case "replayed-omission":
+			if activated {
+				mu.Lock()
+				controlID = reqID
+				mu.Unlock()
+				writeRPC(task)
+				return
+			}
+			mu.Lock()
+			oldID := controlID
+			mu.Unlock()
+			writeRPCWithID(oldID, task)
+			return
+		case "deduplicated-message":
+			params, _ := request["params"].(map[string]interface{})
+			message, _ := params["message"].(map[string]interface{})
+			messageID, _ := message["messageId"].(string)
+			mu.Lock()
+			cached := seenMessages[messageID]
+			if activated {
+				seenMessages[messageID] = true
+			}
+			mu.Unlock()
+			if activated || cached {
+				writeRPC(task)
+			} else {
+				writeErr(-32008, "extension support required")
+			}
 			return
 		}
 		if mode == "control-fallback-open" && request["method"] == "SendMessage" && activated {
@@ -184,6 +235,28 @@ func TestExtDowngrade_FailClosed(t *testing.T) {
 			findings, err := exec.Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 			if err != nil || len(findings) != 0 {
 				t.Errorf("expected a clean result against a fail-closed server, got %d findings, err=%v", len(findings), err)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_RejectsUncorrelatedAndCachedReplies(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		incomplete bool
+	}{
+		{"control-wrong-id", true},
+		{"omitted-wrong-id", true},
+		{"replayed-omission", true},
+		{"deduplicated-message", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := extensionServer(tc.mode, true)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("findings=%+v err=%v, want no finding and incomplete=%v", findings, err, tc.incomplete)
 			}
 		})
 	}
