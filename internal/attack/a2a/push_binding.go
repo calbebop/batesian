@@ -227,7 +227,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 	denied := false
 	unjudged := false
 	for _, at := range attempts {
-		requestID := "batesian-pb-set-" + randID
+		requestID := "batesian-pb-set-" + randID + "-" + configID + "-" + at.method
 		headers := pushBindingHeaders(extra, at.method == "CreateTaskPushNotificationConfig")
 		resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",

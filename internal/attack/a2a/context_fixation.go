@@ -186,7 +186,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
-	requestID := "batesian-ctxfix-send-" + randID
+	requestID := "batesian-ctxfix-send-" + randID + "-v1"
 	acceptReply := func(resp *attack.Response, err error) bool {
 		if err != nil || resp == nil || !resp.IsSuccess() {
 			return false
@@ -229,6 +229,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 	} else {
 		result.denied[0] = authRejected(resp)
 		observe(resp)
+		requestID = "batesian-ctxfix-send-" + randID + "-v03"
 		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,

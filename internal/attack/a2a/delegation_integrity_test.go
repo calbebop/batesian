@@ -30,7 +30,7 @@ func continuationMessage(req map[string]interface{}) map[string]interface{} {
 }
 
 // delegationServer stores continuations so owner readback can verify them.
-func delegationServer(mode string) *httptest.Server {
+func delegationServer(mode string, observeRequest ...func(string, string)) *httptest.Server {
 	var mu sync.Mutex
 	owner := map[string]string{}
 	history := map[string][]map[string]interface{}{}
@@ -46,6 +46,9 @@ func delegationServer(mode string) *httptest.Server {
 		req := readBody(r)
 		method, _ := req["method"].(string)
 		id := req["id"]
+		for _, observe := range observeRequest {
+			observe(method, fmt.Sprint(id))
+		}
 		tenant := tenantOf(r)
 		contID := continuationTaskID(req)
 		if mode == "v1-create-unavailable" && method == "SendMessage" && contID == "" {
@@ -270,6 +273,37 @@ func TestDelegation_Vulnerable(t *testing.T) {
 	}
 	if len(f.Chain) != 2 || f.Chain[1].Principal != "tenant-b" {
 		t.Errorf("expected 2-hop chain with tenant-b continuing, got %+v", f.Chain)
+	}
+}
+
+func TestDelegationHistoryReadsUseFreshIDs(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	duplicate := ""
+	reads := 0
+	ts := delegationServer("vulnerable", func(method, id string) {
+		if method != "GetTask" && method != "tasks/get" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		reads++
+		if seen[id] {
+			duplicate = id
+		}
+		seen[id] = true
+	})
+	defer ts.Close()
+
+	findings, err := a2a.NewDelegationIntegrityExecutor(testRuleCtx()).
+		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("delegation probe: findings=%+v err=%v", findings, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if duplicate != "" || reads < 3 {
+		t.Fatalf("task reads=%d, repeated request ID=%q", reads, duplicate)
 	}
 }
 
