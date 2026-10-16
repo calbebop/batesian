@@ -140,7 +140,9 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 					return
 				}
 				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-					"result": map[string]interface{}{"task": map[string]string{"id": "rpc-owner-task"}}})
+					"result": map[string]interface{}{"task": map[string]interface{}{
+						"id": "rpc-owner-task", "status": map[string]string{"state": "submitted"},
+					}}})
 			case "ListTasks", "tasks/list":
 				if caller == "" {
 					w.WriteHeader(http.StatusUnauthorized)

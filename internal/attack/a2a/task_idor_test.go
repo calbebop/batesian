@@ -62,7 +62,7 @@ func taskResult(w http.ResponseWriter, id interface{}, taskID, ctxID string) {
 	writeJSON(w, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      id,
-		"result":  map[string]interface{}{"id": taskID, "contextId": ctxID, "status": "working"},
+		"result":  map[string]interface{}{"id": taskID, "contextId": ctxID, "status": map[string]string{"state": "working"}},
 	})
 }
 
@@ -630,7 +630,7 @@ func TestTaskIDOR_NoContextIdNullRead_NoFalsePositive(t *testing.T) {
 			// Created task carries an id but no contextId.
 			writeJSON(w, map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"id": taskID, "status": "working"},
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "working"}},
 			})
 		case "GetTask", "tasks/get":
 			// Secure: a task the caller cannot see comes back as a null result,

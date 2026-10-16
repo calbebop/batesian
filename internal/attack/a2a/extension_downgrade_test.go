@@ -98,8 +98,31 @@ func extensionServer(mode string, required bool) *httptest.Server {
 			writeErr(-32001, "Task not found")
 			return
 		}
-		task := map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"}
+		task := map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": map[string]string{"state": "working"}}
 		switch mode {
+		case "control-null", "control-empty", "control-id-only",
+			"omitted-null", "omitted-empty", "omitted-id-only":
+			if activated == strings.HasPrefix(mode, "control-") {
+				var result interface{}
+				switch {
+				case strings.HasSuffix(mode, "empty"):
+					result = map[string]interface{}{}
+				case strings.HasSuffix(mode, "id-only"):
+					result = map[string]string{"id": "task-1"}
+				}
+				writeRPC(result)
+			} else {
+				writeRPC(task)
+			}
+			return
+		case "wrapped-open":
+			writeRPC(map[string]interface{}{"task": task})
+			return
+		case "message-open":
+			writeRPC(map[string]interface{}{"message": map[string]interface{}{
+				"messageId": "reply-1", "role": "ROLE_AGENT", "parts": []interface{}{map[string]string{"text": "ok"}},
+			}})
+			return
 		case "control-wrong-id":
 			if activated {
 				writeRPCWithID("other-request", task)
@@ -160,13 +183,13 @@ func extensionServer(mode string, required bool) *httptest.Server {
 				writeErr(-32008, "extension support required")
 				return
 			}
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		case "omitted-generic":
 			if !activated {
 				writeErr(-32600, "invalid request")
 				return
 			}
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		case "omitted-transport":
 			if !activated {
 				conn, _, err := w.(http.Hijacker).Hijack()
@@ -175,13 +198,13 @@ func extensionServer(mode string, required bool) *httptest.Server {
 				}
 				return
 			}
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		case "omitted-wrong-id":
 			if !activated {
 				rpcErr(w, "other-request", -32008, "extension support required")
 				return
 			}
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		case "omitted-service-error", "omitted-rate-limit", "omitted-timeout":
 			if !activated {
 				status := http.StatusServiceUnavailable
@@ -195,9 +218,9 @@ func extensionServer(mode string, required bool) *httptest.Server {
 				writeErr(-32008, "extension support required")
 				return
 			}
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		default: // failopen
-			writeRPC(map[string]interface{}{"id": "task-1", "contextId": "ctx-1", "status": "working"})
+			writeRPC(task)
 		}
 	})
 	return httptest.NewServer(mux)
@@ -257,6 +280,33 @@ func TestExtDowngrade_RejectsUncorrelatedAndCachedReplies(t *testing.T) {
 				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
 				t.Fatalf("findings=%+v err=%v, want no finding and incomplete=%v", findings, err, tc.incomplete)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_RequiresSendResult(t *testing.T) {
+	for _, mode := range []string{"control-null", "control-empty", "control-id-only",
+		"omitted-null", "omitted-empty", "omitted-id-only"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, true)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unjudged send result must not prove a downgrade: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_AcceptsTaskAndMessageResults(t *testing.T) {
+	for _, mode := range []string{"wrapped-open", "message-open"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, true)
+			defer ts.Close()
+			if findings := runExtDowngrade(t, ts); len(findings) != 1 {
+				t.Fatalf("valid send result should establish a downgrade: findings=%+v", findings)
 			}
 		})
 	}
@@ -467,7 +517,9 @@ func TestExtDowngrade_SendsModernHeader(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"jsonrpc": "2.0", "id": b["id"], "result": map[string]interface{}{"id": "task-1"},
+			"jsonrpc": "2.0", "id": b["id"], "result": map[string]interface{}{
+				"id": "task-1", "status": map[string]string{"state": "working"},
+			},
 		})
 	})
 	ts := httptest.NewServer(mux)
