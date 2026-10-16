@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -95,8 +94,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			attack.ErrInconclusive, endpoint)
 	}
 
-	forgedOK := forgedResp.IsAccepted()
-	baselineOK := baselineResp.IsAccepted()
+	forgedOK := peerSendAccepted(forgedResp)
+	baselineOK := peerSendAccepted(baselineResp)
 	forgedDenied := peerAuthDenied(forgedResp)
 	baselineDenied := peerAuthDenied(baselineResp)
 
@@ -196,64 +195,68 @@ func peerAuthDenied(resp *attack.Response) bool {
 type impersonationWire struct {
 	name    string
 	headers map[string]string
-	body    map[string]interface{}
+	method  string
+	role    interface{}
+	part    map[string]string
 }
 
 // impersonationWires lists the v1.0 and v0.3 send methods, newest first.
-func impersonationWires(randID string) []impersonationWire {
+func impersonationWires() []impersonationWire {
 	return []impersonationWire{
 		{
 			name:    "v1.0 SendMessage",
 			headers: map[string]string{"A2A-Version": "1.0"},
-			body: jsonRPCCall("batesian-peer-"+randID+"-v1", "SendMessage", map[string]interface{}{
-				"configuration": map[string]interface{}{"returnImmediately": true},
-				"message": map[string]interface{}{
-					"messageId": "batesian-pi-" + randID,
-					"role":      "ROLE_USER",
-					"parts":     []interface{}{map[string]interface{}{"text": "ping"}},
-				},
-			}),
+			method:  "SendMessage",
+			role:    "ROLE_USER",
+			part:    map[string]string{"text": "ping"},
 		},
 		{
-			// v0.3: slash method, lowercase role, and parts carry a kind. messageId
-			// is required by the Message schema, which the previous body omitted.
-			name: "v0.3 message/send",
-			body: jsonRPCCall("batesian-peer-"+randID+"-v03", "message/send", map[string]interface{}{
-				"message": map[string]interface{}{
-					"messageId": "batesian-pi-" + randID,
-					"role":      "user",
-					"parts":     []interface{}{map[string]interface{}{"kind": "text", "text": "ping"}},
-				},
-			}),
+			name:   "v0.3 message/send",
+			method: "message/send",
+			role:   "user",
+			part:   map[string]string{"kind": "text", "text": "ping"},
 		},
 	}
+}
+
+func (w impersonationWire) request(requestID, messageID string) map[string]interface{} {
+	params := map[string]interface{}{
+		"message": map[string]interface{}{
+			"messageId": messageID,
+			"role":      w.role,
+			"parts":     []interface{}{w.part},
+		},
+	}
+	if w.method == "SendMessage" {
+		params["configuration"] = map[string]interface{}{"returnImmediately": true}
+	}
+	return jsonRPCCall(requestID, w.method, params)
 }
 
 // probeWires skips unsupported methods and records unobserved comparisons.
 func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
 	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, incomplete []string, ok bool) {
-	for i, w := range impersonationWires(randID) {
+	for i, w := range impersonationWires() {
 		requestID := fmt.Sprintf("batesian-peer-%s-%d", randID, i)
 		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
 		for k, v := range w.headers {
 			forgedHeaders[k] = v
 		}
-		forgedBody := maps.Clone(w.body)
-		forgedBody["id"] = requestID + "-forged"
-		fResp, err := client.POST(ctx, endpoint, forgedHeaders, forgedBody)
+		forgedID := requestID + "-forged"
+		fResp, err := client.POST(ctx, endpoint, forgedHeaders,
+			w.request(forgedID, forgedID+"-message"))
 		if err != nil {
 			incomplete = append(incomplete, w.name+" forged request failed")
 			continue
 		}
-		baselineBody := maps.Clone(w.body)
-		baselineBody["id"] = requestID + "-anonymous"
-		bResp, err := unauthClient.POST(ctx, endpoint, w.headers, baselineBody)
+		baselineID := requestID + "-anonymous"
+		bResp, err := unauthClient.POST(ctx, endpoint, w.headers,
+			w.request(baselineID, baselineID+"-message"))
 		if err != nil {
 			incomplete = append(incomplete, w.name+" anonymous request failed")
 			continue
 		}
-		if !peerReplyCorrelated(fResp, requestID+"-forged") ||
-			!peerReplyCorrelated(bResp, requestID+"-anonymous") {
+		if !peerReplyCorrelated(fResp, forgedID) || !peerReplyCorrelated(bResp, baselineID) {
 			incomplete = append(incomplete, w.name+" reply did not match its request ID")
 			continue
 		}
@@ -264,9 +267,60 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 			incomplete = append(incomplete, w.name+" method availability differed between probes")
 			continue
 		}
+		if !peerSendAccepted(fResp) && !peerAuthDenied(fResp) {
+			incomplete = append(incomplete, w.name+" forged response did not establish a send result or authentication rejection")
+			continue
+		}
+		if !peerSendAccepted(bResp) && !peerAuthDenied(bResp) {
+			incomplete = append(incomplete, w.name+" anonymous response did not establish a send result or authentication rejection")
+			continue
+		}
 		return fResp, bResp, w.name, incomplete, true
 	}
 	return nil, nil, "", incomplete, false
+}
+
+func peerSendAccepted(resp *attack.Response) bool {
+	if resp == nil || !resp.IsAccepted() {
+		return false
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(resp.Body, &envelope) != nil {
+		return false
+	}
+	var wrapped struct {
+		Task    json.RawMessage `json:"task"`
+		Message json.RawMessage `json:"message"`
+	}
+	if json.Unmarshal(envelope.Result, &wrapped) != nil {
+		return false
+	}
+	if len(wrapped.Task) > 0 || len(wrapped.Message) > 0 {
+		if len(wrapped.Task) > 0 && len(wrapped.Message) > 0 {
+			return false
+		}
+		if len(wrapped.Task) > 0 {
+			envelope.Result = wrapped.Task
+		} else {
+			envelope.Result = wrapped.Message
+		}
+	}
+	var result struct {
+		ID     string `json:"id"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+		MessageID string            `json:"messageId"`
+		Role      json.RawMessage   `json:"role"`
+		Parts     []json.RawMessage `json:"parts"`
+	}
+	if json.Unmarshal(envelope.Result, &result) != nil {
+		return false
+	}
+	return result.ID != "" && result.Status.State != "" ||
+		result.MessageID != "" && len(result.Role) > 0 && string(result.Role) != "null" && len(result.Parts) > 0
 }
 
 func peerReplyCorrelated(resp *attack.Response, requestID string) bool {

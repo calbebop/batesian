@@ -592,7 +592,7 @@ func TestPeerImpersonation_ServiceErrorDoesNotProveMethodAbsent(t *testing.T) {
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("want incomplete after a v1 service failure, got findings=%v err=%v", findings, err)
 			}
-			if !strings.Contains(err.Error(), "v1.0 SendMessage forged token response") {
+			if !strings.Contains(err.Error(), "v1.0 SendMessage forged response") {
 				t.Fatalf("missing v1 service failure reason: %v", err)
 			}
 		})
@@ -713,7 +713,7 @@ func TestPeerImpersonation_FindingSurvivesMismatchedWire(t *testing.T) {
 			}
 			writeJSON(w, map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": "task-001"},
+				"result": map[string]interface{}{"id": "task-001", "status": map[string]interface{}{"state": "completed"}},
 			})
 		}
 	}))
@@ -782,6 +782,150 @@ func TestPeerImpersonation_CorrelatesProbeReplies(t *testing.T) {
 				t.Fatalf("fallback wire missing from evidence: %s", findings[0].Evidence)
 			}
 		})
+	}
+}
+
+func TestPeerImpersonation_UsesDistinctMessageIDs(t *testing.T) {
+	for _, supported := range []string{"SendMessage", "message/send"} {
+		t.Run(supported, func(t *testing.T) {
+			var messageIDs []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				if req["method"] != "SendMessage" && req["method"] != "message/send" {
+					rpcErr(w, req["id"], -32601, "Method not found")
+					return
+				}
+				params, _ := req["params"].(map[string]interface{})
+				message, _ := params["message"].(map[string]interface{})
+				messageID, _ := message["messageId"].(string)
+				messageIDs = append(messageIDs, messageID)
+				if req["method"] != supported {
+					rpcErr(w, req["id"], -32601, "Method not found")
+					return
+				}
+				if r.Header.Get("Authorization") == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"id": "task-1", "status": map[string]interface{}{"state": "completed"}}})
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				context.Background(), srv.URL, testOpts())
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			want := 2
+			if supported == "message/send" {
+				want = 4
+			}
+			if len(messageIDs) != want {
+				t.Fatalf("message IDs = %v, want %d probes", messageIDs, want)
+			}
+			seen := make(map[string]bool, len(messageIDs))
+			for _, id := range messageIDs {
+				if id == "" || seen[id] {
+					t.Fatalf("message IDs must be distinct and nonempty: %v", messageIDs)
+				}
+				seen[id] = true
+			}
+		})
+	}
+}
+
+func TestPeerImpersonation_RequiresSendResult(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		v03Result   interface{}
+		wantFinding bool
+	}{
+		{"null replies", nil, false},
+		{"empty result", map[string]interface{}{}, false},
+		{"task ID without status", map[string]interface{}{"id": "task-1"}, false},
+		{"message ID without parts", map[string]interface{}{"messageId": "reply-1", "role": "agent"}, false},
+		{"empty task wrapper", map[string]interface{}{"task": map[string]interface{}{}}, false},
+		{"v0.3 task after generic v1 reply", map[string]interface{}{
+			"id": "task-1", "status": map[string]interface{}{"state": "completed"},
+		}, true},
+		{"v0.3 message after generic v1 reply", map[string]interface{}{
+			"messageId": "reply-1", "role": "agent", "parts": []interface{}{map[string]string{"kind": "text", "text": "ok"}},
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				if r.Header.Get("Authorization") == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				var result interface{}
+				if req["method"] == "message/send" {
+					result = tc.v03Result
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result})
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				context.Background(), srv.URL, testOpts())
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want incomplete v1.0 probe, findings=%+v err=%v", findings, err)
+			}
+			if (len(findings) == 1) != tc.wantFinding {
+				t.Fatalf("findings=%+v, want finding=%v", findings, tc.wantFinding)
+			}
+			if tc.wantFinding && !strings.Contains(findings[0].Evidence, "v0.3 message/send") {
+				t.Fatalf("expected v0.3 evidence, got %s", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestPeerImpersonation_AcceptsWrappedV1SendResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, cardWithIssuer("peer-agent"))
+			return
+		}
+		req := readBody(r)
+		if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+			rpcErr(w, req["id"], -32001, "Task not found")
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+			"result": map[string]interface{}{"task": map[string]interface{}{
+				"id": "task-1", "status": map[string]interface{}{"state": "completed"},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+		context.Background(), srv.URL, testOpts())
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "v1.0 SendMessage") {
+		t.Fatalf("wrapped v1.0 reply should establish the send result: findings=%+v err=%v", findings, err)
 	}
 }
 
