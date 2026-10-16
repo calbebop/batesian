@@ -105,38 +105,29 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	// attempts below already have, so a refused credential is not reported as "this
 	// agent does not fetch attacker-controlled callbacks".
 	credentialed := client.PresentsCredential(endpoint)
-	if err != nil || !pushReplyAccepted(sendResp, sendID) {
+	taskID := pushTaskReplyID(sendResp, sendID)
+	if err != nil || taskID == "" {
 		obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
 	}
-	if err == nil && pushReplyAccepted(sendResp, sendID) {
-		// Got a task - try to register push notification config for it
-		taskID, _ := extractTaskContext(sendResp.Body)
-		if taskID != "" {
-			// params IS a TaskPushNotificationConfig, whose fields are taskId,
-			// url, token, id, tenant and authentication. The callback is named
-			// url; there is no pushNotificationUrl, and sending one earns
-			// -32602 "has no field named" from a2a-sdk v1, so this step never
-			// registered anything against a real v1 agent.
-			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      pushID,
-				"method":  "CreateTaskPushNotificationConfig",
-				"params": map[string]interface{}{
-					"taskId": taskID,
-					"url":    callbackURL,
-					"token":  token,
-				},
-			})
-			if pushErr == nil && pushRegistrationReplyAccepted(pushResp, pushID, "CreateTaskPushNotificationConfig", taskID, callbackURL) {
-				taskAccepted = true
-				registrationConfirmed = true
-				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
-				recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
-			} else {
-				obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
-			}
+	if err == nil && taskID != "" {
+		// The v1 config uses url, not pushNotificationUrl.
+		pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      pushID,
+			"method":  "CreateTaskPushNotificationConfig",
+			"params": map[string]interface{}{
+				"taskId": taskID,
+				"url":    callbackURL,
+				"token":  token,
+			},
+		})
+		if pushErr == nil && pushRegistrationReplyAccepted(pushResp, pushID, "CreateTaskPushNotificationConfig", taskID, callbackURL) {
+			taskAccepted = true
+			registrationConfirmed = true
+			acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
+			recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
 		} else {
-			obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
+			obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
 		}
 	}
 
@@ -153,40 +144,34 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		if err2 == nil && sendResp2 != nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 != nil || !pushReplyAccepted(sendResp2, legacyID) {
+		taskID := pushTaskReplyID(sendResp2, legacyID)
+		if err2 != nil || taskID == "" {
 			obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
 		}
-		if err2 == nil && pushReplyAccepted(sendResp2, legacyID) {
-			// A task id is what makes this a registration rather than a plain
-			// echo: an agent that answers with a Message has nothing to attach a
-			// push config to, and claiming otherwise would have the rule wait
-			// for a callback nobody agreed to send.
-			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
-				taskAccepted = true
-				acceptedBinding = "JSONRPC/v0.3-message-send"
-				recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
+		if err2 == nil && taskID != "" {
+			// Only a Task can carry a push registration.
+			taskAccepted = true
+			acceptedBinding = "JSONRPC/v0.3-message-send"
+			recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
 
-				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      setID,
-					"method":  "tasks/pushNotificationConfig/set",
-					"params": map[string]interface{}{
-						"taskId": taskID,
-						"pushNotificationConfig": map[string]string{
-							"url":   callbackURL,
-							"token": token,
-						},
+			setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      setID,
+				"method":  "tasks/pushNotificationConfig/set",
+				"params": map[string]interface{}{
+					"taskId": taskID,
+					"pushNotificationConfig": map[string]string{
+						"url":   callbackURL,
+						"token": token,
 					},
-				})
-				if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
-					registrationConfirmed = true
-					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
-					recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
-				} else {
-					obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
-				}
+				},
+			})
+			if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
+				registrationConfirmed = true
+				acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+				recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
 			} else {
-				obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
+				obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
 			}
 		}
 	}
@@ -203,8 +188,8 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 					reached = true
 				}
 				taskID := ""
-				if err3 == nil && sendResp3 != nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
-					taskID = restTaskID(sendResp3.Body)
+				if err3 == nil {
+					taskID = restPushTaskID(sendResp3)
 				}
 				if taskID != "" {
 					cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))

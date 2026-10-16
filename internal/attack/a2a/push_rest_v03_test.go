@@ -39,7 +39,9 @@ func v03RESTPushServer(t *testing.T, auth, signed, messageOnly bool) (*httptest.
 			writeJSON(w, map[string]interface{}{"message": map[string]string{"messageId": "reply"}})
 			return
 		}
-		writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "task-legacy", "contextId": "ctx-legacy"}})
+		writeJSON(w, map[string]interface{}{"task": map[string]interface{}{
+			"id": "task-legacy", "contextId": "ctx-legacy", "status": map[string]string{"state": "submitted"},
+		}})
 	})
 	mux.HandleFunc("/agent/v1/tasks/task-legacy/pushNotificationConfigs", func(w http.ResponseWriter, r *http.Request) {
 		body := readBody(r)

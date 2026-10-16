@@ -29,7 +29,9 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 		case "SendMessage":
 			writeJSON(w, map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"id": "task-push-001", "contextId": "ctx-push-001"},
+				"result": map[string]interface{}{
+					"id": "task-push-001", "contextId": "ctx-push-001", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"},
+				},
 			})
 		case "CreateTaskPushNotificationConfig":
 			params, _ := req["params"].(map[string]interface{})
@@ -94,7 +96,9 @@ func v03PushServer(t *testing.T) *httptest.Server {
 		case "message/send":
 			writeJSON(w, map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"id": "task-v03-001", "contextId": "ctx-v03-001"},
+				"result": map[string]interface{}{
+					"id": "task-v03-001", "contextId": "ctx-v03-001", "status": map[string]string{"state": "submitted"},
+				},
 			})
 		case "tasks/pushNotificationConfig/set":
 			cfg, _ := params["pushNotificationConfig"].(map[string]interface{})
@@ -206,7 +210,9 @@ func restPushServer(t *testing.T, prefix string, staleFirst bool) *httptest.Serv
 	mux.HandleFunc(prefix+"/message:send", func(w http.ResponseWriter, r *http.Request) {
 		// The shape a2a-sdk actually returns from REST message:send.
 		writeJSON(w, map[string]interface{}{
-			"task": map[string]interface{}{"id": "task-rest-001", "contextId": "ctx-rest-001"},
+			"task": map[string]interface{}{
+				"id": "task-rest-001", "contextId": "ctx-rest-001", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"},
+			},
 		})
 	})
 	mux.HandleFunc(prefix+"/tasks/task-rest-001/pushNotificationConfigs", func(w http.ResponseWriter, r *http.Request) {

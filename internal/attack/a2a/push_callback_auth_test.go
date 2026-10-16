@@ -255,7 +255,9 @@ func TestCbAuth_V03AuthenticationShape(t *testing.T) {
 			if len(schemes) != 1 || schemes[0] != "Bearer" || auth["credentials"] == "" {
 				t.Errorf("v0.3 inline config missing Bearer authentication: %+v", push)
 			}
-			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": map[string]string{"id": "task-v03-auth", "contextId": "ctx"}})
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": map[string]interface{}{
+				"id": "task-v03-auth", "contextId": "ctx", "status": map[string]string{"state": "submitted"},
+			}})
 		case "tasks/pushNotificationConfig/set":
 			push, _ := params["pushNotificationConfig"].(map[string]interface{})
 			auth, _ := push["authentication"].(map[string]interface{})
@@ -300,7 +302,9 @@ func runCbAuthREST(t *testing.T, staleFirst bool) {
 		})
 	})
 	mux.HandleFunc("/v1/message:send", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "task-rest-auth", "contextId": "ctx"}})
+		writeJSON(w, map[string]interface{}{"task": map[string]interface{}{
+			"id": "task-rest-auth", "contextId": "ctx", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"},
+		}})
 	})
 	mux.HandleFunc("/v1/tasks/task-rest-auth/pushNotificationConfigs", func(w http.ResponseWriter, r *http.Request) {
 		config := readBody(r)
