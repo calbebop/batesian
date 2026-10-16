@@ -17,7 +17,7 @@ func pushSetupServer(mode string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent-card.json" {
 			binding, path := "JSONRPC", "/"
-			if mode == "rest-config-gateway" {
+			if mode == "rest-config-gateway" || mode == "rest-config-invalid" {
 				binding, path = "HTTP+JSON", "/api"
 			}
 			writeJSON(w, map[string]any{
@@ -33,6 +33,10 @@ func pushSetupServer(mode string) *httptest.Server {
 			return
 		}
 		if r.URL.Path == "/api/tasks/task-setup/pushNotificationConfigs" {
+			if mode == "rest-config-invalid" {
+				writeJSON(w, map[string]any{})
+				return
+			}
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
@@ -65,7 +69,8 @@ func pushSetupServer(mode string) *httptest.Server {
 				return
 			}
 			if mode == "v03-set-gateway" || mode == "v03-inline-callback" || mode == "rest-config-gateway" ||
-				mode == "v03-send-wrong-id" || mode == "v03-set-wrong-id" {
+				mode == "rest-config-invalid" ||
+				mode == "v03-send-wrong-id" || mode == "v03-set-wrong-id" || strings.HasPrefix(mode, "v03-invalid-") {
 				rpcErr(w, id, -32601, "Method not found")
 				return
 			}
@@ -74,6 +79,20 @@ func pushSetupServer(mode string) *httptest.Server {
 			}
 			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"id": "task-setup"}})
 		case "CreateTaskPushNotificationConfig":
+			if strings.HasPrefix(mode, "v1-config-invalid-") {
+				params, _ := req["params"].(map[string]any)
+				var result any
+				switch mode {
+				case "v1-config-invalid-empty":
+					result = map[string]any{}
+				case "v1-config-invalid-task":
+					result = map[string]any{"taskId": "other", "url": params["url"]}
+				case "v1-config-invalid-url":
+					result = map[string]any{"taskId": "task-setup", "url": "https://other.example/cb"}
+				}
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+				return
+			}
 			if mode == "v1-config-unsupported" || mode == "v1-unsupported-v03-confirm" {
 				rpcErr(w, id, -32003, "Push notifications not supported")
 				return
@@ -86,13 +105,17 @@ func pushSetupServer(mode string) *httptest.Server {
 				if mode == "v1-config-wrong-id-v03-confirm" {
 					id = "other-request"
 				}
-				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"taskId": "task-setup"}})
+				params, _ := req["params"].(map[string]any)
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{
+					"taskId": "task-setup", "url": params["url"],
+				}})
 				return
 			}
 			w.WriteHeader(http.StatusBadGateway)
 		case "message/send":
 			if mode == "v03-set-gateway" || mode == "v03-inline-callback" ||
 				mode == "v1-send-gateway-v03-confirm" || mode == "v1-config-gateway-v03-confirm" ||
+				strings.HasPrefix(mode, "v1-config-invalid-") || strings.HasPrefix(mode, "v03-invalid-") ||
 				mode == "v1-message-v03-confirm" || mode == "v1-unsupported-v03-confirm" ||
 				mode == "v1-send-wrong-id-v03-confirm" || mode == "v1-config-wrong-id-v03-confirm" ||
 				mode == "v03-send-wrong-id" || mode == "v03-set-wrong-id" {
@@ -117,14 +140,32 @@ func pushSetupServer(mode string) *httptest.Server {
 			}
 			rpcErr(w, id, -32601, "Method not found")
 		case "tasks/pushNotificationConfig/set":
+			if strings.HasPrefix(mode, "v03-invalid-") {
+				params, _ := req["params"].(map[string]any)
+				var result any
+				switch mode {
+				case "v03-invalid-empty":
+					result = map[string]any{}
+				case "v03-invalid-task":
+					result = map[string]any{"taskId": "other", "pushNotificationConfig": params["pushNotificationConfig"]}
+				case "v03-invalid-url":
+					result = map[string]any{"taskId": "task-setup", "pushNotificationConfig": map[string]string{"url": "https://other.example/cb"}}
+				}
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+				return
+			}
 			if mode == "v1-send-gateway-v03-confirm" || mode == "v1-config-gateway-v03-confirm" ||
+				strings.HasPrefix(mode, "v1-config-invalid-") ||
 				mode == "v1-message-v03-confirm" || mode == "v1-unsupported-v03-confirm" ||
 				mode == "v1-send-wrong-id-v03-confirm" || mode == "v1-config-wrong-id-v03-confirm" ||
 				mode == "v03-send-wrong-id" || mode == "v03-set-wrong-id" {
 				if mode == "v03-set-wrong-id" {
 					id = "other-request"
 				}
-				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"taskId": "task-setup"}})
+				params, _ := req["params"].(map[string]any)
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{
+					"taskId": "task-setup", "pushNotificationConfig": params["pushNotificationConfig"],
+				}})
 				return
 			}
 			w.WriteHeader(http.StatusBadGateway)
@@ -227,6 +268,64 @@ func TestPushSetup_FallbackRetainsUnjudgedAttempts(t *testing.T) {
 	}
 }
 
+func TestPushSetup_InvalidV1RegistrationFallsBack(t *testing.T) {
+	for _, mode := range []string{
+		"v1-config-invalid-null", "v1-config-invalid-empty", "v1-config-invalid-task", "v1-config-invalid-url",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			srv := pushSetupServer(mode)
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
+						!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "did not confirm the task and callback URL") {
+						t.Fatalf("fallback must retain the unconfirmed v1 registration: findings=%+v err=%v", findings, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPushSetup_InvalidLegacyRegistrationIsIncomplete(t *testing.T) {
+	for _, mode := range []string{"v03-invalid-null", "v03-invalid-empty", "v03-invalid-task", "v03-invalid-url"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := pushSetupServer(mode)
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+						!strings.Contains(err.Error(), "did not confirm the task and callback URL") {
+						t.Fatalf("invalid legacy registration must be incomplete: findings=%+v err=%v", findings, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPushSetup_InvalidRESTRegistrationIsIncomplete(t *testing.T) {
+	srv := pushSetupServer("rest-config-invalid")
+	defer srv.Close()
+	for _, rule := range pushSetupRules() {
+		t.Run(rule.name, func(t *testing.T) {
+			findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+				TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+			})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "did not confirm the task and callback URL") {
+				t.Fatalf("empty REST config must be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 func TestPushSetup_WrongReplyIDRetainsFallback(t *testing.T) {
 	for _, mode := range []string{"v1-send-wrong-id-v03-confirm", "v1-config-wrong-id-v03-confirm"} {
 		t.Run(mode, func(t *testing.T) {
@@ -310,7 +409,8 @@ func TestPushSetup_RESTFallbackRetainsUnjudgedAttempts(t *testing.T) {
 				case "/api/message:send":
 					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
 				case "/api/tasks/task-setup/pushNotificationConfigs":
-					writeJSON(w, map[string]any{"taskId": "task-setup", "url": "registered"})
+					config := readBody(r)
+					writeJSON(w, map[string]any{"taskId": "task-setup", "url": config["url"]})
 				case "/":
 					req := readBody(r)
 					rpcErr(w, req["id"], -32601, "Method not found")

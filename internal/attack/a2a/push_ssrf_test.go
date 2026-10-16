@@ -32,8 +32,8 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 				"result": map[string]interface{}{"id": "task-push-001", "contextId": "ctx-push-001"},
 			})
 		case "CreateTaskPushNotificationConfig":
+			params, _ := req["params"].(map[string]interface{})
 			if callBack {
-				params, _ := req["params"].(map[string]interface{})
 				if url, _ := params["url"].(string); url != "" {
 					token, _ := params["token"].(string)
 					hc := &http.Client{Timeout: 3 * time.Second}
@@ -45,7 +45,9 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 					}
 				}
 			}
-			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{"ok": true}})
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"taskId": "task-push-001", "url": params["url"],
+			}})
 		default:
 			writeJSON(w, jsonRPCError(-32601, "Method not found"))
 		}
@@ -106,7 +108,9 @@ func v03PushServer(t *testing.T) *httptest.Server {
 					}
 				}
 			}
-			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{"ok": true}})
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"taskId": "task-v03-001", "pushNotificationConfig": cfg,
+			}})
 		default:
 			// Covers SendMessage and tasks/send alike: a v0.3-only server knows
 			// neither.
@@ -217,7 +221,7 @@ func restPushServer(t *testing.T, prefix string, staleFirst bool) *httptest.Serv
 				}
 			}
 		}
-		writeJSON(w, map[string]interface{}{"taskId": "task-rest-001", "url": "registered"})
+		writeJSON(w, map[string]interface{}{"taskId": "task-rest-001", "url": body["url"]})
 	})
 
 	srv.Start()
