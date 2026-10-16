@@ -22,7 +22,7 @@ import (
 // A server that processes requests which omit its own required extension has
 // silently downgraded the negotiated capability set. The executor only reports a
 // CONFIRMED downgrade when an extension-activating control request is accepted
-// AND the same request with the header omitted is also accepted.
+// AND a fresh request with the header omitted is also accepted.
 type ExtensionDowngradeExecutor struct {
 	rule attack.RuleContext
 }
@@ -85,10 +85,11 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 
 	var observed setupObservation
 	tested := false
-	for _, uri := range required {
+	for i, uri := range required {
+		requestScope := fmt.Sprintf("%s-%d", vars.RandID, i)
 		// Control: activate the required extension. If even this is rejected we
 		// cannot exercise the rule (e.g. messaging needs creds we lack).
-		accepted, shape, ctrlObs, _ := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, "")
+		accepted, shape, ctrlObs, _ := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, requestScope+"-control", "")
 		if !accepted {
 			observed.observe(ctrlObs)
 			continue
@@ -97,7 +98,7 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 			observed.observe(ctrlObs)
 		}
 		// Test: omit the extension header and reuse the shape that worked.
-		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, shape)
+		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, requestScope+"-omitted", shape)
 		if omitted {
 			finding := e.finding(endpoint, uri, shape)
 			if cardReadReason != "" {
@@ -169,7 +170,7 @@ func (e *ExtensionDowngradeExecutor) requiredExtensions(ctx context.Context, cli
 }
 
 // sendMessage tries both wire shapes, or only forceShape when set.
-func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, forceShape string) (accepted bool, shape string, obs setupObservation, rejectedRequired bool) {
+func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.HTTPClient, endpoint string, extra map[string]string, randID, requestScope, forceShape string) (accepted bool, shape string, obs setupObservation, rejectedRequired bool) {
 	type variant struct {
 		name   string
 		method string
@@ -188,24 +189,24 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		for k, val := range extra {
 			headers[k] = val
 		}
+		requestID := "batesian-ext-" + requestScope + "-" + v.name
 		params := map[string]interface{}{
 			"message": map[string]interface{}{
 				"role":      v.role,
 				"parts":     []interface{}{v.part},
-				"messageId": "batesian-ext-" + randID,
+				"messageId": requestID + "-message",
 			},
 		}
 		if v.name == "v1.0" {
 			params["configuration"] = map[string]interface{}{"returnImmediately": true}
 		}
-		requestID := "batesian-ext-" + v.name + "-" + randID
 		resp, err := c.POST(ctx, endpoint, headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
 			"method":  v.method,
 			"params":  params,
 		})
-		if err == nil && resp != nil && resp.IsAccepted() {
+		if err == nil && taskSetupReplyAccepted(resp, requestID) {
 			return true, v.name, obs, false
 		}
 		if forceShape != "" && err == nil && resp != nil {
@@ -215,8 +216,8 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 				return false, "", setupObservation{}, true
 			}
 		}
-		obs.observe(classifyTaskSetup("activating a required extension", endpoint,
-			c.PresentsCredential(endpoint), resp))
+		obs.observe(correlatedTaskSetup("activating a required extension", endpoint,
+			c.PresentsCredential(endpoint), resp, requestID))
 	}
 	return false, "", obs, false
 }
@@ -231,7 +232,7 @@ func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack
 		Description: fmt.Sprintf(
 			"The agent card marks extension %q as required, but the server accepted a SendMessage that "+
 				"OMITTED the A2A-Extensions activation header. A request that activates the extension and an "+
-				"identical request that does not are both processed, so the required extension's policy or "+
+				"otherwise equivalent request that does not are both processed, so the required extension's policy or "+
 				"capability guarantees can be bypassed simply by not sending the header. The A2A spec requires "+
 				"a server to reject a request that does not activate a required extension (ExtensionSupportRequiredError).", uri),
 		Evidence: fmt.Sprintf(
