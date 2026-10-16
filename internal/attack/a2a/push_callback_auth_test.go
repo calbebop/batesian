@@ -266,7 +266,9 @@ func TestCbAuth_V03AuthenticationShape(t *testing.T) {
 			}
 			callbackURL, _ := push["url"].(string)
 			sendAuthenticatedNotification(t, callbackURL, "task-v03-auth", credential)
-			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": push})
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": map[string]interface{}{
+				"taskId": "task-v03-auth", "pushNotificationConfig": push,
+			}})
 		default:
 			rpcErr(w, request["id"], -32601, "method not found")
 		}

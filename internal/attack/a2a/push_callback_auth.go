@@ -120,14 +120,14 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					},
 				},
 			})
-			if pushErr == nil && pushReplyAccepted(pushResp, pushID) {
+			if pushErr == nil && pushRegistrationReplyAccepted(pushResp, pushID, "CreateTaskPushNotificationConfig", taskID, callbackURL) {
 				taskAccepted = true
 				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
 				acceptedTaskID = taskID
 				recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
 			} else {
-				obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID))
+				obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
 			}
 		} else {
 			obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
@@ -165,12 +165,12 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 						},
 					},
 				})
-				if setErr == nil && pushReplyAccepted(setResp, setID) {
+				if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
 					registrationConfirmed = true
 					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
 					recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
 				} else {
-					obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID))
+					obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
 				}
 			} else {
 				obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
@@ -197,14 +197,15 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))
 					cfgResp, cfgErr := client.POST(ctx, cfgURL, headers,
 						restPushConfigRequest(taskID, callbackURL, token, credential, vars.RandID, route.version))
-					if cfgErr == nil && cfgResp != nil && cfgResp.IsSuccess() && cfgResp.IsJSON() && !isJSONRPCError(cfgResp.Body) {
+					if cfgErr == nil && restPushRegistrationReplyAccepted(cfgResp, taskID, callbackURL, route.version) {
 						taskAccepted = true
 						registrationConfirmed = true
 						acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
 						acceptedTaskID = taskID
 						recordPushConfig(opts.TargetState, cfgURL, taskID, route.version, cfgResp)
 					} else {
-						obs.observe(classifyPushRegistration("HTTP+JSON/"+route.version+" pushNotificationConfigs", cfgResp))
+						obs.observe(restPushRegistrationOutcome("HTTP+JSON/"+route.version+" pushNotificationConfigs",
+							cfgResp, taskID, callbackURL, route.version))
 					}
 				} else {
 					obs.observe(classifyRESTPushTaskSetup("creating a task on the HTTP+JSON/"+route.version+" wire",

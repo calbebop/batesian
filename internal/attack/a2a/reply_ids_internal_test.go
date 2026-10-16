@@ -114,7 +114,7 @@ func TestPushBindingSetIDsSeparateConfigs(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": req.ID,
-			"result": map[string]string{"taskId": "task-1", "id": req.Params.ID},
+			"result": map[string]string{"taskId": "task-1", "id": req.Params.ID, "url": "https://example.test/cb"},
 		})
 	}))
 	defer server.Close()

@@ -235,7 +235,7 @@ func (e *PushBindingExecutor) setPush(ctx context.Context, c *attack.HTTPClient,
 			"method":  at.method,
 			"params":  at.params,
 		})
-		if err == nil && resp != nil && resp.IsAccepted() {
+		if err == nil && pushRegistrationReplyAccepted(resp, requestID, at.method, taskID, url) {
 			if returned := pushResult(resp.Body, requestID); returned != nil {
 				set := pushSet{accepted: true, judged: true, partial: unjudged, v1: at.method == "CreateTaskPushNotificationConfig", id: configID}
 				if id, _ := returned["id"].(string); id != "" {

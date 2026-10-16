@@ -25,6 +25,10 @@ func TestRun_A2APushCallbackNotObservedIsSkipped(t *testing.T) {
 		var request struct {
 			ID     string `json:"id"`
 			Method string `json:"method"`
+			Params struct {
+				TaskID string `json:"taskId"`
+				URL    string `json:"url"`
+			} `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
@@ -32,8 +36,11 @@ func TestRun_A2APushCallbackNotObservedIsSkipped(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		result := map[string]interface{}{"ok": true}
-		if request.Method == "SendMessage" {
+		switch request.Method {
+		case "SendMessage":
 			result = map[string]interface{}{"id": "task-1", "contextId": "ctx-1"}
+		case "CreateTaskPushNotificationConfig":
+			result = map[string]interface{}{"taskId": request.Params.TaskID, "url": request.Params.URL}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": request.ID, "result": result})
 	}))
