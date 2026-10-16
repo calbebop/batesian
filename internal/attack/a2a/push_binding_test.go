@@ -94,7 +94,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			}
 			tid := "task-" + who
 			taskOwner[tid] = who
-			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": "working"})
+			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": map[string]string{"state": "working"}})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
 			if method == "CreateTaskPushNotificationConfig" &&
 				((mode == "v1-owner-set-unavailable" && who == "tenant-a") ||

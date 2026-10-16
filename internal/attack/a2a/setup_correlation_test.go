@@ -31,7 +31,7 @@ func TestOwnerTaskSetupCorrelatesReplies(t *testing.T) {
 			return (&TaskEnumerationExecutor{}).createTask(ctx, c, ep, p, id)
 		}},
 	}
-	for _, mode := range []string{"valid", "wrong result", "wrong error", "both wrong"} {
+	for _, mode := range []string{"valid", "wrong result", "wrong error", "both wrong", "null v1", "empty v1"} {
 		for _, tc := range creators {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +44,7 @@ func TestOwnerTaskSetupCorrelatesReplies(t *testing.T) {
 						return
 					}
 					id := req.ID
-					if (req.Method == "SendMessage" && mode != "valid") ||
+					if (req.Method == "SendMessage" && (mode == "wrong result" || mode == "wrong error" || mode == "both wrong")) ||
 						(req.Method == "message/send" && mode == "both wrong") {
 						id = "other-request"
 					}
@@ -62,8 +62,16 @@ func TestOwnerTaskSetupCorrelatesReplies(t *testing.T) {
 					if req.Method == "message/send" {
 						taskID = "task-v03"
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id,
-						"result": map[string]string{"id": taskID}})
+					var result any = map[string]interface{}{"id": taskID, "status": map[string]string{"state": "submitted"}}
+					if req.Method == "SendMessage" {
+						switch mode {
+						case "null v1":
+							result = nil
+						case "empty v1":
+							result = map[string]interface{}{}
+						}
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
 				}))
 				defer srv.Close()
 

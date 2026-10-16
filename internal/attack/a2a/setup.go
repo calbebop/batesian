@@ -74,15 +74,61 @@ func taskSetupReplyAccepted(resp *attack.Response, requestID string) bool {
 		return false
 	}
 	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
-	return valid && !hasError
+	return valid && !hasError && sendReplyHasResult(resp)
+}
+
+func sendReplyHasResult(resp *attack.Response) bool {
+	if resp == nil || !resp.IsAccepted() {
+		return false
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(resp.Body, &envelope) != nil {
+		return false
+	}
+	var wrapped struct {
+		Task    json.RawMessage `json:"task"`
+		Message json.RawMessage `json:"message"`
+	}
+	if json.Unmarshal(envelope.Result, &wrapped) != nil {
+		return false
+	}
+	if len(wrapped.Task) > 0 || len(wrapped.Message) > 0 {
+		if len(wrapped.Task) > 0 && len(wrapped.Message) > 0 {
+			return false
+		}
+		if len(wrapped.Task) > 0 {
+			envelope.Result = wrapped.Task
+		} else {
+			envelope.Result = wrapped.Message
+		}
+	}
+	var result struct {
+		ID     string `json:"id"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+		MessageID string            `json:"messageId"`
+		Role      json.RawMessage   `json:"role"`
+		Parts     []json.RawMessage `json:"parts"`
+	}
+	if json.Unmarshal(envelope.Result, &result) != nil {
+		return false
+	}
+	return result.ID != "" && result.Status.State != "" ||
+		result.MessageID != "" && len(result.Role) > 0 && string(result.Role) != "null" && len(result.Parts) > 0
 }
 
 func correlatedTaskSetup(what, endpoint string, credentialed bool, resp *attack.Response, requestID string) setupObservation {
 	if resp != nil && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden &&
 		resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed && json.Valid(resp.Body) {
-		_, _, _, valid := discoveryResponse(resp.Body, requestID)
+		_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
 		if !valid {
 			return setupObservation{setupOtherRefusal, what + " reply did not match its request ID"}
+		}
+		if resp.IsSuccess() && !hasError && !sendReplyHasResult(resp) {
+			return setupObservation{setupOtherRefusal, what + " reply did not contain a Task or Message"}
 		}
 	}
 	return classifyTaskSetup(what, endpoint, credentialed, resp)

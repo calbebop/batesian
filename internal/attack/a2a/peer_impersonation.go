@@ -94,8 +94,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			attack.ErrInconclusive, endpoint)
 	}
 
-	forgedOK := peerSendAccepted(forgedResp)
-	baselineOK := peerSendAccepted(baselineResp)
+	forgedOK := sendReplyHasResult(forgedResp)
+	baselineOK := sendReplyHasResult(baselineResp)
 	forgedDenied := peerAuthDenied(forgedResp)
 	baselineDenied := peerAuthDenied(baselineResp)
 
@@ -267,60 +267,17 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 			incomplete = append(incomplete, w.name+" method availability differed between probes")
 			continue
 		}
-		if !peerSendAccepted(fResp) && !peerAuthDenied(fResp) {
+		if !sendReplyHasResult(fResp) && !peerAuthDenied(fResp) {
 			incomplete = append(incomplete, w.name+" forged response did not establish a send result or authentication rejection")
 			continue
 		}
-		if !peerSendAccepted(bResp) && !peerAuthDenied(bResp) {
+		if !sendReplyHasResult(bResp) && !peerAuthDenied(bResp) {
 			incomplete = append(incomplete, w.name+" anonymous response did not establish a send result or authentication rejection")
 			continue
 		}
 		return fResp, bResp, w.name, incomplete, true
 	}
 	return nil, nil, "", incomplete, false
-}
-
-func peerSendAccepted(resp *attack.Response) bool {
-	if resp == nil || !resp.IsAccepted() {
-		return false
-	}
-	var envelope struct {
-		Result json.RawMessage `json:"result"`
-	}
-	if json.Unmarshal(resp.Body, &envelope) != nil {
-		return false
-	}
-	var wrapped struct {
-		Task    json.RawMessage `json:"task"`
-		Message json.RawMessage `json:"message"`
-	}
-	if json.Unmarshal(envelope.Result, &wrapped) != nil {
-		return false
-	}
-	if len(wrapped.Task) > 0 || len(wrapped.Message) > 0 {
-		if len(wrapped.Task) > 0 && len(wrapped.Message) > 0 {
-			return false
-		}
-		if len(wrapped.Task) > 0 {
-			envelope.Result = wrapped.Task
-		} else {
-			envelope.Result = wrapped.Message
-		}
-	}
-	var result struct {
-		ID     string `json:"id"`
-		Status struct {
-			State string `json:"state"`
-		} `json:"status"`
-		MessageID string            `json:"messageId"`
-		Role      json.RawMessage   `json:"role"`
-		Parts     []json.RawMessage `json:"parts"`
-	}
-	if json.Unmarshal(envelope.Result, &result) != nil {
-		return false
-	}
-	return result.ID != "" && result.Status.State != "" ||
-		result.MessageID != "" && len(result.Role) > 0 && string(result.Role) != "null" && len(result.Parts) > 0
 }
 
 func peerReplyCorrelated(resp *attack.Response, requestID string) bool {

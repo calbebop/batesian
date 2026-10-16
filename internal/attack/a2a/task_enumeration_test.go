@@ -586,6 +586,7 @@ func TestTaskEnumeration_ScopedListingWithOwnTasksIsClean(t *testing.T) {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{"task": map[string]interface{}{
 					"id": tk.id, "contextId": "ctx-" + caller,
+					"status": map[string]string{"state": "submitted"},
 				}},
 			})
 		case "ListTasks", "tasks/list":
