@@ -81,7 +81,7 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	// Exclude endpoints that persist unauthenticated continuations.
 	anonymousMarker := "anon-" + vars.RandID
 	anonymousOutcome := e.continueTask(ctx, unauthClient, endpoint, nil, taskID, contextID, anonymousMarker)
-	_, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, anonymousMarker, vars.RandID)
+	_, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, anonymousMarker, vars.RandID+"-anon")
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 
 	marker := "cross-" + vars.RandID
 	bOutcome := e.continueTask(ctx, clientB, endpoint, b.Headers, taskID, contextID, marker)
-	readable, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, marker, vars.RandID)
+	readable, found, err := e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, marker, vars.RandID+"-cross")
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 		}
 		return nil, nil
 	}
-	readable, found, err = e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, anonymousMarker, vars.RandID)
+	readable, found, err = e.waitForOwnerMarker(ctx, clientA, endpoint, a.Headers, taskID, anonymousMarker, vars.RandID+"-anon-recheck")
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	for k, v := range p.Headers {
 		v1Headers[k] = v
 	}
-	requestID := "batesian-deleg-create-" + p.Name + "-" + randID
+	requestID := "batesian-deleg-create-" + p.Name + "-" + randID + "-v1"
 	observe := func(resp *attack.Response) {
 		outcome := classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			principalCredentialPresent(c, endpoint, p.Headers), resp)
@@ -174,6 +174,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	})
 	if err != nil || !delegationResult(resp, requestID) {
 		observe(resp)
+		requestID = "batesian-deleg-create-" + p.Name + "-" + randID + "-v03"
 		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
@@ -212,7 +213,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 	for k, v := range extraHeaders {
 		v1Headers[k] = v
 	}
-	requestID := "batesian-deleg-cont-" + marker
+	requestID := "batesian-deleg-cont-" + marker + "-v1"
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
@@ -232,6 +233,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 	if first == continuationAccepted {
 		return first
 	}
+	requestID = "batesian-deleg-cont-" + marker + "-v03"
 	resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
