@@ -38,34 +38,8 @@ func pushTaskReplyID(resp *attack.Response, requestID string) string {
 	if !valid || hasError {
 		return ""
 	}
-	return pushTaskResultID(result)
-}
-
-func pushTaskResultID(result json.RawMessage) string {
-	var reply map[string]json.RawMessage
-	if json.Unmarshal(result, &reply) != nil || reply == nil {
-		return ""
-	}
-	if task, ok := reply["task"]; ok {
-		if _, hasMessage := reply["message"]; hasMessage {
-			return ""
-		}
-		result = task
-	} else if _, hasMessage := reply["message"]; hasMessage {
-		return ""
-	}
-	var task struct {
-		Kind   string `json:"kind"`
-		ID     string `json:"id"`
-		Status struct {
-			State string `json:"state"`
-		} `json:"status"`
-	}
-	if json.Unmarshal(result, &task) != nil ||
-		(task.Kind != "" && task.Kind != "task") || task.ID == "" || task.Status.State == "" {
-		return ""
-	}
-	return task.ID
+	id, _ := taskResultContext(result)
+	return id
 }
 
 func pushMessageResultAccepted(result json.RawMessage) bool {
@@ -104,7 +78,8 @@ func restPushTaskID(resp *attack.Response) string {
 	if resp == nil || !resp.IsSuccess() || !resp.IsJSON() || isJSONRPCError(resp.Body) {
 		return ""
 	}
-	return pushTaskResultID(resp.Body)
+	id, _ := taskResultContext(resp.Body)
+	return id
 }
 
 func pushRegistrationReplyAccepted(resp *attack.Response, requestID, method, taskID, callbackURL string) bool {

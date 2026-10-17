@@ -4,6 +4,34 @@ import (
 	"encoding/json"
 )
 
+func taskResultContext(result json.RawMessage) (taskID, contextID string) {
+	var reply map[string]json.RawMessage
+	if json.Unmarshal(result, &reply) != nil || reply == nil {
+		return "", ""
+	}
+	if task, ok := reply["task"]; ok {
+		if _, hasMessage := reply["message"]; hasMessage {
+			return "", ""
+		}
+		result = task
+	} else if _, hasMessage := reply["message"]; hasMessage {
+		return "", ""
+	}
+	var task struct {
+		Kind      string `json:"kind"`
+		ID        string `json:"id"`
+		ContextID string `json:"contextId"`
+		Status    struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(result, &task) != nil ||
+		(task.Kind != "" && task.Kind != "task") || task.ID == "" || task.Status.State == "" {
+		return "", ""
+	}
+	return task.ID, task.ContextID
+}
+
 // restTaskPageToken accepts legacy lists without a continuation field.
 func restTaskPageToken(body []byte) (string, bool) {
 	var envelope map[string]json.RawMessage

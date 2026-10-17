@@ -33,3 +33,50 @@ func TestParseRESTTaskListPage(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskResultContext(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantID  string
+		wantCtx string
+	}{
+		{"flat v0.3", `{"kind":"task","id":"task-1","contextId":"ctx-1","status":{"state":"submitted"}}`, "task-1", "ctx-1"},
+		{"wrapped v1", `{"task":{"id":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_SUBMITTED"}}}`, "task-1", "ctx-1"},
+		{"id only", `{"id":"task-1","contextId":"ctx-1"}`, "", ""},
+		{"missing state", `{"task":{"id":"task-1","status":{}}}`, "", ""},
+		{"message", `{"message":{"id":"task-1","status":{"state":"submitted"}}}`, "", ""},
+		{"wrong kind", `{"kind":"message","id":"task-1","status":{"state":"submitted"}}`, "", ""},
+		{"ambiguous wrapper", `{"task":{"id":"task-1","status":{"state":"submitted"}},"message":{}}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, contextID := taskResultContext([]byte(tc.body))
+			if id != tc.wantID || contextID != tc.wantCtx {
+				t.Fatalf("Task = (%q, %q), want (%q, %q)", id, contextID, tc.wantID, tc.wantCtx)
+			}
+		})
+	}
+}
+
+func TestTaskIDExtractorsRequireTask(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result string
+		want   string
+	}{
+		{"flat", `{"id":"task-1","status":{"state":"submitted"}}`, "task-1"},
+		{"wrapped", `{"task":{"id":"task-1","status":{"state":"submitted"}}}`, "task-1"},
+		{"id only", `{"id":"task-1"}`, ""},
+		{"message", `{"message":{"messageId":"msg-1","role":"agent","parts":[{"text":"pong"}]}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := restTaskID([]byte(tc.result)); got != tc.want {
+				t.Fatalf("REST task ID = %q, want %q", got, tc.want)
+			}
+			envelope := `{"jsonrpc":"2.0","id":"probe","result":` + tc.result + `}`
+			if got, _ := extractTaskContext([]byte(envelope)); got != tc.want {
+				t.Fatalf("JSON-RPC task ID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

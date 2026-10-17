@@ -440,30 +440,15 @@ func isUserRole(v interface{}) bool {
 	}
 }
 
-// extractTaskContext extracts the taskId and contextId from a JSON-RPC task result.
-// Handles both flat shapes (result.id) and nested shapes (result.task.id) as
-// different A2A server implementations return either form.
+// extractTaskContext reads a Task from a JSON-RPC send result.
 func extractTaskContext(body []byte) (taskID, contextID string) {
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
 		return "", ""
 	}
-	result, _ := m["result"].(map[string]interface{})
-	if result == nil {
-		return "", ""
-	}
-	// Try flat result.id first, then nested result.task.id.
-	taskID, _ = result["id"].(string)
-	contextID, _ = result["contextId"].(string)
-	if taskID == "" {
-		if task, ok := result["task"].(map[string]interface{}); ok {
-			taskID, _ = task["id"].(string)
-			if contextID == "" {
-				contextID, _ = task["contextId"].(string)
-			}
-		}
-	}
-	return taskID, contextID
+	return taskResultContext(envelope.Result)
 }
 
 // containsAnyStr reports whether s contains any of the non-empty substrings.

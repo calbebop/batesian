@@ -116,7 +116,9 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				}
-				writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "anon-task"}})
+				writeJSON(w, map[string]interface{}{"task": map[string]interface{}{
+					"id": "anon-task", "status": map[string]string{"state": "submitted"},
+				}})
 				return
 			}
 			mu.Lock()
@@ -126,7 +128,11 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				writeJSON(w, map[string]interface{}{"message": map[string]string{"messageId": "reply"}})
 				return
 			}
-			writeJSON(w, map[string]interface{}{"task": map[string]string{"id": taskID}})
+			task := map[string]interface{}{"id": taskID}
+			if mode != "id-only" {
+				task["status"] = map[string]string{"state": "submitted"}
+			}
+			writeJSON(w, map[string]interface{}{"task": task})
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), taskPath) {
@@ -215,6 +221,7 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 		{"anonymous read returned method error", "method-not-allowed", false, false, false, true},
 		{"anonymous read returned JSON error", "error-body", false, false, false, true},
 		{"task creation absent", "no-send", false, false, false, true},
+		{"ID-only creation reply", "id-only", false, false, false, true},
 		{"creation returned message", "message-only", false, false, false, true},
 	}
 	for _, tc := range tests {
@@ -247,6 +254,9 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 			mu.Unlock()
 			if tc.finding && len(gotReads) < 2 {
 				t.Fatalf("owner and anonymous reads were not both exercised: %v", gotReads)
+			}
+			if tc.mode == "id-only" && len(gotReads) != 0 {
+				t.Fatalf("ID-only reply triggered task reads: %v", gotReads)
 			}
 		})
 	}

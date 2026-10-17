@@ -2,7 +2,6 @@ package a2a
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -350,22 +349,9 @@ func buildV03SendRequest(callbackURL, token, randID string) map[string]interface
 	}
 }
 
-// restTaskID pulls the task id out of a REST message:send reply. The REST
-// binding has no JSON-RPC envelope, so extractTaskContext, which requires a
-// result object, finds nothing here. a2a-sdk answers with the SendMessageResponse
-// oneof, {"task":{...}}; the bare task object is accepted too, since the wrapper
-// is a proto detail rather than something the binding guarantees.
+// restTaskID reads a Task from a REST message:send reply.
 func restTaskID(body []byte) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return ""
-	}
-	if task, ok := m["task"].(map[string]interface{}); ok {
-		if id, _ := task["id"].(string); id != "" {
-			return id
-		}
-	}
-	id, _ := m["id"].(string)
+	id, _ := taskResultContext(body)
 	return id
 }
 

@@ -111,7 +111,11 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			writeJSON(w, map[string]interface{}{"task": map[string]string{"id": taskID}})
+			task := map[string]interface{}{"id": taskID}
+			if mode != "id-only" {
+				task["status"] = map[string]string{"state": "submitted"}
+			}
+			writeJSON(w, map[string]interface{}{"task": task})
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), taskPath) {
@@ -230,6 +234,7 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 		{"owner cannot read", "owner-blind", false, false, "", true},
 		{"task already terminal", "terminal", false, false, "", true},
 		{"task creation absent", "no-send", false, false, "", true},
+		{"ID-only creation reply", "id-only", false, false, "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,6 +270,9 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 			mu.Unlock()
 			if want != 0 && len(gotHits) == 0 {
 				t.Fatal("finding without a REST cancel request")
+			}
+			if tc.mode == "id-only" && len(gotHits) != 0 {
+				t.Fatalf("ID-only reply triggered cancellation: %v", gotHits)
 			}
 		})
 	}

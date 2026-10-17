@@ -80,7 +80,11 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "rest-owner-task"}})
+			task := map[string]interface{}{"id": "rest-owner-task"}
+			if mode != "id-only" {
+				task["status"] = map[string]string{"state": "submitted"}
+			}
+			writeJSON(w, map[string]interface{}{"task": task})
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == listPath {
@@ -192,6 +196,7 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 		{"anonymous list open", "open", false, false, false, false},
 		{"list absent", "no-list", false, false, false, false},
 		{"task creation absent", "no-send", false, false, false, true},
+		{"ID-only creation reply", "id-only", false, false, false, true},
 		{"owner cannot list own task", "owner-blind", false, false, false, true},
 		{"repeated cursor", "loop", false, false, false, true},
 		{"page cap", "cap", false, false, false, true},
@@ -222,8 +227,11 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 			mu.Lock()
 			gotHits := append([]restEnumHit(nil), (*hits)...)
 			mu.Unlock()
-			if len(gotHits) == 0 && tc.mode != "no-send" {
+			if len(gotHits) == 0 && tc.mode != "no-send" && tc.mode != "id-only" {
 				t.Fatal("REST listing was not probed")
+			}
+			if tc.mode == "id-only" && len(gotHits) != 0 {
+				t.Fatalf("ID-only reply triggered listing: %+v", gotHits)
 			}
 			for _, hit := range gotHits {
 				if hit.history != "0" || hit.size != "100" {
