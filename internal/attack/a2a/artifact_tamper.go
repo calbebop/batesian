@@ -202,33 +202,34 @@ func storedTaskContent(body []byte, taskID string) (taskContent, bool) {
 	}
 	type task struct {
 		ID     string `json:"id"`
-		State  string `json:"state"`
 		Status struct {
 			State string `json:"state"`
 		} `json:"status"`
 		Artifacts []artifact `json:"artifacts"`
 	}
 	var envelope struct {
-		Result *struct {
-			task
-			Task *task `json:"task"`
-		} `json:"result"`
+		Result json.RawMessage `json:"result"`
 	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+	if json.Unmarshal(body, &envelope) != nil {
 		return taskContent{}, false
 	}
-	result := envelope.Result.task
-	if envelope.Result.Task != nil {
-		result = *envelope.Result.Task
-	}
-	if result.ID != taskID {
+	id, _ := taskResultContext(envelope.Result)
+	if id != taskID {
 		return taskContent{}, false
 	}
-	content := taskContent{state: result.State, fields: make(map[string]string)}
-	if result.Status.State != "" {
-		content.state = result.Status.State
+	var result struct {
+		task
+		Task *task `json:"task"`
 	}
-	for _, artifact := range result.Artifacts {
+	if json.Unmarshal(envelope.Result, &result) != nil {
+		return taskContent{}, false
+	}
+	parsed := result.task
+	if result.Task != nil {
+		parsed = *result.Task
+	}
+	content := taskContent{state: parsed.Status.State, fields: make(map[string]string)}
+	for _, artifact := range parsed.Artifacts {
 		if artifact.ID != "" {
 			if text := storedText(artifact.Parts); text != "" {
 				content.fields["artifact:"+artifact.ID] = text
@@ -323,10 +324,9 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 			}),
 		},
 		{
-			// v0.2: the task id is a params field and re-submitting it IS the
-			// overwrite attempt. Kept last so a modern agent never sees it.
+			// Legacy tasks/send puts the task ID in params. Keep it last.
 			wire: tamperWire{
-				name: "v0.2 tasks/send",
+				name: "legacy tasks/send",
 				continuePayload: func(taskID, text, randID string) map[string]interface{} {
 					return jsonRPCCall("batesian-at-"+randID+"-continue-v02", "tasks/send", map[string]interface{}{
 						"id": taskID,
@@ -375,9 +375,7 @@ func (e *ArtifactTamperExecutor) createTask(ctx context.Context, client *attack.
 			}
 			continue
 		}
-		var body map[string]interface{}
-		_ = json.Unmarshal(resp.Body, &body)
-		if id := extractTaskID(body); id != "" {
+		if id, _ := extractTaskContext(resp.Body); id != "" {
 			return id, a.wire, true, incomplete
 		}
 		outcome := classifyTaskSetup("creating a task on the "+a.wire.name+" wire", endpoint, credentialed, resp)
@@ -393,22 +391,4 @@ func jsonRPCCall(requestID, method string, params map[string]interface{}) map[st
 		"method":  method,
 		"params":  params,
 	}
-}
-
-// extractTaskID pulls the task ID from a tasks/send or SendMessage response.
-func extractTaskID(body map[string]interface{}) string {
-	result, _ := body["result"].(map[string]interface{})
-	if result == nil {
-		return ""
-	}
-	// A2A v1.0 wraps in task object
-	if task, ok := result["task"].(map[string]interface{}); ok {
-		if id, ok := task["id"].(string); ok {
-			return id
-		}
-	}
-	if id, ok := result["id"].(string); ok {
-		return id
-	}
-	return ""
 }
