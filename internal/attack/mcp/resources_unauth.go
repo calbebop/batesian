@@ -211,8 +211,8 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		sev = "critical"
 	}
 
-	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\nresources examined: %d of %d listed\ncontent snippet: %.400s",
-		read.statusCode, session.Endpoint, read.uri, examined, len(uris), read.content)
+	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\nresources examined: %d of %d listed\ncontent: %d bytes returned (omitted)",
+		read.statusCode, session.Endpoint, read.uri, examined, len(uris), read.contentLength)
 	title := fmt.Sprintf("MCP resource %q content readable without authentication", read.uri)
 	description := fmt.Sprintf("resources/read for %s returned content without authentication. "+
 		"Resource data is directly accessible to any unauthenticated caller.", read.uri)
@@ -240,10 +240,10 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 
 // resourceRead is one successfully read resource.
 type resourceRead struct {
-	uri          string
-	statusCode   int
-	content      string
-	credEvidence string
+	uri           string
+	statusCode    int
+	contentLength int
+	credEvidence  string
 }
 
 // readResources reads resources until one yields a credential, up to
@@ -335,10 +335,8 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 			continue
 		}
 		var payload []byte
-		var snippet string
 		if item.Text != nil && *item.Text != "" {
 			payload = []byte(*item.Text)
-			snippet = *item.Text
 		} else if item.Blob != nil {
 			decoded, err := base64.StdEncoding.DecodeString(*item.Blob)
 			if err != nil {
@@ -349,22 +347,18 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 				continue
 			}
 			payload = decoded
-			snippet = fmt.Sprintf("[binary content: %d bytes]", len(decoded))
 		} else {
 			continue
 		}
-		if read.content == "" {
-			read.content = snippet
-		}
+		read.contentLength += len(payload)
 		for _, re := range credentialPatterns {
 			if loc := re.FindIndex(payload); loc != nil {
 				read.credEvidence = fmt.Sprintf("Pattern matched: %s at byte offset %d", re.String(), loc[0])
-				read.content = "[redacted: credential pattern detected]"
 				return read, "content returned"
 			}
 		}
 	}
-	if read.content == "" {
+	if read.contentLength == 0 {
 		if invalidContent {
 			return nil, "incomplete (invalid resource content)"
 		}

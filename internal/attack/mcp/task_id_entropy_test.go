@@ -252,8 +252,9 @@ func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	if seq.Severity != "high" || seq.Confidence != attack.RiskIndicator {
 		t.Errorf("want high/indicator for sequential handles, got %q/%q", seq.Severity, seq.Confidence)
 	}
-	if !strings.Contains(seq.Evidence, "predicted next handle") {
-		t.Errorf("evidence should include the prediction, got: %q", seq.Evidence)
+	if !strings.Contains(seq.Evidence, "constant stride: 7") ||
+		strings.Contains(seq.Description+seq.Evidence, "100008") {
+		t.Errorf("evidence should retain the stride without exposing handles, got: %+v", seq)
 	}
 }
 
@@ -303,6 +304,9 @@ func TestEntropy_LowAlphabetFiresMedium(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, "bits") {
 		t.Errorf("evidence should report the bit estimate, got: %q", f.Evidence)
+	}
+	if strings.Contains(f.Evidence, "k000100") {
+		t.Errorf("evidence exposed a sampled task handle: %q", f.Evidence)
 	}
 }
 

@@ -59,7 +59,8 @@ func TestResourcesUnauth_MetadataCannotEscalateRead(t *testing.T) {
 		t.Fatalf("expected list and read findings, got findings=%+v err=%v", findings, err)
 	}
 	if findings[1].Severity != "high" || strings.Contains(findings[1].Evidence, secret) ||
-		!strings.Contains(findings[1].Evidence, "public overview") {
+		strings.Contains(findings[1].Evidence, "public overview") ||
+		!strings.Contains(findings[1].Evidence, "content: 15 bytes returned (omitted)") {
 		t.Fatalf("metadata must not affect or appear in the read finding: %+v", findings[1])
 	}
 }

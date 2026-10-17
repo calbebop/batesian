@@ -150,6 +150,12 @@ func TestResourcesUnauth_Vulnerable(t *testing.T) {
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("finding %q: want ConfirmedExploit, got %q", f.Title, f.Confidence)
 		}
+		if strings.Contains(f.Evidence+f.Description, content) {
+			t.Errorf("finding exposed resource content: %+v", f)
+		}
+	}
+	if !strings.Contains(findings[len(findings)-1].Evidence, "content: ") {
+		t.Errorf("read finding should retain content length: %+v", findings[len(findings)-1])
 	}
 }
 

@@ -334,7 +334,6 @@ func teAlphabetBits(ids []string) (bits float64, alphabet string, maxLen int) {
 }
 
 func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []string, step int64) attack.Finding {
-	predicted := teNext(ids[len(ids)-1], step)
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -343,11 +342,11 @@ func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []str
 		Title:      fmt.Sprintf("MCP task handles minted by %q are sequential integers", tool),
 		Description: fmt.Sprintf(
 			"%d handles requested back to back from %q at %s were integers with a constant "+
-				"stride (%s). This suggests a predictable generator; other callers' requests may "+
+				"stride (%d). This suggests a predictable generator; other callers' requests may "+
 				"interleave, and task access still requires authorization.",
-			len(ids), tool, endpoint, teJoinSteps(ids)),
-		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles: %s\nconstant stride: %d\npredicted next handle if uninterrupted: %s",
-			endpoint, tool, strings.Join(ids, ", "), step, predicted),
+			len(ids), tool, endpoint, step),
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nconstant stride: %d\nhandle values: [redacted]",
+			endpoint, tool, len(ids), step),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
@@ -367,31 +366,10 @@ func (e *TaskIDEntropyExecutor) entropyFinding(endpoint, tool string, ids []stri
 				"generator's actual entropy cannot be determined from these samples. Review the "+
 				"generator before treating task IDs as unguessable.",
 			len(ids), tool, endpoint, len(alphabet), maxLen, bits),
-		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles: %s\ndistinct characters: %q\n"+
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nhandle values: [redacted]\ndistinct characters: %q\n"+
 			"longest handle: %d positions\nobserved-alphabet estimate: %.1f bits (threshold %d)",
-			endpoint, tool, strings.Join(ids, ", "), alphabet, maxLen, bits, entropyThresholdBits),
+			endpoint, tool, len(ids), alphabet, maxLen, bits, entropyThresholdBits),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
-}
-
-func teNext(last string, step int64) string {
-	v, err := strconv.ParseInt(last, 10, 64)
-	if err != nil {
-		return "?"
-	}
-	return strconv.FormatInt(v+step, 10)
-}
-
-func teJoinSteps(ids []string) string {
-	var sb strings.Builder
-	for i, id := range ids {
-		if i > 0 {
-			a, _ := strconv.ParseInt(ids[i-1], 10, 64)
-			b, _ := strconv.ParseInt(id, 10, 64)
-			fmt.Fprintf(&sb, " (%+d) ", b-a)
-		}
-		sb.WriteString(id)
-	}
-	return sb.String()
 }
