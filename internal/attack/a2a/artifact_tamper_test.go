@@ -66,12 +66,8 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
-					"id": taskID, "state": "completed",
+					"id": taskID, "status": map[string]string{"state": "completed"},
 					"artifacts": storedArtifact(text),
-					"message": map[string]interface{}{
-						"role":  "agent",
-						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
-					},
 				},
 			})
 		case "tasks/get":
@@ -86,12 +82,8 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
-					"id": taskID, "state": "completed",
+					"id": taskID, "status": map[string]string{"state": "completed"},
 					"artifacts": storedArtifact(text),
-					"message": map[string]interface{}{
-						"role":  "user",
-						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}},
-					},
 				},
 			})
 		default:
@@ -150,7 +142,7 @@ func appendingA2AServer(t *testing.T) *httptest.Server {
 			}
 			store.set(taskID, text)
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed"}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"}}})
 		case "tasks/get":
 			text, ok := store.get(taskID)
 			if !ok {
@@ -159,10 +151,8 @@ func appendingA2AServer(t *testing.T) *httptest.Server {
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed",
-					"artifacts": storedArtifact(text),
-					"message": map[string]interface{}{"role": "user",
-						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"},
+					"artifacts": storedArtifact(text)}})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -196,7 +186,7 @@ func idempotentPreserveServer(t *testing.T) *httptest.Server {
 				store.set(taskID, text) // only the first write sticks
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed"}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"}}})
 		case "tasks/get":
 			text, ok := store.get(taskID)
 			if !ok {
@@ -205,10 +195,8 @@ func idempotentPreserveServer(t *testing.T) *httptest.Server {
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed",
-					"artifacts": storedArtifact(text),
-					"message": map[string]interface{}{"role": "user",
-						"parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"},
+					"artifacts": storedArtifact(text)}})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -291,6 +279,101 @@ func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
 				Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("unmatched %s reply must not report clean: findings=%+v err=%v", mode, findings, err)
+			}
+		})
+	}
+}
+
+func TestArtifactTamper_IDOnlySetupIsIncomplete(t *testing.T) {
+	var sends, reads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		req := readBody(r)
+		switch req["method"] {
+		case "SendMessage":
+			sends++
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"task": map[string]string{"id": "task-1"}}})
+		case "message/send", "tasks/send":
+			sends++
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]string{"id": "task-1"}})
+		case "GetTask", "tasks/get":
+			if id, ok := req["id"].(string); ok && strings.HasPrefix(id, "batesian-get-") {
+				reads++
+			}
+			rpcErr(w, req["id"], -32001, "Task not found")
+		default:
+			rpcErr(w, req["id"], -32601, "Method not found")
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+		Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || sends != 3 || reads != 0 {
+		t.Fatalf("ID-only replies must not establish a task: findings=%+v err=%v sends=%d reads=%d",
+			findings, err, sends, reads)
+	}
+}
+
+func TestArtifactTamper_ReadbackWithoutStatusIsIncomplete(t *testing.T) {
+	for _, phase := range []string{"baseline", "after"} {
+		t.Run(phase, func(t *testing.T) {
+			var sends, reads int
+			var original, current string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				req := readBody(r)
+				switch req["method"] {
+				case "SendMessage":
+					sends++
+					current = textOf(req)
+					if sends == 1 {
+						original = current
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+						"result": map[string]interface{}{"task": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": "completed"},
+						}}})
+				case "GetTask":
+					if id, ok := req["id"].(string); !ok || !strings.HasPrefix(id, "batesian-get-") {
+						rpcErr(w, req["id"], -32001, "Task not found")
+						return
+					}
+					reads++
+					text := original
+					if reads > 1 {
+						text = current
+					}
+					task := map[string]interface{}{"id": "task-1", "artifacts": storedArtifact(text)}
+					if (phase == "baseline" && reads == 1) || (phase == "after" && reads > 1) {
+						task["state"] = "completed"
+					} else {
+						task["status"] = map[string]string{"state": "completed"}
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": task})
+				default:
+					rpcErr(w, req["id"], -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewArtifactTamperExecutor(attack.RuleContext{ID: "a2a-artifact-tamper-001"}).
+				Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			wantSends := 1
+			if phase == "after" {
+				wantSends = 2
+			}
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || sends != wantSends {
+				t.Fatalf("status-free %s read must not prove tampering: findings=%+v err=%v sends=%d reads=%d",
+					phase, findings, err, sends, reads)
 			}
 		})
 	}
@@ -444,7 +527,9 @@ func TestArtifactTamper_HistoryWithoutStoredArtifactIsInconclusive(t *testing.T)
 			part, _ := parts[0].(map[string]interface{})
 			latest, _ = part["text"].(string)
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+				"result": map[string]interface{}{"task": map[string]interface{}{
+					"id": "task-1", "status": map[string]string{"state": "completed"},
+				}}})
 		case "GetTask":
 			if latest == "" {
 				rpcErr(w, id, -32001, "Task not found")
@@ -506,7 +591,9 @@ func TestArtifactTamper_UnjudgedContinuationIsInconclusive(t *testing.T) {
 					part, _ := parts[0].(map[string]interface{})
 					original, _ = part["text"].(string)
 					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+						"result": map[string]interface{}{"task": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": "completed"},
+						}}})
 				case "GetTask":
 					if original == "" {
 						rpcErr(w, id, -32001, "Task not found")
@@ -569,7 +656,9 @@ func TestArtifactTamper_OverwriteDespiteError(t *testing.T) {
 						return
 					}
 					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+						"result": map[string]interface{}{"task": map[string]interface{}{
+							"id": "task-1", "status": map[string]string{"state": "completed"},
+						}}})
 				case "GetTask":
 					mu.Lock()
 					text, sendCount := stored, sends
@@ -615,7 +704,9 @@ func TestArtifactTamper_ChecksEveryOriginalArtifact(t *testing.T) {
 			}
 			sends++
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1"}}})
+				"result": map[string]interface{}{"task": map[string]interface{}{
+					"id": "task-1", "status": map[string]string{"state": "completed"},
+				}}})
 		case "GetTask":
 			if original == "" {
 				rpcErr(w, id, -32001, "Task not found")
@@ -675,7 +766,7 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 			}
 			store.set(taskID, text)
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed"}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"}}})
 		case "tasks/get":
 			params, _ := req["params"].(map[string]interface{})
 			taskID, _ := params["id"].(string)
@@ -685,7 +776,7 @@ func TestArtifactTamper_ImmutableTasks(t *testing.T) {
 				return
 			}
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": taskID, "state": "completed", "artifacts": storedArtifact(text)}})
+				"result": map[string]interface{}{"id": taskID, "status": map[string]string{"state": "completed"}, "artifacts": storedArtifact(text)}})
 		default:
 			// Realistic JSON-RPC: unknown methods return -32601, not HTTP 404.
 			json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
@@ -750,7 +841,9 @@ func modernOnlyOverwritingServer(t *testing.T) *httptest.Server {
 			// VULNERABLE: the stored content is replaced, not appended.
 			stored[id] = text
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"task": map[string]interface{}{"id": id, "contextId": "ctx-1"}}})
+				"result": map[string]interface{}{"task": map[string]interface{}{
+					"id": id, "contextId": "ctx-1", "status": map[string]string{"state": "completed"},
+				}}})
 		case "GetTask":
 			id, _ := params["id"].(string)
 			text, ok := stored[id]
@@ -764,7 +857,7 @@ func modernOnlyOverwritingServer(t *testing.T) *httptest.Server {
 						map[string]interface{}{"role": "user",
 							"parts": []interface{}{map[string]interface{}{"text": text}}}}}})
 		default:
-			// Every other name, including the v0.2 tasks/send the rule used to send.
+			// Every other name, including legacy tasks/send, is unavailable.
 			notFound()
 		}
 	}))
@@ -823,14 +916,7 @@ func TestArtifactTamper_NoTaskCreatedIsNotTested(t *testing.T) {
 	}
 }
 
-// legacyOnlyOverwritingServer implements ONLY the v0.2 tasks/send name and answers
-// every other method with -32601 at HTTP 200, which is how both official SDKs
-// answer a name their revision does not define.
-//
-// This is what makes the fallback gate matter. The first attempt is v1.0
-// SendMessage; a gate keyed on !IsSuccess() sees HTTP 200 and stops, so the walk
-// never reaches the wire this server actually speaks. Gating on !IsAccepted()
-// treats the error envelope as a non-answer and advances.
+// legacyOnlyOverwritingServer accepts only tasks/send and rejects other methods.
 func legacyOnlyOverwritingServer(t *testing.T, gateway bool) *httptest.Server {
 	t.Helper()
 	stored := map[string]string{}
@@ -867,7 +953,7 @@ func legacyOnlyOverwritingServer(t *testing.T, gateway bool) *httptest.Server {
 			// VULNERABLE: overwrite with no immutability check.
 			stored[id] = text
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": id, "state": "completed"}})
+				"result": map[string]interface{}{"id": id, "status": map[string]string{"state": "completed"}}})
 		case "tasks/get":
 			id, _ := params["id"].(string)
 			text, ok := stored[id]
@@ -877,8 +963,8 @@ func legacyOnlyOverwritingServer(t *testing.T, gateway bool) *httptest.Server {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]interface{}{"id": id, "state": "completed", "artifacts": storedArtifact(text), "message": map[string]interface{}{
-					"role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": text}}}}})
+				"result": map[string]interface{}{"id": id, "status": map[string]string{"state": "completed"},
+					"artifacts": storedArtifact(text)}})
 		default:
 			// HTTP 200 with a JSON-RPC error, exactly as the real SDKs answer a name
 			// their revision does not define.
@@ -903,7 +989,7 @@ func TestArtifactTamper_JSONRPCErrorAdvancesToTheNextWire(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("the walk must advance past a 200-carried -32601 to the wire the server speaks, got %d finding(s)", len(findings))
 	}
-	if !strings.Contains(findings[0].Evidence, "v0.2 tasks/send") {
+	if !strings.Contains(findings[0].Evidence, "legacy tasks/send") {
 		t.Errorf("evidence should name the wire that worked, got: %s", findings[0].Evidence)
 	}
 }
