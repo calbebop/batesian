@@ -642,7 +642,9 @@ func TestTaskEnumeration_RESTFindingKeepsRPCFailure(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			writeJSON(w, map[string]interface{}{"task": map[string]string{"id": "owner-task"}})
+			writeJSON(w, map[string]interface{}{"task": map[string]interface{}{
+				"id": "owner-task", "status": map[string]string{"state": "submitted"},
+			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/tasks":
 			if r.Header.Get("Authorization") == "" {
 				w.WriteHeader(http.StatusUnauthorized)

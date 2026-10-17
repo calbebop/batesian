@@ -799,7 +799,7 @@ func TestSessionSmuggle_EmptyHistoryIsNotTested(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
 			"result": map[string]interface{}{
-				"id": "task-1", "contextId": "ctx-1", "status": "working",
+				"id": "task-1", "contextId": "ctx-1", "status": map[string]string{"state": "working"},
 				"history": []interface{}{},
 			},
 		})
