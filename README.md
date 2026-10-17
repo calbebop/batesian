@@ -9,7 +9,7 @@
 
 Batesian is a single-binary CLI that tests deployed AI agent infrastructure with real protocol traffic. It exercises authorization, identity, discovery, task isolation, callbacks, sessions, and tool boundaries, then reports evidence as a confirmed exploit or a risk indicator. Table, JSON, and SARIF output support local testing and CI.
 
-This README describes the current `main` branch, which may be ahead of the latest release. Use a release tag for its exact behavior and see the [changelog](CHANGELOG.md) for changes since v1.7.0.
+This README describes the current `main` branch, which may differ from the latest release. Use a release tag for its exact behavior and see the [changelog](CHANGELOG.md) for changes by version.
 
 > [!CAUTION]
 > Run Batesian only against systems you own or have explicit written permission to test. Scans send attack-shaped traffic and some rules can change server-side state. Use `scan --dry-run` to inspect the request plan without sending traffic.
@@ -56,7 +56,7 @@ The current `main` branch requires Go 1.26.9 or newer. A release tag's `go.mod` 
 go install github.com/calbebop/batesian/cmd/batesian@latest
 ```
 
-`@latest` installs the latest tagged release. To try the unreleased `main` branch, use `@main` instead. Pin a reviewed commit or release tag in CI.
+`@latest` installs the latest tagged release. To install the current `main` branch instead, use `@main`. Pin a reviewed commit or release tag in CI.
 
 ## Quick start
 
