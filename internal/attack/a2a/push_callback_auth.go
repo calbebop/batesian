@@ -102,35 +102,32 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	if err == nil && sendResp != nil && sendResp.StatusCode != 404 {
 		reached = true
 	}
-	if err != nil || !pushReplyAccepted(sendResp, sendID) {
+	taskID := pushTaskReplyID(sendResp, sendID)
+	if err != nil || taskID == "" {
 		obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
 	}
-	if err == nil && pushReplyAccepted(sendResp, sendID) {
-		if taskID, _ := extractTaskContext(sendResp.Body); taskID != "" {
-			pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      pushID,
-				"method":  "CreateTaskPushNotificationConfig",
-				"params": map[string]interface{}{
-					"taskId": taskID,
-					"url":    callbackURL,
-					"token":  token,
-					"authentication": map[string]string{
-						"scheme": "Bearer", "credentials": credential,
-					},
+	if err == nil && taskID != "" {
+		pushResp, pushErr := client.POST(ctx, endpoint, a2aHeaders, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      pushID,
+			"method":  "CreateTaskPushNotificationConfig",
+			"params": map[string]interface{}{
+				"taskId": taskID,
+				"url":    callbackURL,
+				"token":  token,
+				"authentication": map[string]string{
+					"scheme": "Bearer", "credentials": credential,
 				},
-			})
-			if pushErr == nil && pushRegistrationReplyAccepted(pushResp, pushID, "CreateTaskPushNotificationConfig", taskID, callbackURL) {
-				taskAccepted = true
-				registrationConfirmed = true
-				acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
-				acceptedTaskID = taskID
-				recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
-			} else {
-				obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
-			}
+			},
+		})
+		if pushErr == nil && pushRegistrationReplyAccepted(pushResp, pushID, "CreateTaskPushNotificationConfig", taskID, callbackURL) {
+			taskAccepted = true
+			registrationConfirmed = true
+			acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
+			acceptedTaskID = taskID
+			recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
 		} else {
-			obs.observe(pushTaskSetupOutcome("creating a task to attach a push config to", endpoint, credentialed, sendResp, sendID))
+			obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
 		}
 	}
 
@@ -141,39 +138,36 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 		if err2 == nil && sendResp2 != nil && sendResp2.StatusCode != 404 {
 			reached = true
 		}
-		if err2 != nil || !pushReplyAccepted(sendResp2, legacyID) {
+		taskID := pushTaskReplyID(sendResp2, legacyID)
+		if err2 != nil || taskID == "" {
 			obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
 		}
-		if err2 == nil && pushReplyAccepted(sendResp2, legacyID) {
-			if taskID, _ := extractTaskContext(sendResp2.Body); taskID != "" {
-				taskAccepted = true
-				acceptedBinding = "JSONRPC/v0.3-message-send"
-				acceptedTaskID = taskID
-				recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
-				setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      setID,
-					"method":  "tasks/pushNotificationConfig/set",
-					"params": map[string]interface{}{
-						"taskId": taskID,
-						"pushNotificationConfig": map[string]interface{}{
-							"url":   callbackURL,
-							"token": token,
-							"authentication": map[string]interface{}{
-								"schemes": []string{"Bearer"}, "credentials": credential,
-							},
+		if err2 == nil && taskID != "" {
+			taskAccepted = true
+			acceptedBinding = "JSONRPC/v0.3-message-send"
+			acceptedTaskID = taskID
+			recordPossiblePushConfig(opts.TargetState, endpoint, taskID)
+			setResp, setErr := client.POST(ctx, endpoint, map[string]string{}, map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      setID,
+				"method":  "tasks/pushNotificationConfig/set",
+				"params": map[string]interface{}{
+					"taskId": taskID,
+					"pushNotificationConfig": map[string]interface{}{
+						"url":   callbackURL,
+						"token": token,
+						"authentication": map[string]interface{}{
+							"schemes": []string{"Bearer"}, "credentials": credential,
 						},
 					},
-				})
-				if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
-					registrationConfirmed = true
-					acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
-					recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
-				} else {
-					obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
-				}
+				},
+			})
+			if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
+				registrationConfirmed = true
+				acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
+				recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
 			} else {
-				obs.observe(pushTaskSetupOutcome("creating a task on the v0.3 wire", endpoint, credentialed, sendResp2, legacyID))
+				obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
 			}
 		}
 	}
@@ -190,8 +184,8 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 					reached = true
 				}
 				taskID := ""
-				if err3 == nil && sendResp3 != nil && sendResp3.IsSuccess() && sendResp3.IsJSON() && !isJSONRPCError(sendResp3.Body) {
-					taskID = restTaskID(sendResp3.Body)
+				if err3 == nil {
+					taskID = restPushTaskID(sendResp3)
 				}
 				if taskID != "" {
 					cfgURL := endpointpkg.AppendPath(restBase, route.configPath(taskID))

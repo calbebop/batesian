@@ -38,7 +38,9 @@ func TestRun_A2APushCallbackNotObservedIsSkipped(t *testing.T) {
 		result := map[string]interface{}{"ok": true}
 		switch request.Method {
 		case "SendMessage":
-			result = map[string]interface{}{"id": "task-1", "contextId": "ctx-1"}
+			result = map[string]interface{}{
+				"id": "task-1", "contextId": "ctx-1", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"},
+			}
 		case "CreateTaskPushNotificationConfig":
 			result = map[string]interface{}{"taskId": request.Params.TaskID, "url": request.Params.URL}
 		}

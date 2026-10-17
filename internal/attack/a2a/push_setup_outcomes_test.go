@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func pushSetupServer(mode string) *httptest.Server {
 			return
 		}
 		if r.URL.Path == "/api/message:send" {
-			writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
+			writeJSON(w, map[string]any{"task": map[string]any{"id": "task-setup", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"}}})
 			return
 		}
 		if r.URL.Path == "/api/tasks/task-setup/pushNotificationConfigs" {
@@ -64,7 +65,7 @@ func pushSetupServer(mode string) *httptest.Server {
 			}
 			if mode == "v1-message-v03-confirm" {
 				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{
-					"kind": "message", "messageId": "reply", "role": "agent", "parts": []any{},
+					"kind": "message", "messageId": "reply", "role": "agent", "parts": []any{map[string]string{"text": "pong"}},
 				}})
 				return
 			}
@@ -77,7 +78,7 @@ func pushSetupServer(mode string) *httptest.Server {
 			if mode == "v1-send-wrong-id-v03-confirm" {
 				id = "other-request"
 			}
-			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"id": "task-setup"}})
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"id": "task-setup", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"}}})
 		case "CreateTaskPushNotificationConfig":
 			if strings.HasPrefix(mode, "v1-config-invalid-") {
 				params, _ := req["params"].(map[string]any)
@@ -135,7 +136,7 @@ func pushSetupServer(mode string) *httptest.Server {
 				if mode == "v03-send-wrong-id" {
 					id = "other-request"
 				}
-				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]string{"id": "task-setup"}})
+				writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"id": "task-setup", "status": map[string]string{"state": "submitted"}}})
 				return
 			}
 			rpcErr(w, id, -32601, "Method not found")
@@ -185,6 +186,69 @@ func pushSetupRules() []struct {
 	}{
 		{"SSRF", a2aattack.NewPushSSRFExecutor(testRuleCtx())},
 		{"callback auth", a2aattack.NewPushCallbackAuthExecutor(cbAuthRC())},
+	}
+}
+
+func TestPushSetup_MalformedTaskDoesNotRegister(t *testing.T) {
+	for _, wire := range []string{"v1", "v0.3", "rest"} {
+		t.Run(wire, func(t *testing.T) {
+			var registrations atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent-card.json" {
+					binding, path := "JSONRPC", "/"
+					if wire == "rest" {
+						binding, path = "HTTP+JSON", "/api"
+					}
+					writeJSON(w, map[string]any{"name": "Push task test agent", "supportedInterfaces": []map[string]string{{
+						"url": "http://" + r.Host + path, "protocolBinding": binding, "protocolVersion": "1.0",
+					}}})
+					return
+				}
+				if r.URL.Path == "/api/message:send" && wire == "rest" {
+					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-1"}})
+					return
+				}
+				if r.URL.Path == "/api/tasks/task-1/pushNotificationConfigs" {
+					registrations.Add(1)
+					writeJSON(w, map[string]string{"taskId": "task-1", "url": "http://oob.batesian.invalid/cb"})
+					return
+				}
+				if r.URL.Path != "/" || r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				req := readBody(r)
+				method, _ := req["method"].(string)
+				switch method {
+				case "SendMessage":
+					if wire == "v1" {
+						writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": req["id"], "result": map[string]string{"id": "task-1"}})
+						return
+					}
+				case "message/send":
+					if wire == "v0.3" {
+						writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": req["id"], "result": map[string]string{"id": "task-1"}})
+						return
+					}
+				case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
+					registrations.Add(1)
+					writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": req["id"], "result": map[string]string{"taskId": "task-1"}})
+					return
+				}
+				rpcErr(w, req["id"], -32601, "Method not found")
+			}))
+			defer srv.Close()
+			for _, rule := range pushSetupRules() {
+				t.Run(rule.name, func(t *testing.T) {
+					findings, err := rule.exec.Execute(t.Context(), srv.URL, attack.Options{
+						TimeoutSeconds: 5, OOBListenerURL: "http://oob.batesian.invalid",
+					})
+					if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || registrations.Load() != 0 {
+						t.Fatalf("malformed task triggered push registration: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -403,11 +467,11 @@ func TestPushSetup_RESTFallbackRetainsUnjudgedAttempts(t *testing.T) {
 						w.WriteHeader(http.StatusBadGateway)
 						return
 					}
-					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
+					writeJSON(w, map[string]any{"task": map[string]any{"id": "task-setup", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"}}})
 				case "/old/tasks/task-setup/pushNotificationConfigs":
 					w.WriteHeader(http.StatusBadGateway)
 				case "/api/message:send":
-					writeJSON(w, map[string]any{"task": map[string]string{"id": "task-setup"}})
+					writeJSON(w, map[string]any{"task": map[string]any{"id": "task-setup", "status": map[string]string{"state": "TASK_STATE_SUBMITTED"}}})
 				case "/api/tasks/task-setup/pushNotificationConfigs":
 					config := readBody(r)
 					writeJSON(w, map[string]any{"taskId": "task-setup", "url": config["url"]})

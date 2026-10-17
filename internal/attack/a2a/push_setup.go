@@ -30,12 +30,81 @@ func (s pushSetupObservation) partialErr() error {
 	return s.incomplete
 }
 
-func pushReplyAccepted(resp *attack.Response, requestID string) bool {
+func pushTaskReplyID(resp *attack.Response, requestID string) string {
 	if resp == nil || !resp.IsSuccess() {
+		return ""
+	}
+	result, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	if !valid || hasError {
+		return ""
+	}
+	return pushTaskResultID(result)
+}
+
+func pushTaskResultID(result json.RawMessage) string {
+	var reply map[string]json.RawMessage
+	if json.Unmarshal(result, &reply) != nil || reply == nil {
+		return ""
+	}
+	if task, ok := reply["task"]; ok {
+		if _, hasMessage := reply["message"]; hasMessage {
+			return ""
+		}
+		result = task
+	} else if _, hasMessage := reply["message"]; hasMessage {
+		return ""
+	}
+	var task struct {
+		Kind   string `json:"kind"`
+		ID     string `json:"id"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(result, &task) != nil ||
+		(task.Kind != "" && task.Kind != "task") || task.ID == "" || task.Status.State == "" {
+		return ""
+	}
+	return task.ID
+}
+
+func pushMessageResultAccepted(result json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(result, &fields) != nil || fields == nil {
 		return false
 	}
-	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
-	return valid && !hasError
+	if _, hasTask := fields["task"]; hasTask {
+		return false
+	}
+	if message, wrapped := fields["message"]; wrapped {
+		result = message
+		if json.Unmarshal(result, &fields) != nil || fields == nil {
+			return false
+		}
+	}
+	if _, hasID := fields["id"]; hasID {
+		return false
+	}
+	if _, hasStatus := fields["status"]; hasStatus {
+		return false
+	}
+	var message struct {
+		Kind      string            `json:"kind"`
+		MessageID string            `json:"messageId"`
+		Role      json.RawMessage   `json:"role"`
+		Parts     []json.RawMessage `json:"parts"`
+	}
+	return json.Unmarshal(result, &message) == nil &&
+		(message.Kind == "" || message.Kind == "message") &&
+		message.MessageID != "" && len(message.Role) > 0 && string(message.Role) != "null" &&
+		len(message.Parts) > 0
+}
+
+func restPushTaskID(resp *attack.Response) string {
+	if resp == nil || !resp.IsSuccess() || !resp.IsJSON() || isJSONRPCError(resp.Body) {
+		return ""
+	}
+	return pushTaskResultID(resp.Body)
 }
 
 func pushRegistrationReplyAccepted(resp *attack.Response, requestID, method, taskID, callbackURL string) bool {
@@ -65,9 +134,15 @@ func pushRegistrationReplyAccepted(resp *attack.Response, requestID, method, tas
 
 func pushTaskSetupOutcome(what, endpoint string, credentialed bool, resp *attack.Response, requestID string) setupObservation {
 	if resp != nil && resp.IsSuccess() {
-		_, _, _, valid := discoveryResponse(resp.Body, requestID)
+		result, _, hasError, valid := discoveryResponse(resp.Body, requestID)
 		if !valid {
 			return setupObservation{setupOtherRefusal, what + " reply did not match its request ID"}
+		}
+		if !hasError && pushTaskReplyID(resp, requestID) == "" {
+			if pushMessageResultAccepted(result) {
+				return setupObservation{rank: setupFeatureAbsent}
+			}
+			return setupObservation{setupOtherRefusal, what + " reply did not contain a Task or Message"}
 		}
 	}
 	return classifyPushTaskSetup(what, endpoint, credentialed, resp)
@@ -122,16 +197,6 @@ func classifyPushTaskSetup(what, endpoint string, credentialed bool, resp *attac
 	if resp != nil {
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 			return setupObservation{rank: setupFeatureAbsent}
-		}
-		if resp.IsAccepted() {
-			var reply struct {
-				Result struct {
-					Kind string `json:"kind"`
-				} `json:"result"`
-			}
-			if json.Unmarshal(resp.Body, &reply) == nil && reply.Result.Kind == "message" {
-				return setupObservation{rank: setupFeatureAbsent}
-			}
 		}
 	}
 	return classifyTaskSetup(what, endpoint, credentialed, resp)
