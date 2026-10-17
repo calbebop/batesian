@@ -314,43 +314,32 @@ func contextTaskHistoryHasText(body []byte, requestID, taskID, marker string) (r
 	if json.Unmarshal(body, &reply) != nil || reply.JSONRPC != "2.0" || reply.ID != requestID {
 		return false, false
 	}
-	type task struct {
-		ID      string          `json:"id"`
-		History json.RawMessage `json:"history"`
-	}
-	var result struct {
-		task
-		Task *task `json:"task"`
-	}
-	if json.Unmarshal(reply.Result, &result) != nil {
+	task, id, _ := validatedTaskResult(reply.Result)
+	if id != taskID {
 		return false, false
 	}
-	candidates := []task{result.task}
-	if result.Task != nil {
-		candidates = append(candidates, *result.Task)
+	var result struct {
+		History json.RawMessage `json:"history"`
 	}
-	for _, candidate := range candidates {
-		if candidate.ID != taskID {
-			continue
-		}
-		var history []struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}
-		if json.Unmarshal(candidate.History, &history) != nil || history == nil {
-			continue
-		}
-		readable = true
-		for _, message := range history {
-			for _, part := range message.Parts {
-				if strings.Contains(part.Text, marker) {
-					return true, true
-				}
+	if json.Unmarshal(task, &result) != nil {
+		return false, false
+	}
+	var history []struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if json.Unmarshal(result.History, &history) != nil || history == nil {
+		return false, false
+	}
+	for _, message := range history {
+		for _, part := range message.Parts {
+			if strings.Contains(part.Text, marker) {
+				return true, true
 			}
 		}
 	}
-	return readable, false
+	return true, false
 }
 
 // finding builds the confirmed context-fixation cross-principal disclosure.

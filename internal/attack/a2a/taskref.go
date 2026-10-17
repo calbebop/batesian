@@ -5,17 +5,22 @@ import (
 )
 
 func taskResultContext(result json.RawMessage) (taskID, contextID string) {
+	_, taskID, contextID = validatedTaskResult(result)
+	return taskID, contextID
+}
+
+func validatedTaskResult(result json.RawMessage) (json.RawMessage, string, string) {
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(result, &reply) != nil || reply == nil {
-		return "", ""
+		return nil, "", ""
 	}
 	if task, ok := reply["task"]; ok {
 		if _, hasMessage := reply["message"]; hasMessage {
-			return "", ""
+			return nil, "", ""
 		}
 		result = task
 	} else if _, hasMessage := reply["message"]; hasMessage {
-		return "", ""
+		return nil, "", ""
 	}
 	var task struct {
 		Kind      string `json:"kind"`
@@ -27,9 +32,9 @@ func taskResultContext(result json.RawMessage) (taskID, contextID string) {
 	}
 	if json.Unmarshal(result, &task) != nil ||
 		(task.Kind != "" && task.Kind != "task") || task.ID == "" || task.Status.State == "" {
-		return "", ""
+		return nil, "", ""
 	}
-	return task.ID, task.ContextID
+	return result, task.ID, task.ContextID
 }
 
 // restTaskPageToken accepts legacy lists without a continuation field.

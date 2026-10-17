@@ -191,7 +191,8 @@ func contextServer(mode string) *httptest.Server {
 				mode == "artifact-echo" || mode == "status-echo" || mode == "history-metadata" ||
 				mode == "wrong-task" || mode == "uncorrelated-get" || mode == "wrapped-history" ||
 				mode == "messages-with-task-id" {
-				result := map[string]interface{}{"id": taskID, "contextId": ctxID}
+				result := map[string]interface{}{"id": taskID, "contextId": ctxID,
+					"status": map[string]string{"state": "working"}}
 				history := make([]interface{}, 0, len(hist))
 				for _, m := range hist {
 					message := map[string]interface{}{"role": "user", "parts": []interface{}{
@@ -220,7 +221,7 @@ func contextServer(mode string) *httptest.Server {
 					}}
 				}
 				if mode == "status-echo" {
-					result["status"] = map[string]interface{}{"message": map[string]interface{}{
+					result["status"] = map[string]interface{}{"state": "working", "message": map[string]interface{}{
 						"parts": []interface{}{map[string]string{"text": victimText}},
 					}}
 				}
@@ -273,7 +274,8 @@ func writeHistory(w http.ResponseWriter, id interface{}, taskID, ctxID string, m
 	}
 	writeJSON(w, map[string]interface{}{
 		"jsonrpc": "2.0", "id": id,
-		"result": map[string]interface{}{"id": taskID, "contextId": ctxID, "history": history},
+		"result": map[string]interface{}{"id": taskID, "contextId": ctxID,
+			"status": map[string]string{"state": "working"}, "history": history},
 	})
 }
 

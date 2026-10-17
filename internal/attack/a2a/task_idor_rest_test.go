@@ -158,10 +158,10 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				case "redacted":
-					writeJSON(w, map[string]interface{}{"id": taskID, "history": []interface{}{}})
+					writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": "working"}, "history": []interface{}{}})
 					return
 				case "unrelated":
-					writeJSON(w, map[string]interface{}{"id": "other-task", "history": []interface{}{
+					writeJSON(w, map[string]interface{}{"id": "other-task", "status": map[string]string{"state": "working"}, "history": []interface{}{
 						map[string]interface{}{field: []interface{}{map[string]string{"text": text}}},
 					}})
 					return
@@ -180,10 +180,10 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 				}
 			}
 			if mode == "owner-blind" {
-				writeJSON(w, map[string]interface{}{"id": taskID, "history": []interface{}{}})
+				writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": "working"}, "history": []interface{}{}})
 				return
 			}
-			writeJSON(w, map[string]interface{}{"id": taskID, "history": []interface{}{
+			writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": "working"}, "history": []interface{}{
 				map[string]interface{}{field: []interface{}{map[string]string{"text": text}}},
 			}})
 			return

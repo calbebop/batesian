@@ -78,6 +78,7 @@ func taskWithHistory(w http.ResponseWriter, id interface{}, taskID, ctxID string
 		"result": map[string]interface{}{
 			"id":        taskID,
 			"contextId": ctxID,
+			"status":    map[string]string{"state": "working"},
 			"history": []interface{}{
 				map[string]interface{}{"role": "user", "parts": []interface{}{map[string]string{"text": messageText}}},
 			},
@@ -317,7 +318,7 @@ func TestTaskIDOR_HybridReadChecksLegacyAfterStub(t *testing.T) {
 			taskResult(w, id, "task-hybrid", "ctx-hybrid")
 		case "GetTask":
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-				"result": map[string]string{"id": "task-hybrid"}})
+				"result": map[string]interface{}{"id": "task-hybrid", "status": map[string]string{"state": "working"}}})
 		case "tasks/get":
 			mu.Lock()
 			text := ownerText

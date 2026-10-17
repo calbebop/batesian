@@ -67,6 +67,7 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"id": "task-smuggle-1", "contextId": "ctx-smuggle-1",
+					"status":  map[string]string{"state": "working"},
 					"history": []interface{}{stored},
 				},
 			})
@@ -203,7 +204,7 @@ func TestSessionSmuggle_ReplayedHistoryPollIsIncomplete(t *testing.T) {
 				history = append(history, stored)
 			}
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"id": "task-poll", "history": history}})
+				"result": map[string]interface{}{"id": "task-poll", "status": map[string]string{"state": "working"}, "history": history}})
 		default:
 			rpcErr(w, id, -32601, "Method not found")
 		}
@@ -248,6 +249,7 @@ func TestSessionSmuggle_V03OnlyFallback(t *testing.T) {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"id": "task-smuggle-v03", "contextId": "ctx-smuggle-v03",
+					"status":  map[string]string{"state": "working"},
 					"history": []interface{}{stored},
 				},
 			})
@@ -290,6 +292,7 @@ func TestSessionSmuggle_FindingRetainsIncompleteVersion(t *testing.T) {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"id": "task-smuggle-v03", "contextId": "ctx-smuggle-v03",
+					"status":  map[string]string{"state": "working"},
 					"history": []interface{}{stored},
 				},
 			})
@@ -347,7 +350,8 @@ func TestSessionSmuggle_HistoryFallbackRetainsIncomplete(t *testing.T) {
 					writeJSON(w, map[string]interface{}{
 						"jsonrpc": "2.0", "id": id,
 						"result": map[string]interface{}{
-							"id": "task-history-fallback", "history": []interface{}{message},
+							"id": "task-history-fallback", "status": map[string]string{"state": "working"},
+							"history": []interface{}{message},
 						},
 					})
 				default:
@@ -434,7 +438,7 @@ func TestSessionSmuggle_StopsWhenHistoryBecomesUnreadable(t *testing.T) {
 			if reads.Add(1) == 1 {
 				writeJSON(w, map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
-					"result": map[string]interface{}{"id": "task-unreadable", "history": []interface{}{}},
+					"result": map[string]interface{}{"id": "task-unreadable", "status": map[string]string{"state": "working"}, "history": []interface{}{}},
 				})
 				return
 			}
@@ -543,7 +547,7 @@ func sessionRoleProbeServer(v1, legacy string) *httptest.Server {
 			text := stored
 			mu.Unlock()
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"id": "task-role", "history": []interface{}{
+				"result": map[string]interface{}{"id": "task-role", "status": map[string]string{"state": "working"}, "history": []interface{}{
 					map[string]interface{}{"role": 1, "parts": []interface{}{map[string]string{"text": text}}},
 				}}})
 		case "SendMessage", "message/send":
@@ -654,6 +658,7 @@ func TestSessionSmuggle_AcceptedButNormalized(t *testing.T) {
 				"jsonrpc": "2.0", "id": id,
 				"result": map[string]interface{}{
 					"id": "task-norm-1", "contextId": "ctx-norm-1",
+					"status": map[string]string{"state": "working"},
 					"history": []interface{}{
 						// marker preserved but role coerced to user (1)
 						map[string]interface{}{"role": 1, "parts": []interface{}{map[string]string{"text": markerText}}},
@@ -845,7 +850,7 @@ func TestSessionSmuggle_UnusableHistoryIsNotTested(t *testing.T) {
 						reads.Add(1)
 					}
 					result := map[string]interface{}{
-						"id": "task-no-history", "contextId": "ctx-no-history", "status": "working",
+						"id": "task-no-history", "contextId": "ctx-no-history", "status": map[string]string{"state": "working"},
 					}
 					if tt.include {
 						result["history"] = tt.history
@@ -908,7 +913,7 @@ func TestSessionSmuggle_MarkerWithUnknownRoleIsNotTested(t *testing.T) {
 					writeJSON(w, map[string]interface{}{
 						"jsonrpc": "2.0", "id": id,
 						"result": map[string]interface{}{
-							"id": "task-unknown-role", "history": []interface{}{message},
+							"id": "task-unknown-role", "status": map[string]string{"state": "working"}, "history": []interface{}{message},
 						},
 					})
 				default:

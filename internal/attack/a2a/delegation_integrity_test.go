@@ -653,7 +653,7 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 			stored := append([]map[string]interface{}(nil), history...)
 			mu.Unlock()
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
-				"id": preTask, "contextId": "ctx-upstream", "history": stored,
+				"id": preTask, "contextId": "ctx-upstream", "status": map[string]string{"state": "working"}, "history": stored,
 			}})
 			return
 		}
