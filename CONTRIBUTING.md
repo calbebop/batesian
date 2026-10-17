@@ -254,3 +254,6 @@ For general questions, start a thread in the
 For bug reports or new rule requests, open an issue using one of the existing
 templates. For security-sensitive matters, please follow the process in
 [`SECURITY.md`](SECURITY.md) rather than opening a public issue.
+
+Release maintainers can use the [release checklist](docs/releasing.md) to verify
+the merged candidate before tagging.

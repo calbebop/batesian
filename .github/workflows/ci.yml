@@ -12,7 +12,7 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main, dev]
-  # Supports pre-PR runs and manual fallback when event delivery is unavailable.
+  # Supports pre-PR runs and pre-tag candidate checks on main.
   workflow_dispatch:
 
 # Cancel superseded branch and PR runs; never cancel tag-based releases.
@@ -92,14 +92,18 @@ jobs:
 
   validate-release:
     name: Validate release targets
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     uses: ./.github/workflows/validation.yml
     permissions:
       contents: read
 
   release-snapshot:
     name: Verify release snapshot
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
