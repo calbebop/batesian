@@ -45,9 +45,9 @@ func TestTaskMarkerLocation_LegacyRESTContent(t *testing.T) {
 		name, body string
 		want       string
 	}{
-		{"history", `{"id":"task-1","history":[{"content":[{"text":"marker"}]}]}`, "history"},
-		{"status", `{"id":"task-1","status":{"message":{"content":[{"text":"marker"}]}}}`, "status message"},
-		{"redacted", `{"id":"task-1","history":[{"content":[{"text":"hidden"}]}]}`, ""},
+		{"history", `{"id":"task-1","status":{"state":"working"},"history":[{"content":[{"text":"marker"}]}]}`, "history"},
+		{"status", `{"id":"task-1","status":{"state":"working","message":{"content":[{"text":"marker"}]}}}`, "status message"},
+		{"redacted", `{"id":"task-1","status":{"state":"working"},"history":[{"content":[{"text":"hidden"}]}]}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			location, matched := taskMarkerLocation(json.RawMessage(tc.body), "task-1", "marker")

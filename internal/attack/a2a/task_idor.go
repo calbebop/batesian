@@ -325,56 +325,43 @@ func taskReadMarkerLocation(body []byte, taskID, marker string) (string, bool) {
 }
 
 func taskMarkerLocation(body []byte, taskID, marker string) (string, bool) {
+	taskBody, id, _ := validatedTaskResult(body)
+	if id != taskID {
+		return "", false
+	}
 	type content struct {
 		Parts   json.RawMessage `json:"parts"`
 		Content json.RawMessage `json:"content"`
 	}
 	type task struct {
-		ID        string          `json:"id"`
-		TaskID    string          `json:"taskId"`
 		History   []content       `json:"history"`
 		Artifacts []content       `json:"artifacts"`
 		Status    json.RawMessage `json:"status"`
 	}
-	var envelope struct {
-		task
-		Task *task `json:"task"`
-	}
-	if json.Unmarshal(body, &envelope) != nil {
+	var result task
+	if json.Unmarshal(taskBody, &result) != nil {
 		return "", false
-	}
-	candidates := []task{envelope.task}
-	if envelope.Task != nil {
-		candidates = append(candidates, *envelope.Task)
 	}
 	hasMarker := func(item content) bool {
 		return strings.Contains(storedText(item.Parts), marker) || strings.Contains(storedText(item.Content), marker)
 	}
-	matched := false
-	for _, candidate := range candidates {
-		if candidate.ID != taskID && candidate.TaskID != taskID {
-			continue
-		}
-		matched = true
-		for _, message := range candidate.History {
-			if hasMarker(message) {
-				return "history", true
-			}
-		}
-		for _, artifact := range candidate.Artifacts {
-			if hasMarker(artifact) {
-				return "artifact", true
-			}
-		}
-		var status struct {
-			Message content `json:"message"`
-		}
-		if json.Unmarshal(candidate.Status, &status) == nil &&
-			hasMarker(status.Message) {
-			return "status message", true
+	for _, message := range result.History {
+		if hasMarker(message) {
+			return "history", true
 		}
 	}
-	return "", matched
+	for _, artifact := range result.Artifacts {
+		if hasMarker(artifact) {
+			return "artifact", true
+		}
+	}
+	var status struct {
+		Message content `json:"message"`
+	}
+	if json.Unmarshal(result.Status, &status) == nil && hasMarker(status.Message) {
+		return "status message", true
+	}
+	return "", true
 }
 
 type taskListProbe struct {

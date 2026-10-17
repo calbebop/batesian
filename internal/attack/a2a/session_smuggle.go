@@ -229,7 +229,7 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 			}
 
 			pollAgain := false
-			history, state := taskHistory(body)
+			history, state := taskHistory(body, taskID)
 			switch state {
 			case taskHistoryMissing:
 				why = "the task response contained no usable history"
@@ -302,22 +302,24 @@ const (
 )
 
 // taskHistory extracts a flat or nested Task history array.
-func taskHistory(body []byte) ([]interface{}, taskHistoryState) {
+func taskHistory(body []byte, taskID string) ([]interface{}, taskHistoryState) {
 	var envelope struct {
-		Result *struct {
-			History json.RawMessage `json:"history"`
-			Task    *struct {
-				History json.RawMessage `json:"history"`
-			} `json:"task"`
-		} `json:"result"`
+		Result json.RawMessage `json:"result"`
 	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Result == nil {
+	if json.Unmarshal(body, &envelope) != nil {
 		return nil, taskHistoryMalformed
 	}
-	raw := envelope.Result.History
-	if len(raw) == 0 && envelope.Result.Task != nil {
-		raw = envelope.Result.Task.History
+	task, id, _ := validatedTaskResult(envelope.Result)
+	if id != taskID {
+		return nil, taskHistoryMalformed
 	}
+	var result struct {
+		History json.RawMessage `json:"history"`
+	}
+	if json.Unmarshal(task, &result) != nil {
+		return nil, taskHistoryMalformed
+	}
+	raw := result.History
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		return nil, taskHistoryMissing
 	}

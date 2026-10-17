@@ -344,15 +344,22 @@ func (e *DelegationIntegrityExecutor) ownerHistoryHasMarker(ctx context.Context,
 
 func taskHistoryHasMarker(body []byte, requestID, taskID, marker string) (readable, found bool) {
 	var envelope struct {
-		JSONRPC string `json:"jsonrpc"`
-		ID      string `json:"id"`
-		Result  *struct {
-			ID      string          `json:"id"`
-			History json.RawMessage `json:"history"`
-		} `json:"result"`
+		JSONRPC string          `json:"jsonrpc"`
+		ID      string          `json:"id"`
+		Result  json.RawMessage `json:"result"`
 	}
 	if json.Unmarshal(body, &envelope) != nil || envelope.JSONRPC != "2.0" ||
-		envelope.ID != requestID || envelope.Result == nil || envelope.Result.ID != taskID {
+		envelope.ID != requestID {
+		return false, false
+	}
+	task, id, _ := validatedTaskResult(envelope.Result)
+	if id != taskID {
+		return false, false
+	}
+	var result struct {
+		History json.RawMessage `json:"history"`
+	}
+	if json.Unmarshal(task, &result) != nil {
 		return false, false
 	}
 	var history []struct {
@@ -362,7 +369,7 @@ func taskHistoryHasMarker(body []byte, requestID, taskID, marker string) (readab
 			Text string `json:"text"`
 		} `json:"parts"`
 	}
-	if json.Unmarshal(envelope.Result.History, &history) != nil || history == nil {
+	if json.Unmarshal(result.History, &history) != nil || history == nil {
 		return false, false
 	}
 	for _, message := range history {

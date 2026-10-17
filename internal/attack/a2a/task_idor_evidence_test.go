@@ -11,13 +11,13 @@ func TestTaskReadMarkerLocation(t *testing.T) {
 		location string
 		matched  bool
 	}{
-		{"history", `{"result":{"id":"owner-task","history":[{"parts":[{"text":"batesian idor probe 123"}]}]}}`, "history", true},
-		{"nested artifact", `{"result":{"task":{"id":"owner-task","artifacts":[{"parts":[{"text":"batesian idor probe 123"}]}]}}}`, "artifact", true},
-		{"status message", `{"result":{"id":"owner-task","status":{"message":{"parts":[{"text":"batesian idor probe 123"}]}}}}`, "status message", true},
-		{"id echo", `{"result":{"id":"owner-task"}}`, "", true},
+		{"history", `{"result":{"id":"owner-task","status":{"state":"working"},"history":[{"parts":[{"text":"batesian idor probe 123"}]}]}}`, "history", true},
+		{"nested artifact", `{"result":{"task":{"id":"owner-task","status":{"state":"working"},"artifacts":[{"parts":[{"text":"batesian idor probe 123"}]}]}}}`, "artifact", true},
+		{"status message", `{"result":{"id":"owner-task","status":{"state":"working","message":{"parts":[{"text":"batesian idor probe 123"}]}}}}`, "status message", true},
+		{"id echo", `{"result":{"id":"owner-task"}}`, "", false},
 		{"generic status", `{"result":{"id":"owner-task","status":{"state":"working"}}}`, "", true},
-		{"unrelated history", `{"result":{"id":"owner-task","history":[{"parts":[{"text":"other text"}]}]}}`, "", true},
-		{"metadata echo", `{"result":{"id":"owner-task","metadata":{"debug":"batesian idor probe 123"}}}`, "", true},
+		{"unrelated history", `{"result":{"id":"owner-task","status":{"state":"working"},"history":[{"parts":[{"text":"other text"}]}]}}`, "", true},
+		{"metadata echo", `{"result":{"id":"owner-task","status":{"state":"working"},"metadata":{"debug":"batesian idor probe 123"}}}`, "", true},
 		{"wrong task", `{"result":{"id":"other-task","history":[{"parts":[{"text":"batesian idor probe 123"}]}]}}`, "", false},
 		{"context only", `{"result":{"contextId":"owner-context","history":[{"parts":[{"text":"batesian idor probe 123"}]}]}}`, "", false},
 		{"null result", `{"result":null}`, "", false},
