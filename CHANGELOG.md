@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.8.0
 
-Changes on `main` since v1.7.0 are planned for v1.8.0. The catalog has 48 rules, up from 39: 19 A2A and 29 MCP.
+The catalog has 48 rules, up from 39 in v1.7.0: 19 A2A and 29 MCP.
 
 ### New rules
 
@@ -18,7 +18,7 @@ Changes on `main` since v1.7.0 are planned for v1.8.0. The catalog has 48 rules,
 ### Results and operation
 
 - JSON reports now have a schema version and per-rule outcomes. SARIF includes coverage status, evidence, stable fingerprints, and finding-specific severity.
-- Findings require observed evidence for confirmed confidence. Unobserved callbacks and incomplete inventories are reported as incomplete, not clean.
+- Findings require observed evidence for confirmed confidence. Failed prerequisites, invalid responses, partial probes, and unobserved callbacks are reported as incomplete, not clean.
 - CLI output redacts configured secrets and escapes terminal control characters. Configuration discovery can be disabled, and `init` will not overwrite an existing file.
 - The release pipeline verifies archives, CycloneDX SBOMs, checksums, signatures, and provenance before publishing.
 

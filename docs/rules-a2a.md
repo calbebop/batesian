@@ -15,9 +15,9 @@ Each finding carries a **confidence**:
 
 ## Protocol currency
 
-These rules target **A2A v1.0** (the current released version, v1.0.1 as of this
-writing) and fall back to the **v0.3** shapes where they differ, so a deployment
-on either revision is exercised. In practice that means sending the v1.0
+These rules target **A2A v1.0**, including the v1.0.1 patch, and fall back to
+the **v0.3** shapes where they differ, so deployments on either revision are
+exercised. In practice that means sending the v1.0
 PascalCase methods with the `A2A-Version: 1.0` header first and retrying with the
 v0.3 slash methods, and reading both the v1.0 `securityRequirements` and the v0.3
 `security` field from an agent card.
