@@ -74,6 +74,7 @@ func init() {
 	scanCmd.Flags().String("oauth-audience", "", "OAuth 2.0 audience (Auth0/Okta-style)")
 	// Interactive PKCE flow.
 	scanCmd.Flags().String("auth-url", "", "OAuth 2.0 authorization endpoint URL (enables PKCE flow)")
+	scanCmd.Flags().String("oauth-issuer", "", "Exact authorization server issuer from OAuth metadata (PKCE callback validation)")
 	scanCmd.Flags().Int("redirect-port", 9876, "Local TCP port for the OAuth callback listener (PKCE flow)")
 	scanCmd.Flags().Bool("no-browser", false, "Do not auto-open the browser for PKCE consent (print URL only)")
 	// Rule-scoped flag for mcp-oauth-audience-002: expected JWT `aud` claim of the
@@ -117,6 +118,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	token, _ := cmd.Flags().GetString("token")
 	tokenURL, _ := cmd.Flags().GetString("token-url")
 	authURL, _ := cmd.Flags().GetString("auth-url")
+	oauthIssuer, _ := cmd.Flags().GetString("oauth-issuer")
 	clientID, _ := cmd.Flags().GetString("client-id")
 	clientSecret, _ := cmd.Flags().GetString("client-secret")
 	oauthScopes, _ := cmd.Flags().GetStringSlice("oauth-scopes")
@@ -136,7 +138,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		target = cfg.Target
 	}
 	redactor := newOutputRedactor(target)
-	for _, raw := range []string{authURL, tokenURL, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
+	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
 	}
 	for _, raw := range oauthOrigins {
@@ -255,7 +257,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		return err
 	}
 
-	if err := validateOAuthAcquisition(token, authURL, tokenURL, clientID, clientSecret, oauthScopes, oauthAudience); err != nil {
+	if err := validateOAuthAcquisition(token, authURL, tokenURL, oauthIssuer, clientID, clientSecret, oauthScopes, oauthAudience); err != nil {
 		return err
 	}
 
@@ -272,7 +274,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 
 		switch {
 		case authURL != "" && clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, clientID, oauthScopes, oauthAudience, timeout, proxy, skipTLS, redirectPort, !noBrowser)
+			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, oauthIssuer, clientID, oauthScopes, oauthAudience, timeout, proxy, skipTLS, redirectPort, !noBrowser)
 			if err != nil {
 				return fmt.Errorf("OAuth PKCE flow failed: %w", err)
 			}
@@ -605,7 +607,10 @@ func parsePrincipalFlag(raw string) (attackpkg.Principal, error) {
 	return p, nil
 }
 
-func validateOAuthAcquisition(token, authURL, tokenURL, clientID, clientSecret string, scopes []string, audience string) error {
+func validateOAuthAcquisition(token, authURL, tokenURL, issuer, clientID, clientSecret string, scopes []string, audience string) error {
+	if issuer != "" && authURL == "" {
+		return fmt.Errorf("--oauth-issuer requires --auth-url for the PKCE flow")
+	}
 	if token != "" {
 		return nil
 	}
@@ -699,10 +704,11 @@ func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret strin
 }
 
 // fetchOAuthTokenPKCE runs the interactive authorization-code flow.
-func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, clientID string, scopes []string, audience string, timeout time.Duration, proxy string, skipTLS bool, redirectPort int, openBrowser bool) (string, error) {
+func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, issuer, clientID string, scopes []string, audience string, timeout time.Duration, proxy string, skipTLS bool, redirectPort int, openBrowser bool) (string, error) {
 	tok, err := auth.PerformPKCEFlow(ctx, auth.PKCEFlowConfig{
 		AuthURL:      authURL,
 		TokenURL:     tokenURL,
+		Issuer:       issuer,
 		ClientID:     clientID,
 		Scopes:       scopes,
 		Audience:     audience,

@@ -311,15 +311,17 @@ func TestValidateOAuthAcquisition(t *testing.T) {
 		pkceError        = "--auth-url requires --client-id and --token-url for the PKCE flow"
 	)
 	tests := []struct {
-		name                                       string
-		token, authURL, tokenURL, clientID, secret string
-		scopes                                     []string
-		audience, want                             string
+		name                                               string
+		token, authURL, tokenURL, issuer, clientID, secret string
+		scopes                                             []string
+		audience, want                                     string
 	}{
 		{name: "unset"},
 		{name: "client credentials", tokenURL: "https://auth.example/token", clientID: "client"},
 		{name: "client credentials options", tokenURL: "https://auth.example/token", clientID: "client", secret: "secret", scopes: []string{"mcp:read"}, audience: "mcp"},
 		{name: "PKCE", authURL: "https://auth.example/authorize", tokenURL: "https://auth.example/token", clientID: "client"},
+		{name: "PKCE with issuer", authURL: "https://auth.example/authorize", tokenURL: "https://auth.example/token", issuer: "https://auth.example", clientID: "client"},
+		{name: "issuer without PKCE", issuer: "https://auth.example", want: "--oauth-issuer requires --auth-url for the PKCE flow"},
 		{name: "token URL only", tokenURL: "https://auth.example/token", want: credentialsError},
 		{name: "client ID only", clientID: "client", want: credentialsError},
 		{name: "client secret only", secret: "secret", want: credentialsError},
@@ -332,7 +334,7 @@ func TestValidateOAuthAcquisition(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateOAuthAcquisition(tc.token, tc.authURL, tc.tokenURL, tc.clientID, tc.secret, tc.scopes, tc.audience)
+			err := validateOAuthAcquisition(tc.token, tc.authURL, tc.tokenURL, tc.issuer, tc.clientID, tc.secret, tc.scopes, tc.audience)
 			if tc.want == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

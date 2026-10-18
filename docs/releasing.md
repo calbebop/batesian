@@ -16,6 +16,12 @@ release. A passing PR snapshot does not replace this check on `main`.
 ## Publish
 
 Only after the go/no-go decision, tag the verified commit and push the version
-tag. A tag push reruns the gates, builds a draft release, verifies its assets,
-signature, and provenance, then publishes it. If a gate fails, leave the release
-unpublished and fix the candidate through a PR before retrying.
+tag. The release job requires the tag to point to the current `main` commit and
+a successful manual CI run on that exact commit. A tag push reruns the gates,
+builds a draft release, verifies its assets, signature, and provenance, then
+publishes it. If a gate fails, leave the release unpublished and fix the
+candidate through a PR before retrying.
+
+This gate only applies to tags whose commits contain the current workflow.
+Restrict release tag creation separately; a tag on an older commit can run the
+older workflow without this check.

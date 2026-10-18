@@ -134,9 +134,16 @@ Batesian prints the authorization URL to stderr for manual sign-in. It contains 
 batesian scan --target https://mcp.example.com \
   --auth-url https://auth.example.com/authorize \
   --token-url https://auth.example.com/oauth/token \
+  --oauth-issuer https://auth.example.com \
   --client-id my-client \
   --oauth-scopes mcp:read
 ```
+
+Set `--oauth-issuer` to the exact `issuer` in the authorization server metadata,
+which may include a path. Batesian rejects callbacks with a missing or different
+`iss` when this flag is set. It also rejects an `iss` received without a
+configured issuer. Servers that omit `iss` remain compatible when the flag is
+unset.
 
 ### Multiple principals
 
