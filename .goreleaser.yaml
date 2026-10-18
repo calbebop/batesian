@@ -160,7 +160,7 @@ release:
   footer: |
     ---
     {{ if .PreviousTag -}}
-    **Full changelog**: https://github.com/calbebop/batesian/compare/{{.PreviousTag}}...{{.Tag}}
+    **Tag comparison**: https://github.com/calbebop/batesian/compare/{{.PreviousTag}}...{{.Tag}}
     {{- else -}}
-    **Full changelog**: https://github.com/calbebop/batesian/commits/{{.Tag}}
+    **Commit history**: https://github.com/calbebop/batesian/commits/{{.Tag}}
     {{- end }}

@@ -1,11 +1,19 @@
 """Tests for release note extraction."""
 
 import unittest
+from pathlib import Path
 
 from release_notes import extract_notes
 
 
 class ReleaseNotesTests(unittest.TestCase):
+    def test_v181_section_covers_v18_update(self):
+        changelog = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+        notes = extract_notes(changelog.read_text(encoding="utf-8"), "v1.8.1")
+        self.assertIn("48 rules", notes)
+        self.assertIn("v1.7.0...v1.8.1", notes)
+        self.assertNotIn("v1.8.0 (unpublished)", notes)
+
     def test_extracts_only_requested_release(self):
         source = "# Changelog\n\n## v1.8.0\n\n### Fixes\n\n- Safer findings.\n\n## v1.7.0\n\n- Earlier.\n"
         self.assertEqual(extract_notes(source, "v1.8.0"), "### Fixes\n\n- Safer findings.\n")

@@ -27,3 +27,10 @@ candidate through a PR before retrying.
 This gate only applies to tags whose commits contain the current workflow.
 Restrict release tag creation separately; a tag on an older commit can run the
 older workflow without this check.
+
+## Interrupted publication
+
+Do not move a pushed version tag. If a tagged release remains a draft, fix the
+failure through a PR and rerun the candidate checks on merged `main`. Publish
+the next patch version only after those checks pass. Record the skipped tag and
+leave its draft unpublished until cleanup is reviewed.
