@@ -32,6 +32,19 @@ func TestClassifyHistoryMarker(t *testing.T) {
 		{name: "numeric agent", history: []interface{}{message(float64(2))}, want: historyMarkerAgent},
 		{name: "agent", history: []interface{}{message("agent")}, want: historyMarkerAgent},
 		{name: "symbolic agent", history: []interface{}{message("ROLE_AGENT")}, want: historyMarkerAgent},
+		{name: "marker in message ID only", history: []interface{}{map[string]interface{}{
+			"role": "agent", "messageId": marker, "parts": []interface{}{map[string]string{"text": "other"}},
+		}}, want: historyMarkerAbsent},
+		{name: "marker in metadata only", history: []interface{}{map[string]interface{}{
+			"role": "agent", "metadata": map[string]string{"marker": marker},
+			"parts": []interface{}{map[string]string{"text": "other"}},
+		}}, want: historyMarkerAbsent},
+		{name: "marker in part metadata only", history: []interface{}{map[string]interface{}{
+			"role": "agent", "parts": []interface{}{map[string]interface{}{
+				"metadata": map[string]string{"marker": marker}, "text": "other",
+			}},
+		}}, want: historyMarkerAbsent},
+		{name: "malformed history item", history: []interface{}{marker}, want: historyMarkerUnknown},
 		{name: "missing role", history: []interface{}{missingRole}, want: historyMarkerUnknown},
 		{name: "unknown over user", history: []interface{}{message("moderator"), message("user")}, want: historyMarkerUnknown},
 		{name: "agent over unknown", history: []interface{}{message("moderator"), message("agent")}, want: historyMarkerAgent},

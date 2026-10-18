@@ -185,7 +185,10 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		if forceShape != "" && v.name != forceShape {
 			continue
 		}
-		headers := map[string]string{"A2A-Version": "1.0"}
+		headers := map[string]string{}
+		if v.name == "v1.0" {
+			headers["A2A-Version"] = "1.0"
+		}
 		for k, val := range extra {
 			headers[k] = val
 		}

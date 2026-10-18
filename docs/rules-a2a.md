@@ -306,9 +306,11 @@ engine). Unlike `a2a-task-idor-001` (anonymous access), this confirms that a
 It requires **two principals with valid, distinct credentials**, configured via
 the `principals:` block in `batesian.yaml` or repeated `--principal
 name=...,token=...,tenant=...` flags.
+Both principals also need nonempty, distinct tenant labels. These labels are
+operator-supplied; verify that they match the target's actual tenant assignments.
 
 Sequence: (1) authenticate as A and B and have each create its own task - both
-must succeed, proving two valid distinct identities (shared tokens => skip); (2)
+must succeed, proving two valid, distinct authorization contexts (shared tokens => skip); (2)
 confirm the server is not simply open - an unauthenticated read of A's task must
 be rejected (if it succeeds, that's `a2a-task-idor-001` territory, not a tenant
 breach, so no finding here); (3) attempt the cross-tenant reads in both
@@ -348,13 +350,14 @@ grant. Its provenance records whether A's task came from an upstream rule.
 
 The A2A half of the session/task-ID fixation concern (the MCP half is
 `mcp-session-fixation-001`). A2A groups a conversation by `contextId`; the
-server should mint it and scope each context to its participants. This **chained,
-multi-principal** rule confirms a server that adopts a client-chosen contextId
-**and** merges a different principal's messages under it. Needs two principals
+v1 specification permits client-provided IDs. Accepting one is not a finding by
+itself; the server must scope the context to its authorized participants. This **chained,
+multi-principal** rule confirms a server that accepts a client-chosen contextId
+**and** exposes a different principal's messages under it. Needs two principals
 with valid, distinct credentials.
 
 Sequence: (1) as attacker A, send under a client-chosen contextId - if the server
-returns its own contextId instead, it mints server-side, so no finding; (2)
+returns a different contextId, this rule cannot establish the leak; (2)
 confirm an unauthenticated message under the fixed context is rejected on the
 same protocol wire (else it is open or untested); (3) as victim B, send a secret
 marker under the same contextId and confirm B's task reports it; (4) as A, read
@@ -424,15 +427,16 @@ each with a `uri` and a `required` flag; clients activate one via the
 `A2A-Extensions` request header (the legacy `X-A2A-Extensions` name, used through
 v0.3.0, is also sent for older servers). A required extension is a capability the
 server states clients must activate, so the spec requires the server to reject
-requests that do not (`ExtensionSupportRequiredError`). This rule is card-driven and confirms a fail-open downgrade only with a
-control/test pair: it reads the card, and for each `required: true` extension it
-(1) sends a `SendMessage` that **activates** the extension (control - must be
-accepted or the rule can't test), then (2) sends an identical `SendMessage` with
-the `A2A-Extensions` header **omitted**. A **confirmed** finding is raised only
-when the omission is also accepted - the server does not enforce its own required
-extension, so its policy/capability guarantees can be bypassed by simply not
-sending the header. A server that rejects the un-activated request fails closed
-(no finding). Malformed `capabilities.extensions` entries cannot establish the
+requests that do not (`ExtensionSupportRequiredError`). This rule is card-driven
+and confirms a fail-open downgrade only with a control/test pair: it reads the
+card, and for each `required: true` extension it (1) sends a message that
+**activates** the extension (control - must be accepted or the rule can't test),
+then (2) sends the same wire shape with both extension headers **omitted**. The
+v0.3 fallback uses `message/send` without a v1 version header. A **confirmed**
+finding requires the omission to be accepted too - the server does not enforce
+its own required extension, so its policy/capability guarantees can be bypassed
+by omitting both headers. A server that rejects the un-activated request fails
+closed (no finding). Malformed `capabilities.extensions` entries cannot establish the
 card's required-extension policy and make this check inconclusive.
 
 ---

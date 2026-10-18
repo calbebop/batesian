@@ -7,11 +7,11 @@ info:
     Tests whether an A2A server lets a CLIENT pre-seed the conversation
     `contextId` and then merges a DIFFERENT principal's messages into that same
     context - the A2A half of the session/task-ID fixation concern (the MCP half
-    is mcp-session-fixation-001). The server should mint contextIds itself and
-    scope each context to its participants; a server that adopts a client-chosen
-    contextId and exposes another principal's messages under it lets an attacker
-    fix a context, lure a victim onto it, and read the victim's content
-    (CWE-384).
+    is mcp-session-fixation-001). A2A v1 permits client-supplied contextIds. The
+    server must scope each context to its authorized participants; a server that
+    accepts a client-chosen contextId and exposes another principal's messages
+    under it lets an attacker fix a context, lure a victim onto it, and read
+    the victim's content (CWE-384).
 
     This is a stateful, multi-principal chained check requiring at least two
     principals with valid, distinct credentials (an attacker A and a victim B);
@@ -19,8 +19,8 @@ info:
 
     Sequence:
       1. As A, send a message carrying a client-chosen `contextId`. If the server
-         returns its OWN contextId instead, it mints server-side - secure - and
-         no finding is raised.
+         returns a different contextId, this rule cannot establish the leak and
+         raises no finding.
       2. Confirm the server is not simply open: an UNAUTHENTICATED message under
          the fixed contextId must be rejected. If it succeeds, the server has no
          auth at all (not fixation) - no finding.
@@ -52,12 +52,11 @@ attack:
   type: a2a-context-fixation
 
 remediation: |
-  1. Always generate the contextId server-side; never adopt a client-supplied
-     contextId as authoritative for grouping a conversation.
-  2. Scope each context to the principals that legitimately participate in it and
-     reject (or partition) messages from other principals; never merge two
-     principals' messages into one context because they share an id.
-  3. Rotate context/session identifiers on identity transitions and handoffs so a
-     pre-seeded id cannot bridge a trust boundary.
-  4. Record the acting principal per message so cross-principal context joins are
-     auditable.
+  1. Authorize every context read and write against the acting principal. A
+     client-supplied contextId alone does not grant access to that context.
+  2. Scope each context to its authorized participants. Reject or partition
+     messages from other principals rather than merging them by id alone.
+  3. Rotate context/session identifiers on identity transitions and handoffs
+     when the trust boundary changes.
+  4. Record the acting principal per message so cross-principal context joins
+     are auditable.
