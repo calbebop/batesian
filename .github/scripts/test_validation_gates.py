@@ -11,7 +11,7 @@ import validate_mcp_fixtures
 import validate_oauth_dcr
 import validate_push_callback_auth
 import validate_secured_agent
-from validation_outcomes import incomplete_rules, rule_statuses
+from validation_outcomes import finding_quality_issues, incomplete_rules, rule_statuses
 
 
 def report(*, findings=(), skipped=(), errors=(), outcomes=()):
@@ -57,6 +57,21 @@ class OutcomeTests(unittest.TestCase):
         duplicate["rule_outcomes"].append(duplicate["rule_outcomes"][0])
         with self.assertRaisesRegex(ValueError, "duplicate"):
             rule_statuses(duplicate, {"expected"})
+
+    def test_positive_findings_require_confidence_and_evidence(self):
+        rid = "a2a-task-cancel-idor-001"
+        doc = report(findings=[rid])
+        finding = doc["findings"][0]
+        finding.update(confidence="confirmed", evidence="owner readback", target_url="http://fixture/")
+        self.assertEqual(finding_quality_issues(doc, {rid: "confirmed"}), [])
+
+        for field, value in (("confidence", "indicator"), ("evidence", "  "),
+                             ("target_url", "")):
+            with self.subTest(field=field):
+                changed = dict(doc, findings=[dict(finding, **{field: value})])
+                self.assertTrue(finding_quality_issues(changed, {rid: "confirmed"}))
+        self.assertTrue(finding_quality_issues(doc, {"missing-rule": "confirmed"}))
+        self.assertTrue(finding_quality_issues({"findings": None}, {rid: "confirmed"}))
 
     def test_clean_fixture_rejects_missing_outcome(self):
         with self.assertRaisesRegex(ValueError, "missing outcomes"):

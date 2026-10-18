@@ -9,7 +9,7 @@ import tempfile
 import time
 import urllib.request
 
-from validation_outcomes import incomplete_rules, rule_statuses
+from validation_outcomes import finding_quality_issues, incomplete_rules, rule_statuses
 
 HOST = "127.0.0.1"
 PORT = 3111
@@ -29,6 +29,8 @@ IDOR_RULES = {
     "a2a-task-enumeration-001",
 }
 SECURED_RULES = IDOR_RULES | {"a2a-task-idor-001"}
+IDOR_CONFIDENCE = {rid: "confirmed" for rid in IDOR_RULES}
+IDOR_CONFIDENCE["a2a-task-enumeration-001"] = "indicator"
 
 # Two principals are required by the cross-principal rules; --token drives the
 # rules that read a single credential. Verbatim from the fixture's docstring.
@@ -140,24 +142,27 @@ def main():
     rules, doc = scan_posture("idor")
     missing = IDOR_RULES - rules
     statuses = rule_statuses(doc, IDOR_RULES)
-    ok = not missing and all(status == "findings" for status in statuses.values())
+    quality = finding_quality_issues(doc, IDOR_CONFIDENCE)
+    ok = not missing and not quality and all(status == "findings" for status in statuses.values())
     all_ok &= ok
     check("idor (the five ownership rules must fire)", ok,
-          f"missing {sorted(missing)}; fired {sorted(rules)}")
+          f"missing {sorted(missing)}; quality {quality}; fired {sorted(rules)}")
 
     rules, doc = scan_posture("idor-paged")
+    quality = finding_quality_issues(doc, {"a2a-task-enumeration-001": "indicator"})
     ok = "a2a-task-enumeration-001" in rules and \
-        rule_statuses(doc, {"a2a-task-enumeration-001"})["a2a-task-enumeration-001"] == "findings"
+        rule_statuses(doc, {"a2a-task-enumeration-001"})["a2a-task-enumeration-001"] == "findings" and not quality
     all_ok &= ok
     check("idor-paged (task enumeration must fire)", ok,
-          f"a2a-task-enumeration-001 {'present' if ok else 'ABSENT'}; fired {sorted(rules)}")
+          f"quality {quality}; fired {sorted(rules)}")
 
     rules, doc = scan_posture("unauth-read")
+    quality = finding_quality_issues(doc, {"a2a-task-idor-001": "confirmed"})
     ok = "a2a-task-idor-001" in rules and \
-        rule_statuses(doc, {"a2a-task-idor-001"})["a2a-task-idor-001"] == "findings"
+        rule_statuses(doc, {"a2a-task-idor-001"})["a2a-task-idor-001"] == "findings" and not quality
     all_ok &= ok
     check("unauth-read (a2a-task-idor-001 must fire)", ok,
-          f"a2a-task-idor-001 {'present' if ok else 'ABSENT'}; fired {sorted(rules)}")
+          f"quality {quality}; fired {sorted(rules)}")
 
     return 0 if all_ok else 1
 
