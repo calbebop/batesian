@@ -1,6 +1,10 @@
 # Changelog
 
-## v1.8.0
+## v1.8.1
+
+The v1.8.0 tag produced a draft but was not published. v1.8.1 includes the full
+v1.8 update and the corrected draft verification.
+[Compare with v1.7.0](https://github.com/calbebop/batesian/compare/v1.7.0...v1.8.1).
 
 The catalog has 48 rules, up from 39 in v1.7.0: 19 A2A and 29 MCP.
 
@@ -23,6 +27,11 @@ The catalog has 48 rules, up from 39 in v1.7.0: 19 A2A and 29 MCP.
 - Findings require observed evidence for confirmed confidence. Failed prerequisites, invalid responses, partial probes, and unobserved callbacks are reported as incomplete, not clean.
 - CLI output redacts configured secrets and escapes terminal control characters. Configuration discovery can be disabled, and `init` will not overwrite an existing file.
 - The release pipeline verifies archives, CycloneDX SBOMs, checksums, signatures, and provenance before publishing.
+
+## v1.8.0 (unpublished)
+
+The tag was created, but the draft did not pass release verification or publish.
+Use v1.8.1.
 
 ## v1.7.0
 
