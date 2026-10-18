@@ -193,7 +193,7 @@ func TestVV_ModernWireMeta(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Method string      `json:"method"`
-			ID     json.Number `json:"id"`
+			ID     interface{} `json:"id"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Method == "initialize" {

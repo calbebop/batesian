@@ -252,20 +252,28 @@ func isModernError(body []byte) bool {
 // A reply without supportedVersions is not a DiscoverResult: the field is
 // required in the specification and in all three official SDKs.
 func modernWireAdvertised(body []byte) bool {
-	var envelope struct {
-		Result *struct {
-			SupportedVersions []string `json:"supportedVersions"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Result == nil {
+	versions, ok := discoveryVersions(body)
+	if !ok {
 		return false
 	}
-	for _, v := range envelope.Result.SupportedVersions {
+	for _, v := range versions {
 		if v == modernEraVersion {
 			return true
 		}
 	}
 	return false
+}
+
+func discoveryVersions(body []byte) ([]string, bool) {
+	var envelope struct {
+		Result *struct {
+			SupportedVersions *[]string `json:"supportedVersions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Result == nil || envelope.Result.SupportedVersions == nil {
+		return nil, false
+	}
+	return *envelope.Result.SupportedVersions, true
 }
 
 // jsonRPCErrorCode extracts the numeric code from a JSON-RPC error envelope.
@@ -299,9 +307,8 @@ func jsonRPCErrorCode(body []byte) (int, bool) {
 // (the client should correct its request rather than fall back); anything else
 // means legacy.
 //
-// Only a transport failure yields EraUnknown. Any HTTP reply, including 404 or
-// 405, tells us something answered, and absent a modern error that answer is
-// legacy.
+// Transport failures and uncorrelated JSON-RPC replies leave the era unknown.
+// Other HTTP replies, including 404 or 405, establish no modern signal.
 func detectEra(ctx context.Context, client *attack.HTTPClient, endpoint string) Era {
 	// Built through a modern session rather than by hand. What a modern request
 	// looks like (MCP-Protocol-Version and Mcp-Method, both REQUIRED, and the
@@ -312,20 +319,39 @@ func detectEra(ctx context.Context, client *attack.HTTPClient, endpoint string) 
 	// tested.
 	probe := mcpSession{Endpoint: endpoint, Era: EraModern}
 	resp, err := probe.post(ctx, client, "batesian-era-probe", "server/discover", nil)
-	if err != nil {
+	if err != nil || resp == nil {
 		return EraUnknown
 	}
 
 	// A DiscoverResult that advertises the modern revision means the server
 	// serves that wire. Discovery answering at all does not, because every
 	// server implements the RPC whatever era it serves; see modernWireAdvertised.
-	if resp.IsAccepted() && modernWireAdvertised(resp.Body) {
-		return EraModern
+	body, parsed := parseResponseBody(resp.Body)
+	matched := parsed && matchesRPCStringID(body, "batesian-era-probe")
+	if resp.IsSuccess() {
+		if !matched || (!validRPCResult(body) && !validRPCError(body)) {
+			return EraUnknown
+		}
+		if validRPCResult(body) {
+			if _, ok := discoveryVersions(resp.Body); !ok {
+				return EraUnknown
+			}
+			if modernWireAdvertised(resp.Body) {
+				return EraModern
+			}
+		}
+		if validRPCError(body) && isModernError(resp.Body) {
+			return EraModern
+		}
+		return EraLegacy
 	}
 	// A spec-reserved error code can only come from a modern server, whatever
 	// the HTTP status carrying it.
 	if isModernError(resp.Body) {
-		return EraModern
+		if matched && validRPCError(body) {
+			return EraModern
+		}
+		return EraUnknown
 	}
 	// Something answered, but not as a modern server would.
 	return EraLegacy

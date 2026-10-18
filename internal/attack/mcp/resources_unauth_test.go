@@ -111,6 +111,11 @@ func mcpResourcesRequireAuthServer(t *testing.T) *httptest.Server {
 			})
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusOK)
+		case "server/discover":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"supportedVersions": []string{"2025-03-26"}},
+			})
 		default:
 			// Reject with JSON-RPC auth error
 			json.NewEncoder(w).Encode(map[string]interface{}{

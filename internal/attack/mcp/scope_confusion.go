@@ -133,7 +133,7 @@ func openSessionsAs(ctx context.Context, client *attack.HTTPClient, baseURL stri
 	if legacyErr == nil {
 		legacy.Era = EraLegacy
 		out = append(out, legacy)
-		endpoints = []string{legacy.Endpoint}
+		endpoints = modernDiscoveryEndpoints(baseURL, legacy.Endpoint)
 	}
 
 	for _, ep := range endpoints {
@@ -179,9 +179,8 @@ func scopeDiscoverModern(ctx context.Context, client *attack.HTTPClient, endpoin
 	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
 		return mcpSession{}, false, nil
 	}
-	var envelope map[string]interface{}
-	if json.Unmarshal(resp.Body, &envelope) != nil ||
-		envelope["jsonrpc"] != "2.0" || envelope["id"] != requestID {
+	body, parsed := parseResponseBody(resp.Body)
+	if !parsed || !matchesRPCStringID(body, requestID) || !validRPCResult(body) {
 		return mcpSession{}, false, fmt.Errorf("%w: modern wire discovery for %q at %s returned an unmatched response",
 			attack.ErrInconclusive, p.name, endpoint)
 	}

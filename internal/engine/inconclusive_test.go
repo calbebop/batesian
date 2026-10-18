@@ -131,10 +131,19 @@ func TestRun_ModernEraServerReportsUnsupportedProtocol(t *testing.T) {
 	// A modern server: it has no initialize method, and answers the era probe
 	// with a spec-reserved error code.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID interface{} `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32022,` +
-			`"message":"Unsupported protocol version","data":{"supported":["2026-07-28"]}}}`))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{
+				"code": -32022, "message": "Unsupported protocol version",
+				"data": map[string]interface{}{"supported": []string{"2026-07-28"}},
+			},
+		})
 	}))
 	defer srv.Close()
 

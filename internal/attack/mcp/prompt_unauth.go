@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -54,30 +55,19 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 
 	// Call prompts/list without any auth token.
 	listResp, err := session.post(ctx, client, 3, "prompts/list", nil)
-	verdict, listBody := classifyProbe(listResp, err, 3)
-	if verdict != probeAnswered {
-		return nil, verdict == probeRejected
-	}
-
-	// JSON-RPC error means auth is enforced - not vulnerable.
-	if _, hasErr := listBody["error"]; hasErr {
-		return nil, true
-	}
-
-	result, ok := listBody["result"].(map[string]interface{})
+	result, denied, ok := promptListResult(listResp, err, 3)
 	if !ok {
-		return nil, false
+		return nil, denied
 	}
 	promptsRaw, ok := result["prompts"].([]interface{})
 	if !ok {
 		return nil, false
 	}
-	cursor, more := result["nextCursor"].(string)
-	_, hasCursor := result["nextCursor"]
-	complete := !hasCursor
+	cursor, more, valid := resourcesListCursor(result)
+	complete := valid && !more
 	seen := map[string]bool{}
 	nextID := 4
-	for page := 1; page < 10 && more; page++ {
+	for page := 1; page < 10 && valid && more; page++ {
 		if seen[cursor] {
 			break
 		}
@@ -86,14 +76,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		nextID++
 		pageResp, pageErr := session.post(ctx, client, pageID, "prompts/list",
 			map[string]interface{}{"cursor": cursor})
-		pageVerdict, pageBody := classifyProbe(pageResp, pageErr, pageID)
-		if pageVerdict != probeAnswered {
-			break
-		}
-		if _, hasErr := pageBody["error"]; hasErr {
-			break
-		}
-		pageResult, ok := pageBody["result"].(map[string]interface{})
+		pageResult, _, ok := promptListResult(pageResp, pageErr, pageID)
 		if !ok {
 			break
 		}
@@ -102,12 +85,8 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			break
 		}
 		promptsRaw = append(promptsRaw, pagePrompts...)
-		next, present := pageResult["nextCursor"]
-		if !present {
-			complete = true
-			break
-		}
-		cursor, more = next.(string)
+		cursor, more, valid = resourcesListCursor(pageResult)
+		complete = valid && !more
 	}
 	if len(promptsRaw) == 0 {
 		return nil, complete
@@ -148,6 +127,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 
 	const maxPromptReads = 10
 	var outcomes []string
+	getsComplete := true
 	for i, name := range names {
 		if i >= maxPromptReads {
 			break
@@ -157,6 +137,9 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		getResp, err := session.post(ctx, client, id, "prompts/get", map[string]interface{}{"name": name})
 		content, outcome := promptGetOutcome(getResp, err, id)
 		outcomes = append(outcomes, outcome)
+		if strings.HasPrefix(outcome, "incomplete") {
+			getsComplete = false
+		}
 		if content == "" {
 			continue
 		}
@@ -191,7 +174,29 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		findings[0].Evidence += "\nprompt content access not confirmed"
 	}
 
-	return findings, true
+	return findings, complete && getsComplete
+}
+
+// promptListResult distinguishes an auth gate from an unrelated RPC failure.
+func promptListResult(resp *attack.Response, err error, id int) (map[string]interface{}, bool, bool) {
+	verdict, body := classifyProbe(resp, err, id)
+	if verdict == probeInconclusive {
+		return nil, false, false
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, true, false
+	}
+	if _, ok := body["error"]; ok {
+		return nil, promptAuthError(body), false
+	}
+	if verdict != probeAnswered {
+		return nil, false, false
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok || (result["resultType"] != nil && result["resultType"] != "complete") {
+		return nil, false, false
+	}
+	return result, false, true
 }
 
 func promptGetOutcome(resp *attack.Response, err error, id int) (string, string) {
@@ -209,15 +214,30 @@ func promptGetOutcome(resp *attack.Response, err error, id int) (string, string)
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return "", fmt.Sprintf("denied (HTTP %d)", resp.StatusCode)
 		}
+		if promptAuthError(body) {
+			return "", "denied (JSON-RPC error)"
+		}
 		return "", "incomplete (JSON-RPC error)"
 	case probeAnswered:
 		if _, hasErr := body["error"]; hasErr {
+			if promptAuthError(body) {
+				return "", "denied (JSON-RPC error)"
+			}
 			return "", "incomplete (JSON-RPC error)"
 		}
 		return promptGetContent(resp.Body, id)
 	default:
 		return "", "incomplete (unknown response)"
 	}
+}
+
+func promptAuthError(body map[string]interface{}) bool {
+	rpcErr, ok := body["error"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	msg, _ := rpcErr["message"].(string)
+	return authFlavoredError(rpcErrorCode(rpcErr["code"]), msg)
 }
 
 func promptGetContent(response []byte, id int) (string, string) {

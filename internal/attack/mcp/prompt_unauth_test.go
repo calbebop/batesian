@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -66,28 +67,29 @@ func TestPromptUnauth_GetRequiresContent(t *testing.T) {
 		wrongID     bool
 		findings    int
 		wantOutcome string
+		incomplete  bool
 	}{
-		{"missing result", nil, false, 1, "incomplete (missing result)"},
-		{"missing messages", map[string]interface{}{}, false, 1, "incomplete (missing prompt messages)"},
-		{"empty messages", map[string]interface{}{"messages": []interface{}{}}, false, 1, "no non-empty content returned"},
-		{"empty text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": ""})}}, false, 1, "no non-empty content returned"},
-		{"empty image", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": ""})}}, false, 1, "no non-empty content returned"},
-		{"invalid blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": "not base64"}})}}, false, 1, "incomplete (invalid prompt content)"},
-		{"unsupported content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "future"})}}, false, 1, "incomplete (invalid prompt content)"},
-		{"malformed messages", map[string]interface{}{"messages": "not an array"}, false, 1, "incomplete (invalid prompt response)"},
-		{"input required", map[string]interface{}{"resultType": "input_required", "messages": textResult["messages"]}, false, 1, "incomplete (input required)"},
-		{"unexpected result type", map[string]interface{}{"resultType": "unknown"}, false, 1, "incomplete (unexpected result type)"},
-		{"wrong response ID", textResult, true, 1, "incomplete (invalid JSON-RPC response)"},
-		{"text content", textResult, false, 2, "content returned"},
+		{"missing result", nil, false, 1, "incomplete (missing result)", true},
+		{"missing messages", map[string]interface{}{}, false, 1, "incomplete (missing prompt messages)", true},
+		{"empty messages", map[string]interface{}{"messages": []interface{}{}}, false, 1, "no non-empty content returned", false},
+		{"empty text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "text", "text": ""})}}, false, 1, "no non-empty content returned", false},
+		{"empty image", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": ""})}}, false, 1, "no non-empty content returned", false},
+		{"invalid blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": "not base64"}})}}, false, 1, "incomplete (invalid prompt content)", true},
+		{"unsupported content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "future"})}}, false, 1, "incomplete (invalid prompt content)", true},
+		{"malformed messages", map[string]interface{}{"messages": "not an array"}, false, 1, "incomplete (invalid prompt response)", true},
+		{"input required", map[string]interface{}{"resultType": "input_required", "messages": textResult["messages"]}, false, 1, "incomplete (input required)", true},
+		{"unexpected result type", map[string]interface{}{"resultType": "unknown"}, false, 1, "incomplete (unexpected result type)", true},
+		{"wrong response ID", textResult, true, 1, "incomplete (invalid JSON-RPC response)", true},
+		{"text content", textResult, false, 2, "content returned", false},
 		{"later message", map[string]interface{}{"messages": []interface{}{
 			message(map[string]interface{}{"type": "text", "text": ""}),
 			message(map[string]interface{}{"type": "text", "text": "private prompt"}),
-		}}, false, 2, "content returned"},
-		{"complete result", map[string]interface{}{"resultType": "complete", "messages": textResult["messages"]}, false, 2, "content returned"},
-		{"image content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString([]byte("image"))})}}, false, 2, "content returned"},
-		{"audio content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "audio", "data": base64.StdEncoding.EncodeToString([]byte("audio"))})}}, false, 2, "content returned"},
-		{"embedded text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "text": "embedded prompt"}})}}, false, 2, "content returned"},
-		{"embedded blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": base64.StdEncoding.EncodeToString([]byte("document"))}})}}, false, 2, "content returned"},
+		}}, false, 2, "content returned", false},
+		{"complete result", map[string]interface{}{"resultType": "complete", "messages": textResult["messages"]}, false, 2, "content returned", false},
+		{"image content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString([]byte("image"))})}}, false, 2, "content returned", false},
+		{"audio content", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "audio", "data": base64.StdEncoding.EncodeToString([]byte("audio"))})}}, false, 2, "content returned", false},
+		{"embedded text", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "text": "embedded prompt"}})}}, false, 2, "content returned", false},
+		{"embedded blob", map[string]interface{}{"messages": []interface{}{message(map[string]interface{}{"type": "resource", "resource": map[string]string{"uri": "file:///doc", "blob": base64.StdEncoding.EncodeToString([]byte("document"))}})}}, false, 2, "content returned", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,7 +98,7 @@ func TestPromptUnauth_GetRequiresContent(t *testing.T) {
 
 			exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
 			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
-			if err != nil || len(findings) != tc.findings {
+			if errors.Is(err, attack.ErrInconclusive) != tc.incomplete || len(findings) != tc.findings {
 				t.Fatalf("want %d findings, got %+v (err=%v)", tc.findings, findings, err)
 			}
 			if !strings.Contains(findings[0].Evidence, "1: "+tc.wantOutcome) {
@@ -221,14 +223,15 @@ func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
 
 			exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
 			findings, err := exec.Execute(t.Context(), srv.URL, testOpts())
-			if err != nil || len(findings) != 2 {
+			wantIncomplete := tc.name == "HTTP unavailable" || tc.name == "wrong response ID"
+			if errors.Is(err, attack.ErrInconclusive) != wantIncomplete || len(findings) != 2 {
 				t.Fatalf("expected list and later content findings, got %+v (err=%v)", findings, err)
 			}
 			if !strings.Contains(findings[1].Title, `"second"`) || !strings.Contains(findings[1].Evidence, "later content") {
 				t.Fatalf("expected second prompt content, got %+v", findings[1])
 			}
 			firstOutcome := map[string]string{
-				"rejected":          "incomplete (JSON-RPC error)",
+				"rejected":          "denied (JSON-RPC error)",
 				"HTTP unauthorized": "denied (HTTP 401)",
 				"HTTP unavailable":  "incomplete (HTTP 503)",
 				"empty":             "no non-empty content returned",
@@ -299,7 +302,7 @@ func TestPromptUnauth_LimitsPromptReads(t *testing.T) {
 	if err != nil || len(findings) != 1 || len(fetched) != 10 {
 		t.Fatalf("expected one list finding and ten prompt reads, got findings=%+v fetched=%v err=%v", findings, fetched, err)
 	}
-	if !strings.Contains(findings[0].Evidence, "10: incomplete (JSON-RPC error)") ||
+	if !strings.Contains(findings[0].Evidence, "10: denied (JSON-RPC error)") ||
 		strings.Contains(findings[0].Evidence, "11: ") {
 		t.Errorf("listing evidence must cover only attempted gets: %s", findings[0].Evidence)
 	}
@@ -398,12 +401,93 @@ func TestPromptUnauth_PartialListingRetainsFinding(t *testing.T) {
 
 	exec := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"})
 	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
-	if err != nil || len(findings) != 2 || !followed.Load() || !fetched.Load() {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 2 || !followed.Load() || !fetched.Load() {
 		t.Fatalf("expected confirmed first-page findings, got findings=%+v err=%v followed=%t fetched=%t",
 			findings, err, followed.Load(), fetched.Load())
 	}
 	if !strings.Contains(findings[0].Evidence, "listing incomplete") {
 		t.Fatalf("expected partial-listing evidence, got %q", findings[0].Evidence)
+	}
+}
+
+func TestPromptUnauth_ListErrorsAndCursors(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		findings   int
+		incomplete bool
+	}{
+		{"auth error", 0, false},
+		{"method error", 0, true},
+		{"validation error", 0, true},
+		{"first invalid cursor", 2, true},
+		{"later invalid cursor", 2, true},
+		{"later RPC error", 2, true},
+		{"repeated cursor", 2, true},
+		{"complete pages", 2, false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var pages atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string                 `json:"method"`
+					ID     json.RawMessage        `json:"id"`
+					Params map[string]interface{} `json:"params"`
+				}
+				if json.NewDecoder(r.Body).Decode(&req) != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				reply := map[string]interface{}{"jsonrpc": "2.0", "id": req.ID}
+				switch req.Method {
+				case "initialize":
+					reply["result"] = map[string]interface{}{
+						"protocolVersion": "2025-03-26", "serverInfo": map[string]string{"name": "prompt-list", "version": "1"},
+						"capabilities": map[string]interface{}{"prompts": map[string]interface{}{}},
+					}
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+					return
+				case "prompts/list":
+					page := pages.Add(1)
+					if page == 1 && (tc.mode == "auth error" || tc.mode == "method error" || tc.mode == "validation error") {
+						code := map[string]int{"auth error": -32001, "method error": -32601, "validation error": -32602}[tc.mode]
+						reply["error"] = map[string]interface{}{"code": code, "message": "request rejected"}
+					} else if page > 1 && tc.mode == "later RPC error" {
+						reply["error"] = map[string]interface{}{"code": -32603, "message": "server error"}
+					} else {
+						result := map[string]interface{}{"prompts": []map[string]string{{"name": "review"}}}
+						if page == 1 && tc.mode != "first invalid cursor" {
+							result["nextCursor"] = "next"
+						}
+						if page == 1 && tc.mode == "first invalid cursor" || page > 1 && tc.mode == "later invalid cursor" {
+							result["nextCursor"] = 42
+						}
+						if page > 1 && tc.mode == "repeated cursor" {
+							result["nextCursor"] = "next"
+						}
+						reply["result"] = result
+					}
+				case "prompts/get":
+					reply["result"] = map[string]interface{}{"messages": []map[string]interface{}{{
+						"role": "user", "content": map[string]string{"type": "text", "text": "private prompt"},
+					}}}
+				default:
+					reply["error"] = map[string]interface{}{"code": -32601, "message": "Method not found"}
+				}
+				_ = json.NewEncoder(w).Encode(reply)
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewPromptUnauthExecutor(attack.RuleContext{ID: "mcp-prompt-unauth-001"}).
+				Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != tc.findings || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("findings=%d err=%v; want findings=%d incomplete=%t", len(findings), err, tc.findings, tc.incomplete)
+			}
+			if tc.mode == "repeated cursor" && pages.Load() != 2 {
+				t.Fatalf("repeated cursor caused %d list calls, want 2", pages.Load())
+			}
+		})
 	}
 }
 
@@ -534,7 +618,7 @@ func TestPromptUnauth_ListExposedGetRejected(t *testing.T) {
 	if findings[0].Severity != "medium" {
 		t.Errorf("expected medium list finding, got %q", findings[0].Severity)
 	}
-	if !strings.Contains(findings[0].Evidence, "1: incomplete (JSON-RPC error)") ||
+	if !strings.Contains(findings[0].Evidence, "1: denied (JSON-RPC error)") ||
 		!strings.Contains(findings[0].Evidence, "prompt content access not confirmed") {
 		t.Errorf("missing rejected get outcome: %s", findings[0].Evidence)
 	}
@@ -558,6 +642,11 @@ func TestPromptUnauth_AuthEnforced(t *testing.T) {
 			})
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
+		case "server/discover":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"supportedVersions": []string{"2025-03-26"}},
+			})
 		default:
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],

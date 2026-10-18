@@ -98,8 +98,8 @@ payload and removing the client first could cancel the fetch being listened for.
 
 ## Both protocol wires
 
-When a server answers **both** the handshake-based revisions and `2026-07-28`
-on one endpoint, the four unauthenticated-access rules are exercised on each
+When a server answers **both** the handshake-based revisions and `2026-07-28`,
+the four unauthenticated-access rules are exercised on each
 wire: `mcp-resources-unauth-001`, `mcp-tools-unauth-001`,
 `mcp-prompt-unauth-001` and `mcp-completion-unauth-001`. The two wires need not
 be gated alike: a server can enforce authorization on one and not the other.
@@ -136,11 +136,13 @@ clean.
 
 ## Endpoint discovery
 
-A target that names a path is probed as given; otherwise `/mcp`, `/`, `/api` and
-`/rpc` are tried in that order. The walk **stops at the first path that answers as
-an MCP endpoint**, because the remaining candidates are the same server at paths
-it does not serve, so probing them yields 404s rather than coverage. Only when no
-candidate answers does a rule report that it could not test.
+A target that names a path is probed there. For a bare origin, legacy handshake
+discovery tries `/mcp`, `/`, `/api` and `/rpc` in order and stops at the first
+MCP endpoint. Modern-capable rules also check those paths with `server/discover`
+until they find a modern wire, since it may be mounted separately. They do not
+send attack probes to sibling paths that fail discovery. An explicit endpoint
+keeps modern discovery on that endpoint. If neither wire is usable, the rule
+reports that it could not test.
 
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
@@ -313,6 +315,9 @@ The rule tries up to ten listed prompts, stopping at the first readable
 template. A list-only disclosure is **medium**; retrieving template content as
 well is **high** - both **confirmed**. A server that requires auth, or does not
 advertise the prompts capability, produces no finding.
+Pagination follows at most ten pages. A malformed cursor, non-authorization
+JSON-RPC error or interrupted read leaves the verdict incomplete; any confirmed
+disclosure remains in the findings.
 
 ---
 
@@ -488,6 +493,8 @@ credentials:
 
 Both wires must advertise the **same** listing method. Comparing different
 methods would measure capability differences rather than an authorization gate.
+They must also share an endpoint; different URLs cannot isolate an era-based
+authorization difference.
 
 **Scope.** This compares access at the method level on wires that both open
 unauthenticated. A server that gates the handshake itself, so only one wire opens

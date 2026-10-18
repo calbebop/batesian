@@ -19,8 +19,8 @@ import (
 // not serve. Measured against @modelcontextprotocol/server-everything it was 30%
 // of a scan's requests, and 75% of one rule's.
 //
-// The server below answers at /mcp only and counts every request that lands
-// anywhere else, so a rule that keeps walking fails.
+// The server below answers at /mcp only and counts attack requests at other
+// paths. Modern discovery may check sibling paths on a bare-origin target.
 
 // mountedMCPServer serves a working MCP endpoint at /mcp and 404s every other
 // path, counting the strays.
@@ -31,11 +31,15 @@ func mountedMCPServer(t *testing.T) (*httptest.Server, *int64) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
-			// Only the other candidate paths count. A rule may legitimately fetch
-			// well-known OAuth metadata, which is discovery of a different kind.
-			switch r.URL.Path {
-			case "/", "/api", "/rpc":
-				atomic.AddInt64(&strays, 1)
+			var req struct {
+				Method string `json:"method"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Method != "server/discover" {
+				switch r.URL.Path {
+				case "/", "/api", "/rpc":
+					atomic.AddInt64(&strays, 1)
+				}
 			}
 			http.NotFound(w, r)
 			return
