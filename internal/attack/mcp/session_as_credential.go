@@ -189,7 +189,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			return nil, false
 		}
 
-		return []attack.Finding{e.finding(ep, session.SessionID, bogus, anonSession.SessionID)}, true
+		return []attack.Finding{e.finding(ep, anonSession.SessionID)}, true
 	})
 	if len(findings) == 0 && missingAnonSession != "" {
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, missingAnonSession)
@@ -277,14 +277,14 @@ func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *att
 	return verdict
 }
 
-func (e *SessionAsCredentialExecutor) finding(endpoint, session, bogus, anonSession string) attack.Finding {
+func (e *SessionAsCredentialExecutor) finding(endpoint, anonSession string) attack.Finding {
 	// The anonymous-handshake control reads differently depending on how the server
 	// answered it, and both readings are evidence, so state which one happened
 	// rather than asserting a refusal that may not have been the one observed.
 	anonLine := "initialize with no credential: refused, so the handshake is gated\n"
 	if anonSession != "" {
-		anonLine = fmt.Sprintf("tools/list with a session issued to an ANONYMOUS handshake (%s) "+
-			"and no credential: refused\n", anonSession)
+		anonLine = "tools/list with a session issued to an ANONYMOUS handshake " +
+			"and no credential: refused\n"
 	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
@@ -302,13 +302,13 @@ func (e *SessionAsCredentialExecutor) finding(endpoint, session, bogus, anonSess
 				"session id is a plaintext header logged by every proxy in the path, so anyone who reads "+
 				"one replays the authenticated session.", endpoint),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\nsession id issued to the credentialed handshake: %s\n"+
+			"endpoint: %s\nsession id issued to the credentialed handshake: [redacted]\n"+
 				"tools/list with session + credential: answered\n"+
 				"%s"+
 				"tools/list with no session and no credential: refused\n"+
-				"tools/list with a never-issued session id (%s) and no credential: refused\n"+
+				"tools/list with a never-issued session id and no credential: refused\n"+
 				"tools/list with the issued session id and NO credential: answered",
-			endpoint, session, anonLine, bogus),
+			endpoint, anonLine),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}

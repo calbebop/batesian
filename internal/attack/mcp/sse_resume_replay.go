@@ -128,14 +128,14 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 				Confidence: attack.ConfirmedExploit,
 				Title:      "MCP SSE resumption delivered a session-A-labeled event to session B",
 				Description: fmt.Sprintf(
-					"At %s, session B resumed with Last-Event-ID=%q and received event %q with "+
-						"the same data observed on session A's stream. The event data names session A's "+
-						"server-issued ID %q. This is evidence of cross-session redelivery on the "+
-						"legacy MCP SSE transport.", ep, checkpointID, ev.id, sessionA.SessionID),
+					"At %s, session B resumed from session A's checkpoint and received an event "+
+						"with the same ID and data observed on session A's stream. The data names "+
+						"session A's server-issued ID. This is evidence of cross-session redelivery "+
+						"on the legacy MCP SSE transport.", ep),
 				Evidence: fmt.Sprintf(
-					"endpoint: %s\nsession A: %s (checkpoint event id %s)\nsession B: %s\n"+
-						"B resumed Last-Event-ID: %s\nmatching event id: %s\nmatching event data: %s",
-					ep, sessionA.SessionID, checkpointID, sessionB.SessionID, checkpointID, ev.id, marker),
+					"endpoint: %s\nsession A ID: [redacted]\nsession B ID: [redacted]\n"+
+						"B resumed from A's checkpoint: yes\nmatching event id: [redacted]\n"+
+						"matching event data: yes (payload omitted)", ep),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
 			}}, true, ""

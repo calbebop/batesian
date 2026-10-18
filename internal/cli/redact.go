@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
@@ -225,8 +226,27 @@ func (r outputRedactor) value(v any) any {
 		return r.text(v)
 	case map[string]any:
 		out := make(map[string]any, len(v))
-		for k, item := range v {
-			out[k] = r.value(item)
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			left, right := r.text(keys[i]) == keys[i], r.text(keys[j]) == keys[j]
+			if left != right {
+				return left
+			}
+			return keys[i] < keys[j]
+		})
+		for _, k := range keys {
+			base := r.text(k)
+			name := base
+			for n := 2; ; n++ {
+				if _, exists := out[name]; !exists {
+					break
+				}
+				name = fmt.Sprintf("%s (%d)", base, n)
+			}
+			out[name] = r.value(v[k])
 		}
 		return out
 	case []any:

@@ -69,6 +69,30 @@ func TestBuildJSONOutputRedactsCardAndSourceURL(t *testing.T) {
 	}
 }
 
+func TestBuildJSONOutputRedactsCardKeysWithoutDroppingValues(t *testing.T) {
+	response := &a2a.ProbeResult{Body: []byte(`{"extension":{"<redacted>":"original","token-one":"first","token-two":"second"}}`)}
+	redactor := newOutputRedactor("https://agent.example")
+	redactor.addSecret("token-one")
+	redactor.addSecret("token-two")
+
+	doc, err := buildJSONOutput(response, &report.ProbeResult{}, redactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension := doc["agent_card"].(map[string]any)["extension"].(map[string]any)
+	if len(extension) != 3 || extension["<redacted>"] != "original" ||
+		extension["<redacted> (2)"] != "first" || extension["<redacted> (3)"] != "second" {
+		t.Fatalf("redacted keys lost values: %#v", extension)
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "token-one") || strings.Contains(string(encoded), "token-two") {
+		t.Fatalf("card key exposed a configured secret: %s", encoded)
+	}
+}
+
 func TestBuildJSONOutputRejectsInvalidCard(t *testing.T) {
 	for _, body := range []string{"", "null", `{"name":`} {
 		t.Run(body, func(t *testing.T) {

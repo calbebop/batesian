@@ -1067,7 +1067,8 @@ This rule probes only the MCP 2026-07-28 Tasks extension. It advertises
 `resultType: "task"` handles. Numeric IDs with a constant stride receive a
 high-severity indicator; a low observed-alphabet estimate receives a medium
 indicator. The estimate cannot prove the generator's full alphabet or actual
-entropy.
+entropy. Reports include the sample count and derived measurements, not the
+sampled handles or a predicted next handle.
 
 The call requires an exact `--mcp-invoke-tool` approval and a
 `readOnlyHint: true` annotation. The annotation is untrusted. If the modern

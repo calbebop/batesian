@@ -265,13 +265,14 @@ func TestResume_OpaqueEventIDs(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding against opaque-id server, got %d: %+v", len(findings), findings)
 	}
-	// The evidence must show B resumed with A's opaque checkpoint id, not "0".
+	// The fixture requires the captured opaque ID for resumption, but the report
+	// must not publish that ID or the session handle.
 	ev := findings[0].Evidence
-	if !strings.Contains(ev, "evt-sess-1-1") {
-		t.Errorf("expected evidence to reference opaque checkpoint id 'evt-sess-1-1', got:\n%s", ev)
+	if !strings.Contains(ev, "B resumed from A's checkpoint: yes") {
+		t.Errorf("expected evidence of the checkpoint comparison, got:\n%s", ev)
 	}
-	if strings.Contains(ev, "Last-Event-ID: 0") {
-		t.Errorf("evidence shows a numeric '0' resume cursor; the opaque id was not used verbatim:\n%s", ev)
+	if strings.Contains(ev, "evt-sess-1-1") || strings.Contains(ev, "sess-1") {
+		t.Errorf("evidence exposed a checkpoint or session ID:\n%s", ev)
 	}
 }
 
@@ -450,9 +451,9 @@ func TestResume_MultilineDataEvent(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding when events span multiple data: lines, got %d: %+v", len(findings), findings)
 	}
-	// The full marker must survive reassembly; the trailing empty data: line
-	// must not have reduced it to a fragment.
-	if !strings.Contains(findings[0].Evidence, "S-sess-1-2") {
-		t.Errorf("expected the joined marker in evidence, got:\n%s", findings[0].Evidence)
+	// The full marker must survive reassembly without appearing in the report.
+	if !strings.Contains(findings[0].Evidence, "matching event data: yes") ||
+		strings.Contains(findings[0].Evidence, "S-sess-1-2") {
+		t.Errorf("expected redacted match evidence, got:\n%s", findings[0].Evidence)
 	}
 }

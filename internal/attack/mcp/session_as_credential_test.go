@@ -188,6 +188,10 @@ func TestSessionAsCredential_Vulnerable(t *testing.T) {
 			t.Errorf("evidence missing %q; got:\n%s", want, f.Evidence)
 		}
 	}
+	if strings.Contains(f.Evidence, "sess-session-authenticates-1") ||
+		strings.Contains(f.Evidence, "batesian-never-issued-") {
+		t.Errorf("evidence exposed a session probe ID: %s", f.Evidence)
+	}
 }
 
 // Every call needs the credential. The session id carries no authority.
