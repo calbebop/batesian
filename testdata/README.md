@@ -84,7 +84,7 @@ validation; selected fixtures also run in CI.
 | `mcp_log_optin_server.py` | 7804 | `mcp-log-optin-001` must fire on `always`; stay silent on `on-optin`; report not tested on `never` (three postures, see below) |
 | `mcp_tool_param_traversal_server.py` | 7805 | `mcp-tool-param-traversal-001` fires on `vulnerable` with `--mcp-invoke-tool read_note`; silent on `patched` |
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open`, on both legacy and `modern-` postures (needs two principals and `--mcp-scope-tool delete_item`) |
-| `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001` must fire on `shadow-open`; fire medium on `shadow-hardened`; stay silent on `none` (three postures, see below) |
+| `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001`: high on `shadow-open`, medium on `shadow-hardened`, low on `shadow-protected`, silent on `none` |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
 | `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` fires on `prefix`; stays silent on `port-prefix`, `hardened`, and `open` |
@@ -399,15 +399,18 @@ defaulting to `shadow-open`:
 ```sh
 python testdata/mcp_shadow_surface_server.py shadow-open       # high finding
 python testdata/mcp_shadow_surface_server.py shadow-hardened   # medium finding
+python testdata/mcp_shadow_surface_server.py shadow-protected  # low indicator
 python testdata/mcp_shadow_surface_server.py none              # silent
 batesian scan --target http://127.0.0.1:7807 --rule-ids mcp-shadow-surface-001 -v
 ```
 
 Port 7807 is the named target and serves nothing but 404s. Port 6277 is the
-shadow listener - an inspector-style page plus an unauthenticated initialize -
+shadow listener - an inspector-style page plus a read-only tool listing -
 which exists to prove the rule finds surfaces the operator never aimed at. In
 `shadow-hardened` the listener refuses any request carrying a foreign Origin,
-so only the medium severity may appear. In `none` the second listener simply
+so only the medium severity may appear. In `shadow-protected`, initialization
+is anonymous but the listing requires authentication, so only the dashboard
+indicator appears. In `none` the second listener simply
 is not started; a closed port is an answer, and the rule reporting clean there
 is checked-and-absent rather than could-not-tell.
 

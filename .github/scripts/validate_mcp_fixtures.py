@@ -28,10 +28,9 @@ is a difference the gate catches:
                                   full while anonymous is refused); patched and
                                   open stay silent - enforced scopes are a pass,
                                   an open server belongs to tools-unauth (#227).
-  mcp_shadow_surface_server       shadow-open high, shadow-hardened medium, none
-                                  silent: severity tracks whether a foreign origin
-                                  can reach the surface, and a closed port is an
-                                  answer, not could-not-tell (#228).
+  mcp_shadow_surface_server       shadow-open high, shadow-hardened medium,
+                                  shadow-protected low, none silent. A handshake
+                                  alone does not confirm operational exposure.
   mcp_tool_poisoning_server       poisoned fires checks 1-3 on one STABLE manifest;
                                   drifting alternates two benign manifests so only
                                   the drift check fires; clean silent. The split
@@ -360,10 +359,7 @@ def scope_confusion():
 
 
 def shadow_surface():
-    """shadow-open is the full chain (unauthenticated plus foreign Origin
-    accepted, high); shadow-hardened refuses the Origin twin (medium); none
-    binds no second listener at all, and a closed port is an answer, so
-    silence there is checked-and-absent."""
+    """Check exposed, Origin-gated, operation-gated, and absent listeners."""
     ok_all = True
     rid = "mcp-shadow-surface-001"
 
@@ -373,7 +369,8 @@ def shadow_surface():
                 return f.get("severity")
         return None
 
-    for posture, expect_sev in [("shadow-open", "high"), ("shadow-hardened", "medium"), ("none", None)]:
+    for posture, expect_sev in [("shadow-open", "high"), ("shadow-hardened", "medium"),
+                                ("shadow-protected", "low"), ("none", None)]:
         p, l = start("mcp_shadow_surface_server.py", 7807, posture)
         try:
             fired, _, doc = scan(7807)
