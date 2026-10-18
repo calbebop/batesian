@@ -52,7 +52,7 @@ type Config struct {
 	// endpoints may use. The target origin itself is always allowed.
 	OAuthOrigins []string `yaml:"oauth_origins"`
 
-	// MCPScopeTools are exact tool names the scope-confusion rule may invoke.
+	// MCPScopeTools are approved calls the limited principal should be denied.
 	MCPScopeTools []string `yaml:"mcp_scope_tools"`
 
 	// MCPInvokeTools are exact names the traversal and task rules may call.

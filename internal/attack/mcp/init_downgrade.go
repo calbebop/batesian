@@ -98,12 +98,10 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 	}
 
 	legacyAccess, legacyCount := e.probeList(ctx, client, legacySession, method)
-	modernAccess, modernCount := e.probeList(ctx, client, modernSession, method)
+	modernAccess, _ := e.probeList(ctx, client, modernSession, method)
 
-	// Confirmed downgrade bypass: the modern baseline must be REJECTED (auth
-	// enforced) while the legacy session was GRANTED access. If the modern session
-	// was also granted access, the server has no auth at all (not a downgrade
-	// issue); if legacy was rejected the server is secure.
+	// Confirmed downgrade bypass needs a modern auth refusal and a legacy result.
+	// An empty modern list may reflect ordinary data differences, not filtering.
 	//
 	// accessUndetermined on EITHER side means there is no comparison to make. It is
 	// reported as not tested rather than folded into either verdict: folded into
@@ -120,17 +118,8 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 			method, ep, version)
 	}
 
-	modernEnforced := modernAccess == accessRefused ||
-		(modernAccess == accessGranted && modernCount == 0)
-	if legacyAccess == accessGranted && legacyCount > 0 && modernEnforced {
+	if legacyAccess == accessGranted && legacyCount > 0 && modernAccess == accessRefused {
 		noun := strings.TrimSuffix(method, "/list") // resource, tool, prompt
-		modernClause := fmt.Sprintf("%s was REJECTED (authorization enforced)", method)
-		modernEvidence := "rejected"
-		if modernAccess == accessGranted {
-			modernClause = fmt.Sprintf("%s returned 0 %s(s) (authorization enforced via "+
-				"result-level filtering)", method, noun)
-			modernEvidence = fmt.Sprintf("0 %s(s) returned (filtered)", noun)
-		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -139,17 +128,21 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 			Title: fmt.Sprintf(
 				"MCP protocol downgrade to %q bypasses auth enforced under %q", legacyVersion, modernVersion),
 			Description: fmt.Sprintf(
-				"At %s, %s, but SUCCEEDED (returned %d "+
+				"At %s, %s was REJECTED (authorization enforced), but SUCCEEDED (returned %d "+
 					"%s(s)) when the session was initialized with the legacy pre-auth version %q. "+
 					"This confirms that advertising the outdated protocol version bypasses the server's "+
 					"authorization checks.",
-				ep, modernClause, legacyCount, noun, legacyVersion),
+				ep, method, legacyCount, noun, legacyVersion),
 			Evidence: fmt.Sprintf(
-				"Endpoint: %s\nModern (%s) %s: %s\nLegacy (%s) %s: %d %s(s) returned",
-				ep, modernVersion, method, modernEvidence, legacyVersion, method, legacyCount, noun),
+				"Endpoint: %s\nModern (%s) %s: authorization refused\nLegacy (%s) %s: %d %s(s) returned",
+				ep, modernVersion, method, legacyVersion, method, legacyCount, noun),
 			Remediation: e.rule.Remediation,
 			TargetURL:   ep,
 		}}, true, ""
+	}
+	if legacyAccess == accessGranted && legacyCount == 0 && modernAccess == accessRefused {
+		return nil, true, fmt.Sprintf("%s at %s was refused under %s, but the legacy version returned no items",
+			method, ep, modernVersion)
 	}
 
 	return nil, true, ""
@@ -335,7 +328,7 @@ func (e *InitDowngradeExecutor) probeList(ctx context.Context, client *attack.HT
 		"method":  method,
 		"params":  map[string]interface{}{},
 	})
-	verdict := classifyAccess(resp, err, 2)
+	verdict := classifyAuthAccess(resp, err, 2)
 	if verdict != accessGranted {
 		return verdict, 0
 	}
@@ -349,6 +342,9 @@ func (e *InitDowngradeExecutor) probeList(ctx context.Context, client *attack.HT
 		// refused and nothing was listed.
 		return accessUndetermined, 0
 	}
-	items, _ := result[strings.TrimSuffix(method, "/list")].([]interface{})
+	items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{})
+	if !ok {
+		return accessUndetermined, 0
+	}
 	return accessGranted, len(items)
 }

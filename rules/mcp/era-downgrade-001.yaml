@@ -18,17 +18,17 @@ info:
     specifically the asymmetry, confirmed by asking the same read-only listing on
     each wire with no credentials and comparing:
 
-    - one wire REFUSED and the other ANSWERED => confirmed bypass
+    - one wire returned an authorization refusal and the other returned items
+      => confirmed bypass
+    - one wire refused and the other returned an empty list => incomplete.
       (critical / ConfirmedExploit). Direction does not matter: whichever wire is
       open is the one an attacker uses.
-    - both answered => neither listing is gated; that is reported by the
-      corresponding unauthenticated-listing rule, not here.
+    - both answered => no authorization asymmetry is proven here.
     - both refused => the gate is applied uniformly (secure).
     - only one era served => nothing to compare (not applicable).
 
-    The listing method is chosen per wire from that wire's own advertised
-    capabilities, because the two need not match; comparing a method one wire does
-    not implement would measure the capability difference rather than the gate.
+    Both wires must advertise the same listing method. A generic RPC error or
+    empty list does not prove an authorization gate.
 
     Scope: this compares access at the METHOD level, on wires that both open
     unauthenticated. A server that instead gates the handshake itself, so that only

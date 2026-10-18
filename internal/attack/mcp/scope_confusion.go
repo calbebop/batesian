@@ -297,7 +297,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		candidates = candidates[:scopeCandidateCap]
 	}
 	if missing := unapprovedScopeTools(candidates, allowedTools); len(missing) > 0 {
-		return nil, fmt.Sprintf("active scope probes require explicit approval for: %s; pass --mcp-scope-tool for each exact name",
+		return nil, fmt.Sprintf("active scope probes require approval and an expected denial for the limited principal: %s; pass --mcp-scope-tool for each exact name",
 			strings.Join(missing, ", ")), false
 	}
 	sessB := sessA
@@ -325,20 +325,23 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		return nil, fmt.Sprintf("tools/list returned no successful listing for the limited principal %q", princB.name), false
 	}
 
-	// Anonymous dispatch rules out a scope-specific bypass.
-	anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon, candidates[0], randID)
-	if anonymousCall.headerMismatch {
-		return nil, fmt.Sprintf("tools/call for %q returned HeaderMismatch on the anonymous control", candidates[0].Name), false
-	}
-	if scopeShowsDispatch(anonymousCall, randID) {
-		return nil, "", true
-	}
-	if !scopeShowsAuthRefusal(anonymousCall) {
-		return nil, fmt.Sprintf("the anonymous control at %s returned no authorization verdict", sessA.Endpoint), false
-	}
-
 	var incomplete []string
 	for i, cand := range candidates {
+		// Each tool needs its own anonymous control. One public tool says nothing
+		// about another tool's authorization boundary.
+		anonymousCall := e.callAs(ctx, client, sessA, anonymousPrincipal, scopeIDAnon+i, cand, randID)
+		if anonymousCall.headerMismatch {
+			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q returned HeaderMismatch on the anonymous control", cand.Name))
+			continue
+		}
+		if scopeShowsDispatch(anonymousCall, randID) {
+			continue
+		}
+		if !scopeShowsAuthRefusal(anonymousCall) {
+			incomplete = append(incomplete, fmt.Sprintf("the anonymous control for %q at %s returned no authorization verdict", cand.Name, sessA.Endpoint))
+			continue
+		}
+
 		fullCall := e.callAs(ctx, client, sessA, princA, scopeIDFullBase+i, cand, randID)
 		if fullCall.headerMismatch {
 			return findings, fmt.Sprintf("tools/call for %q returned HeaderMismatch for the full principal", cand.Name), false
@@ -367,7 +370,8 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 		case scopeShowsAuthRefusal(limCall):
 			// Scope enforcement held.
 		default:
-			// No verdict.
+			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q returned no scope verdict for the limited principal %q",
+				cand.Name, princB.name))
 		}
 	}
 	if len(incomplete) > 0 {
@@ -602,15 +606,14 @@ func (e *ScopeConfusionExecutor) finding(endpoint string, cand scopeTool, fullNa
 		Title:      fmt.Sprintf("MCP tools/call runs %q under a scope-limited credential", cand.Name),
 		Description: fmt.Sprintf(
 			"The same approved tools/call for %q at %s was sent as two principals: %q "+
-				"(full) and %q (limited). Both reached argument validation, while an unauthenticated "+
-				"call was refused, so the server authenticates callers and then ignores what their "+
-				"credential is scoped to do. Every authenticated caller can reach the privileged tool "+
-				"surface regardless of granted scopes.",
+				"(full) and %q (limited). Both dispatched the tool, while an unauthenticated "+
+				"call to that tool was refused. The configured limited credential reached a tool "+
+				"it should not be authorized to use.",
 			cand.Name, endpoint, fullName, limName),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\ntool: %s\nfull principal %q: dispatched (validation answered)\n"+
-				"limited principal %q: dispatched (validation answered)\n"+
-				"anonymous control: refused",
+				"limited principal %q: dispatched (validation answered; expected denial supplied by operator)\n"+
+				"anonymous control for this tool: refused",
 			endpoint, cand.Name, fullName, limName),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,

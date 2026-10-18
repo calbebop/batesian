@@ -61,7 +61,7 @@ func init() {
 	scanCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
 	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
 	scanCmd.Flags().StringSlice("oauth-origin", nil, "Allow target-advertised OAuth endpoints on this exact additional origin (comma-separated)")
-	scanCmd.Flags().StringSlice("mcp-scope-tool", nil, "Allow the scope-confusion rule to call this exact tool name (comma-separated)")
+	scanCmd.Flags().StringSlice("mcp-scope-tool", nil, "Allow calls to this tool and assert the limited principal lacks its required scope (comma-separated)")
 	scanCmd.Flags().StringSlice("mcp-invoke-tool", nil, "Allow traversal and task rules to call this exact MCP tool name (comma-separated)")
 	scanCmd.Flags().String("oob-url", "", "External OOB server URL (default: start a local listener automatically)")
 	scanCmd.Flags().String("config", "", "Path to batesian.yaml config file (default: auto-discover)")

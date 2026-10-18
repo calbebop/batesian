@@ -12,9 +12,13 @@ info:
     mcp_scope_tools. Authorization permits real calls under all three
     identities, and probe arguments may have side effects.
     A readOnlyHint does not override a mutating tool name.
+    Listing a tool also asserts that the limited principal should be denied
+    access to it; the scanner cannot verify the tokens' granted scopes.
 
     Two distinct, differently scoped principals are also required. Missing
     approval or credentials produces a not-tested result.
+    Each approved tool has its own anonymous control. A public tool does not
+    suppress a finding for a separate protected tool.
 
   references:
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
