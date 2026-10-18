@@ -396,13 +396,15 @@ const (
 func classifyHistoryMarker(history []interface{}, marker string) historyMarkerState {
 	state := historyMarkerAbsent
 	for _, item := range history {
-		raw, err := json.Marshal(item)
-		if err != nil || !containsAnyStr(string(raw), marker) {
-			continue
-		}
 		msg, ok := item.(map[string]interface{})
 		if !ok {
-			state = historyMarkerUnknown
+			if text, ok := item.(string); ok && strings.Contains(text, marker) {
+				state = historyMarkerUnknown
+			}
+			continue
+		}
+		parts, err := json.Marshal(msg["parts"])
+		if err != nil || !strings.Contains(storedText(parts), marker) {
 			continue
 		}
 		switch {
@@ -451,16 +453,4 @@ func extractTaskContext(body []byte) (taskID, contextID string) {
 		return "", ""
 	}
 	return taskResultContext(envelope.Result)
-}
-
-// containsAnyStr reports whether s contains any of the non-empty substrings.
-// Empty substrings are skipped: strings.Contains(s, "") is always true, which
-// would let an absent/optional value match any input.
-func containsAnyStr(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if sub != "" && strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }

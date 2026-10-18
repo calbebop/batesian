@@ -90,8 +90,8 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 			attack.ErrInconclusive)
 	}
 	if ownerSend.contextID != fixedCtx {
-		// The server minted its own contextId rather than honouring the client's, which
-		// is the secure behaviour and a real tested result.
+		// The server did not accept this client-chosen contextId, so this path cannot
+		// establish a cross-principal leak.
 		return nil, nil
 	}
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactContextID, Value: fixedCtx, Principal: a.Name, Producer: e.rule.ID})
@@ -351,8 +351,8 @@ func (e *ContextFixationExecutor) finding(endpoint string, attacker, victim atta
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A server merges principals under a client-supplied contextId (context fixation)",
 		Description: fmt.Sprintf(
-			"The server adopted a client-chosen contextId (%q) instead of minting its own, and "+
-				"then exposed principal %q's message to principal %q under that shared context: "+
+			"The server accepted a client-chosen contextId (%q) and exposed principal %q's "+
+				"message to principal %q under that shared context: "+
 				"%q read back the context (task %s) and saw %q's secret marker (task %s). An "+
 				"attacker can fix a contextId, steer a victim onto it, and capture the victim's "+
 				"messages and embedded context (CWE-384). An unauthenticated message under the "+

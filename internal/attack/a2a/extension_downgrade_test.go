@@ -79,8 +79,12 @@ func extensionServer(mode string, required bool) *httptest.Server {
 			http.NotFound(w, r)
 			return
 		}
-		// Model a v1.0 server: activation is read from the A2A-Extensions header.
-		activated := strings.Contains(r.Header.Get("A2A-Extensions"), reqExtURI)
+		strictV03 := mode == "strict-v03-open" || mode == "strict-v03-closed"
+		header := "A2A-Extensions"
+		if strictV03 {
+			header = "X-A2A-Extensions"
+		}
+		activated := strings.Contains(r.Header.Get(header), reqExtURI)
 		var request map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		reqID := request["id"]
@@ -93,6 +97,10 @@ func extensionServer(mode string, required bool) *httptest.Server {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": reqID,
 				"error": map[string]interface{}{"code": code, "message": msg}})
+		}
+		if strictV03 && (r.Header.Get("A2A-Version") != "" || request["method"] != "message/send") {
+			writeErr(-32601, "unsupported wire version")
+			return
 		}
 		if request["method"] == "GetTask" || request["method"] == "tasks/get" {
 			writeErr(-32001, "Task not found")
@@ -174,7 +182,7 @@ func extensionServer(mode string, required bool) *httptest.Server {
 		switch mode {
 		case "noauth-msg":
 			writeErr(-32600, "authentication required")
-		case "failclosed", "failclosed-http", "primary-failed-fallback-closed",
+		case "failclosed", "failclosed-http", "primary-failed-fallback-closed", "strict-v03-closed",
 			"canonical-v03-closed", "canonical-version-error-closed":
 			if !activated {
 				if mode == "failclosed-http" {
@@ -244,6 +252,24 @@ func TestExtDowngrade_FailOpen(t *testing.T) {
 	f := onlyFinding(t, runExtDowngrade(t, ts))
 	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func TestExtDowngrade_StrictV03Fallback(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{
+		{"strict-v03-open", 1},
+		{"strict-v03-closed", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := extensionServer(tc.mode, true)
+			defer ts.Close()
+			if findings := runExtDowngrade(t, ts); len(findings) != tc.want {
+				t.Fatalf("got %d findings, want %d", len(findings), tc.want)
+			}
+		})
 	}
 }
 

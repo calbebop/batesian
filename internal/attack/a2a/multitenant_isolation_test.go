@@ -242,8 +242,8 @@ func TestMultiTenant_HeaderScopedPrincipals(t *testing.T) {
 	ts := tenantServer("vulnerable")
 	defer ts.Close()
 	principals := []attack.Principal{
-		{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-a"}},
-		{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
+		{Name: "tenant-a", Tenant: "A", Headers: map[string]string{"X-API-Key": "key-a"}},
+		{Name: "tenant-b", Tenant: "B", Headers: map[string]string{"X-API-Key": "key-b"}},
 	}
 	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
 		Execute(context.Background(), ts.URL, mtOpts(principals...))
@@ -410,5 +410,30 @@ func TestMultiTenant_SameTokenSkips(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings, got %d", len(findings))
+	}
+}
+
+func TestMultiTenant_RequiresDistinctTenantLabels(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tenant string
+	}{
+		{"missing", ""},
+		{"whitespace", "  "},
+		{"same", "A"},
+		{"same with padding", " A "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			principals := tenantPrincipals()
+			principals[1].Tenant = tc.tenant
+			findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+				Execute(context.Background(), "http://127.0.0.1:1", mtOpts(principals...))
+			if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("want ErrInconclusive before network access, got %v", err)
+			}
+			if len(findings) != 0 {
+				t.Fatalf("want no finding, got %d", len(findings))
+			}
+		})
 	}
 }

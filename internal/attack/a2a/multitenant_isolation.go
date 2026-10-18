@@ -42,10 +42,15 @@ func (e *MultiTenantIsolationExecutor) Execute(ctx context.Context, target strin
 
 // ExecuteChained runs the multi-tenant isolation check.
 func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
-	// Cross-tenant reads require distinct principals.
+	// Cross-tenant reads require distinct principals and tenant labels.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(a.Tenant) == "" || strings.TrimSpace(b.Tenant) == "" ||
+		strings.TrimSpace(a.Tenant) == strings.TrimSpace(b.Tenant) {
+		return nil, fmt.Errorf("%w: principals %q and %q need distinct, nonempty tenant labels for a cross-tenant check",
+			attack.ErrInconclusive, a.Name, b.Name)
 	}
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
@@ -239,10 +244,11 @@ func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner at
 		RuleName:   e.rule.Name,
 		Severity:   "high",
 		Confidence: attack.ConfirmedExploit,
-		Title:      "A2A task readable across tenant boundary by an authenticated principal",
+		Title:      "A2A task readable across configured tenant boundary by an authenticated principal",
 		Description: fmt.Sprintf(
-			"Principal %q (tenant %q) received principal %q's (tenant %q) unique probe text "+
-				"from task %s's %s through %s. The task content was returned across the tenant boundary.",
+			"Principal %q (configured tenant %q) received principal %q's (configured tenant %q) "+
+				"unique probe text from task %s's %s through %s. The task content crossed the "+
+				"configured tenant boundary; verify that the labels match the target's assignments.",
 			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.location, read.method),
 		Evidence: fmt.Sprintf(
 			"reader: %s (tenant %s)\nowner: %s (tenant %s)\ntask: %s\nmethod: %s\n"+

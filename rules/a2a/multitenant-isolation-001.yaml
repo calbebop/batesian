@@ -12,10 +12,11 @@ info:
     anonymous read exposes the same content, the anonymous task-read rule owns
     that finding instead.
 
-    Requires two distinct principals configured in batesian.yaml or with
-    repeated --principal flags. A confirmed finding demonstrates disclosure of
-    the observed probe content; it does not assume that all task history or
-    artifacts are accessible.
+    Requires two distinct principals with nonempty, different tenant labels,
+    configured in batesian.yaml or with repeated --principal flags. Labels are
+    operator-supplied and should match the target's actual tenant assignments.
+    A confirmed finding demonstrates disclosure of the observed probe content;
+    it does not assume that all task history or artifacts are accessible.
 
   references:
     - https://a2a-protocol.org/latest/specification/
