@@ -42,3 +42,26 @@ def incomplete_rules(doc, rule_ids):
     skipped = sorted(rid for rid, status in statuses.items() if status == "skipped")
     errors = sorted(rid for rid, status in statuses.items() if status == "error")
     return skipped, errors
+
+
+def finding_quality_issues(doc, expected):
+    """Check that positive controls have attributable findings."""
+    findings = doc.get("findings") if isinstance(doc, dict) else None
+    if not isinstance(findings, list):
+        return ["scan report is missing findings"]
+
+    issues = []
+    for rid, confidence in expected.items():
+        matches = [item for item in findings
+                   if isinstance(item, dict) and item.get("rule_id") == rid]
+        if not matches:
+            issues.append(f"{rid}: missing finding")
+            continue
+        for item in matches:
+            if item.get("confidence") != confidence:
+                issues.append(f"{rid}: expected {confidence} confidence")
+            for field in ("evidence", "target_url"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    issues.append(f"{rid}: missing {field}")
+    return issues

@@ -15,12 +15,11 @@ Each finding carries a **confidence**:
 
 ## Protocol currency
 
-These rules target **A2A v1.0**, including the v1.0.1 patch, and fall back to
-the **v0.3** shapes where they differ, so deployments on either revision are
-exercised. In practice that means sending the v1.0
-PascalCase methods with the `A2A-Version: 1.0` header first and retrying with the
-v0.3 slash methods, and reading both the v1.0 `securityRequirements` and the v0.3
-`security` field from an agent card.
+The catalog covers selected **A2A v1.0** operations, including the v1.0.1
+patch. Task rules generally try PascalCase methods with `A2A-Version: 1.0`
+before v0.3 slash methods, and card rules read both v1.0
+`securityRequirements` and v0.3 `security`. Binding support and fallbacks vary
+by rule; the entries below describe the requests each rule sends.
 Agent Card discovery tries `/.well-known/agent-card.json` with the v1.0 header,
 then without it for v0.3, before checking the older `agent.json` path. Extended
 v1.0 card reads send `A2A-Version: 1.0`.
@@ -36,6 +35,16 @@ changes touch this rule set:
 - **`application/a2a+json`** is now the preferred content type for the HTTP+JSON
   binding. It is a SHOULD rather than a MUST, and the JSON-RPC binding these
   rules primarily drive explicitly keeps `application/json`.
+
+The catalog does not yet check task subscriptions or push-config List/Delete
+authorization. These operations are defined in the
+[A2A v1.0.1 specification](https://a2a-protocol.org/v1.0.1/specification/),
+but neither live validation target can exercise them: the official SDK fixture
+disables streaming and push, and the secured fixture has no handlers for those
+three methods. Subscription checks need a live, nonterminal task and a bounded
+stream read. Push List/Delete checks need owner and unauthorized controls,
+bounded pagination, readback, and cleanup of scanner-owned configs. Different
+credentials alone do not establish different task access policies.
 
 ## Endpoint discovery
 
