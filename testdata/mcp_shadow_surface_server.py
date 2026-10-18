@@ -6,27 +6,27 @@ Deliberately vulnerable MCP test server for validating:
 
     port 7807 - the "named target". Serves nothing but 404s, so the scan has
                 no protocol surface where it was pointed.
-    port 6277 - the shadow listener, an inspector-style proxy that answers an
-                unauthenticated initialize and (in the default posture)
-                accepts a foreign Origin as well.
+    port 6277 - the shadow listener, an inspector-style proxy with an
+                unauthenticated read-only tool listing.
 
 Postures:
-  shadow-open (default) - 6277 answers initialize without credentials AND
-                          accepts the foreign-Origin twin.
+  shadow-open (default) - 6277 lists a tool without credentials and accepts
+                          the foreign-Origin comparison.
                           The rule MUST fire confirmed/high.
-  shadow-hardened       - 6277 still answers anonymously, but refuses any
+  shadow-hardened       - 6277 still lists anonymously, but refuses any
                           request carrying a foreign Origin with 403.
                           The rule MUST fire confirmed/medium.
+  shadow-protected      - initialize is anonymous, but tools/list requires
+                          authentication. Only the dashboard indicator fires.
   none                  - no shadow listener at all; only 7807 runs.
                           The rule MUST stay silent.
 
-The shadow page fingerprints as "MCP Inspector" so the evidence names the
-product class. Nothing beyond initialize is ever served: no tool executes,
-no session state matters.
+The shadow page fingerprints as "MCP Inspector". Tools are listed, never called.
 
 Validate against it:
   python testdata/mcp_shadow_surface_server.py                   # shadow-open
   python testdata/mcp_shadow_surface_server.py shadow-hardened   # medium
+  python testdata/mcp_shadow_surface_server.py shadow-protected  # low indicator
   python testdata/mcp_shadow_surface_server.py none              # silent
 
 Run: python testdata/mcp_shadow_surface_server.py [posture]
@@ -39,7 +39,7 @@ import threading
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 MAIN_PORT = 7807
@@ -64,7 +64,7 @@ def handshake_result(rid):
 
 
 async def shadow_endpoint(request: Request) -> JSONResponse:
-    if request.app.state.posture == "shadow-hardened":
+    if request.app.state.posture in ("shadow-hardened", "shadow-protected"):
         origin = request.headers.get("origin", "")
         if origin and FOREIGN_ORIGIN in origin:
             return JSONResponse(
@@ -73,10 +73,23 @@ async def shadow_endpoint(request: Request) -> JSONResponse:
                 status_code=403,
             )
     try:
-        rid = (await request.json()).get("id", 1)
+        message = await request.json()
     except Exception:
-        rid = 1
-    return JSONResponse(handshake_result(rid))
+        return JSONResponse({"error": "invalid request"}, status_code=400)
+    rid = message.get("id", 1)
+    method = message.get("method")
+    if method == "initialize":
+        return JSONResponse(handshake_result(rid))
+    if method == "notifications/initialized":
+        return Response(status_code=202)
+    if method == "tools/list":
+        if request.app.state.posture == "shadow-protected":
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return JSONResponse({"jsonrpc": "2.0", "id": rid, "result": {
+            "tools": [{"name": "inspect", "description": "Read-only inspector"}],
+        }})
+    return JSONResponse({"jsonrpc": "2.0", "id": rid,
+                         "error": {"code": -32601, "message": "Method not found"}})
 
 
 async def shadow_page(request: Request) -> HTMLResponse:
@@ -98,8 +111,8 @@ def serve(app, port):
 
 if __name__ == "__main__":
     posture = sys.argv[1] if len(sys.argv) > 1 else "shadow-open"
-    if posture not in ("shadow-open", "shadow-hardened", "none"):
-        sys.exit(f"unknown posture {posture!r}; expected shadow-open, shadow-hardened, or none")
+    if posture not in ("shadow-open", "shadow-hardened", "shadow-protected", "none"):
+        sys.exit(f"unknown posture {posture!r}")
     print(f"[*] shadow-surface fixture ({posture}): named target on {MAIN_PORT}, "
           f"shadow listener on {SHADOW_PORT}", flush=True)
 

@@ -126,6 +126,12 @@ batesian scan --target https://mcp.example.com \
   --oauth-scopes mcp:read,mcp:write
 ```
 
+When MCP rules are selected, Batesian sends the target's canonical URI as the
+OAuth `resource` in token requests. Use `--oauth-resource https://mcp.example.com/mcp`
+if the resource server's canonical URI differs from `--target`. A2A-only scans
+omit `resource` unless this flag is set. `--oauth-audience` remains a separate,
+provider-specific parameter.
+
 ### Authorization code with PKCE
 
 Batesian prints the authorization URL to stderr for manual sign-in. It contains a one-time state value, so keep it private and avoid saving terminal logs during sign-in.
@@ -139,11 +145,15 @@ batesian scan --target https://mcp.example.com \
   --oauth-scopes mcp:read
 ```
 
+The PKCE flow sends the same `resource` in both the authorization and token
+requests.
+
 Set `--oauth-issuer` to the exact `issuer` in the authorization server metadata,
 which may include a path. Batesian rejects callbacks with a missing or different
 `iss` when this flag is set. It also rejects an `iss` received without a
 configured issuer. Servers that omit `iss` remain compatible when the flag is
-unset.
+unset. This manual endpoint flow does not discover or validate authorization
+server metadata; verify the issuer and endpoints before using it.
 
 ### Multiple principals
 

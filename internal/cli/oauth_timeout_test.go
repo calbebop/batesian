@@ -37,7 +37,7 @@ func TestFetchOAuthTokenUsesRequestTimeout(t *testing.T) {
 
 	const timeout = 250 * time.Millisecond
 	start := time.Now()
-	_, err = fetchOAuthToken(context.Background(), "https://"+listener.Addr().String()+"/token", "client", "secret", nil, "", timeout, "", false)
+	_, err = fetchOAuthToken(context.Background(), "https://"+listener.Addr().String()+"/token", "client", "secret", nil, "", "", timeout, "", false)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected stalled token request to fail")
@@ -70,7 +70,7 @@ func TestFetchOAuthTokenUsesExplicitProxy(t *testing.T) {
 	}))
 	defer proxy.Close()
 
-	_, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", time.Second, proxy.URL, false)
+	_, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", "", time.Second, proxy.URL, false)
 	if err == nil {
 		t.Fatal("expected proxy rejection")
 	}
@@ -89,7 +89,7 @@ func TestFetchOAuthTokenUsesSkipTLS(t *testing.T) {
 	}))
 	defer target.Close()
 
-	token, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", time.Second, "", true)
+	token, err := fetchOAuthToken(context.Background(), target.URL+"/token", "client", "secret", nil, "", "", time.Second, "", true)
 	if err != nil {
 		t.Fatalf("fetching token: %v", err)
 	}

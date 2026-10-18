@@ -10,8 +10,9 @@ func TestClassifyHistoryMarker(t *testing.T) {
 	const marker = "probe-marker"
 	message := func(role interface{}) map[string]interface{} {
 		return map[string]interface{}{
-			"role":  role,
-			"parts": []interface{}{map[string]string{"text": marker}},
+			"role":      role,
+			"messageId": marker,
+			"parts":     []interface{}{map[string]string{"text": marker}},
 		}
 	}
 	missingRole := map[string]interface{}{
@@ -46,8 +47,14 @@ func TestClassifyHistoryMarker(t *testing.T) {
 		}}, want: historyMarkerAbsent},
 		{name: "malformed history item", history: []interface{}{marker}, want: historyMarkerUnknown},
 		{name: "missing role", history: []interface{}{missingRole}, want: historyMarkerUnknown},
-		{name: "unknown over user", history: []interface{}{message("moderator"), message("user")}, want: historyMarkerUnknown},
+		{name: "user over unknown", history: []interface{}{message("moderator"), message("user")}, want: historyMarkerUser},
 		{name: "agent over unknown", history: []interface{}{message("moderator"), message("agent")}, want: historyMarkerAgent},
+		{name: "agent echo after normalized user", history: []interface{}{message("user"), map[string]interface{}{
+			"role": "agent", "messageId": "reply", "parts": []interface{}{map[string]string{"text": "You said: " + marker}},
+		}}, want: historyMarkerUser},
+		{name: "agent echo without client turn", history: []interface{}{map[string]interface{}{
+			"role": "agent", "messageId": "reply", "parts": []interface{}{map[string]string{"text": marker}},
+		}}, want: historyMarkerUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

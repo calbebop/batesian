@@ -1,9 +1,11 @@
 package mcp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -44,7 +46,27 @@ func shadowMCPHandler(foreignOriginRefused bool) http.HandlerFunc {
 			_, _ = w.Write([]byte("<html><title>MCP Inspector</title><body>proxy ready</body></html>"))
 		case foreignOriginRefused && r.Header.Get("Origin") != "":
 			http.Error(w, "forbidden origin", http.StatusForbidden)
-		default:
+		case r.Method == http.MethodPost:
+			var req map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			switch req["method"] {
+			case "notifications/initialized":
+				w.WriteHeader(http.StatusAccepted)
+				return
+			case "tools/list":
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"tools": []interface{}{map[string]string{"name": "inspect"}}},
+				})
+				return
+			case "initialize":
+			default:
+				http.Error(w, "unknown method", http.StatusNotFound)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": 1,
 				"result": map[string]interface{}{
@@ -53,6 +75,8 @@ func shadowMCPHandler(foreignOriginRefused bool) http.HandlerFunc {
 					"serverInfo":      map[string]interface{}{"name": "inspector-proxy", "version": "1"},
 				},
 			})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
 }
@@ -105,6 +129,99 @@ func TestShadow_HardenedOriginMedium(t *testing.T) {
 	f := findings[0]
 	if f.Severity != "medium" || f.Confidence != attack.ConfirmedExploit {
 		t.Errorf("want medium/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func TestShadow_ProtectedOperationsAreNotConfirmed(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req["method"] == "tools/list" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			r.Body.Close()
+			body, _ := json.Marshal(req)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		shadowMCPHandler(true)(w, r)
+	}))
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 1 || findings[0].Severity != "low" || findings[0].Confidence != attack.RiskIndicator {
+		t.Fatalf("protected operations must not be confirmed: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_ProtectedOperationsWithoutDashboardAreClean(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["method"] == "tools/list" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		body, _ := json.Marshal(req)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		shadowMCPHandler(true)(w, r)
+	}))
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("protected operations were reported: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_ForeignOriginMustReachListingForHigh(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if r.Header.Get("Origin") != "" && req["method"] == "tools/list" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			body, _ := json.Marshal(req)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		shadowMCPHandler(false)(w, r)
+	}))
+	defer shadow.Close()
+
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 1 || findings[0].Severity != "medium" ||
+		!strings.Contains(findings[0].Evidence, "refused (HTTP 403)") {
+		t.Fatalf("foreign listing refusal was overstated: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestShadow_MalformedInitializeDoesNotConfirm(t *testing.T) {
+	main := httptest.NewServer(http.NotFoundHandler())
+	defer main.Close()
+	shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":{"protocolVersion":"x"}}`))
+	}))
+	defer shadow.Close()
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, main.URL)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("malformed initialize was accepted: findings=%+v err=%v", findings, err)
 	}
 }
 

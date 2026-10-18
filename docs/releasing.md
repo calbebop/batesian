@@ -8,7 +8,9 @@
 3. Require Build & Test, Lint, Vulnerability Scan, Validate release targets,
    and Verify release snapshot to pass. Release (goreleaser) must be skipped.
 4. Check the changelog, README version references, bundled rule count, and
-   release notes. Record the go/no-go decision in the release checklist issue.
+   release notes. The release job extracts the matching section from
+   `CHANGELOG.md` rather than publishing every commit subject. Record the
+   go/no-go decision in the release checklist issue.
 
 The manual CI run validates the merged candidate without creating a tag or
 release. A passing PR snapshot does not replace this check on `main`.

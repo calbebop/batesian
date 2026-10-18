@@ -83,8 +83,11 @@ Three of them register an OAuth client, because what DCR accepts cannot be teste
 without asking it to accept something: `mcp-confused-deputy-001` registers one whose
 `redirect_uri` points off-origin, `mcp-oauth-dcr-001` one requesting privileged
 scopes, and `mcp-oauth-metadata-ssrf-001` one whose metadata URLs point at the scan's
-OOB listener. All three delete the client afterwards via RFC 7592 client management,
-authenticated with the `registration_access_token` the server itself issued.
+OOB listener. The first two attempt to delete the client afterwards via RFC 7592
+client management, authenticated with the `registration_access_token` the server
+itself issued. The metadata probe also attempts deletion after a local OOB wait.
+External-OOB mode leaves its client registered so delayed callbacks remain
+observable; remove it after verification.
 
 Cleanup is best effort and never changes a verdict. A server that returns no
 `registration_client_uri`, no `registration_access_token`, or refuses the delete keeps
@@ -93,8 +96,8 @@ the client, and the finding's evidence says so and names it: every client is pre
 host is reported rather than followed, for the same reason the operator's token is
 never sent off-host.
 
-The SSRF rule deletes only after its OOB wait, because there the registration *is* the
-payload and removing the client first could cancel the fetch being listened for.
+The local-OOB SSRF probe deletes only after its wait: the registration is the
+payload, and removing it first could cancel the fetch being observed.
 
 ## Both protocol wires
 
@@ -948,14 +951,12 @@ not evidence that a port lacks an MCP listener.
 
 Three outcomes, all from read-only probes:
 
-1. An `initialize` answered without credentials is an open shadow surface.
-   The exact same request repeated with a foreign Origin separates severities:
-   both accepted is a **high** finding. An explicit HTTP 403 refusal or an
-   inconclusive comparison leaves the unauthenticated surface finding at
-   **medium**; an inconclusive comparison is not reported as Origin validation.
-2. A page fingerprinting as "MCP Inspector" or "Serena" whose protocol
-   endpoint does not answer the probed paths is a **low indicator** naming the
-   exposed product page.
+1. An anonymous `initialize` is followed by a read-only listing advertised by
+   that session. A nonempty listing confirms an open surface. If the
+   foreign-Origin handshake and the same listing also succeed, the finding is **high**. A
+   refused or inconclusive Origin comparison leaves it at **medium**.
+2. A page fingerprinting as "MCP Inspector" or "Serena" without a confirmed
+   unauthenticated listing is a **low indicator** naming the exposed product page.
 3. Closed ports and unrelated services produce nothing. Transient or unanswered
    probes are incomplete.
 

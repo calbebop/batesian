@@ -24,9 +24,8 @@ Agent Card discovery tries `/.well-known/agent-card.json` with the v1.0 header,
 then without it for v0.3, before checking the older `agent.json` path. Extended
 v1.0 card reads send `A2A-Version: 1.0`.
 
-Unlike MCP, A2A has had no restructuring revision: v1.0.1 is a patch that fixed
-specification inconsistencies rather than changing the protocol. Two of its
-changes touch this rule set:
+A2A v1.0 restructured the protocol. The v1.0.1 patch fixed specification
+inconsistencies without another wire revision. Two details affect this rule set:
 
 - **Task states** are documented in the proto enum form (`TASK_STATE_CANCELED`)
   rather than the lowercase strings (`canceled`) v0.3 used. Detection accepts
@@ -145,11 +144,12 @@ report them not tested against a secured agent, and say so.
 
 **Extended Agent Card Unauthenticated Disclosure** | Severity: High / Critical | CWE-862
 
-Fetches the Extended Agent Card without credentials, over both transports the spec
-allows: the JSON-RPC `agent/getAuthenticatedExtendedCard` method and the legacy
-`GET /extendedAgentCard` endpoint. The extended card carries privileged capability
-listings (tools, skills, resource scopes) that should require authentication. A
-JSON-RPC `error` envelope or an HTTP 401/403 is treated as a correct rejection,
+Fetches the Extended Agent Card without credentials. It uses v1 JSON-RPC
+`GetExtendedAgentCard` and HTTP+JSON `GET /extendedAgentCard`, plus v0.3 JSON-RPC
+`agent/getAuthenticatedExtendedCard` and REST `GET /v1/card`. The card carries
+privileged capability listings (tools, skills, resource scopes) that should
+require authentication. A JSON-RPC `error` envelope or an HTTP 401/403 is
+treated as a correct rejection,
 not a finding. To avoid noise, outcomes are coalesced to **one finding per
 transport** (an invalid-token acceptance is preferred over a no-token acceptance,
 since accepting a bogus token is the stronger signal).
@@ -221,8 +221,8 @@ task-list probe still runs.
 
 Sends v1 `SendMessage` (falling back to v0.3 `message/send`) with the agent role,
 then **reads the task history back** to confirm whether the injection landed.
-Only when the marker is stored as an agent-role turn is a **confirmed** exploit
-reported.
+Only when the injected message ID and marker are stored as an agent-role turn
+is a **confirmed** exploit reported. An agent reply quoting the marker is not proof.
 
 What is reported is the stored turn, not the acceptance. The specification defines
 the roles by direction (`ROLE_USER` client-to-server, `ROLE_AGENT` server-to-client)
@@ -291,7 +291,7 @@ intentional.
 
 **Task Artifact Tampering via Task ID Reuse** | Severity: Critical | CWE-284
 
-Submits a task, then re-submits the same client-generated task ID with different
+Submits a task, then re-submits the same server-returned task ID with different
 content, then **reads the task back via `tasks/get`** to prove what the server
 actually stored. Acceptance requires HTTP success *and* no JSON-RPC error (a
 "task already exists" error is correctly treated as a rejection). A **confirmed**

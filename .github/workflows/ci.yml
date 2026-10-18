@@ -54,6 +54,9 @@ jobs:
       - name: Test CI documentation
         run: python3 -m unittest discover -s .github/scripts -p 'test_*docs.py'
 
+      - name: Test release notes
+        run: python3 -m unittest discover -s .github/scripts -p test_release_notes.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -187,12 +190,15 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      - name: Prepare release notes
+        run: python3 .github/scripts/release_notes.py "$GITHUB_REF_NAME" > "$RUNNER_TEMP/batesian-release-notes.md"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes=${{ runner.temp }}/batesian-release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

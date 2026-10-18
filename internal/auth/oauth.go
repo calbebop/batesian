@@ -61,6 +61,8 @@ type ClientCredentialsConfig struct {
 	Scopes []string
 	// Audience is the target API identifier (optional; used by Auth0, Okta, etc.).
 	Audience string
+	// Resource is the OAuth resource indicator for the target server.
+	Resource string
 	// Timeout is the HTTP timeout for the token request (default: 15s).
 	Timeout time.Duration
 
@@ -103,6 +105,9 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 	}
 	if cfg.Audience != "" {
 		form.Set("audience", cfg.Audience)
+	}
+	if cfg.Resource != "" {
+		form.Set("resource", cfg.Resource)
 	}
 
 	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy, cfg.SkipTLS)
@@ -181,6 +186,8 @@ type AuthCodeConfig struct {
 	Code string
 	// PKCEVerifier is the PKCE code verifier generated before the authorization request.
 	PKCEVerifier string
+	// Resource is the OAuth resource indicator for the token exchange.
+	Resource string
 	// Timeout is the HTTP timeout for the token request.
 	Timeout time.Duration
 
@@ -215,6 +222,9 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 		"code":          {cfg.Code},
 		"redirect_uri":  {cfg.RedirectURI},
 		"code_verifier": {cfg.PKCEVerifier},
+	}
+	if cfg.Resource != "" {
+		form.Set("resource", cfg.Resource)
 	}
 
 	httpClient, err := tokenEndpointClient(client, cfg.Timeout, cfg.Proxy, cfg.SkipTLS)

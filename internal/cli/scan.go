@@ -72,6 +72,7 @@ func init() {
 	scanCmd.Flags().String("client-secret", "", "OAuth 2.0 client secret (client credentials flow only)")
 	scanCmd.Flags().StringSlice("oauth-scopes", nil, "OAuth 2.0 scopes to request (comma-separated)")
 	scanCmd.Flags().String("oauth-audience", "", "OAuth 2.0 audience (Auth0/Okta-style)")
+	scanCmd.Flags().String("oauth-resource", "", "OAuth resource URI (defaults to the MCP target when MCP rules are selected)")
 	// Interactive PKCE flow.
 	scanCmd.Flags().String("auth-url", "", "OAuth 2.0 authorization endpoint URL (enables PKCE flow)")
 	scanCmd.Flags().String("oauth-issuer", "", "Exact authorization server issuer from OAuth metadata (PKCE callback validation)")
@@ -123,6 +124,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	clientSecret, _ := cmd.Flags().GetString("client-secret")
 	oauthScopes, _ := cmd.Flags().GetStringSlice("oauth-scopes")
 	oauthAudience, _ := cmd.Flags().GetString("oauth-audience")
+	oauthResource, _ := cmd.Flags().GetString("oauth-resource")
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
@@ -256,6 +258,17 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if err != nil {
 		return err
 	}
+	if oauthResource == "" && selectsMCP(filtered) {
+		oauthResource, err = resourceFromTarget(target)
+		if err != nil {
+			return err
+		}
+	} else if oauthResource != "" {
+		oauthResource, err = canonicalOAuthResource(oauthResource)
+		if err != nil {
+			return err
+		}
+	}
 
 	if err := validateOAuthAcquisition(token, authURL, tokenURL, oauthIssuer, clientID, clientSecret, oauthScopes, oauthAudience); err != nil {
 		return err
@@ -274,14 +287,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 
 		switch {
 		case authURL != "" && clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, oauthIssuer, clientID, oauthScopes, oauthAudience, timeout, proxy, skipTLS, redirectPort, !noBrowser)
+			tok, err := fetchOAuthTokenPKCE(cmd.Context(), authURL, tokenURL, oauthIssuer, clientID, oauthScopes, oauthAudience, oauthResource, timeout, proxy, skipTLS, redirectPort, !noBrowser)
 			if err != nil {
 				return fmt.Errorf("OAuth PKCE flow failed: %w", err)
 			}
 			token = tok
 			redactor.addSecret(token)
 		case clientID != "" && tokenURL != "":
-			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience, timeout, proxy, skipTLS)
+			tok, err := fetchOAuthToken(cmd.Context(), tokenURL, clientID, clientSecret, oauthScopes, oauthAudience, oauthResource, timeout, proxy, skipTLS)
 			if err != nil {
 				return fmt.Errorf("OAuth token acquisition failed: %w", err)
 			}
@@ -686,13 +699,14 @@ func effectiveMCPInvokeTools(flagChanged bool, flagVal, cfgVal []string) []strin
 }
 
 // fetchOAuthToken acquires a bearer token via client credentials grant.
-func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret string, scopes []string, audience string, timeout time.Duration, proxy string, skipTLS bool) (string, error) {
+func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret string, scopes []string, audience, resource string, timeout time.Duration, proxy string, skipTLS bool) (string, error) {
 	tok, err := auth.FetchClientCredentialsToken(ctx, auth.ClientCredentialsConfig{
 		TokenURL:     tokenURL,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes:       scopes,
 		Audience:     audience,
+		Resource:     resource,
 		Timeout:      timeout,
 		Proxy:        proxy,
 		SkipTLS:      skipTLS,
@@ -704,7 +718,7 @@ func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret strin
 }
 
 // fetchOAuthTokenPKCE runs the interactive authorization-code flow.
-func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, issuer, clientID string, scopes []string, audience string, timeout time.Duration, proxy string, skipTLS bool, redirectPort int, openBrowser bool) (string, error) {
+func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, issuer, clientID string, scopes []string, audience, resource string, timeout time.Duration, proxy string, skipTLS bool, redirectPort int, openBrowser bool) (string, error) {
 	tok, err := auth.PerformPKCEFlow(ctx, auth.PKCEFlowConfig{
 		AuthURL:      authURL,
 		TokenURL:     tokenURL,
@@ -712,6 +726,7 @@ func fetchOAuthTokenPKCE(ctx context.Context, authURL, tokenURL, issuer, clientI
 		ClientID:     clientID,
 		Scopes:       scopes,
 		Audience:     audience,
+		Resource:     resource,
 		Timeout:      timeout,
 		Proxy:        proxy,
 		SkipTLS:      skipTLS,

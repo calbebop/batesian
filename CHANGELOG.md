@@ -17,6 +17,8 @@ The catalog has 48 rules, up from 39 in v1.7.0: 19 A2A and 29 MCP.
 
 ### Results and operation
 
+- OAuth token acquisition sends the MCP target as a resource indicator. Shadow-surface and session-smuggling findings require stronger evidence before confirmation.
+- GitHub release notes use this curated changelog section rather than a full commit dump.
 - JSON reports now have a schema version and per-rule outcomes. SARIF includes coverage status, evidence, stable fingerprints, and finding-specific severity.
 - Findings require observed evidence for confirmed confidence. Failed prerequisites, invalid responses, partial probes, and unobserved callbacks are reported as incomplete, not clean.
 - CLI output redacts configured secrets and escapes terminal control characters. Configuration discovery can be disabled, and `init` will not overwrite an existing file.

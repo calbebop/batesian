@@ -175,8 +175,7 @@ func legacyHandshakeBody() map[string]interface{} {
 	}
 }
 
-// initializeSucceeded reports whether body is a completed MCP initialize: a
-// result envelope naming the negotiated revision. It is the handshake-grade
+// initializeSucceeded reports whether body is a completed MCP initialize. It is the handshake-grade
 // counterpart of answersMCPInitialize, which answers the reachability question
 // and deliberately counts version rejections and auth refusals, because for
 // that question an error still proves an MCP endpoint is listening.
@@ -187,17 +186,27 @@ func legacyHandshakeBody() map[string]interface{} {
 // accepts it, and a rule built on that gate then treated the error as the
 // session's initialize result: RawInit became the error body, ServerSupports
 // derived capabilities from it, and notifications/initialized was sent against
-// a session the server never established. This oracle reads
-// result.protocolVersion, so an error envelope does not count whatever it
-// quotes. Callers pair it with IsSuccess so a non-2xx carrying a result body
-// does not count either.
+// a session the server never established. This oracle checks the envelope and
+// required result fields. Callers pair it with IsSuccess so a non-2xx carrying
+// a result body does not count either.
 func initializeSucceeded(initBody []byte) bool {
-	var body struct {
-		Result struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		} `json:"result"`
+	body, ok := parseResponseBody(initBody)
+	if !ok || !matchesRPCID(body, 1) || !validRPCResult(body) {
+		return false
 	}
-	return json.Unmarshal(initBody, &body) == nil && body.Result.ProtocolVersion != ""
+	result, ok := body["result"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	version, _ := result["protocolVersion"].(string)
+	capabilities, capsOK := result["capabilities"].(map[string]interface{})
+	serverInfo, infoOK := result["serverInfo"].(map[string]interface{})
+	if !capsOK || capabilities == nil || !infoOK {
+		return false
+	}
+	name, _ := serverInfo["name"].(string)
+	serverVersion, _ := serverInfo["version"].(string)
+	return version != "" && name != "" && serverVersion != ""
 }
 
 // negotiatedVersion reads the protocolVersion the server chose from its

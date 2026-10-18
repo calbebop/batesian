@@ -85,6 +85,8 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 	marker, incomplete := e.fingerprint(ctx, client, base)
 
 	mcpPath := ""
+	var initBody []byte
+	var sessionID string
 	for _, path := range shadowPaths {
 		resp, err := client.POST(ctx, base+path, nil, legacyHandshakeBody())
 		if shadowProbeIncomplete(resp, err) {
@@ -95,6 +97,8 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 			continue
 		}
 		mcpPath = path
+		initBody = resp.Body
+		sessionID = resp.Headers.Get("Mcp-Session-Id")
 		break
 	}
 
@@ -106,53 +110,75 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 		if incomplete {
 			probeEvidence = "MCP handshake probes incomplete on " + strings.Join(shadowPaths, ", ")
 		}
-		return &attack.Finding{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "low",
-			Confidence: attack.RiskIndicator,
-			Title:      fmt.Sprintf("Known MCP dashboard served without credentials on %s:%d (%s)", host, port, marker),
-			Description: fmt.Sprintf(
-				"GET %s/ returned a page identifying as %q, but no MCP endpoint answered on the "+
-					"probed paths. The dashboard for this product is exposed to your scan position; "+
-					"whether its control endpoints are reachable depends on paths and methods this "+
-					"rule does not drive. Inspector-class dashboards have shipped with unauthenticated "+
-					"RCE when exposed like this (CVE-2025-49596), so confirm what else the process serves.",
-				base, marker),
-			Evidence:    fmt.Sprintf("GET %s/ -> HTTP 200, body names %q\n%s", base, marker, probeEvidence),
-			Remediation: e.rule.Remediation,
-			TargetURL:   base + "/",
-		}, incomplete
+		return e.dashboardFinding(base, host, port, marker, probeEvidence), incomplete
 	}
 
 	endpoint := base + mcpPath
+	session := mcpSession{Endpoint: endpoint, SessionID: sessionID,
+		ProtocolVersion: negotiatedVersion(initBody), RawInit: initBody}
+	_, _ = client.POST(ctx, endpoint, session.header(), map[string]interface{}{
+		"jsonrpc": "2.0", "method": "notifications/initialized",
+	})
 
-	// Foreign-Origin twin of the request that just succeeded: identical bytes,
-	// one header different. Accepting it is the browser-reachability half of
-	// the rebinding chain.
+	method, count := "", 0
+	for i, candidate := range advertisedListMethods(session) {
+		id := i + 2
+		resp, err := session.post(ctx, client, id, candidate, nil)
+		items, valid := shadowListItems(resp, err, id, candidate)
+		if valid && items > 0 {
+			method, count = candidate, items
+			break
+		}
+		if !valid && (err != nil || resp == nil || (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden)) {
+			incomplete = true
+		}
+	}
+	if method == "" {
+		if marker == "" {
+			return nil, incomplete
+		}
+		return e.dashboardFinding(base, host, port, marker,
+			"MCP initialize answered; no unauthenticated read-only listing was observed"), incomplete
+	}
+
+	// Check both the foreign-Origin handshake and the same read-only listing.
 	rebindResp, rebindErr := client.POST(ctx, endpoint, map[string]string{"Origin": foreignOrigin}, legacyHandshakeBody())
-	originOpen := rebindErr == nil && rebindResp != nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body)
 	originRefused := rebindErr == nil && rebindResp != nil && rebindResp.StatusCode == http.StatusForbidden
+	originOpen := false
+	if rebindErr == nil && rebindResp != nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body) {
+		foreignSession := mcpSession{Endpoint: endpoint, SessionID: rebindResp.Headers.Get("Mcp-Session-Id"),
+			ProtocolVersion: negotiatedVersion(rebindResp.Body), RawInit: rebindResp.Body}
+		headers := foreignSession.header()
+		headers["Origin"] = foreignOrigin
+		_, _ = client.POST(ctx, endpoint, headers, map[string]interface{}{
+			"jsonrpc": "2.0", "method": "notifications/initialized",
+		})
+		foreignList, listErr := foreignSession.postShaping(ctx, client, 2, method, nil,
+			func(headers map[string]string) { headers["Origin"] = foreignOrigin })
+		foreignCount, valid := shadowListItems(foreignList, listErr, 2, method)
+		originOpen = valid && foreignCount > 0
+		originRefused = listErr == nil && foreignList != nil && foreignList.StatusCode == http.StatusForbidden
+	}
 	originEvidence := "inconclusive (transport failure)"
 	originDescription := "The foreign-Origin comparison did not yield a verdict, so browser reachability was not assessed."
 	if rebindResp != nil {
 		originEvidence = fmt.Sprintf("inconclusive (HTTP %d)", rebindResp.StatusCode)
 	}
 	if originOpen {
-		originEvidence = "accepted"
-		originDescription = "A matching handshake with a foreign Origin also succeeded."
+		originEvidence = "initialize and listing accepted"
+		originDescription = "The same read-only listing also succeeded with a foreign Origin."
 	} else if originRefused {
 		originEvidence = "refused (HTTP 403)"
-		originDescription = "A matching handshake with a foreign Origin was refused with HTTP 403."
+		originDescription = "The foreign-Origin handshake or listing was refused with HTTP 403."
 	}
 
-	sev, title := "medium", fmt.Sprintf("MCP surface answers without authentication on %s:%d%s", host, port, mcpPath)
+	sev, title := "medium", fmt.Sprintf("MCP %s exposes %d item(s) without authentication on %s:%d%s", method, count, host, port, mcpPath)
 	if originOpen {
 		sev = "high"
-		title = fmt.Sprintf("Unauthenticated MCP surface accepts foreign Origins on %s:%d%s (DNS-rebinding chain)", host, port, mcpPath)
+		title = fmt.Sprintf("Unauthenticated MCP %s accepts foreign Origins on %s:%d%s", method, host, port, mcpPath)
 	}
-	evidence := fmt.Sprintf("endpoint: %s\ninitialize without credentials: accepted\nforeign Origin twin (%s): %s",
-		endpoint, foreignOrigin, originEvidence)
+	evidence := fmt.Sprintf("endpoint: %s\ninitialize without credentials: accepted\n%s without credentials: %d items\nforeign Origin twin (%s): %s",
+		endpoint, method, count, foreignOrigin, originEvidence)
 	if marker != "" {
 		evidence += "\npage fingerprint: " + marker
 	}
@@ -162,12 +188,41 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 		Severity:   sev,
 		Confidence: attack.ConfirmedExploit,
 		Title:      title,
-		Description: fmt.Sprintf("An MCP initialize succeeded without credentials at %s on an adjacent port. %s",
-			endpoint, originDescription),
+		Description: fmt.Sprintf("An MCP %s returned %d item(s) without credentials at %s on an adjacent port. %s",
+			method, count, endpoint, originDescription),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}, incomplete || (!originOpen && !originRefused)
+}
+
+func (e *ShadowSurfaceExecutor) dashboardFinding(base, host string, port int, marker, probeEvidence string) *attack.Finding {
+	return &attack.Finding{
+		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "low", Confidence: attack.RiskIndicator,
+		Title:       fmt.Sprintf("Known MCP dashboard served without credentials on %s:%d (%s)", host, port, marker),
+		Description: fmt.Sprintf("GET %s/ returned a page identifying as %q. The dashboard is visible to this scan position, but operational access was not established.", base, marker),
+		Evidence:    fmt.Sprintf("GET %s/ -> HTTP 200, body names %q\n%s", base, marker, probeEvidence),
+		Remediation: e.rule.Remediation, TargetURL: base + "/",
+	}
+}
+
+func shadowListItems(resp *attack.Response, err error, id int, method string) (int, bool) {
+	if err != nil || resp == nil || !resp.IsSuccess() {
+		return 0, false
+	}
+	body, ok := parseResponseBody(resp.Body)
+	if !ok || !matchesRPCID(body, id) || !validRPCResult(body) {
+		return 0, false
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok {
+		return 0, false
+	}
+	items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{})
+	if !ok {
+		return 0, false
+	}
+	return len(items), true
 }
 
 func shadowProbeIncomplete(resp *attack.Response, err error) bool {

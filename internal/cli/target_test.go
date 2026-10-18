@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/calbebop/batesian/internal/rules"
+)
 
 func TestValidateTargetURL(t *testing.T) {
 	tests := []struct {
@@ -35,6 +39,28 @@ func TestValidateTargetURL(t *testing.T) {
 				t.Fatalf("validateTargetURL(%q) error = %v, wantErr %v", tc.target, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestOAuthResource(t *testing.T) {
+	if got, err := resourceFromTarget("https://User:secret@MCP.Example/mcp?token=secret#part"); err != nil || got != "https://mcp.example/mcp" {
+		t.Fatalf("resourceFromTarget() = %q, %v", got, err)
+	}
+	if got, err := resourceFromTarget("https://MCP.Example/"); err != nil || got != "https://mcp.example" {
+		t.Fatalf("resourceFromTarget() = %q, %v", got, err)
+	}
+	for _, raw := range []string{"https://mcp.example/?token=secret", "https://user@mcp.example", "https://mcp.example/#part", "mcp.example"} {
+		if _, err := canonicalOAuthResource(raw); err == nil {
+			t.Errorf("accepted invalid resource %q", raw)
+		}
+	}
+}
+
+func TestSelectsMCP(t *testing.T) {
+	a2a := &rules.Rule{Attack: rules.AttackBlock{Protocol: "a2a"}}
+	mcp := &rules.Rule{Attack: rules.AttackBlock{Protocol: "mcp"}}
+	if selectsMCP([]*rules.Rule{a2a}) || !selectsMCP([]*rules.Rule{a2a, mcp}) {
+		t.Fatal("MCP resource selection did not follow the selected rule protocols")
 	}
 }
 
