@@ -32,3 +32,14 @@ func parseOAuthEndpoint(raw, label string) (*url.URL, error) {
 	}
 	return parsed, nil
 }
+
+func validateOAuthIssuer(raw string) error {
+	parsed, err := parseOAuthEndpoint(raw, "OAuth issuer")
+	if err != nil {
+		return err
+	}
+	if parsed.User != nil || parsed.ForceQuery || parsed.RawQuery != "" {
+		return fmt.Errorf("OAuth issuer must not include userinfo or a query")
+	}
+	return nil
+}

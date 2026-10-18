@@ -479,6 +479,154 @@ func TestPerformPKCEFlow_StateMismatchKeepsLoginPending(t *testing.T) {
 	}
 }
 
+func TestPerformPKCEFlowRejectsInvalidIssuer(t *testing.T) {
+	for _, issuer := range []string{
+		"http://auth.example", "https://auth.example?x=1", "https://auth.example?",
+		"https://auth.example#fragment", "https://user@auth.example", "https://auth.example:0",
+	} {
+		t.Run(issuer, func(t *testing.T) {
+			_, err := auth.PerformPKCEFlow(context.Background(), auth.PKCEFlowConfig{
+				AuthURL: "https://auth.example/authorize", TokenURL: "https://auth.example/token",
+				Issuer: issuer, ClientID: "client",
+			})
+			if err == nil || !strings.Contains(err.Error(), "OAuth issuer") {
+				t.Fatalf("issuer %q accepted: %v", issuer, err)
+			}
+		})
+	}
+}
+
+func TestPerformPKCEFlowIssuerCallback(t *testing.T) {
+	const issuer = "https://auth.example/tenant"
+	tests := []struct {
+		name, expectedIssuer string
+		badIssuer            []string
+		badError             bool
+		badSuffix, wantError string
+	}{
+		{name: "mismatched", expectedIssuer: issuer, badIssuer: []string{"https://other.example"}},
+		{name: "missing", expectedIssuer: issuer},
+		{name: "duplicate", expectedIssuer: issuer, badIssuer: []string{issuer, issuer}},
+		{name: "unexpected", badIssuer: []string{issuer}},
+		{name: "error response", expectedIssuer: issuer, badIssuer: []string{"https://other.example"}, badError: true},
+		{name: "malformed query", expectedIssuer: issuer, badIssuer: []string{issuer}, badSuffix: "&iss=%zz", wantError: "invalid query"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var exchanges atomic.Int32
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/token" {
+					http.NotFound(w, r)
+					return
+				}
+				exchanges.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"access_token":"valid-token"}`)
+			}))
+			defer srv.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			port := pickFreePort(t)
+			urlCh := make(chan string, 1)
+			resultCh := make(chan error, 1)
+			go func() {
+				_, err := performPKCEFlowForTest(ctx, auth.PKCEFlowConfig{
+					AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token",
+					Issuer: tc.expectedIssuer, ClientID: "client", RedirectPort: port,
+					CallbackTimeout: 5 * time.Second,
+					Logger: func(format string, args ...interface{}) {
+						msg := fmt.Sprintf(format, args...)
+						if strings.Contains(msg, "code_challenge") {
+							urlCh <- strings.TrimSpace(msg)
+						}
+					},
+				}, srv.Client())
+				resultCh <- err
+			}()
+
+			var authorizationURL string
+			select {
+			case authorizationURL = <-urlCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("flow did not print authorization URL")
+			}
+			parsed, err := url.Parse(authorizationURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := parsed.Query().Get("state")
+			if state == "" {
+				t.Fatal("authorization URL missing state")
+			}
+			callback := func(issuers []string, oauthError bool, suffix string) *http.Response {
+				t.Helper()
+				query := url.Values{"state": {state}}
+				if oauthError {
+					query.Set("error", "access_denied")
+				} else {
+					query.Set("code", "valid")
+				}
+				for _, value := range issuers {
+					query.Add("iss", value)
+				}
+				resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?%s%s", port, query.Encode(), suffix))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resp
+			}
+
+			bad := callback(tc.badIssuer, tc.badError, tc.badSuffix)
+			body, err := io.ReadAll(bad.Body)
+			bad.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantError := tc.wantError
+			if wantError == "" {
+				wantError = "issuer mismatch"
+			}
+			if bad.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), wantError) {
+				t.Fatalf("invalid issuer response: %d %s", bad.StatusCode, body)
+			}
+			if tc.badError && strings.Contains(string(body), "access_denied") {
+				t.Fatalf("unverified OAuth error appeared in response: %s", body)
+			}
+			select {
+			case err := <-resultCh:
+				t.Fatalf("invalid issuer ended the flow: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			if exchanges.Load() != 0 {
+				t.Fatal("invalid issuer caused a token exchange")
+			}
+
+			goodIssuer := []string(nil)
+			if tc.expectedIssuer != "" {
+				goodIssuer = []string{tc.expectedIssuer}
+			}
+			good := callback(goodIssuer, false, "")
+			good.Body.Close()
+			if good.StatusCode != http.StatusOK {
+				t.Fatalf("valid callback returned %d", good.StatusCode)
+			}
+			select {
+			case err := <-resultCh:
+				if err != nil {
+					t.Fatalf("valid callback failed: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("valid callback did not finish")
+			}
+			if exchanges.Load() != 1 {
+				t.Fatalf("token exchanges = %d, want 1", exchanges.Load())
+			}
+		})
+	}
+}
+
 func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -501,6 +649,7 @@ func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
 				_, err := auth.PerformPKCEFlow(ctx, auth.PKCEFlowConfig{
 					AuthURL:         "https://auth.example.com/authorize",
 					TokenURL:        "https://auth.example.com/token",
+					Issuer:          "https://auth.example.com",
 					ClientID:        "client",
 					RedirectPort:    port,
 					CallbackTimeout: 5 * time.Second,
@@ -529,7 +678,7 @@ func TestPerformPKCEFlowErrorRequiresMatchingState(t *testing.T) {
 				t.Fatal("authorization URL missing state")
 			}
 
-			query := url.Values{"error": {"access_denied"}, "error_description": {"denied"}}
+			query := url.Values{"error": {"access_denied"}, "error_description": {"denied"}, "iss": {"https://auth.example.com"}}
 			switch tc.stateMode {
 			case "mismatched":
 				query.Set("state", "tampered")

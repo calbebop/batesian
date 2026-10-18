@@ -133,6 +133,28 @@ jobs:
       - name: Verify release snapshot
         run: python3 .github/scripts/verify_release.py
 
+  release-candidate:
+    name: Verify reviewed main candidate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test candidate gate
+        run: python3 -m unittest discover -s .github/scripts -p test_verify_release_candidate.py
+
+      - name: Verify candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=main&head_sha=${GITHUB_SHA}&per_page=100" |
+            python3 .github/scripts/verify_release_candidate.py --main-sha "$main_sha" --tag-sha "$GITHUB_SHA"
+
   release:
     name: Release (goreleaser)
     runs-on: ubuntu-latest
@@ -140,7 +162,7 @@ jobs:
     # Tag PUSH only. workflow_dispatch accepts any ref, including a tag, so a
     # ref test alone would let a manual run re-publish an existing release.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, lint, vuln, validate-release]
+    needs: [build, lint, vuln, validate-release, release-candidate]
     permissions:
       contents: write      # create GitHub releases and upload assets
       id-token: write      # cosign keyless signing via Sigstore OIDC

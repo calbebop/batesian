@@ -27,6 +27,10 @@ type PKCEFlowConfig struct {
 	// will be exchanged for an access token.
 	TokenURL string
 
+	// Issuer is the exact authorization server issuer from its metadata.
+	// When set, the callback must contain a matching iss parameter.
+	Issuer string
+
 	// ClientID is the OAuth client identifier registered with the authorization server.
 	ClientID string
 
@@ -82,6 +86,11 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 	if _, err := parseOAuthEndpoint(cfg.TokenURL, "token URL"); err != nil {
 		return nil, err
 	}
+	if cfg.Issuer != "" {
+		if err := validateOAuthIssuer(cfg.Issuer); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.ClientID == "" {
 		return nil, errors.New("PKCE flow requires a client ID")
 	}
@@ -121,7 +130,7 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 	}
 	defer listener.Close()
 
-	code, callbackErr := waitForCallback(ctx, listener, state, cfg.CallbackTimeout, cfg.Logger, authURL, cfg.OpenBrowser)
+	code, callbackErr := waitForCallback(ctx, listener, state, cfg.Issuer, cfg.CallbackTimeout, cfg.Logger, authURL, cfg.OpenBrowser)
 	if callbackErr != nil {
 		return nil, callbackErr
 	}
@@ -192,6 +201,7 @@ func waitForCallback(
 	ctx context.Context,
 	listener net.Listener,
 	expectedState string,
+	expectedIssuer string,
 	timeout time.Duration,
 	logger func(string, ...interface{}),
 	authURL string,
@@ -206,11 +216,22 @@ func waitForCallback(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
+		q, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			respondCallbackError(w, "invalid query", "the authorization response contained malformed parameters")
+			return
+		}
 		states := q["state"]
 		if len(states) != 1 || states[0] != expectedState {
 			respondCallbackError(w, "state mismatch", "the state parameter did not match the value sent in the authorization request")
 			return
+		}
+		issuers := q["iss"]
+		if len(issuers) != 0 || expectedIssuer != "" {
+			if len(issuers) != 1 || issuers[0] == "" || issuers[0] != expectedIssuer {
+				respondCallbackError(w, "issuer mismatch", "the iss parameter did not match the configured authorization server issuer")
+				return
+			}
 		}
 		errParam := q.Get("error")
 		if errParam != "" {
