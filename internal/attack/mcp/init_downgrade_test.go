@@ -27,7 +27,7 @@ const (
 // negotiated. Any version other than the pre-auth revision counts as modern, rather
 // than one hardcoded string: pinning the version the rule offers made a fully-open
 // server look like a critical downgrade bypass the moment that version was updated.
-func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool) *httptest.Server {
+func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool, listMode ...string) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	sessions := map[string]string{} // sessionID -> protocolVersion
@@ -65,10 +65,28 @@ func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool) *httptest
 			version := sessions[r.Header.Get("Mcp-Session-Id")]
 			mu.Unlock()
 			allow := (version == legacyVer && legacyAllows) || (version != legacyVer && modernAllows)
+			if version != legacyVer && len(listMode) != 0 && listMode[0] != "legacy-empty" {
+				code := -32601
+				if listMode[0] == "Resource not found" {
+					code = -32002
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": code, "message": listMode[0]},
+				})
+				return
+			}
 			if !allow {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
 					"error": map[string]interface{}{"code": -32001, "message": "Unauthorized"},
+				})
+				return
+			}
+			if version == legacyVer && len(listMode) != 0 && listMode[0] == "legacy-empty" {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"result": map[string]interface{}{"resources": []interface{}{}},
 				})
 				return
 			}
@@ -102,6 +120,31 @@ func TestInitDowngrade_ConfirmedBypass(t *testing.T) {
 	}
 	if findings[0].Severity != "critical" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("expected critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+func TestInitDowngrade_NonAuthErrorDoesNotProveGate(t *testing.T) {
+	for _, message := range []string{"Method not found", "Resource not found"} {
+		t.Run(message, func(t *testing.T) {
+			srv := versionAwareServer(t, true, false, message)
+			defer srv.Close()
+
+			findings, err := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"}).
+				Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("a non-auth RPC error cannot confirm a downgrade: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestInitDowngrade_EmptyLegacyListIsInconclusive(t *testing.T) {
+	srv := versionAwareServer(t, true, false, "legacy-empty")
+	defer srv.Close()
+	findings, err := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("an empty legacy list does not prove a bypass: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -486,12 +529,8 @@ func TestInitDowngrade_ToolsOnlyServer(t *testing.T) {
 	}
 }
 
-// TestInitDowngrade_ResultFilteringBypass: the modern version returns an empty
-// list (auth enforced via result-level filtering) while the legacy version
-// returns data. The oracle used to require a hard refuse (accessRefused) on the
-// modern side and missed this entirely; now it also fires when the modern side
-// returns an empty result.
-func TestInitDowngrade_ResultFilteringBypass(t *testing.T) {
+// An empty modern listing is not proof that authorization was enforced.
+func TestInitDowngrade_EmptyModernListIsNotAnAuthRefusal(t *testing.T) {
 	var mu sync.Mutex
 	sessions := map[string]string{}
 	counter := 0
@@ -550,10 +589,7 @@ func TestInitDowngrade_ResultFilteringBypass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding for result-level filtering bypass, got %d: %+v", len(findings), findings)
-	}
-	if findings[0].Severity != "critical" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if len(findings) != 0 {
+		t.Fatalf("an empty list does not establish an auth gate, got %+v", findings)
 	}
 }

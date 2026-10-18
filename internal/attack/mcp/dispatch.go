@@ -209,3 +209,27 @@ func classifyAccess(resp *attack.Response, err error, expectedID int) accessVerd
 	}
 	return accessUndetermined
 }
+
+// classifyAuthAccess only treats an authorization rejection as a closed gate.
+// Other JSON-RPC errors do not establish a downgrade boundary.
+func classifyAuthAccess(resp *attack.Response, err error, expectedID int) accessVerdict {
+	if err != nil || resp == nil {
+		return accessUndetermined
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return accessRefused
+	}
+	body, ok := parseResponseBody(resp.Body)
+	if !ok || !matchesRPCID(body, expectedID) {
+		return accessUndetermined
+	}
+	if resp.IsSuccess() && validRPCResult(body) {
+		return accessGranted
+	}
+	if resp.IsSuccess() && validRPCError(body) {
+		if attack.AuthFlavoredMessage(jsonRPCErrorMessage(resp.Body)) {
+			return accessRefused
+		}
+	}
+	return accessUndetermined
+}

@@ -158,7 +158,7 @@ In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment refe
 - Target-advertised OAuth endpoints are restricted to the target origin. Use `--oauth-origin https://login.example.com` to approve an additional exact origin.
 - OAuth probes attempt to remove registered clients when RFC 7592 management is available. External OOB metadata checks leave the client registered so delayed callbacks remain observable; remove it manually after verification.
 - Stateful rules may create A2A and MCP tasks, A2A push configurations, and OAuth clients. Scan reports list accepted and unverified objects with cleanup status even when no finding is produced. Task cancellation is not deletion, and Batesian does not remove push configurations. Review leftover objects after a scan.
-- The scope-confusion rule invokes a mutating tool only when its exact name is approved with `--mcp-scope-tool`.
+- The scope-confusion rule invokes a mutating tool only when its exact name is approved with `--mcp-scope-tool`. This also asserts that the limited principal should be denied access to that tool.
 - Traversal and task rules require `--mcp-invoke-tool NAME` before calling a real MCP tool. Review the tool yourself; server-supplied read-only annotations are only hints.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 

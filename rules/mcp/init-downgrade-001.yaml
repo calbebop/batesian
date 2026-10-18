@@ -7,16 +7,18 @@ info:
     Tests whether advertising a protocol version that predates the mandatory
     OAuth 2.1 authorization framework (specifically "2024-11-05", published
     before the MCP authorization specification) lets a caller bypass authorization
-    that the server enforces under the modern version ("2025-03-26").
+    that the server enforces under the current handshake version.
 
     Accepting or negotiating an older protocol version is, by itself, SPEC-
     COMPLIANT and is NOT reported as a finding. The vulnerability is specifically
     a downgrade AUTH BYPASS, and the rule confirms it with a discriminator: it
-    calls resources/list under BOTH a modern-version session and a legacy-version
-    session and compares the outcomes.
+    calls the same advertised list method under BOTH a modern-version session
+    and a legacy-version session and compares the outcomes.
 
-    - modern rejected (auth enforced) + legacy granted  => confirmed downgrade
+    - modern authorization refusal + legacy returned items => confirmed downgrade
       bypass (critical / ConfirmedExploit).
+    - a generic RPC error is not proof of an auth gate; an empty legacy list
+      leaves the comparison incomplete.
     - both granted  => the server simply has no auth at all; that is reported by
       mcp-resources-unauth, not here (no finding).
     - both rejected, or the legacy version rejected at initialize  => secure

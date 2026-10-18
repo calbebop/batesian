@@ -97,16 +97,9 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 			undeterminedStatus(legacyOutcome, modernOutcome))
 	}
 
-	// Both granted: if both return data, no auth at all (tools-unauth territory).
-	// But if one returned data and the other an empty list, the empty side
-	// enforces via result-level filtering that the non-empty side bypasses.
+	// Two granted listings do not establish an authorization boundary. An empty
+	// list can reflect ordinary data differences between the wires.
 	if legacyOutcome.granted() && modernOutcome.granted() {
-		if legacyOutcome.count > 0 && modernOutcome.count == 0 {
-			return []attack.Finding{e.finding(*legacy, legacyOutcome, modernOutcome)}, nil
-		}
-		if modernOutcome.count > 0 && legacyOutcome.count == 0 {
-			return []attack.Finding{e.finding(*legacy, modernOutcome, legacyOutcome)}, nil
-		}
 		return nil, nil
 	}
 	// Both refused is the secure outcome. No asymmetry to report.
@@ -117,6 +110,10 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 	open, closed := legacyOutcome, modernOutcome
 	if modernOutcome.granted() {
 		open, closed = modernOutcome, legacyOutcome
+	}
+	if open.count == 0 {
+		return nil, fmt.Errorf("%w: the %s wire refused %s, but the %s wire returned no items; protected data was not observed",
+			attack.ErrInconclusive, closed.era, method, open.era)
 	}
 	return []attack.Finding{e.finding(*legacy, open, closed)}, nil
 }
@@ -190,8 +187,8 @@ func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTT
 	out := listOutcome{era: session.Era, method: method}
 
 	resp, err := session.post(ctx, client, 2, out.method, nil)
-	out.verdict = classifyAccess(resp, err, 2)
-	if err != nil {
+	out.verdict = classifyAuthAccess(resp, err, 2)
+	if err != nil || resp == nil {
 		// A transport failure is not a refusal. The method stays set so the caller
 		// can distinguish "this wire did not answer" from "this wire advertised
 		// nothing listable"; comparable() excludes it from the comparison either way.
@@ -203,24 +200,26 @@ func (e *EraDowngradeExecutor) probeList(ctx context.Context, client *attack.HTT
 	out.body = resp.BodyString()
 	if out.verdict == accessGranted {
 		var rb map[string]interface{}
-		if json.Unmarshal([]byte(out.body), &rb) == nil {
-			if result, ok := rb["result"].(map[string]interface{}); ok {
-				if items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{}); ok {
-					out.count = len(items)
-				}
-			}
+		if json.Unmarshal([]byte(out.body), &rb) != nil {
+			out.verdict = accessUndetermined
+			return out
 		}
+		result, ok := rb["result"].(map[string]interface{})
+		if !ok {
+			out.verdict = accessUndetermined
+			return out
+		}
+		items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{})
+		if !ok {
+			out.verdict = accessUndetermined
+			return out
+		}
+		out.count = len(items)
 	}
 	return out
 }
 
 func (e *EraDowngradeExecutor) finding(session mcpSession, open, closed listOutcome) attack.Finding {
-	closedDesc := "was REFUSED"
-	closedEvidence := "refused"
-	if closed.verdict == accessGranted {
-		closedDesc = "returned 0 items (authorization enforced via result-level filtering)"
-		closedEvidence = "0 items returned (filtered)"
-	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -229,16 +228,16 @@ func (e *EraDowngradeExecutor) finding(session mcpSession, open, closed listOutc
 		Title: fmt.Sprintf("MCP authorization enforced on the %s wire but not the %s wire (era downgrade bypass)",
 			closed.era, open.era),
 		Description: fmt.Sprintf(
-			"At %s, an unauthenticated %s %s on the %s wire but ANSWERED on the %s wire. "+
+			"At %s, an unauthenticated %s was REFUSED on the %s wire but ANSWERED on the %s wire. "+
 				"The server serves both protocol eras on one endpoint and applies its authorization "+
 				"check to only one of them, so a caller reaches protected functionality by asking on "+
 				"the other. Nothing about the two eras changes who is allowed to read what.",
-			session.Endpoint, open.method, closedDesc, closed.era, open.era),
+			session.Endpoint, open.method, closed.era, open.era),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\n%s wire: %s -> HTTP %d, %s\n%s wire: %s -> HTTP %d, answered\nanswered body: %.300s",
+			"endpoint: %s\n%s wire: %s -> HTTP %d, authorization refused\n%s wire: %s -> HTTP %d, %d items returned",
 			session.Endpoint,
-			closed.era, closed.method, closed.status, closedEvidence,
-			open.era, open.method, open.status, open.body),
+			closed.era, closed.method, closed.status,
+			open.era, open.method, open.status, open.count),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	}

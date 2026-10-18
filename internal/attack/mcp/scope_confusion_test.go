@@ -66,6 +66,7 @@ type scopeServer struct {
 	anonymousCallStatus     int
 	anonymousCallError      string
 	anonymousCallResult     string
+	anonymousOpenTool       string
 	initializeResponseID    int
 	listResponseID          int
 	anonymousCallResponseID int
@@ -283,6 +284,15 @@ func (s *scopeServer) handler() http.HandlerFunc {
 
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if token == "" && req.Method == "tools/call" {
+			if req.Params.Name == s.anonymousOpenTool {
+				reply(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]interface{}{
+						"content": []map[string]interface{}{{"type": "text", "text": "tool dispatched"}},
+					},
+				}, http.StatusOK)
+				return
+			}
 			if s.anonymousCallStatus != 0 {
 				w.WriteHeader(s.anonymousCallStatus)
 				return
@@ -468,6 +478,9 @@ func (s *scopeServer) handler() http.HandlerFunc {
 					return
 				}
 				rpcErr(-32602, msg, http.StatusOK)
+			case "send_email":
+				probe, _ := req.Params.Arguments["batesian_probe"].(string)
+				rpcErr(-32602, "Email "+probe+" not found", http.StatusOK)
 			default:
 				rpcErr(-32601, "Method not found", http.StatusOK)
 			}
@@ -817,7 +830,9 @@ func TestScope_HiddenToolResponses(t *testing.T) {
 			defer ts.Close()
 
 			findings, err := runScope(t, ts)
-			if err != nil || len(findings) != tc.wantFindings {
+			if len(findings) != tc.wantFindings ||
+				(tc.wantFindings > 0 && err != nil) ||
+				(tc.wantFindings == 0 && !errors.Is(err, attack.ErrInconclusive)) {
 				t.Fatalf("expected %d findings, got findings=%+v err=%v", tc.wantFindings, findings, err)
 			}
 		})
@@ -847,6 +862,28 @@ func TestScope_OpenSuppressed(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings against an open server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestScope_AnonymousControlIsPerTool(t *testing.T) {
+	for _, tc := range []struct {
+		openTool string
+		wantTool string
+	}{
+		{openTool: "delete_item", wantTool: "send_email"},
+		{openTool: "send_email", wantTool: "delete_item"},
+	} {
+		t.Run(tc.openTool, func(t *testing.T) {
+			s := &scopeServer{auth: true, extraTool: true, anonymousOpenTool: tc.openTool}
+			ts := httptest.NewServer(s.handler())
+			defer ts.Close()
+			opts := scopeOpts()
+			opts.MCPScopeTools = []string{"delete_item", "send_email"}
+			findings, err := mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, opts)
+			if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Title, tc.wantTool) {
+				t.Fatalf("only the protected tool should produce a finding: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 

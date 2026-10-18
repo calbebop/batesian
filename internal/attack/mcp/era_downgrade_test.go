@@ -27,7 +27,7 @@ func eraDowngradeRC() attack.RuleContext {
 // Both wires are always openable: the handshake and server/discover are never
 // gated, so the rule is comparing method-level access rather than which era it
 // could reach at all.
-func dualEraGateServer(t *testing.T, gateLegacy, gateModern bool) *httptest.Server {
+func dualEraGateServer(t *testing.T, gateLegacy, gateModern bool, modernListOutcome ...string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
@@ -76,11 +76,25 @@ func dualEraGateServer(t *testing.T, gateLegacy, gateModern bool) *httptest.Serv
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
+			if modern && len(modernListOutcome) != 0 {
+				switch modernListOutcome[0] {
+				case "empty":
+					result(map[string]interface{}{"tools": []interface{}{}})
+				case "error":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": id,
+						"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+					})
+				}
+				return
+			}
 			if (modern && gateModern) || (!modern && gateLegacy) {
 				refuse()
 				return
 			}
-			result(map[string]interface{}{"tools": []interface{}{map[string]interface{}{"name": "echo"}}})
+			result(map[string]interface{}{"tools": []interface{}{map[string]interface{}{
+				"name": "echo", "description": "private-tool-description",
+			}}})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
@@ -117,6 +131,9 @@ func TestEraDowngrade_ModernWireUngated(t *testing.T) {
 	if !strings.Contains(f.Evidence, "modern wire: tools/list") {
 		t.Errorf("evidence should name the answering wire and method, got:\n%s", f.Evidence)
 	}
+	if strings.Contains(f.Evidence, "private-tool-description") {
+		t.Errorf("finding evidence should report counts, not listing content: %q", f.Evidence)
+	}
 }
 
 // The same bug the other way round, which is just as exploitable: whichever wire
@@ -142,6 +159,34 @@ func TestEraDowngrade_NoGateAnywhereIsSuppressed(t *testing.T) {
 
 	if findings := runEraDowngrade(t, ts); len(findings) != 0 {
 		t.Errorf("expected zero findings when the server gates nothing, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestEraDowngrade_EmptyListDoesNotProveGate(t *testing.T) {
+	ts := dualEraGateServer(t, false, false, "empty")
+	defer ts.Close()
+	if findings := runEraDowngrade(t, ts); len(findings) != 0 {
+		t.Fatalf("an empty list is not an auth refusal: %+v", findings)
+	}
+}
+
+func TestEraDowngrade_EmptyOpenListIsInconclusive(t *testing.T) {
+	ts := dualEraGateServer(t, true, false, "empty")
+	defer ts.Close()
+	findings, err := mcpattack.NewEraDowngradeExecutor(eraDowngradeRC()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("an empty open list does not prove a bypass: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEraDowngrade_NonAuthErrorDoesNotProveGate(t *testing.T) {
+	ts := dualEraGateServer(t, false, false, "error")
+	defer ts.Close()
+	findings, err := mcpattack.NewEraDowngradeExecutor(eraDowngradeRC()).
+		Execute(context.Background(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("a non-auth RPC error cannot confirm a downgrade: findings=%+v err=%v", findings, err)
 	}
 }
 

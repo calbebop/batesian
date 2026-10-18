@@ -449,13 +449,15 @@ skipped rather than mis-tested. Covering the extension is separate work.
 Negotiating an older protocol version (`2024-11-05`, which predates the mandatory
 OAuth 2.1 authorization framework) is, by itself, **spec-compliant** and is *not*
 a finding. The rule confirms a true downgrade bypass with a discriminator: it
-calls `resources/list` under both a modern-version session and a legacy-version
+calls the same advertised list method under a modern-version and a legacy-version
 session and compares outcomes. The probe runs **unauthenticated** (it ignores any
 `--token`): the bypass is the ability to reach protected functionality without
 credentials, so attaching a token would let an auth-enforcing server grant the
 modern path and mask the bug. A **confirmed** finding is reported only when the
-modern session is rejected (auth enforced) but the legacy session succeeds. If
-both succeed, the server simply has no auth (owned by `mcp-resources-unauth-001`);
+modern session returns an authorization refusal but the legacy session returns
+items. A generic RPC error is not an auth refusal; an empty legacy list leaves
+the comparison incomplete. If
+both succeed, the server simply has no auth (owned by the unauthenticated-listing rules);
 if both are rejected, the server is secure - neither produces a finding here.
 
 ---
@@ -476,19 +478,16 @@ Serving both eras is spec-compliant and is **not** reported. The finding is the
 asymmetry, confirmed by asking the same read-only listing on each wire with no
 credentials:
 
-- one wire **refused**, the other **answered** => **confirmed** bypass. Direction
+- one wire **refused by authorization**, the other **returned items** => **confirmed** bypass. Direction
   is irrelevant: whichever wire is open is the one that gets used.
-- both answered => neither listing is gated, which is `mcp-resources-unauth-001`
-  or `mcp-tools-unauth-001` territory, so this is suppressed rather than
-  double-counted.
+- one wire refused while the other returned an empty list => incomplete.
+- both answered => no authorization asymmetry is proven, so this rule stays
+  silent. Unauthenticated access is covered by the listing rules.
 - both refused => the gate is applied uniformly (secure).
 - only one era served => nothing to compare (not applicable).
 
-The listing method is chosen per wire from that wire's **own** advertised
-capabilities, since the two need not match: on a server built on the Python SDK
-the handshake reports `experimental, prompts, resources, tools` while
-`server/discover` reports `prompts, resources, tools`. Comparing a method one wire
-does not implement would measure the capability difference rather than the gate.
+Both wires must advertise the **same** listing method. Comparing different
+methods would measure capability differences rather than an authorization gate.
 
 **Scope.** This compares access at the method level on wires that both open
 unauthenticated. A server that gates the handshake itself, so only one wire opens
@@ -906,14 +905,16 @@ the full principal for protected `server/discover` requests.
 
 The rule discovers likely mutating tools but invokes none by default. Approve
 each candidate by exact, case-sensitive name with `--mcp-scope-tool` or
-`mcp_scope_tools`. Approval permits real calls under all three identities;
+`mcp_scope_tools`. This also asserts that the limited principal lacks the scope
+required for that tool; the scanner cannot verify granted scopes independently.
+Approval permits real calls under all three identities;
 generated probe arguments may be accepted and cause side effects.
 Server-supplied `readOnlyHint` does not exclude a tool whose name suggests a write.
 
 Two distinct, differently scoped principals are required. Missing approval or
 credentials reports **not tested**, not clean. A confirmed high finding means
-both authenticated identities reached dispatch while the anonymous call was
-refused.
+both authenticated identities reached dispatch while the anonymous call to
+that same tool was refused. Each approved candidate has its own control.
 
 ---
 
