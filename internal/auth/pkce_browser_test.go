@@ -130,6 +130,7 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	var (
 		seenVerifier string
 		seenCode     string
+		seenResource string
 	)
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +141,7 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 			_ = r.ParseForm()
 			seenCode = r.FormValue("code")
 			seenVerifier = r.FormValue("code_verifier")
+			seenResource = r.FormValue("resource")
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"access_token": fakeAccess,
@@ -178,6 +180,7 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 			ClientID:        "test-client",
 			RedirectPort:    port,
 			Scopes:          []string{"read"},
+			Resource:        "https://mcp.example.com/mcp",
 			OpenBrowser:     false,
 			Logger:          logger,
 			CallbackTimeout: 10 * time.Second,
@@ -214,6 +217,9 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	if got := parsed.Query().Get("response_type"); got != "code" {
 		t.Errorf("expected response_type=code, got %q", got)
 	}
+	if got := parsed.Query().Get("resource"); got != "https://mcp.example.com/mcp" {
+		t.Errorf("authorization resource = %q", got)
+	}
 
 	cb := fmt.Sprintf("http://127.0.0.1:%d/callback?code=%s&state=%s", port, fakeCode, state)
 	resp, err := http.Get(cb)
@@ -244,6 +250,9 @@ func TestPerformPKCEFlow_HappyPath(t *testing.T) {
 	}
 	if seenCode != fakeCode {
 		t.Errorf("token endpoint received code=%q, expected %q", seenCode, fakeCode)
+	}
+	if seenResource != "https://mcp.example.com/mcp" {
+		t.Errorf("token endpoint received resource=%q", seenResource)
 	}
 }
 

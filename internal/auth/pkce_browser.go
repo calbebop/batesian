@@ -44,6 +44,8 @@ type PKCEFlowConfig struct {
 
 	// Audience is the optional API audience identifier (Auth0/Okta-style).
 	Audience string
+	// Resource is the OAuth resource indicator for the target server.
+	Resource string
 
 	// OpenBrowser controls whether the CLI attempts to open the system browser
 	// automatically. When false, the user is expected to manually open the
@@ -142,6 +144,7 @@ func performPKCEFlowWithClient(ctx context.Context, cfg PKCEFlowConfig, tokenCli
 		RedirectURI:  redirectURI,
 		Code:         code,
 		PKCEVerifier: pkce.Verifier,
+		Resource:     cfg.Resource,
 		Timeout:      cfg.Timeout,
 		Proxy:        cfg.Proxy,
 		SkipTLS:      cfg.SkipTLS,
@@ -180,6 +183,9 @@ func buildAuthURL(cfg PKCEFlowConfig, challenge, state, redirectURI string) (str
 	}
 	if cfg.Audience != "" {
 		q.Set("audience", cfg.Audience)
+	}
+	if cfg.Resource != "" {
+		q.Set("resource", cfg.Resource)
 	}
 	parsed.RawQuery = q.Encode()
 	return parsed.String(), nil

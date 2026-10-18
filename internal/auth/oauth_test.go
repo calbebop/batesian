@@ -23,6 +23,10 @@ func TestFetchClientCredentialsToken_Success(t *testing.T) {
 			http.Error(w, "bad client_id", http.StatusUnauthorized)
 			return
 		}
+		if r.FormValue("resource") != "https://mcp.example.com/mcp" {
+			http.Error(w, "bad resource", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "test-access-token",
@@ -38,6 +42,7 @@ func TestFetchClientCredentialsToken_Success(t *testing.T) {
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
 		Scopes:       []string{"read", "write"},
+		Resource:     "https://mcp.example.com/mcp",
 	}, srv.Client())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -47,6 +52,26 @@ func TestFetchClientCredentialsToken_Success(t *testing.T) {
 	}
 	if tok.ExpiresIn != 3600 {
 		t.Errorf("expected expires_in=3600, got %d", tok.ExpiresIn)
+	}
+}
+
+func TestExchangeAuthCode_SendsResource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil || r.FormValue("resource") != "https://mcp.example.com/mcp" {
+			http.Error(w, "bad resource", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"token"}`))
+	}))
+	defer srv.Close()
+
+	_, err := auth.ExchangeAuthCodeWithClient(context.Background(), auth.AuthCodeConfig{
+		TokenURL: srv.URL, ClientID: "client", Code: "code",
+		RedirectURI: "http://127.0.0.1:9876/callback", PKCEVerifier: "verifier",
+		Resource: "https://mcp.example.com/mcp",
+	}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

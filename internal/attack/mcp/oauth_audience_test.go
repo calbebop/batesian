@@ -63,6 +63,7 @@ func initializeOK(w http.ResponseWriter) {
 		"id":      1,
 		"result": map[string]interface{}{
 			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]interface{}{},
 			"serverInfo":      map[string]interface{}{"name": "ok", "version": "1.0"},
 		},
 	})

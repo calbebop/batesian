@@ -247,7 +247,7 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 					// and the role had been rewritten.
 					return nil, incomplete
 				case historyMarkerUnknown:
-					why = "the injected marker was returned with an unrecognized role"
+					why = "the marker appeared with an unrecognized role or unmatched message ID"
 				case historyMarkerAbsent:
 					// historyLength is a maximum, so omission does not prove non-persistence.
 					why = "the returned history did not include the injected marker"
@@ -395,6 +395,7 @@ const (
 // classifyHistoryMarker determines how history stored the injected marker.
 func classifyHistoryMarker(history []interface{}, marker string) historyMarkerState {
 	state := historyMarkerAbsent
+	agentMessage := false
 	for _, item := range history {
 		msg, ok := item.(map[string]interface{})
 		if !ok {
@@ -408,15 +409,23 @@ func classifyHistoryMarker(history []interface{}, marker string) historyMarkerSt
 			continue
 		}
 		switch {
-		case isAgentRole(msg["role"]):
-			return historyMarkerAgent
 		case isUserRole(msg["role"]):
-			if state == historyMarkerAbsent {
-				state = historyMarkerUser
+			state = historyMarkerUser
+		case isAgentRole(msg["role"]):
+			messageID, _ := msg["messageId"].(string)
+			if messageID == marker {
+				agentMessage = true
+			} else if state == historyMarkerAbsent {
+				state = historyMarkerUnknown
 			}
 		default:
-			state = historyMarkerUnknown
+			if state != historyMarkerUser {
+				state = historyMarkerUnknown
+			}
 		}
+	}
+	if state != historyMarkerUser && agentMessage {
+		return historyMarkerAgent
 	}
 	return state
 }

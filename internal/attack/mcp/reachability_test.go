@@ -96,7 +96,7 @@ func TestInitializeSucceeded(t *testing.T) {
 	}{
 		{
 			name: "completed handshake",
-			body: `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"s"}}}`,
+			body: `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"s","version":"1"}}}`,
 			want: true,
 		},
 		{
@@ -116,6 +116,21 @@ func TestInitializeSucceeded(t *testing.T) {
 		{
 			name: "result without a protocolVersion is not a handshake",
 			body: `{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"s"}}}`,
+			want: false,
+		},
+		{
+			name: "bare result is not a handshake",
+			body: `{"result":{"protocolVersion":"x"}}`,
+			want: false,
+		},
+		{
+			name: "wrong response ID is not a handshake",
+			body: `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`,
+			want: false,
+		},
+		{
+			name: "missing server identity is not a handshake",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{}}}`,
 			want: false,
 		},
 		{

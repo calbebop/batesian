@@ -661,7 +661,8 @@ func TestSessionSmuggle_AcceptedButNormalized(t *testing.T) {
 					"status": map[string]string{"state": "working"},
 					"history": []interface{}{
 						// marker preserved but role coerced to user (1)
-						map[string]interface{}{"role": 1, "parts": []interface{}{map[string]string{"text": markerText}}},
+						map[string]interface{}{"role": 1, "messageId": markerText, "parts": []interface{}{map[string]string{"text": markerText}}},
+						map[string]interface{}{"role": 2, "messageId": "reply", "parts": []interface{}{map[string]string{"text": "You said: " + markerText}}},
 					},
 				},
 			})
