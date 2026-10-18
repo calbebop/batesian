@@ -43,35 +43,35 @@ func TestDetectEra(t *testing.T) {
 		{
 			name:   "discover result",
 			status: 200,
-			body:   `{"jsonrpc":"2.0","id":"x","result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}}`,
 			want:   EraModern,
 			why:    "a DiscoverResult can only come from a server implementing the modern discovery RPC",
 		},
 		{
 			name:   "unsupported protocol version",
 			status: 400,
-			body:   `{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"]}}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"]}}}`,
 			want:   EraModern,
 			why:    "-32022 is spec-reserved, so only a modern server emits it",
 		},
 		{
 			name:   "header mismatch",
 			status: 400,
-			body:   `{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Header mismatch"}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","error":{"code":-32020,"message":"Header mismatch"}}`,
 			want:   EraModern,
 			why:    "-32020 is spec-reserved",
 		},
 		{
 			name:   "missing required client capability",
 			status: 400,
-			body:   `{"jsonrpc":"2.0","id":1,"error":{"code":-32021,"message":"Missing capability"}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","error":{"code":-32021,"message":"Missing capability"}}`,
 			want:   EraModern,
 			why:    "-32021 is spec-reserved",
 		},
 		{
 			name:   "unallocated code inside the reserved range",
 			status: 400,
-			body:   `{"jsonrpc":"2.0","id":1,"error":{"code":-32050,"message":"Some future spec error"}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","error":{"code":-32050,"message":"Some future spec error"}}`,
 			want:   EraModern,
 			why:    "detection keys on the reserved range, so a future spec-defined code still reads as modern",
 		},
@@ -116,7 +116,7 @@ func TestDetectEra(t *testing.T) {
 		{
 			name:   "2xx that is not a result envelope",
 			status: 200,
-			body:   `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"nope"}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","error":{"code":-32000,"message":"nope"}}`,
 			want:   EraLegacy,
 			why:    "a 2xx carrying a legacy error is not a DiscoverResult",
 		},
@@ -127,16 +127,37 @@ func TestDetectEra(t *testing.T) {
 			// as a wire it rejects with HTTP 400.
 			name:   "discover result advertising only handshake-era versions",
 			status: 200,
-			body:   `{"jsonrpc":"2.0","id":"x","result":{"resultType":"complete","supportedVersions":["2025-11-25","2025-06-18","2024-11-05"],"capabilities":{}}}`,
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","result":{"resultType":"complete","supportedVersions":["2025-11-25","2025-06-18","2024-11-05"],"capabilities":{}}}`,
 			want:   EraLegacy,
 			why:    "the server names the versions it serves and the modern revision is not among them",
 		},
 		{
 			name:   "discover result carrying no supportedVersions",
 			status: 200,
-			body:   `{"jsonrpc":"2.0","id":"x","result":{"resultType":"complete","capabilities":{}}}`,
-			want:   EraLegacy,
-			why:    "supportedVersions is required on a DiscoverResult, so a reply without it is not one",
+			body:   `{"jsonrpc":"2.0","id":"batesian-era-probe","result":{"resultType":"complete","capabilities":{}}}`,
+			want:   EraUnknown,
+			why:    "supportedVersions is required on a DiscoverResult, so the reply is incomplete",
+		},
+		{
+			name:   "stale modern result",
+			status: 200,
+			body:   `{"jsonrpc":"2.0","id":"stale","result":{"supportedVersions":["2026-07-28"]}}`,
+			want:   EraUnknown,
+			why:    "a result for another request cannot identify this endpoint's era",
+		},
+		{
+			name:   "stale reserved error",
+			status: 400,
+			body:   `{"jsonrpc":"2.0","id":"stale","error":{"code":-32020,"message":"Header mismatch"}}`,
+			want:   EraUnknown,
+			why:    "a reserved error for another request cannot identify this endpoint's era",
+		},
+		{
+			name:   "malformed modern result",
+			status: 200,
+			body:   `{"id":"batesian-era-probe","result":{"supportedVersions":["2026-07-28"]}}`,
+			want:   EraUnknown,
+			why:    "the JSON-RPC envelope is required",
 		},
 	}
 
@@ -336,12 +357,12 @@ func TestDetectEra_ProbeMatchesAModernSessionRequest(t *testing.T) {
 		gotHeaders = r.Header.Clone()
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"batesian-era-probe","result":{}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"batesian-era-probe","result":{"supportedVersions":["2025-06-18"]}}`))
 	}))
 	defer srv.Close()
 
 	if era := detect(t, srv); era != EraLegacy {
-		t.Fatalf("a result that advertises no modern version is legacy, got %v", era)
+		t.Fatalf("a result that advertises only a legacy version is legacy, got %v", era)
 	}
 
 	// What a modern session would have sent for the same call.

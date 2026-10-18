@@ -60,6 +60,10 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 		// covered by the unauth rules, not here.
 		return nil, nil
 	}
+	if legacy.Endpoint != modern.Endpoint {
+		return nil, fmt.Errorf("%w: legacy and modern wires use different endpoints (%s and %s); cannot isolate an era-based authorization difference",
+			attack.ErrInconclusive, legacy.Endpoint, modern.Endpoint)
+	}
 
 	// ONE method, advertised by BOTH wires. Each wire used to choose its own from its
 	// own advertisement, and nothing then required the two to match: a legacy wire

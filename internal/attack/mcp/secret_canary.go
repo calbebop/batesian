@@ -114,7 +114,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	modern := mcpSession{Endpoint: ep, Era: EraModern}
 	discover, discoverErr := modern.post(ctx, client, 4, "server/discover", nil)
 	record(discover, discoverErr, "modern server/discover")
-	if discover != nil && ((discover.IsAccepted() && modernWireAdvertised(discover.Body)) ||
+	if discover != nil && ((classifyAccess(discover, discoverErr, 4) == accessGranted && modernWireAdvertised(discover.Body)) ||
 		(authRefusal(discover) && hasBearerChallenge(discover))) {
 		applicable = true
 	}

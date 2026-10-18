@@ -68,6 +68,11 @@ func matchesRPCID(body map[string]interface{}, expectedID int) bool {
 	return ok && id.String() == strconv.Itoa(expectedID)
 }
 
+func matchesRPCStringID(body map[string]interface{}, expectedID string) bool {
+	id, ok := body["id"].(string)
+	return ok && id == expectedID
+}
+
 func validRPCResult(body map[string]interface{}) bool {
 	if body["jsonrpc"] != "2.0" {
 		return false

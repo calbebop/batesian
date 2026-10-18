@@ -205,6 +205,97 @@ func TestOpenSessions_ModernOnly(t *testing.T) {
 	}
 }
 
+func TestOpenSessions_ModernAtSeparatePath(t *testing.T) {
+	var apiProbes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		modern := r.Header.Get("MCP-Protocol-Version") == modernEraVersion
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/mcp" && !modern && req["method"] == "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18", "serverInfo": map[string]string{"name": "split", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case r.URL.Path == "/mcp" && !modern && req["method"] == "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == "/api" && modern && req["method"] == "server/discover":
+			apiProbes.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"supportedVersions": []string{modernEraVersion},
+					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sessions, err := openSessions(context.Background(), wireClient(), srv.URL)
+	if err != nil || len(sessions) != 2 || sessions[0].Endpoint != srv.URL+"/mcp" || sessions[1].Endpoint != srv.URL+"/api" {
+		t.Fatalf("origin sessions=%+v err=%v; want legacy /mcp and modern /api", sessions, err)
+	}
+	if apiProbes.Load() != 1 {
+		t.Fatalf("modern /api probes=%d, want 1", apiProbes.Load())
+	}
+	findings, err := NewEraDowngradeExecutor(attack.RuleContext{ID: "mcp-era-downgrade-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("different endpoints must not prove an era downgrade: findings=%+v err=%v", findings, err)
+	}
+
+	sessions, err = openSessions(context.Background(), wireClient(), srv.URL+"/mcp")
+	if err != nil || len(sessions) != 1 || sessions[0].Era != EraLegacy {
+		t.Fatalf("explicit endpoint sessions=%+v err=%v; want only legacy /mcp", sessions, err)
+	}
+	if apiProbes.Load() != 2 {
+		t.Fatalf("explicit endpoint crossed into /api: %d probes", apiProbes.Load())
+	}
+}
+
+func TestDiscoverModern_CorrelatesResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		status     int
+		wantModern bool
+		incomplete bool
+	}{
+		{"matching result", `{"jsonrpc":"2.0","id":"batesian-discover","result":{"supportedVersions":["2026-07-28"],"capabilities":{}}}`, 0, true, false},
+		{"legacy version", `{"jsonrpc":"2.0","id":"batesian-discover","result":{"supportedVersions":["2025-06-18"]}}`, 0, false, false},
+		{"method absent", `{"jsonrpc":"2.0","id":"batesian-discover","error":{"code":-32601,"message":"Method not found"}}`, 0, false, false},
+		{"auth error", `{"jsonrpc":"2.0","id":"batesian-discover","error":{"code":-32001,"message":"Unauthorized"}}`, 0, false, true},
+		{"accepted without body", ``, http.StatusAccepted, false, false},
+		{"stale result", `{"jsonrpc":"2.0","id":"stale","result":{"supportedVersions":["2026-07-28"]}}`, 0, false, true},
+		{"numeric id", `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"]}}`, 0, false, true},
+		{"missing jsonrpc", `{"id":"batesian-discover","result":{"supportedVersions":["2026-07-28"]}}`, 0, false, true},
+		{"missing versions", `{"jsonrpc":"2.0","id":"batesian-discover","result":{}}`, 0, false, false},
+		{"trailing response", `{"jsonrpc":"2.0","id":"batesian-discover","result":{"supportedVersions":["2026-07-28"]}} {}`, 0, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			_, ok, err := discoverModern(context.Background(), wireClient(), srv.URL)
+			if ok != tc.wantModern || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("modern=%t err=%v, want modern=%t incomplete=%t", ok, err, tc.wantModern, tc.incomplete)
+			}
+		})
+	}
+}
+
 func TestOpenSessions_AnonymousRejectionDoesNotHideAuthenticatedModernWire(t *testing.T) {
 	var modernProbes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

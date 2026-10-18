@@ -39,9 +39,21 @@ func dnsRebindServer(mode string) *httptest.Server {
 			http.NotFound(w, r)
 			return
 		}
+		var req struct {
+			Method string      `json:"method"`
+			ID     interface{} `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "server/discover" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
+			"jsonrpc": "2.0", "id": req.ID,
 			"result": map[string]interface{}{
 				"protocolVersion": "2025-06-18",
 				"serverInfo":      map[string]interface{}{"name": "rebind-fixture", "version": "1.0"},

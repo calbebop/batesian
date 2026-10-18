@@ -384,7 +384,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 			if u := parseResourceMetadataURL(modernResp.Headers.Get("WWW-Authenticate")); u != "" {
 				return u, true, observed
 			}
-			if modernResp.IsAccepted() && modernWireAdvertised(modernResp.Body) {
+			if classifyAccess(modernResp, modernErr, 1) == accessGranted && modernWireAdvertised(modernResp.Body) {
 				for _, method := range modernAuthMethods {
 					methodResp, methodErr := modern.postShaping(ctx, client, 2, method, nil, func(headers map[string]string) {
 						headers["Authorization"] = ""

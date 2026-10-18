@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -184,20 +185,18 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 
 	legacy, legacyErr := initializeMCP(ctx, client, baseURL)
 
-	// Where to look for a modern wire. A successful handshake already located the
-	// server, so only that endpoint is probed; otherwise every candidate is tried,
-	// which is also the path a modern-only server takes.
 	endpoints := endpointCandidates(baseURL)
 	if legacyErr == nil {
 		legacy.Era = EraLegacy
 		out = append(out, legacy)
-		endpoints = []string{legacy.Endpoint}
+		endpoints = modernDiscoveryEndpoints(baseURL, legacy.Endpoint)
 	}
 
+	var discoveryErr error
 	for _, ep := range endpoints {
 		modern, ok, discoverErr := discoverModern(ctx, client, ep)
-		if discoverErr != nil && len(out) > 0 {
-			return out, discoverErr
+		if discoveryErr == nil {
+			discoveryErr = discoverErr
 		}
 		if ok {
 			out = append(out, modern)
@@ -208,7 +207,23 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 	if len(out) == 0 {
 		return nil, inconclusive(legacyErr)
 	}
-	return out, nil
+	return out, discoveryErr
+}
+
+// A bare origin may host the two wires at different conventional paths. An
+// explicit endpoint is kept narrow so a scan does not cross into sibling APIs.
+func modernDiscoveryEndpoints(baseURL, legacyEndpoint string) []string {
+	u, err := url.Parse(baseURL)
+	if err != nil || strings.Trim(u.Path, "/") != "" {
+		return []string{legacyEndpoint}
+	}
+	endpoints := []string{legacyEndpoint}
+	for _, ep := range endpointCandidates(baseURL) {
+		if ep != legacyEndpoint {
+			endpoints = append(endpoints, ep)
+		}
+	}
+	return endpoints
 }
 
 // discoverModern asks ep for a modern DiscoverResult and builds a session from it.
@@ -235,8 +250,31 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery returned HTTP %d",
 			attack.ErrInconclusive, resp.StatusCode)
 	}
-	if !resp.IsAccepted() || !modernWireAdvertised(resp.Body) {
+	if !resp.IsSuccess() {
 		return mcpSession{}, false, nil
+	}
+	if resp.StatusCode == http.StatusAccepted && len(resp.Body) == 0 {
+		return mcpSession{}, false, nil
+	}
+	body, parsed := parseResponseBody(resp.Body)
+	if !parsed {
+		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery returned an unmatched or invalid JSON-RPC response",
+			attack.ErrInconclusive)
+	}
+	if validRPCError(body) && matchesRPCStringID(body, "batesian-discover") {
+		rpcErr := body["error"].(map[string]interface{})
+		msg, _ := rpcErr["message"].(string)
+		if authFlavoredError(rpcErrorCode(rpcErr["code"]), msg) {
+			return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery rejected authorization",
+				attack.ErrInconclusive)
+		}
+	}
+	if !modernWireAdvertised(resp.Body) {
+		return mcpSession{}, false, nil
+	}
+	if !matchesRPCStringID(body, "batesian-discover") || !validRPCResult(body) {
+		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery returned an unmatched or invalid JSON-RPC response",
+			attack.ErrInconclusive)
 	}
 	return mcpSession{
 		Endpoint:        ep,
