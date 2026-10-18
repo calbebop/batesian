@@ -57,6 +57,9 @@ jobs:
       - name: Test release notes
         run: python3 -m unittest discover -s .github/scripts -p test_release_notes.py
 
+      - name: Test draft release lookup
+        run: python3 -m unittest discover -s .github/scripts -p test_fetch_draft_release.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -206,7 +209,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" |
+          python3 .github/scripts/fetch_draft_release.py "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" |
             python3 .github/scripts/verify_release.py --tag "$GITHUB_REF_NAME" --release-json -
 
       - name: Verify checksum signature
