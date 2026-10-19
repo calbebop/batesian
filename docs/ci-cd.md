@@ -4,9 +4,8 @@ Batesian outputs SARIF, consumed by SARIF tooling (DAST viewers, dashboards) and
 uploadable to GitHub Code Scanning. Note that Batesian findings are network
 targets, not files in the repository, so GitHub surfaces them as alerts without
 source-line annotations (it resolves SARIF locations as repository paths).
-The examples below use the current `main` branch because their coverage gates
-depend on JSON rule outcomes and SARIF invocation metadata. Older releases may
-not include these fields. Pin a reviewed commit or release tag in real CI.
+The examples below pin v1.8.1, which includes JSON rule outcomes and SARIF
+invocation metadata. Update the pin after reviewing a newer release.
 
 SARIF alert messages include a short evidence excerpt. Full evidence and attack
 chain steps are in result properties. When a finding differs from its rule's
@@ -48,7 +47,7 @@ jobs:
           go-version: '1.26.9'
 
       - name: Install Batesian
-        run: go install github.com/calbebop/batesian/cmd/batesian@main
+        run: go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
 
       - name: Run scan (SARIF output)
         run: |
@@ -215,7 +214,7 @@ batesian-scan:
   stage: test
   script:
     - apt-get update && apt-get install -y --no-install-recommends jq
-    - go install github.com/calbebop/batesian/cmd/batesian@main
+    - go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
     - batesian scan --target $AGENT_TARGET_URL --output json > batesian-results.json
     - |
       jq -e '
@@ -238,7 +237,7 @@ batesian-scan:
 ```groovy
 stage('Agent Security Scan') {
     steps {
-        sh 'go install github.com/calbebop/batesian/cmd/batesian@main'
+        sh 'go install github.com/calbebop/batesian/cmd/batesian@v1.8.1'
         sh '''
             batesian scan \
               --target ${AGENT_TARGET_URL} \

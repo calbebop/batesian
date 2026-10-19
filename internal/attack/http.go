@@ -221,10 +221,6 @@ func NewUnauthHTTPClient(opts Options, vars Vars) *HTTPClient {
 
 // NewHTTPClient creates an attack HTTP client.
 func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
-	timeout, err := httpx.TimeoutDuration(opts.TimeoutSeconds)
-	if err != nil {
-		timeout = 10 * time.Second
-	}
 	oauthOrigins := make(map[string]struct{}, len(opts.OAuthOrigins))
 	for _, raw := range opts.OAuthOrigins {
 		if origin, err := normalizeOAuthOrigin(raw); err == nil {
@@ -235,7 +231,7 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		discovery: opts.Discovery,
 		state:     opts.TargetState,
 		inner: &http.Client{
-			Timeout:   timeout,
+			Timeout:   HTTPTimeout(opts),
 			Transport: Transport(opts),
 			// Do not follow redirects. A scanner must see exactly what the
 			// probed endpoint returns: following a 3xx to a login page masks an
@@ -253,6 +249,15 @@ func NewHTTPClient(opts Options, vars Vars) *HTTPClient {
 		targetOrigin: originOf(vars.BaseURL),
 		oauthOrigins: oauthOrigins,
 	}
+}
+
+// HTTPTimeout returns the per-request timeout used by scan clients.
+func HTTPTimeout(opts Options) time.Duration {
+	timeout, err := httpx.TimeoutDuration(opts.TimeoutSeconds)
+	if err != nil {
+		return 10 * time.Second
+	}
+	return timeout
 }
 
 // Response captures an HTTP response for assertion evaluation.

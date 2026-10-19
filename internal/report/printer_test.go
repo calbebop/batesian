@@ -34,6 +34,12 @@ func TestPrintScanSummary_VerboseShowsPrimaryDetails(t *testing.T) {
 			t.Errorf("compact output contains %q:\n%s", want, compact.String())
 		}
 	}
+	if !strings.Contains(compact.String(), "Run with -v for evidence and remediation.") {
+		t.Errorf("compact output lacks details hint:\n%s", compact.String())
+	}
+	if strings.Contains(verbose.String(), "Run with -v") {
+		t.Errorf("verbose output contains details hint:\n%s", verbose.String())
+	}
 }
 
 type failAfterWriter struct {

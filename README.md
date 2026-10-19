@@ -212,7 +212,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
-      - run: go install github.com/calbebop/batesian/cmd/batesian@main
+      - run: go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
       - name: Scan
         env:
           BATESIAN_TOKEN: ${{ secrets.BATESIAN_TOKEN }}
@@ -235,7 +235,7 @@ jobs:
           ' results.sarif
 ```
 
-Pin a reviewed commit or release tag instead of `@main` in real CI. This example uses a manual trigger so credentials are not exposed to pull-request code. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
+Update the pinned release after review. This example uses a manual trigger so credentials are not exposed to pull-request code. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
 
 ## Configuration and rule packs
 

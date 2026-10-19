@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
@@ -74,6 +75,10 @@ func confusedDeputyServer(mode string) *httptest.Server {
 			writeJSON(http.StatusCreated, registration)
 		case r.URL.Path == "/authorize" && r.Method == http.MethodGet:
 			redirectURI := r.URL.Query().Get("redirect_uri")
+			if mode == "authorize-stall" {
+				<-r.Context().Done()
+				return
+			}
 			if mode == "authorize-gateway" {
 				w.WriteHeader(http.StatusBadGateway)
 				return
@@ -192,6 +197,23 @@ func TestConfusedDeputy_UnansweredAuthorizationIsIncomplete(t *testing.T) {
 				t.Fatalf("authorization probe did not finish: findings=%+v err=%v", findings, err)
 			}
 		})
+	}
+}
+
+func TestConfusedDeputy_AuthorizationTimeout(t *testing.T) {
+	ts := confusedDeputyServer("authorize-stall")
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	opts := testOpts()
+	opts.TimeoutSeconds = 1
+	start := time.Now()
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(ctx, ts.URL, opts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("stalled authorization: findings=%+v err=%v", findings, err)
+	}
+	if elapsed := time.Since(start); elapsed >= 3*time.Second {
+		t.Fatalf("authorization exceeded request timeout: %s", elapsed)
 	}
 }
 
