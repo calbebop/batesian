@@ -134,7 +134,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
-| `a2a-push-callback-auth-001` | [Push Notification Without Integrity Token](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
+| `a2a-push-callback-auth-001` | [Push Notification Missing Webhook Authentication](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
 
 ---
 
@@ -172,11 +172,12 @@ Supplying `--oob-url` points the callback at an external collector and emits
 operator guidance for manual confirmation.
 
 Three bindings are driven. On **v1.0** the callback is registered through
-`CreateTaskPushNotificationConfig`, whose params are a `TaskPushNotificationConfig`
-carrying a flat `url`; there is no way to attach one to a send, because
-`SendMessageConfiguration` has no such field. On **v0.3** it travels inline on
-`message/send` under `configuration.pushNotificationConfig`, and is also set
-explicitly with `tasks/pushNotificationConfig/set`. The **HTTP+JSON** binding is
+`CreateTaskPushNotificationConfig` or sent inline as
+`configuration.taskPushNotificationConfig` in `SendMessage`. The inline path can
+catch callbacks from tasks that finish before a separate registration when
+Batesian's local listener can verify delivery. On
+**v0.3** it travels inline under `configuration.pushNotificationConfig` and is
+also set with `tasks/pushNotificationConfig/set`. The **HTTP+JSON** binding is
 driven only when the agent card advertises one, at the URL the card gives: its
 prefix is a deployment choice, so there is no path to fall back on and an agent
 without that interface is not probed for it.
@@ -528,7 +529,8 @@ convention, explicitly permits anonymous access and is not flagged), then sends 
 unauthenticated core request. A first, non-mutating `tasks/get` for a random
 non-existent id records whether the read path is reachable anonymously; the
 definitive confirmation is an unauthenticated `message/send` that returns a task
-result (the created task is then read back unauthenticated to corroborate). A
+result (the created task is then read back unauthenticated to corroborate). The
+rule checks advertised HTTP+JSON interfaces as well as JSON-RPC. A
 **confirmed** finding is raised only on a positive result envelope - never on an
 ambiguous application error - so a server that answers the unauthenticated request
 with HTTP 401/403 produces no finding.
@@ -587,34 +589,13 @@ from the agent card and are pinned to the target origin, not guessed.
 
 ### a2a-push-callback-auth-001
 
-**Push Notification Without Integrity Token** | Severity: High | confirmed | CWE-345
+**Push Notification Missing Webhook Authentication** | Severity: High | confirmed | CWE-345
 
-Tests whether an A2A agent's outgoing push notifications carry anything a
-receiver can use to verify where they came from. The push flow hands the
-agent a webhook URL plus, optionally, a secret token the agent is expected to
-present when it calls (typically as `X-A2A-Notification-Token`). A receiver
-that knows the token can tell genuine completion events from forged ones. An
-agent that accepts the token at registration and then never presents it
-produces notifications with no verifiable provenance: anyone who learns or
-guesses the webhook URL can forge task completions, failures, or injected
-results, indistinguishable from genuine agent output - the notification-side
-enabler of task hijacking.
-
-The registration mechanics are shared with `a2a-push-ssrf-001` across all
-three transport bindings; two things differ. The URL marker routing the
-callback and the integrity token are deliberately different values here,
-because in the SSRF rule they coincide and "the callback arrived" is the same
-string as "the callback was authenticated". And the oracle grades what the
-callback carried rather than that it happened:
-
-1. Callback presents the secret - header or body -> the transport is
-   verifiable, no finding. A held boundary is exactly the pass sought.
-2. Callback arrives WITHOUT it (**confirmed**, high): the agent ignored
-   integrity material it accepted at registration.
-3. No callback within the window -> **not tested**: accepting a config is
-   normal A2A behaviour and says nothing about what callbacks carry.
-4. With an external `--oob-url`, an info indicator names the token so the
-   operator can verify against their own collector.
-
-Like every task-first rule, creation depends on the credential the scan was
-given; a refused creation is not tested naming the refusal.
+Registers a push callback with a generated Bearer credential, then checks a
+task notification for the matching `Authorization` header. The URL marker,
+push token, and Bearer credential are distinct. A missing or mismatched
+credential on an observed task notification is a confirmed finding; no
+callback is inconclusive. The rule tries the same JSON-RPC and HTTP+JSON
+registration paths as `a2a-push-ssrf-001`, including v1.0 inline configuration.
+With an external `--oob-url`, registration is informational and delivery needs
+manual verification. A refused task creation is not tested.
