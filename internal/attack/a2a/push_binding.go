@@ -32,11 +32,11 @@ func (e *PushBindingExecutor) Requires() []attack.ArtifactKind {
 }
 
 func (e *PushBindingExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 
 func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
+	ctx = withTenantRouting(ctx)
 	if len(opts.Principals) == 0 || len(principalHeaders(opts.Principals[0])) == 0 {
 		return nil, fmt.Errorf("%w: an authenticated task owner is required", attack.ErrInconclusive)
 	}
@@ -65,6 +65,28 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if !consumed {
 		incomplete = obs.partialErr()
 	}
+	var registrations []*pushRegistration
+	register := func(set pushSet, callbackURL string) {
+		if !set.accepted {
+			return
+		}
+		version := "0.3.0"
+		if set.v1 {
+			version = "1.0"
+		}
+		registrations = append(registrations, &pushRegistration{
+			endpoint: endpoint, taskID: taskID, configID: set.id,
+			callbackURL: callbackURL, version: version, authHeaders: a.Headers,
+		})
+	}
+	defer func() {
+		for i := len(registrations) - 1; i >= 0; i-- {
+			line := registrations[i].finish(ctx, clientA, opts.TargetState, false)
+			for j := range findings {
+				findings[j].Evidence += "\n" + line
+			}
+		}
+	}()
 
 	// Require a stored owner config before testing access by B.
 	markerURL := "https://batesian-victim-" + vars.RandID + ".example/cb"
@@ -74,6 +96,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if !ownerSet.accepted {
 		return nil, ownerSet.obs.err()
 	}
+	register(ownerSet, markerURL)
 	incomplete = errors.Join(incomplete, ownerSet.partialErr("owner push configuration"))
 	if !e.getPush(ctx, clientA, endpoint, a.Headers, taskID, ownerSet, markerURL, vars.RandID+"-owner") {
 		return nil, attack.ErrInconclusive
@@ -84,6 +107,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	openSet := e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
 		taskID, openURL, "x", "open-"+vars.RandID, vars.RandID)
 	if openSet.accepted {
+		register(openSet, openURL)
 		incomplete = errors.Join(incomplete, openSet.partialErr("anonymous push configuration"))
 		matched, judged := e.getPushOutcome(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open")
 		if matched {
@@ -115,6 +139,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	attackerSet := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
 		taskID, attackerURL, "attacker-tok-"+vars.RandID, "attacker-"+vars.RandID, vars.RandID)
 	if attackerSet.accepted {
+		register(attackerSet, attackerURL)
 		incomplete = errors.Join(incomplete, attackerSet.partialErr("cross-principal push configuration"))
 	}
 	attackerWriteVerified := attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write")

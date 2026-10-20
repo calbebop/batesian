@@ -472,7 +472,10 @@ write, respectively.
 
 The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
 `pushNotificationConfig`. It does not test notification delivery.
-Marker configs on reused tasks are not deleted automatically.
+It attempts to delete each accepted marker after the task owner's readback
+confirms its callback URL. Unconfirmed markers or refused deletions remain in
+the scan report. On single-config servers, a marker can replace an existing
+callback on a reused task; use test tasks for this rule.
 
 ---
 

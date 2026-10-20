@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -19,6 +20,7 @@ type pushRegistration struct {
 	callbackURL string
 	version     string
 	rest        bool
+	authHeaders map[string]string
 }
 
 func newPushRegistration(endpoint, taskID, version, callbackURL string, resp *attack.Response, rest bool) *pushRegistration {
@@ -70,7 +72,7 @@ func (p *pushRegistration) readbackMatches(ctx context.Context, client *attack.H
 	var result []byte
 	if p.rest {
 		getURL := endpointpkg.AppendPath(p.endpoint, "/"+url.PathEscape(p.configID))
-		resp, err = client.GET(ctx, getURL, restVersionHeaders(p.version, nil))
+		resp, err = client.GET(ctx, getURL, restVersionHeaders(p.version, p.authHeaders))
 		if err != nil || resp == nil || !resp.IsSuccess() || !resp.IsJSON() {
 			return false
 		}
@@ -123,7 +125,7 @@ func (p *pushRegistration) delete(ctx context.Context, client *attack.HTTPClient
 	var err error
 	if p.rest {
 		deleteURL := endpointpkg.AppendPath(p.endpoint, "/"+url.PathEscape(p.configID))
-		resp, err = client.DELETE(ctx, deleteURL, restVersionHeaders(p.version, nil))
+		resp, err = client.DELETE(ctx, deleteURL, restVersionHeaders(p.version, p.authHeaders))
 		if err == nil && resp != nil &&
 			(resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent) {
 			return attack.CleanupCompleted, ""
@@ -135,10 +137,14 @@ func (p *pushRegistration) delete(ctx context.Context, client *attack.HTTPClient
 			"jsonrpc": "2.0", "id": requestID, "method": method, "params": params,
 		})
 		if err == nil && resp != nil && resp.IsSuccess() {
-			_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
 			if valid && !hasError {
 				return attack.CleanupCompleted, ""
 			}
+			if valid && hasError {
+				return attack.CleanupAttempted, fmt.Sprintf("delete returned JSON-RPC error %d", code)
+			}
+			return attack.CleanupAttempted, "delete returned an invalid JSON-RPC response"
 		}
 	}
 	switch {
@@ -152,10 +158,17 @@ func (p *pushRegistration) delete(ctx context.Context, client *attack.HTTPClient
 }
 
 func (p *pushRegistration) rpcRequest(v1Method, v03Method string) (string, map[string]string, map[string]string) {
-	if p.version == "0.3.0" {
-		return v03Method, map[string]string{"id": p.taskID, "pushNotificationConfigId": p.configID}, nil
+	headers := make(map[string]string, len(p.authHeaders)+1)
+	for name, value := range p.authHeaders {
+		if !strings.EqualFold(name, "A2A-Version") {
+			headers[name] = value
+		}
 	}
-	return v1Method, map[string]string{"taskId": p.taskID, "id": p.configID}, map[string]string{"A2A-Version": "1.0"}
+	if p.version == "0.3.0" {
+		return v03Method, map[string]string{"id": p.taskID, "pushNotificationConfigId": p.configID}, headers
+	}
+	headers["A2A-Version"] = "1.0"
+	return v1Method, map[string]string{"taskId": p.taskID, "id": p.configID}, headers
 }
 
 func safePushConfigPathID(id string) bool {
