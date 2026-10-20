@@ -91,7 +91,7 @@ The bundled catalogs contain [19 A2A rules](docs/rules-a2a.md) and [29 MCP rules
 
 | Area | Examples |
 | --- | --- |
-| OAuth and token handling | Audience and scope validation, DCR, token replay, metadata SSRF, redirect confusion |
+| OAuth and token handling | Audience and scope validation, DCR, token replay, metadata fetches, redirect confusion |
 | Agent identity and discovery | Agent Card trust, JWS validation, host injection, extension downgrade, extended-card access |
 | Task and tenant isolation | Task IDOR, cross-principal cancellation and enumeration, context fixation, delegation integrity |
 | Push notifications | Callback SSRF, control-plane binding, missing callback authentication |

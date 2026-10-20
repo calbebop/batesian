@@ -89,6 +89,8 @@ type mcpSession struct {
 	// offered version if the server did not echo one. Sent on subsequent
 	// requests via the Mcp-Protocol-Version header.
 	ProtocolVersion string
+	// directProof marks a modern list response validated without discovery.
+	directProof bool
 	// RawInit is the raw JSON body of the server's initialize response, captured
 	// once during the handshake so executors can inspect advertised server
 	// capabilities without issuing a second initialize.

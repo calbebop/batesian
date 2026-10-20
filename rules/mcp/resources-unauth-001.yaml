@@ -2,29 +2,21 @@ id: mcp-resources-unauth-001
 info:
   name: MCP Resources Unauthenticated Read
   author: batesian
-  severity: critical
+  severity: high
   description: |
     Attempts to list and read MCP resources without authentication. The MCP
     protocol exposes resources/list and resources/read endpoints alongside
     tools/list. These resources can contain file system contents, database
     records, environment variables, API keys, or other sensitive data.
 
-    Unlike tool poisoning (which is LLM-mediated), resource disclosure is
-    immediate: the attacker retrieves the data directly without LLM processing.
-    Unauthenticated resource access is functionally equivalent to an open
-    file server on the network.
-
-    Finding severity is graded by demonstrated impact: an unauthenticated
-    resources/list and a readable resource are reported as high; the read finding
-    is escalated to critical only when the returned content matches a credential
-    pattern (AWS/OpenAI/GitHub keys, private keys, JWTs, password/bearer
-    assignments). All findings are ConfirmedExploit (the data was actually
-    retrieved without a token).
+    MCP authorization is optional, so an anonymous list or benign resource
+    read is informational. A read containing a potential credential is a high
+    severity indicator. Pattern matching does not prove the credential is live.
 
   references:
-    - https://modelcontextprotocol.io/docs/concepts/resources
-    - https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control
-    - https://cwe.mitre.org/data/definitions/862.html
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/resources
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
+    - https://cwe.mitre.org/data/definitions/200.html
 
   tags:
     - mcp
@@ -32,15 +24,15 @@ info:
     - authorization
     - disclosure
     - unauthenticated
-    - cwe-862
+    - cwe-200
 
 attack:
   protocol: mcp
   type: mcp-resources-unauth
 
 remediation: |
-  Require authentication for all MCP endpoints including resources/list and
-  resources/read. Apply the principle of least privilege: only expose resources
-  that the authenticated client is explicitly authorized to access. Do not
-  expose file system paths, environment variables, or credential stores as
-  MCP resources in production deployments.
+  Review whether each listed resource is intended to be public. Remove
+  credentials from resource content. For protected resources, enforce access
+  before resources/list and resources/read: use HTTP 401 for missing or invalid
+  bearer tokens and HTTP 403 for insufficient scope. Limit each authenticated
+  client to the resources it is authorized to read.

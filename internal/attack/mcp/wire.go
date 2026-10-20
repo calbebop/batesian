@@ -3,10 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -46,6 +48,8 @@ var nameBearingMethods = map[string]string{
 }
 
 const headerMismatchCode = -32020
+
+var errModernDiscoveryDenied = errors.New("modern MCP discovery denied")
 
 // request builds the headers and body this session's era requires for one call.
 // It is split out of post so postShaping can reshape the headers without
@@ -185,7 +189,7 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 
 	legacy, legacyErr := initializeMCP(ctx, client, baseURL)
 
-	endpoints := endpointCandidates(baseURL)
+	endpoints := modernDiscoveryEndpoints(baseURL, "")
 	if legacyErr == nil {
 		legacy.Era = EraLegacy
 		out = append(out, legacy)
@@ -195,9 +199,7 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 	var discoveryErr error
 	for _, ep := range endpoints {
 		modern, ok, discoverErr := discoverModern(ctx, client, ep)
-		if discoveryErr == nil {
-			discoveryErr = discoverErr
-		}
+		discoveryErr = errors.Join(discoveryErr, discoverErr)
 		if ok {
 			out = append(out, modern)
 			break
@@ -205,6 +207,9 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 	}
 
 	if len(out) == 0 {
+		if errors.Is(discoveryErr, errModernDiscoveryDenied) {
+			return nil, errors.Join(inconclusive(legacyErr), discoveryErr)
+		}
 		return nil, inconclusive(legacyErr)
 	}
 	return out, discoveryErr
@@ -213,6 +218,13 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 // A bare origin may host the two wires at different conventional paths. An
 // explicit endpoint is kept narrow so a scan does not cross into sibling APIs.
 func modernDiscoveryEndpoints(baseURL, legacyEndpoint string) []string {
+	if legacyEndpoint == "" {
+		candidates := endpointCandidates(baseURL)
+		if len(candidates) == 0 {
+			return nil
+		}
+		legacyEndpoint = candidates[0]
+	}
 	u, err := url.Parse(baseURL)
 	if err != nil || strings.Trim(u.Path, "/") != "" {
 		return []string{legacyEndpoint}
@@ -244,8 +256,11 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 	if err != nil || resp == nil {
 		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery did not answer", attack.ErrInconclusive)
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
-		resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return mcpSession{}, false, fmt.Errorf("%w: %w: modern MCP discovery returned HTTP %d",
+			attack.ErrInconclusive, errModernDiscoveryDenied, resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
 		resp.StatusCode >= http.StatusInternalServerError {
 		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery returned HTTP %d",
 			attack.ErrInconclusive, resp.StatusCode)
@@ -265,8 +280,8 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 		rpcErr := body["error"].(map[string]interface{})
 		msg, _ := rpcErr["message"].(string)
 		if authFlavoredError(rpcErrorCode(rpcErr["code"]), msg) {
-			return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery rejected authorization",
-				attack.ErrInconclusive)
+			return mcpSession{}, false, fmt.Errorf("%w: %w: modern MCP discovery rejected authorization",
+				attack.ErrInconclusive, errModernDiscoveryDenied)
 		}
 	}
 	if !modernWireAdvertised(resp.Body) {
@@ -298,6 +313,75 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
 	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	sessions, sessionErr := openSessions(ctx, client, baseURL)
+	return runOnSessions(sessions, sessionErr, baseURL, probe)
+}
+
+// runOnEachWireWithDirect tries a read-only modern list after discovery denies
+// anonymous access. Modern-only result fields distinguish MCP from a generic
+// JSON-RPC service; an unrecognized reply stays inconclusive.
+func runOnEachWireWithDirect(ctx context.Context, client *attack.HTTPClient, baseURL, method, field string,
+	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
+	sessions, sessionErr := openSessions(ctx, client, baseURL)
+	modernSeen := false
+	legacyEndpoint := ""
+	for _, session := range sessions {
+		if session.Era == EraModern {
+			modernSeen = true
+		} else {
+			legacyEndpoint = session.Endpoint
+		}
+	}
+	if !modernSeen && errors.Is(sessionErr, errModernDiscoveryDenied) {
+		endpoints := modernDiscoveryEndpoints(baseURL, "")
+		if legacyEndpoint != "" {
+			endpoints = modernDiscoveryEndpoints(baseURL, legacyEndpoint)
+		}
+		for _, ep := range endpoints {
+			_, _, discoverErr := discoverModern(ctx, client, ep)
+			if !errors.Is(discoverErr, errModernDiscoveryDenied) {
+				continue
+			}
+			if modern, ok := directModernList(ctx, client, ep, method, field); ok {
+				sessions = append(sessions, modern)
+				sessionErr = nil
+				break
+			}
+		}
+	}
+	return runOnSessions(sessions, sessionErr, baseURL, probe)
+}
+
+func directModernList(ctx context.Context, client *attack.HTTPClient, endpoint, method, field string) (mcpSession, bool) {
+	session := mcpSession{Endpoint: endpoint, Era: EraModern, ProtocolVersion: modernEraVersion}
+	resp, err := session.post(ctx, client, 2, method, nil)
+	verdict, body := classifyProbe(resp, err, 2)
+	if verdict != probeAnswered || !validRPCResult(body) {
+		return mcpSession{}, false
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok || result["resultType"] != "complete" {
+		return mcpSession{}, false
+	}
+	if _, ok := result[field].([]interface{}); !ok {
+		return mcpSession{}, false
+	}
+	ttl, ok := result["ttlMs"].(json.Number)
+	if !ok {
+		return mcpSession{}, false
+	}
+	millis, err := strconv.ParseInt(ttl.String(), 10, 64)
+	if err != nil || millis < 0 {
+		return mcpSession{}, false
+	}
+	if result["cacheScope"] != "public" && result["cacheScope"] != "private" {
+		return mcpSession{}, false
+	}
+	session.directProof = true
+	return session, true
+}
+
+func runOnSessions(sessions []mcpSession, sessionErr error, baseURL string,
+	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	if len(sessions) == 0 {
 		return nil, sessionErr
 	}
@@ -333,19 +417,3 @@ func labelEra(session mcpSession, findings []attack.Finding) []attack.Finding {
 	}
 	return findings
 }
-
-// What a 2026-07-28 result looks like, since the rules here read them.
-//
-// Every result carries resultType ("complete", or "input_required" for an interim
-// multi-round-trip reply), and SHOULD carry _meta with
-// io.modelcontextprotocol/serverInfo. The results of server/discover, tools/list,
-// prompts/list, resources/list, resources/templates/list and resources/read
-// additionally carry ttlMs and cacheScope when resultType is "complete"; a
-// tools/call result does not.
-//
-// None of that needs unwrapping. The envelope fields are SIBLINGS of the payload
-// fields, not a wrapper around them: a tools/list result still has tools at the top
-// level of result. So the rules here, which all read a named field, are unaffected,
-// and a helper that stripped the envelope keys had no caller for exactly that
-// reason. It is recorded rather than kept, because dead code reads as a supported
-// capability.

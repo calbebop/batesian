@@ -108,8 +108,10 @@ wire: `mcp-resources-unauth-001`, `mcp-tools-unauth-001`,
 be gated alike: a server can enforce authorization on one and not the other.
 
 Three of those four read the advertised capability per wire, so a surface the server
-exposes on only one era is probed only there. The tools rule only lists tools;
-the prompt and completion rules also probe `prompts/get` and
+exposes on only one era is probed only there. If modern discovery denies anonymous
+access, the tools and resources rules also try their read-only list methods directly;
+only a correlated response with modern result fields establishes that wire. The tools
+rule only lists tools; the prompt and completion rules also probe `prompts/get` and
 `completion/complete`.
 `mcp-resources-unauth-001` deliberately does not gate, on either wire. A non-empty
 `resources/list` answered without a credential is direct evidence of the disclosure,
@@ -142,19 +144,20 @@ clean.
 A target that names a path is probed there. For a bare origin, legacy handshake
 discovery tries `/mcp`, `/`, `/api` and `/rpc` in order and stops at the first
 MCP endpoint. Modern-capable rules also check those paths with `server/discover`
-until they find a modern wire, since it may be mounted separately. They do not
-send attack probes to sibling paths that fail discovery. An explicit endpoint
-keeps modern discovery on that endpoint. If neither wire is usable, the rule
-reports that it could not test.
+until they find a modern wire, since it may be mounted separately. The two
+anonymous list rules can probe a path whose modern discovery denies access, but
+only a modern-shaped list response establishes that wire. After endpoint detection,
+an explicit path keeps modern discovery and this fallback on that path. If neither
+wire is usable, the rule reports that it could not test.
 
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `mcp-oauth-dcr-001` | [OAuth DCR Scope Escalation](#mcp-oauth-dcr-001) | High | indicator | CWE-284 |
 | `mcp-oauth-audience-002` | [OAuth Audience Matching Bug Probes](#mcp-oauth-audience-002) | High | confirmed / indicator | CWE-863 |
 | `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High / Critical | confirmed | CWE-294 |
-| `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | High / Critical | confirmed | CWE-862 |
+| `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | Info / High | indicator | CWE-200 |
 | `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | High / Medium | confirmed | CWE-862 |
-| `mcp-tools-unauth-001` | [Tools Listed Without Authentication](#mcp-tools-unauth-001) | Medium | confirmed | CWE-862 |
+| `mcp-tools-unauth-001` | [Tools Listed Without Authentication](#mcp-tools-unauth-001) | Info | indicator | - |
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | High / Medium | confirmed / indicator | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed / indicator | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
@@ -164,7 +167,7 @@ reports that it could not test.
 | `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
 | `mcp-param-header-mismatch-001` | [Annotated Parameter Header/Body Mismatch](#mcp-param-header-mismatch-001) | Medium | indicator | CWE-436 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
-| `mcp-oauth-metadata-ssrf-001` | [OAuth Discovery / Metadata-Fetch SSRF](#mcp-oauth-metadata-ssrf-001) | High | confirmed / indicator | CWE-918 |
+| `mcp-oauth-metadata-ssrf-001` | [OAuth DCR Metadata Fetch](#mcp-oauth-metadata-ssrf-001) | Info / High | indicator / confirmed | CWE-918 |
 | `mcp-secret-canary-001` | [Credential Canary Reflected in Responses](#mcp-secret-canary-001) | Medium | confirmed | CWE-522 |
 | `mcp-confused-deputy-001` | [OAuth Confused Deputy via redirect_uri](#mcp-confused-deputy-001) | High / Medium | confirmed / indicator | CWE-441 |
 | `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
@@ -285,23 +288,20 @@ Audience-matching bugs on signature-valid tokens are isolated by
 
 ### mcp-resources-unauth-001
 
-**Unauthenticated Resource Read** | Severity: High / Critical | CWE-862
+**Unauthenticated Resource Read** | Severity: Info / High | indicator | CWE-200
 
-Sends `resources/list` and `resources/read` with no credentials. Unlike
-LLM-mediated tool issues, resource disclosure is immediate - the attacker
-retrieves data directly. All findings are **confirmed** (the data was actually
-returned without a token). Severity is **impact-graded**: an unauthenticated list
-and a readable resource are **high**; the read is escalated to **critical** only
-when the returned content matches a credential pattern (AWS/OpenAI/GitHub keys,
-private keys, JWTs, password assignments, `Authorization: Bearer <token>` headers,
-credentials in a URI userinfo section such as `postgresql://user:pass@host/db`),
-and the matched pattern is cited in the evidence.
+Sends `resources/list` and `resources/read` with no credentials. MCP permits
+public resources, so a non-empty list or benign read is **informational**. A read
+containing a potential credential pattern is a **high indicator**, not proof that
+the credential is live. Patterns include AWS/OpenAI/GitHub keys, private keys,
+JWTs, password assignments, bearer headers, and URI userinfo credentials. The
+matched pattern is cited without copying resource content into the finding.
 
 Up to five resources are read, stopping at the first one that matches, and the
 finding reports that resource. Reading only the first would leave the severity to
 the server's list order, so a deployment that lists a public README ahead of its
-database credentials would be graded high. The evidence states how many resources
-were examined against how many were listed, so a run that stopped at the bound is
+database credentials could hide the concerning content. The evidence states how many
+resources were examined against how many were listed, so a run that stopped at the bound is
 distinguishable from one that saw everything.
 
 ---
@@ -326,16 +326,15 @@ disclosure remains in the findings.
 
 ### mcp-tools-unauth-001
 
-**Tools Listed Without Authentication** | Severity: Medium | CWE-862
+**Tools Listed Without Authentication** | Severity: Info | indicator
 
-Tools are the primary MCP attack surface: a tool is a server-side function a
-caller can invoke, not just data or a template. The tools capability is confirmed
-structurally from the captured `initialize` or `server/discover` result. The rule
-confirms an unauthenticated `tools/list` disclosure of tool names and metadata
-(**medium**). It sends no `tools/call`, so invocation
-authorization remains untested. An unknown name is not guaranteed harmless on a
-server under test, and a generic error does not prove a listed tool was callable.
-A server that requires auth or does not advertise tools produces no finding.
+The rule reports tool names and metadata returned by anonymous `tools/list` as
+**informational**. Public catalogs can be intentional. It never sends
+`tools/call`, so invocation authorization remains untested. Normally the tools
+capability is confirmed from `initialize` or `server/discover`; when anonymous
+modern discovery is denied, a modern-shaped direct list response can establish
+the wire instead. An unknown name is not guaranteed harmless on a server under
+test. A protected list produces no finding.
 
 ---
 
@@ -629,20 +628,19 @@ revision removed this resumability mechanism.
 
 ### mcp-oauth-metadata-ssrf-001
 
-**OAuth Discovery / Metadata-Fetch SSRF** | Severity: High | CWE-918
+**OAuth DCR Metadata Fetch** | Severity: Info / High | indicator / confirmed | CWE-918
 
 RFC 7591 dynamic client registration lets a registrant supply URL-valued metadata
 (`jwks_uri`, `sector_identifier_uri`, `logo_uri`, `client_uri`, `policy_uri`,
-`tos_uri`). Some authorization servers fetch these server-side at registration to
-validate or render them; without an allow-list, a registrant can point them at
-internal services or cloud metadata endpoints - SSRF in the OAuth discovery chain.
-This complements `mcp-oauth-dcr-001` (scope escalation), which does not test the
-fetch surface. The check is **OOB-confirmed**: it discovers the registration
-endpoint, sends an unauthenticated registration whose URL fields all point at the
-Batesian OOB listener (each with a unique marker path), and raises a **confirmed**
-finding only when the listener receives an inbound request - the marker path names
-which field was fetched. With an external `--oob-url`, registration acceptance is
-reported as an **indicator** for the operator to confirm via their collaborator.
+`tos_uri`). The rule seeds field-specific OOB URLs in a registration and records
+which one the server fetches. It checks for a callback even when registration
+returns HTTP 400, since validation may fetch metadata before rejecting a client.
+A public-address callback proves a fetch, not access to private addresses or
+response contents, so it is an **informational indicator**. A callback to the
+local listener's private address confirms a request to that address and is
+**high/confirmed**, but does not establish access to other hosts or response
+contents. With external `--oob-url`, acceptance without an observed callback
+remains a manual-verification indicator.
 
 ---
 
@@ -1010,9 +1008,9 @@ inspected; findings shared by both are reported once.
 Reads the identity a target publishes in its handshake - `serverInfo` on the
 legacy initialize result, the same block under `result._meta` on the 2026-07-
 28 discover result - and matches it against documented advisories for MCP
-components with published vulnerabilities. Every Tier-1 SDK and most product
-servers state who they are, which is exactly what an attacker needs to pick
-the right exploit; it is also what a scanner can check.
+components with published vulnerabilities. The reported version is a lead, not
+proof that an affected code path is reachable. When `--token` is supplied, this
+read-only inventory uses it for protected discovery.
 
 The advisory table is deliberately short, and closed: only products whose
 patched version is published and unambiguous carry an entry, each with its

@@ -182,15 +182,15 @@ silently reduce the selected set.
 
 Set these in **Settings > Secrets and variables > Actions**.
 
-## OOB / SSRF detection in CI
+## OOB callbacks in CI
 
-The push-notification SSRF rule (`a2a-push-ssrf-001`) and the OAuth metadata
-SSRF rule (`mcp-oauth-metadata-ssrf-001`) confirm findings via an out-of-band
-callback. Each rule starts a local HTTP listener automatically for the run, so
-no extra flag is needed:
+The push-notification SSRF rule (`a2a-push-ssrf-001`) and OAuth metadata-fetch
+rule (`mcp-oauth-metadata-ssrf-001`) use out-of-band callbacks. A public-address
+OAuth callback confirms a metadata fetch, not private-network access. Each rule
+starts a local HTTP listener automatically, so no extra flag is needed:
 
 ```yaml
-      - name: Run scan (OOB SSRF detection is automatic)
+      - name: Run scan (local OOB listeners)
         run: |
           batesian scan \
             --target ${{ vars.AGENT_TARGET_URL }} \

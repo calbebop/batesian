@@ -26,7 +26,8 @@ info:
     Every finding is an INDICATOR. The version is self-reported and trivially
     spoofed, and matching a range does not prove the vulnerable code path is
     reachable from this surface. Each finding names its advisories so the
-    operator verifies against the actual patch.
+    operator verifies against the actual patch. A supplied bearer token is used
+    for read-only inventory when the endpoint is protected.
 
     A name that matches a table entry but reports an unparseable version is a
     low indicator: neither clean nor vulnerable can be claimed from what the

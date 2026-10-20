@@ -93,8 +93,8 @@ func TestToolsUnauth_ToolsExposed(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one list finding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("expected a confirmed medium list finding, got %+v", findings[0])
+	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("expected an informational catalog finding, got %+v", findings[0])
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("scanner sent %d tools/call request(s)", calls.Load())
@@ -189,8 +189,8 @@ func TestToolsUnauth_FollowsEmptyCursor(t *testing.T) {
 	if len(findings) != 1 || !followed.Load() {
 		t.Fatalf("expected a finding for the later tool, got findings=%+v followed=%t", findings, followed.Load())
 	}
-	if findings[0].Confidence != attack.ConfirmedExploit {
-		t.Fatalf("expected a confirmed finding, got %+v", findings[0])
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Fatalf("expected an informational finding, got %+v", findings[0])
 	}
 }
 

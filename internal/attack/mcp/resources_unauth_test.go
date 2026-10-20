@@ -18,8 +18,8 @@ func resourcesRC() attack.RuleContext {
 	return attack.RuleContext{
 		ID:          "mcp-resources-unauth-001",
 		Name:        "MCP Resources Unauthenticated Read",
-		Severity:    "critical",
-		Remediation: "Require authentication on all MCP endpoints.",
+		Severity:    "high",
+		Remediation: "Protect resources that are not intended to be public.",
 	}
 }
 
@@ -132,8 +132,7 @@ func TestResourcesUnauth_Vulnerable(t *testing.T) {
 		{"uri": "config://database", "name": "DB Config", "mimeType": "text/plain"},
 		{"uri": "config://app", "name": "App Config", "mimeType": "text/plain"},
 	}
-	// Benign content with no detectable secret: the read is still a finding but
-	// graded "high", not escalated to critical.
+	// Benign public content is an observation, not a vulnerability.
 	content := "Welcome to the public configuration overview page."
 
 	ts := mcpResourcesServer(t, resources, content)
@@ -147,13 +146,13 @@ func TestResourcesUnauth_Vulnerable(t *testing.T) {
 	if len(findings) < 2 {
 		t.Fatalf("expected at least 2 findings (list + read), got %d", len(findings))
 	}
-	// Without a detected secret, no finding should be critical.
+	// Neither the list nor the benign read establishes a protection failure.
 	for _, f := range findings {
-		if f.Severity != "high" {
-			t.Errorf("finding %q: want high severity for non-secret content, got %q", f.Title, f.Severity)
+		if f.Severity != "info" {
+			t.Errorf("finding %q: want info severity for public content, got %q", f.Title, f.Severity)
 		}
-		if f.Confidence != attack.ConfirmedExploit {
-			t.Errorf("finding %q: want ConfirmedExploit, got %q", f.Title, f.Confidence)
+		if f.Confidence != attack.RiskIndicator {
+			t.Errorf("finding %q: want RiskIndicator, got %q", f.Title, f.Confidence)
 		}
 		if strings.Contains(f.Evidence+f.Description, content) {
 			t.Errorf("finding exposed resource content: %+v", f)
@@ -180,18 +179,21 @@ func TestResourcesUnauth_CredentialInContent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Credential detection should escalate the read finding to critical.
-	hasCritical := false
+	// A matched pattern raises concern but does not prove the credential is live.
+	hasSensitive := false
 	for _, f := range findings {
-		if f.Severity == "critical" {
-			hasCritical = true
+		if f.Severity == "high" {
+			hasSensitive = true
+			if f.Confidence != attack.RiskIndicator {
+				t.Errorf("potential credential should remain an indicator: %+v", f)
+			}
 			if !strings.Contains(f.Evidence, "AKIA") && !strings.Contains(f.Description, "Credential pattern") {
-				t.Errorf("critical finding should cite the matched credential pattern: %q", f.Title)
+				t.Errorf("high finding should cite the matched credential pattern: %q", f.Title)
 			}
 		}
 	}
-	if !hasCritical {
-		t.Errorf("expected a critical finding when content contains an AWS key, got: %v", findings)
+	if !hasSensitive {
+		t.Errorf("expected a high indicator for credential-shaped content, got: %v", findings)
 	}
 }
 
