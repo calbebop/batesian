@@ -401,6 +401,9 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) error {
 			printKey(key)
 		}
 	}
+	if !p.verbose {
+		fmt.Fprintln(p.w, Dim("Run with -v for evidence and remediation."))
+	}
 
 	p.printSkipsAndErrors(results)
 	p.printTargetObjects(results)

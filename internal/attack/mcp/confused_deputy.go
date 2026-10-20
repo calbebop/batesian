@@ -244,6 +244,7 @@ func authorizeRedirectProbe(ctx context.Context, guard *attack.HTTPClient, opts 
 	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
 
 	hc := &http.Client{
+		Timeout:   attack.HTTPTimeout(opts),
 		Transport: attack.Transport(opts),
 		// Do not follow redirects: we need the first response's Location header.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

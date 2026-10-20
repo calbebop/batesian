@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
@@ -54,6 +55,7 @@ const (
 	logProbeFlooded
 	logProbeWrongID
 	logProbeRPCError
+	logStreamStall
 )
 
 // logOptInServer serves the 2026-07-28 wire only, so the rule's era gate is exercised
@@ -135,6 +137,13 @@ func logOptInServer(t *testing.T, mode logMode, sawOptIn *[]bool) *httptest.Serv
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
+		if mode == logStreamStall {
+			if flusher != nil {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+			return
+		}
 		if mode == logDecoy {
 			// A progress notification, not a log one, mentioning a level.
 			decoy, _ := json.Marshal(map[string]interface{}{
@@ -203,6 +212,23 @@ func runLogOptIn(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 	t.Helper()
 	return mcpattack.NewLogOptInExecutor(logOptInRC()).
 		Execute(context.Background(), ts.URL, testOpts())
+}
+
+func TestLogOptIn_StreamTimeout(t *testing.T) {
+	ts := logOptInServer(t, logStreamStall, nil)
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	opts := testOpts()
+	opts.TimeoutSeconds = 1
+	start := time.Now()
+	findings, err := mcpattack.NewLogOptInExecutor(logOptInRC()).Execute(ctx, ts.URL, opts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("stalled log stream: findings=%+v err=%v", findings, err)
+	}
+	if elapsed := time.Since(start); elapsed >= 3*time.Second {
+		t.Fatalf("log stream exceeded request timeout: %s", elapsed)
+	}
 }
 
 // The finding: log frames arrive for a request that carried no logLevel, and the

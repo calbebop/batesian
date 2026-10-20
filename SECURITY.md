@@ -15,7 +15,7 @@ You can expect an acknowledgment within 48 hours and a resolution timeline withi
 
 In scope: the Batesian CLI, rule engine, and bundled attack rules.
 
-Out of scope: vulnerabilities in third-party dependencies (report those to the upstream project), and findings from running Batesian against systems you do not own or have explicit permission to test.
+Dependency vulnerabilities that affect Batesian are in scope; we will coordinate with the upstream project where appropriate. Unrelated dependency issues and findings from testing systems without authorization are out of scope.
 
 ## Responsible use
 

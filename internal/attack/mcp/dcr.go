@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -123,7 +124,9 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 	}
 
 	out.status = attack.CleanupAttempted
-	resp, err := client.DELETEOAuth(ctx, clientURI, map[string]string{
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	resp, err := client.DELETEOAuth(cleanupCtx, clientURI, map[string]string{
 		"Authorization": "Bearer " + accessToken,
 	})
 	if err != nil {

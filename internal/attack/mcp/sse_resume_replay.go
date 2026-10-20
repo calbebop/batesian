@@ -261,6 +261,7 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 
 func rawSSEClient(opts attack.Options) *http.Client {
 	return &http.Client{
+		Timeout:   attack.HTTPTimeout(opts),
 		Transport: attack.Transport(opts),
 		// Match the shared scan client: do not follow redirects. The SSE GET
 		// must hit the stream endpoint the rule selected, not whatever a 3xx
