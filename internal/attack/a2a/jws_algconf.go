@@ -59,13 +59,12 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		return nil, fmt.Errorf("%w: the agent card at %s is not a JSON object, so its JWS "+
 			"signatures could not be analysed", attack.ErrInconclusive, cardURL)
 	}
-	name, _ := card["name"].(string)
-	if strings.TrimSpace(name) == "" {
+	if _, ok := card["name"].(string); !ok {
 		return nil, fmt.Errorf("%w: the agent card at %s has no valid name",
 			attack.ErrInconclusive, cardURL)
 	}
 
-	agentHost := hostOnly(vars.BaseURL)
+	agentHost := hostnameOnly(vars.BaseURL)
 
 	var sigsRaw []interface{}
 	if raw, present := card["signatures"]; present {
@@ -162,25 +161,28 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 			})
 		}
 
-		// Check 4: jku in protected header but pointing cross-domain
-		if jku != "" && agentHost != "" {
-			jkuHost := hostOnly(jku)
-			if jkuHost != "" && jkuHost != agentHost {
+		// Check 4: review cross-host key sources; require HTTPS.
+		if jku != "" {
+			jkuURL, _ := url.Parse(jku)
+			jkuHost := hostnameOnly(jku)
+			if jkuURL != nil && strings.EqualFold(jkuURL.Scheme, "https") &&
+				agentHost != "" && jkuHost != "" && !strings.EqualFold(jkuHost, agentHost) {
 				findings = append(findings, attack.Finding{
 					RuleID:     e.rule.ID,
 					RuleName:   e.rule.Name,
-					Severity:   "medium",
+					Severity:   "info",
 					Confidence: attack.RiskIndicator,
-					Title:      fmt.Sprintf("A2A agent card signatures[%d] jku points to external domain %s", i, jkuHost),
-					Description: fmt.Sprintf("The jku field (%s) references a JWKS on a different domain than the agent (%s). "+
-						"If the external domain is compromised, attackers can replace the keys and forge cards "+
-						"that pass verification.", jku, agentHost),
-					Evidence:    fmt.Sprintf("agent host: %s, jku host: %s", agentHost, jkuHost),
-					Remediation: e.rule.Remediation,
-					TargetURL:   cardURL,
+					Title:      fmt.Sprintf("A2A agent card signatures[%d] uses a cross-host JWS key source", i),
+					Description: "The protected jku points to a different host than the agent. " +
+						"This is allowed by A2A and can be intentional; the scanner cannot establish " +
+						"whether the key source is trusted by clients.",
+					Evidence: fmt.Sprintf("agent host: %s, jku host: %s", agentHost, jkuHost),
+					Remediation: "Confirm that clients trust this JWKS host and bind its keys to the expected agent. " +
+						"Do not accept arbitrary jku values from untrusted cards.",
+					TargetURL: cardURL,
 				})
 			}
-			if strings.HasPrefix(jku, "http://") {
+			if jkuURL != nil && strings.EqualFold(jkuURL.Scheme, "http") {
 				findings = append(findings, attack.Finding{
 					RuleID:     e.rule.ID,
 					RuleName:   e.rule.Name,
@@ -202,15 +204,16 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				findings = append(findings, attack.Finding{
 					RuleID:     e.rule.ID,
 					RuleName:   e.rule.Name,
-					Severity:   "high",
+					Severity:   "medium",
 					Confidence: attack.RiskIndicator,
-					Title:      fmt.Sprintf("A2A agent card signatures[%d] jku is in unprotected header", i),
-					Description: "The jku field is in the unprotected JWS header, which is NOT covered by " +
-						"the signature. An attacker can modify this field in transit to redirect key lookup " +
-						"to an attacker-controlled JWKS endpoint without invalidating the signature.",
-					Evidence:    fmt.Sprintf("header.jku: %s (unprotected, not covered by signature)", unprotectedJKU),
-					Remediation: e.rule.Remediation,
-					TargetURL:   cardURL,
+					Title:      fmt.Sprintf("A2A agent card signatures[%d] has an unprotected jku", i),
+					Description: "The jku field is outside signature coverage. This is risky if clients " +
+						"use it to choose a trusted key source without independently binding the key to the agent. " +
+						"The scanner cannot determine the verifier's trust policy.",
+					Evidence: fmt.Sprintf("header.jku: %s (unprotected, not covered by signature)", unprotectedJKU),
+					Remediation: "Put jku in the protected header, or ensure clients pin the expected " +
+						"key source and reject untrusted key URLs.",
+					TargetURL: cardURL,
 				})
 			}
 		}
@@ -281,11 +284,10 @@ func parseCardSignature(raw interface{}) (cardSignature, bool) {
 	}, true
 }
 
-// hostOnly returns the host component of a URL (host:port or just host).
-func hostOnly(rawURL string) string {
+func hostnameOnly(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
 	}
-	return u.Host
+	return u.Hostname()
 }

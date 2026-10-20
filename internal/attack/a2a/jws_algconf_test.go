@@ -122,6 +122,56 @@ func TestJWSAlgConfExecutor_WellFormedSignature(t *testing.T) {
 	}
 }
 
+func TestJWSAlgConfExecutor_KeySourceAssessment(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		protectedJKU   string
+		unprotectedJKU string
+		wantSeverity   string
+	}{
+		{"cross-host HTTPS", "https://keys.example/jwks.json", "", "info"},
+		{"cross-host HTTP", "http://keys.example/jwks.json", "", "high"},
+		{"same host different port", "https://127.0.0.1:9443/jwks.json", "", ""},
+		{"plaintext HTTP", "http://127.0.0.1/jwks.json", "", "high"},
+		{"unprotected key URL", "", "https://keys.example/jwks.json", "medium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			header := map[string]interface{}{"alg": "ES256", "kid": "key-1"}
+			if tc.protectedJKU != "" {
+				header["jku"] = tc.protectedJKU
+			}
+			signature := map[string]interface{}{
+				"protected": buildProtectedHeader(header),
+				"signature": "c2ln",
+			}
+			if tc.unprotectedJKU != "" {
+				signature["header"] = map[string]interface{}{"jku": tc.unprotectedJKU}
+			}
+			card := map[string]interface{}{
+				"name": "", "signatures": []interface{}{signature},
+			}
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, card)
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantSeverity == "" {
+				if len(findings) != 0 {
+					t.Fatalf("unexpected findings: %+v", findings)
+				}
+				return
+			}
+			if len(findings) != 1 || findings[0].Severity != tc.wantSeverity {
+				t.Fatalf("findings = %+v, want one %s finding", findings, tc.wantSeverity)
+			}
+		})
+	}
+}
+
 // TestJWSAlgConfExecutor_NoSignatures verifies that a card advertising
 // supportsAuthenticatedExtendedCard without any JWS signatures produces an
 // info-level finding.

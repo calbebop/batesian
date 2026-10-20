@@ -77,7 +77,7 @@ func ValidateAgentCard(body []byte) error {
 		return fmt.Errorf("invalid Agent Card JSON")
 	}
 	for _, key := range []string{"name", "description", "version"} {
-		if _, err := requiredCardString(fields, key); err != nil {
+		if _, err := presentCardString(fields, key); err != nil {
 			return err
 		}
 	}
@@ -89,16 +89,17 @@ func ValidateAgentCard(body []byte) error {
 		if err := json.Unmarshal(raw, &provider); err != nil || provider == nil {
 			return fmt.Errorf("invalid provider")
 		}
-		for _, key := range []string{"url", "organization"} {
-			if _, err := requiredCardString(provider, key); err != nil {
-				return fmt.Errorf("provider: %w", err)
-			}
+		if _, err := requiredCardString(provider, "url"); err != nil {
+			return fmt.Errorf("provider: %w", err)
+		}
+		if _, err := presentCardString(provider, "organization"); err != nil {
+			return fmt.Errorf("provider: %w", err)
 		}
 	}
 	_, modern := fields["supportedInterfaces"]
 	for _, key := range []string{"defaultInputModes", "defaultOutputModes"} {
 		var modes []string
-		if err := json.Unmarshal(fields[key], &modes); err != nil || modes == nil || modern && len(modes) == 0 {
+		if err := json.Unmarshal(fields[key], &modes); err != nil || modes == nil {
 			return fmt.Errorf("missing or invalid required field %s", key)
 		}
 		for _, mode := range modes {
@@ -108,17 +109,17 @@ func ValidateAgentCard(body []byte) error {
 		}
 	}
 	var skills []map[string]json.RawMessage
-	if err := json.Unmarshal(fields["skills"], &skills); err != nil || skills == nil || modern && len(skills) == 0 {
+	if err := json.Unmarshal(fields["skills"], &skills); err != nil || skills == nil {
 		return fmt.Errorf("missing or invalid required field skills")
 	}
 	for i, skill := range skills {
 		for _, key := range []string{"id", "name", "description"} {
-			if _, err := requiredCardString(skill, key); err != nil {
+			if _, err := presentCardString(skill, key); err != nil {
 				return fmt.Errorf("skill %d: %w", i, err)
 			}
 		}
 		var tags []string
-		if err := json.Unmarshal(skill["tags"], &tags); err != nil || tags == nil || modern && len(tags) == 0 {
+		if err := json.Unmarshal(skill["tags"], &tags); err != nil || tags == nil {
 			return fmt.Errorf("skill %d has missing or invalid tags", i)
 		}
 		for _, tag := range tags {
@@ -298,8 +299,16 @@ func validateRequirementList(raw json.RawMessage, schemes map[string]json.RawMes
 }
 
 func requiredCardString(fields map[string]json.RawMessage, key string) (string, error) {
+	value, err := presentCardString(fields, key)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("missing or invalid required field %s", key)
+	}
+	return value, nil
+}
+
+func presentCardString(fields map[string]json.RawMessage, key string) (string, error) {
 	var value string
-	if err := json.Unmarshal(fields[key], &value); err != nil || strings.TrimSpace(value) == "" {
+	if err := json.Unmarshal(fields[key], &value); err != nil || strings.TrimSpace(string(fields[key])) == "null" {
 		return "", fmt.Errorf("missing or invalid required field %s", key)
 	}
 	return value, nil
