@@ -392,12 +392,13 @@ func (c *HTTPClient) OPTIONS(ctx context.Context, urlTpl string, headers map[str
 	return c.do(ctx, http.MethodOptions, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
 }
 
-// DELETE sends a DELETE request. The OAuth rules use it to remove the client
-// registrations they create (RFC 7592), so a scan does not leave them on the target.
-// It runs through the same transport as every other verb, so a dry run records it and
-// sends nothing.
+// DELETE sends a DELETE request through the normal transport and request routing.
+// Dry runs record it without sending traffic.
 func (c *HTTPClient) DELETE(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
-	return c.do(ctx, http.MethodDelete, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
+	url := c.vars.Expand(urlTpl)
+	expandedHeaders := c.vars.ExpandMap(headers)
+	url, _ = augmentRequest(ctx, http.MethodDelete, url, expandedHeaders, nil)
+	return c.do(ctx, http.MethodDelete, url, nil, expandedHeaders)
 }
 
 // DELETEOAuth sends a DELETE only when the target-advertised OAuth URL stays

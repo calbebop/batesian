@@ -2,17 +2,16 @@ package a2a
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-func recordPushConfig(state *attack.TargetState, endpoint, taskID, version string, resp *attack.Response) {
-	if state == nil {
-		return
-	}
+func pushConfigID(taskID, version string, resp *attack.Response) string {
 	var payload struct {
 		ID                     string `json:"id"`
 		ConfigID               string `json:"configId"`
+		Name                   string `json:"name"`
 		PushNotificationConfig *struct {
 			ID string `json:"id"`
 		} `json:"pushNotificationConfig"`
@@ -35,14 +34,24 @@ func recordPushConfig(state *attack.TargetState, endpoint, taskID, version strin
 	if payload.PushNotificationConfig != nil && payload.PushNotificationConfig.ID != "" {
 		configID = payload.PushNotificationConfig.ID
 	}
+	if version == "0.3.0" && configID == "" {
+		prefix := "tasks/" + taskID + "/pushNotificationConfigs/"
+		if strings.HasPrefix(payload.Name, prefix) {
+			configID = strings.TrimPrefix(payload.Name, prefix)
+		}
+	}
+	return configID
+}
+
+func recordPushConfig(state *attack.TargetState, endpoint, taskID, configID string, cleanup attack.CleanupStatus, detail string) {
 	state.Record(attack.TargetObject{
 		Kind:          "a2a_push_config",
 		Creation:      "accepted",
 		ID:            configID,
 		ParentID:      taskID,
 		Endpoint:      endpoint,
-		Cleanup:       attack.CleanupNotAttempted,
-		CleanupDetail: "Batesian does not remove callback configurations",
+		Cleanup:       cleanup,
+		CleanupDetail: detail,
 	})
 }
 

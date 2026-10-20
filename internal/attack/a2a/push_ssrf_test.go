@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	"testing"
@@ -17,6 +18,8 @@ import (
 // pushSSRFServer optionally sends a callback to the registered URL.
 func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
+	var registeredURL, registeredID string
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -35,6 +38,10 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 			})
 		case "CreateTaskPushNotificationConfig":
 			params, _ := req["params"].(map[string]interface{})
+			mu.Lock()
+			registeredURL, _ = params["url"].(string)
+			registeredID, _ = params["id"].(string)
+			mu.Unlock()
 			if callBack {
 				if url, _ := params["url"].(string); url != "" {
 					token, _ := params["token"].(string)
@@ -48,8 +55,25 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 				}
 			}
 			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
-				"taskId": "task-push-001", "url": params["url"],
+				"taskId": "task-push-001", "id": params["id"], "url": params["url"],
 			}})
+		case "GetTaskPushNotificationConfig":
+			params, _ := req["params"].(map[string]interface{})
+			mu.Lock()
+			callbackURL, configID := registeredURL, registeredID
+			mu.Unlock()
+			if params["taskId"] != "task-push-001" || params["id"] != configID {
+				t.Error("readback targeted the wrong push config")
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{
+				"taskId": "task-push-001", "id": configID, "url": callbackURL,
+			}})
+		case "DeleteTaskPushNotificationConfig":
+			params, _ := req["params"].(map[string]interface{})
+			if params["taskId"] != "task-push-001" || !strings.HasPrefix(params["id"].(string), "batesian-") {
+				t.Error("cleanup targeted the wrong push config")
+			}
+			writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{}})
 		default:
 			writeJSON(w, jsonRPCError(-32601, "Method not found"))
 		}
@@ -63,7 +87,10 @@ func TestPushSSRF_PrivateCallbackConfirmed(t *testing.T) {
 	// No OOBListenerURL => the executor spins up its own local listener.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, testOpts())
+	state := &attack.TargetState{}
+	opts := testOpts()
+	opts.TargetState = state
+	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, ts.URL, opts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,6 +99,11 @@ func TestPushSSRF_PrivateCallbackConfirmed(t *testing.T) {
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+	objects := state.Snapshot()
+	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupCompleted ||
+		!strings.Contains(findings[0].Evidence, "deleted after probe") {
+		t.Fatalf("cleanup state = %+v, evidence = %q", objects, findings[0].Evidence)
 	}
 }
 
@@ -370,12 +402,19 @@ func TestPushSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 
 	opts := testOpts()
 	opts.OOBListenerURL = "http://oob.batesian.invalid"
+	state := &attack.TargetState{}
+	opts.TargetState = state
 	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, opts)
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("external callback needs manual verification, got findings=%+v err=%v", findings, err)
 	}
 	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
+	}
+	objects := state.Snapshot()
+	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||
+		!strings.Contains(findings[0].Evidence, "remove after manual verification") {
+		t.Fatalf("external OOB cleanup state = %+v, evidence = %q", objects, findings[0].Evidence)
 	}
 }
 

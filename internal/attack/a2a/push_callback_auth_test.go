@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,9 @@ func cbAuthRC() attack.RuleContext {
 
 // cbAuthServer models a v1.0 agent sending a task notification.
 type cbAuthServer struct {
+	mu              sync.Mutex
+	registeredURL   string
+	registeredID    string
 	signed          bool
 	wrongCredential bool
 	tokenOnly       bool
@@ -40,6 +44,7 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 			ID     string `json:"id"`
 			Params struct {
 				TaskID         string `json:"taskId"`
+				ID             string `json:"id"`
 				URL            string `json:"url"`
 				Token          string `json:"token"`
 				Authentication struct {
@@ -62,6 +67,9 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 			})
 		case "CreateTaskPushNotificationConfig":
 			url, token := req.Params.URL, req.Params.Token
+			s.mu.Lock()
+			s.registeredURL, s.registeredID = url, req.Params.ID
+			s.mu.Unlock()
 			if req.Params.Authentication.Scheme != "Bearer" || len(req.Params.Authentication.Credentials) != 64 ||
 				strings.Contains(url, req.Params.Authentication.Credentials) || req.Params.Authentication.Credentials == token {
 				http.Error(w, "missing independent Bearer credential", http.StatusBadRequest)
@@ -115,11 +123,31 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
 				"result": map[string]interface{}{
-					"taskId": req.Params.TaskID, "url": url, "token": token,
+					"taskId": req.Params.TaskID, "id": req.Params.ID, "url": url, "token": token,
 					"authentication": map[string]string{
 						"scheme": "Bearer", "credentials": req.Params.Authentication.Credentials,
 					},
 				},
+			})
+		case "GetTaskPushNotificationConfig":
+			s.mu.Lock()
+			url, configID := s.registeredURL, s.registeredID
+			s.mu.Unlock()
+			if req.Params.TaskID != "task-cbauth-1" || req.Params.ID != configID {
+				http.Error(w, "readback targeted the wrong push config", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]string{"taskId": req.Params.TaskID, "id": configID, "url": url},
+			})
+		case "DeleteTaskPushNotificationConfig":
+			if req.Params.TaskID != "task-cbauth-1" || !strings.HasPrefix(req.Params.ID, "batesian-") {
+				http.Error(w, "cleanup targeted the wrong push config", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": map[string]interface{}{},
 			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -130,12 +158,9 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 	}
 }
 
-func runCbAuth(t *testing.T, target string, oobURL string) ([]attack.Finding, error) {
+func runCbAuth(t *testing.T, target string) ([]attack.Finding, error) {
 	t.Helper()
 	opts := attack.Options{TimeoutSeconds: 10}
-	if oobURL != "" {
-		opts.OOBListenerURL = oobURL
-	}
 	return a2a.NewPushCallbackAuthExecutor(cbAuthRC()).Execute(context.Background(), target, opts)
 }
 
@@ -144,7 +169,9 @@ func TestCbAuth_UnsignedCallbackFires(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: false, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	state := &attack.TargetState{}
+	findings, err := a2a.NewPushCallbackAuthExecutor(cbAuthRC()).Execute(t.Context(), target.URL,
+		attack.Options{TimeoutSeconds: 10, TargetState: state})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,13 +185,18 @@ func TestCbAuth_UnsignedCallbackFires(t *testing.T) {
 	if !strings.Contains(f.Evidence, "configured Bearer credential matched: no") {
 		t.Errorf("evidence should record the missing credential, got: %q", f.Evidence)
 	}
+	objects := state.Snapshot()
+	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupCompleted ||
+		!strings.Contains(f.Evidence, "deleted after probe") {
+		t.Fatalf("cleanup state = %+v, evidence = %q", objects, f.Evidence)
+	}
 }
 
 func TestCbAuth_TokenOnlyCallbackFires(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{tokenOnly: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
 		t.Fatalf("want high finding when only the optional token is echoed, got findings=%+v err=%v", findings, err)
 	}
@@ -174,7 +206,7 @@ func TestCbAuth_WrongBearerCredentialFires(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{wrongCredential: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
 		t.Fatalf("want high finding for incorrect Bearer credential, got findings=%+v err=%v", findings, err)
 	}
@@ -185,7 +217,7 @@ func TestCbAuth_SignedCallbackSilent(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +230,7 @@ func TestCbAuth_PreflightAndOtherTaskIgnored(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: true, preflight: true, wrongTaskFirst: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("preflight or unrelated task raised a finding: %+v (err=%v)", findings, err)
 	}
@@ -277,7 +309,7 @@ func TestCbAuth_V03AuthenticationShape(t *testing.T) {
 	}))
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("configured v0.3 callback was not accepted: findings=%+v err=%v", findings, err)
 	}
@@ -321,7 +353,7 @@ func runCbAuthREST(t *testing.T, staleFirst bool) {
 	defer server.Close()
 	origin = server.URL
 
-	findings, err := runCbAuth(t, server.URL, "")
+	findings, err := runCbAuth(t, server.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("configured REST callback was not accepted: findings=%+v err=%v", findings, err)
 	}
@@ -341,7 +373,7 @@ func TestCbAuth_NoCallbackNotTested(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{callOut: false}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err == nil {
 		t.Fatalf("expected an inconclusive error when no callback arrived")
 	}
@@ -360,7 +392,9 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: false, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "http://127.0.0.1:9/oob")
+	state := &attack.TargetState{}
+	findings, err := a2a.NewPushCallbackAuthExecutor(cbAuthRC()).Execute(t.Context(), target.URL,
+		attack.Options{TimeoutSeconds: 10, OOBListenerURL: "http://127.0.0.1:9/oob", TargetState: state})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,6 +407,11 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "expected bearer credential:") {
 		t.Errorf("external OOB evidence omitted the credential to verify: %q", findings[0].Evidence)
+	}
+	objects := state.Snapshot()
+	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||
+		!strings.Contains(findings[0].Evidence, "remove after manual verification") {
+		t.Fatalf("external OOB cleanup state = %+v, evidence = %q", objects, findings[0].Evidence)
 	}
 }
 
