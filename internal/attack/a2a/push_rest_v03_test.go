@@ -161,7 +161,7 @@ func TestCbAuth_V03RESTBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, registrations := v03RESTPushServer(t, true, tc.signed, false)
 			defer server.Close()
-			findings, err := runCbAuth(t, server.URL, "")
+			findings, err := runCbAuth(t, server.URL)
 			if err != nil || len(findings) != tc.want || registrations.Load() != 1 {
 				t.Fatalf("v0.3 REST auth result: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
 			}

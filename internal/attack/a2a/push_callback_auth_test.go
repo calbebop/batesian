@@ -158,12 +158,9 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 	}
 }
 
-func runCbAuth(t *testing.T, target string, oobURL string) ([]attack.Finding, error) {
+func runCbAuth(t *testing.T, target string) ([]attack.Finding, error) {
 	t.Helper()
 	opts := attack.Options{TimeoutSeconds: 10}
-	if oobURL != "" {
-		opts.OOBListenerURL = oobURL
-	}
 	return a2a.NewPushCallbackAuthExecutor(cbAuthRC()).Execute(context.Background(), target, opts)
 }
 
@@ -199,7 +196,7 @@ func TestCbAuth_TokenOnlyCallbackFires(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{tokenOnly: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
 		t.Fatalf("want high finding when only the optional token is echoed, got findings=%+v err=%v", findings, err)
 	}
@@ -209,7 +206,7 @@ func TestCbAuth_WrongBearerCredentialFires(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{wrongCredential: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
 		t.Fatalf("want high finding for incorrect Bearer credential, got findings=%+v err=%v", findings, err)
 	}
@@ -220,7 +217,7 @@ func TestCbAuth_SignedCallbackSilent(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -233,7 +230,7 @@ func TestCbAuth_PreflightAndOtherTaskIgnored(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{signed: true, preflight: true, wrongTaskFirst: true, callOut: true}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("preflight or unrelated task raised a finding: %+v (err=%v)", findings, err)
 	}
@@ -312,7 +309,7 @@ func TestCbAuth_V03AuthenticationShape(t *testing.T) {
 	}))
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("configured v0.3 callback was not accepted: findings=%+v err=%v", findings, err)
 	}
@@ -356,7 +353,7 @@ func runCbAuthREST(t *testing.T, staleFirst bool) {
 	defer server.Close()
 	origin = server.URL
 
-	findings, err := runCbAuth(t, server.URL, "")
+	findings, err := runCbAuth(t, server.URL)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("configured REST callback was not accepted: findings=%+v err=%v", findings, err)
 	}
@@ -376,7 +373,7 @@ func TestCbAuth_NoCallbackNotTested(t *testing.T) {
 	target := httptest.NewServer((&cbAuthServer{callOut: false}).handler())
 	defer target.Close()
 
-	findings, err := runCbAuth(t, target.URL, "")
+	findings, err := runCbAuth(t, target.URL)
 	if err == nil {
 		t.Fatalf("expected an inconclusive error when no callback arrived")
 	}

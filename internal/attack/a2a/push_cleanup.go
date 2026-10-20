@@ -44,7 +44,6 @@ func (p *pushRegistration) finish(ctx context.Context, client *attack.HTTPClient
 	status := attack.CleanupUnavailable
 	detail := "registration did not return a configuration ID"
 	if p.configID != "" {
-		detail = ""
 		if p.rest && !safePushConfigPathID(p.configID) {
 			detail = "configuration ID is not a safe URL path segment"
 		} else {
