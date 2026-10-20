@@ -70,17 +70,17 @@ func TestValidateAgentCardRequiredFields(t *testing.T) {
 		edit  func(map[string]any)
 	}{
 		{"name", "name", func(m map[string]any) { delete(m, "name") }},
-		{"description", "description", func(m map[string]any) { m["description"] = " " }},
+		{"description", "description", func(m map[string]any) { m["description"] = 3 }},
 		{"version", "version", func(m map[string]any) { m["version"] = nil }},
 		{"capabilities", "capabilities", func(m map[string]any) { m["capabilities"] = nil }},
-		{"input modes", "defaultInputModes", func(m map[string]any) { m["defaultInputModes"] = []any{} }},
+		{"input modes", "defaultInputModes", func(m map[string]any) { m["defaultInputModes"] = nil }},
 		{"output modes", "defaultOutputModes", func(m map[string]any) { delete(m, "defaultOutputModes") }},
-		{"skills", "skills", func(m map[string]any) { m["skills"] = []any{} }},
+		{"skills", "skills", func(m map[string]any) { m["skills"] = nil }},
 		{"skill description", "description", func(m map[string]any) {
 			delete(m["skills"].([]any)[0].(map[string]any), "description")
 		}},
 		{"skill tags", "tags", func(m map[string]any) {
-			m["skills"].([]any)[0].(map[string]any)["tags"] = []any{}
+			m["skills"].([]any)[0].(map[string]any)["tags"] = nil
 		}},
 		{"interfaces", "supportedInterfaces", func(m map[string]any) { m["supportedInterfaces"] = []any{} }},
 		{"interface version", "supportedInterfaces", func(m map[string]any) {
@@ -133,6 +133,33 @@ func TestValidateAgentCardRequiredFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateAgentCardAllowsPresentDefaults(t *testing.T) {
+	var card map[string]any
+	if err := json.Unmarshal([]byte(minimalV1CardJSON), &card); err != nil {
+		t.Fatal(err)
+	}
+	card["name"] = ""
+	card["description"] = ""
+	card["version"] = ""
+	card["defaultInputModes"] = []string{}
+	card["defaultOutputModes"] = []string{}
+	card["skills"] = []any{}
+	card["provider"] = map[string]any{"url": "https://provider.example", "organization": ""}
+	check := func() {
+		t.Helper()
+		body, err := json.Marshal(card)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateAgentCard(body); err != nil {
+			t.Fatalf("present default values rejected: %v", err)
+		}
+	}
+	check()
+	card["skills"] = []any{map[string]any{"id": "", "name": "", "description": "", "tags": []string{}}}
+	check()
 }
 
 func TestRequiredCardExtensions(t *testing.T) {
@@ -938,6 +965,29 @@ func TestFetchAgentCard_V1Path(t *testing.T) {
 	}
 	if card.Name != "Hello World Agent" {
 		t.Errorf("Name = %q", card.Name)
+	}
+}
+
+func TestFetchAgentCard_PresentEmptyDefaults(t *testing.T) {
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(minimalV1CardJSON), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["description"] = ""
+	fields["skills"] = []any{}
+	fields["defaultInputModes"] = []any{}
+	fields["defaultOutputModes"] = []any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(fields)
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, _, err := client.FetchAgentCard(t.Context())
+	if err != nil || card == nil {
+		t.Fatalf("card = %v, err = %v", card, err)
 	}
 }
 

@@ -121,7 +121,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High / Critical | confirmed | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
-| `a2a-jws-algconf-001` | [AgentCard JWS Algorithm Confusion](#a2a-jws-algconf-001) | Critical | indicator | CWE-327 |
+| `a2a-jws-algconf-001` | [AgentCard JWS Signature Configuration](#a2a-jws-algconf-001) | Critical / High / Medium / Info | indicator | CWE-327 |
 | `a2a-peer-impersonation-001` | [Forged JWT Acceptance](#a2a-peer-impersonation-001) | High / Medium | confirmed / indicator | CWE-290 |
 | `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | Critical | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
@@ -261,14 +261,15 @@ primitive but lower direct impact, reported as **medium / indicator**.
 
 ### a2a-jws-algconf-001
 
-**AgentCard JWS Algorithm Confusion** | Severity: Critical | CWE-327
+**AgentCard JWS Signature Configuration** | Severity: Critical / High / Medium / Info | CWE-327
 
 A **static analyzer** of the agent card's optional JWS `signatures` field
-(RFC 7515). It flags structural weaknesses that enable card forgery: `alg: none`,
+(RFC 7515). It flags weak signature metadata: `alg: none`,
 symmetric algorithms used for public-card verification, empty signature values,
-and `jku` URLs that are unprotected or cross-domain. Because the rule only reads
-the published card - it never forges or verifies a signature against the live
-server - every finding is reported as an **indicator** (severity reflects
+and unprotected or plaintext-HTTP `jku` URLs. A cross-host JWKS is an
+informational trust-boundary review, not a vulnerability by itself. The rule
+only reads the published card; it never verifies a signature against a client.
+Every finding is reported as an **indicator** (severity reflects
 impact-if-true, not a demonstrated exploit).
 
 ---

@@ -1,15 +1,14 @@
 id: a2a-jws-algconf-001
 info:
-  name: A2A AgentCard JWS Algorithm Confusion / Signature Bypass
+  name: A2A AgentCard JWS Signature Configuration
   author: batesian
   severity: critical
   description: |
-    Inspects the JWS signatures field of the A2A Agent Card for algorithm
-    confusion vulnerabilities and structural weaknesses that enable card forgery.
+    Inspects the JWS signatures field of the A2A Agent Card for weak signature
+    metadata. This is a static check; it does not test a client's verifier.
 
     The A2A v0.3.0 spec added an optional signatures field (RFC 7515 JWS) to
-    AgentCards for cryptographic integrity verification. Common implementation
-    mistakes make these signatures bypassable:
+    AgentCards for cryptographic integrity verification. The rule reports:
 
     1. alg:none - any verifier that reads alg from the token header and dispatches
        to a "none" handler will accept a completely forged card with no signature
@@ -22,13 +21,13 @@ info:
        check while failing correct ones.
 
     4. jku in unprotected header - the key URL is outside signature coverage;
-       attackers can substitute it post-signing without breaking the signature.
+       clients must independently bind the key source to the expected agent.
 
-    5. Cross-domain jku - if the JWKS is on a different domain than the agent,
-       compromising that domain enables key substitution.
+    5. Cross-domain jku - an informational trust-boundary review, not a
+       vulnerability by itself. A2A permits a separate JWKS host.
 
   references:
-    - https://a2aprotocol.ai/docs/specification#agent-card-signature
+    - https://a2a-protocol.org/v1.0.1/specification/#84-agent-card-signing
     - https://portswigger.net/web-security/jwt/algorithm-confusion
     - https://www.rfc-editor.org/rfc/rfc7515
     - https://www.rfc-editor.org/rfc/rfc8785
@@ -48,11 +47,13 @@ attack:
   type: agent-card-jws-algconf
 
 remediation: |
-  1. Always place jku, kid, and alg in the JWS protected header (never in header).
+  1. Put alg and kid in the protected header. Protect jku when clients use it
+     to make trust decisions, or pin the expected key source independently.
   2. In your verification code, pin the expected algorithm - never read alg from
      the token to decide the verification function. Reject any alg that is not
      in your explicit allowlist (ES256, RS256, EdDSA).
   3. Reject any AgentCard signature where alg is "none" or empty.
   4. Use only asymmetric algorithms for public agent cards.
-  5. Serve your JWKS from the same origin as your agent, over HTTPS only.
+  5. Serve JWKS over HTTPS. If it is on another host, establish and document
+     why clients trust that key source for this agent.
   6. Consider using sigstore/sigstore-a2a rather than implementing JWS directly.
