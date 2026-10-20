@@ -99,6 +99,12 @@ func TestRESTInterfaceTenant(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+		case "/api/tasks/task-1/pushNotificationConfigs/config-1":
+			if r.Method != http.MethodDelete || r.URL.Query().Get("tenant") != "team-b" {
+				t.Errorf("REST delete = %s %q", r.Method, r.URL.RawQuery)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 		default:
 			http.NotFound(w, r)
 			return
@@ -119,6 +125,9 @@ func TestRESTInterfaceTenant(t *testing.T) {
 	}
 	if response, err := client.GET(ctx, bases[0]+"/tasks?pageToken=next", headers); err != nil || !response.IsSuccess() {
 		t.Fatalf("REST list response = %v, error = %v", response, err)
+	}
+	if response, err := client.DELETE(ctx, bases[0]+"/tasks/task-1/pushNotificationConfigs/config-1", headers); err != nil || !response.IsSuccess() {
+		t.Fatalf("REST delete response = %v, error = %v", response, err)
 	}
 }
 

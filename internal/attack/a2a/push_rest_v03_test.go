@@ -17,6 +17,7 @@ func v03RESTPushServer(t *testing.T, auth, signed, messageOnly bool) (*httptest.
 	t.Helper()
 	var origin string
 	var registrations atomic.Int32
+	var registeredConfig atomic.Value
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/agent.json", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]interface{}{
@@ -72,6 +73,7 @@ func v03RESTPushServer(t *testing.T, auth, signed, messageOnly bool) (*httptest.
 			return
 		}
 		registrations.Add(1)
+		registeredConfig.Store(config)
 		payload := []byte(`{"statusUpdate":{"taskId":"task-legacy","status":{"state":"TASK_STATE_COMPLETED"}}}`)
 		callback, err := http.NewRequest(http.MethodPost, callbackURL, strings.NewReader(string(payload)))
 		if err != nil {
@@ -90,6 +92,27 @@ func v03RESTPushServer(t *testing.T, auth, signed, messageOnly bool) (*httptest.
 			}
 		}
 		writeJSON(w, config)
+	})
+	mux.HandleFunc("/agent/v1/tasks/task-legacy/pushNotificationConfigs/", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path,
+			"/agent/v1/tasks/task-legacy/pushNotificationConfigs/batesian-") {
+			t.Errorf("unexpected cleanup request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			config, ok := registeredConfig.Load().(map[string]interface{})
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(w, config)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	})
 	server := httptest.NewServer(mux)
 	origin = server.URL
@@ -110,7 +133,7 @@ func TestPushSSRF_V03RESTBindingConfirmed(t *testing.T) {
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[0].Kind != "a2a_task" || objects[1].Kind != "a2a_push_config" ||
-		objects[1].Cleanup != attack.CleanupNotAttempted || objects[1].ParentID != objects[0].ID {
+		objects[1].Cleanup != attack.CleanupCompleted || objects[1].ParentID != objects[0].ID {
 		t.Fatalf("target objects = %+v", objects)
 	}
 }

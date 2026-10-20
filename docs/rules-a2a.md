@@ -182,6 +182,12 @@ driven only when the agent card advertises one, at the URL the card gives: its
 prefix is a deployment choice, so there is no path to fall back on and an agent
 without that interface is not probed for it.
 
+For confirmed registrations with a returned config ID, the rule attempts
+Delete after the probe if readback confirms the callback URL, then records the outcome.
+Inline or unidentified configs may remain and are listed in the scan report.
+External OOB probes retain configs so delayed callbacks can be verified; remove
+them after verification.
+
 A callback can only fire for a task that is still running: a config registered
 against a task the agent has already completed has no status update left to
 notify on. Against a long-running agent on the official SDK this reports a
@@ -466,6 +472,7 @@ write, respectively.
 
 The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
 `pushNotificationConfig`. It does not test notification delivery.
+Marker configs on reused tasks are not deleted automatically.
 
 ---
 
@@ -599,4 +606,7 @@ credential on an observed task notification is a confirmed finding; no
 callback is inconclusive. The rule tries the same JSON-RPC and HTTP+JSON
 registration paths as `a2a-push-ssrf-001`, including v1.0 inline configuration.
 With an external `--oob-url`, registration is informational and delivery needs
-manual verification. A refused task creation is not tested.
+manual verification. The rule attempts to delete confirmed configs with
+returned IDs after readback confirms the callback URL. Inline or unidentified
+configs may remain. External OOB probes retain configs for manual verification.
+A refused task creation is not tested.

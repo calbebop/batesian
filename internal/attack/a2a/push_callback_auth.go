@@ -30,7 +30,7 @@ func NewPushCallbackAuthExecutor(r attack.RuleContext) *PushCallbackAuthExecutor
 	return &PushCallbackAuthExecutor{rule: r}
 }
 
-func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, opts attack.Options) (_ []attack.Finding, err error) {
+func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, opts attack.Options) (findings []attack.Finding, err error) {
 	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 
@@ -56,6 +56,14 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	}
 
 	client := attack.NewHTTPClient(opts, vars)
+	var registration *pushRegistration
+	defer func() {
+		if line := registration.finish(ctx, client, opts.TargetState, opts.OOBListenerURL != ""); line != "" {
+			for i := range findings {
+				findings[i].Evidence += "\n" + line
+			}
+		}
+	}()
 	endpoint, endpointOK := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	reached := false
 
@@ -113,6 +121,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			"method":  "CreateTaskPushNotificationConfig",
 			"params": map[string]interface{}{
 				"taskId": taskID,
+				"id":     "batesian-" + vars.RandID,
 				"url":    callbackURL,
 				"token":  token,
 				"authentication": map[string]string{
@@ -125,7 +134,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			registrationConfirmed = true
 			acceptedBinding = "JSONRPC/v1.0-CreateTaskPushNotificationConfig"
 			acceptedTaskID = taskID
-			recordPushConfig(opts.TargetState, endpoint, taskID, "1.0", pushResp)
+			registration = newPushRegistration(endpoint, taskID, "1.0", callbackURL, pushResp, false)
 		} else {
 			obs.observe(pushRegistrationOutcome("CreateTaskPushNotificationConfig", pushResp, pushID, taskID, callbackURL))
 		}
@@ -154,6 +163,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 				"params": map[string]interface{}{
 					"taskId": taskID,
 					"pushNotificationConfig": map[string]interface{}{
+						"id":    "batesian-" + vars.RandID,
 						"url":   callbackURL,
 						"token": token,
 						"authentication": map[string]interface{}{
@@ -165,7 +175,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			if setErr == nil && pushRegistrationReplyAccepted(setResp, setID, "tasks/pushNotificationConfig/set", taskID, callbackURL) {
 				registrationConfirmed = true
 				acceptedBinding = "JSONRPC/v0.3-pushNotificationConfig-set"
-				recordPushConfig(opts.TargetState, endpoint, taskID, "0.3.0", setResp)
+				registration = newPushRegistration(endpoint, taskID, "0.3.0", callbackURL, setResp, false)
 			} else {
 				obs.observe(pushRegistrationOutcome("tasks/pushNotificationConfig/set", setResp, setID, taskID, callbackURL))
 			}
@@ -196,7 +206,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 						registrationConfirmed = true
 						acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
 						acceptedTaskID = taskID
-						recordPushConfig(opts.TargetState, cfgURL, taskID, route.version, cfgResp)
+						registration = newPushRegistration(cfgURL, taskID, route.version, callbackURL, cfgResp, true)
 					} else {
 						obs.observe(restPushRegistrationOutcome("HTTP+JSON/"+route.version+" pushNotificationConfigs",
 							cfgResp, taskID, callbackURL, route.version))

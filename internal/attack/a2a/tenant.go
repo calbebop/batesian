@@ -70,7 +70,7 @@ func (r *tenantRoutes) augment(method, requestURL string, headers map[string]str
 	if selected == nil || selected.tenant == nil {
 		return nil, body
 	}
-	if method == http.MethodGet {
+	if method == http.MethodGet || method == http.MethodDelete {
 		return map[string]string{"tenant": *selected.tenant}, body
 	}
 	if method == http.MethodPost {
