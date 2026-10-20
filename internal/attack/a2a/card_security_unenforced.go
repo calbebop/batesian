@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -76,36 +77,91 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 		return nil, withCardReadReason(nil)
 	}
 
-	// Resolve the JSON-RPC endpoint to probe. The card requires auth but we cannot
-	// reach a testable endpoint, so the contract cannot be exercised here.
-	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
-	if !ok {
-		return nil, withCardReadReason(attack.ErrInconclusive)
+	rpcEndpoint, rpcOK := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	var incomplete error
+	if rpcOK {
+		readOutcome, readErr := e.readTask(ctx, client, rpcEndpoint, "batesian-missing-"+vars.RandID, vars.RandID+"-missing")
+		createdTaskID, createErr := e.createProbe(ctx, client, rpcEndpoint, vars.RandID)
+		if createdTaskID != "" {
+			readBackOutcome, readBackErr := e.readTask(ctx, client, rpcEndpoint, createdTaskID, vars.RandID+"-created")
+			finding := e.finding(rpcEndpoint, schemes, createdTaskID, readOutcome != probeAuthRejected,
+				readBackOutcome == probeProcessedResult, "SendMessage/message/send", "GetTask/tasks/get")
+			if cardReadReason != "" {
+				finding.Evidence += "\nunobserved card read: " + cardReadReason
+			}
+			return []attack.Finding{finding}, withCardReadReason(errors.Join(readErr, createErr, readBackErr))
+		}
+		incomplete = errors.Join(readErr, createErr)
+	} else {
+		incomplete = advertisedJSONRPCUnavailable(ctx, client, vars.BaseURL)
 	}
 
-	// Step 1 (non-mutating): can an unauthenticated read even reach the handler?
-	// A read of a random non-existent id cannot return a task, so this only tells
-	// us whether the read path rejects at the auth layer (evidence, not verdict).
-	readOutcome, readErr := e.readTask(ctx, client, endpoint, "batesian-missing-"+vars.RandID, vars.RandID+"-missing")
-	readReachable := readOutcome != probeAuthRejected
-
-	// Step 2 (definitive): unauthenticated create. A returned task proves a core
-	// write executed with no credentials despite the card requiring them.
-	createdTaskID, createErr := e.createProbe(ctx, client, endpoint, vars.RandID)
-	if createdTaskID == "" {
-		return nil, withCardReadReason(errors.Join(readErr, createErr))
+	bases := resolveHTTPJSONBases(ctx, client, vars.BaseURL)
+	for _, base := range bases {
+		for _, route := range restPushRoutes {
+			sendURL := endpoint.AppendPath(base, route.sendPath)
+			missingURL := endpoint.AppendPath(base, route.taskPath+"/batesian-missing-"+vars.RandID)
+			readOutcome, readErr := e.readRESTTask(ctx, client, missingURL, "batesian-missing-"+vars.RandID, route.version)
+			createdTaskID, createErr := e.createRESTProbe(ctx, client, sendURL, vars.RandID, route.version)
+			if createdTaskID == "" {
+				incomplete = errors.Join(incomplete, readErr, createErr)
+				continue
+			}
+			createdURL := endpoint.AppendPath(base, route.taskPath+"/"+url.PathEscape(createdTaskID))
+			readBackOutcome, readBackErr := e.readRESTTask(ctx, client, createdURL, createdTaskID, route.version)
+			finding := e.finding(sendURL, schemes, createdTaskID, readOutcome != probeAuthRejected,
+				readBackOutcome == probeProcessedResult, "POST "+route.sendPath, "GET "+route.taskPath+"/{id}")
+			if cardReadReason != "" {
+				finding.Evidence += "\nunobserved card read: " + cardReadReason
+			}
+			return []attack.Finding{finding}, withCardReadReason(errors.Join(incomplete, readErr, createErr, readBackErr))
+		}
 	}
-
-	// Strengthen: read the just-created task back with no credentials. If that also
-	// returns the task, both the write and the read paths ignore the declared auth.
-	readBackOutcome, readBackErr := e.readTask(ctx, client, endpoint, createdTaskID, vars.RandID+"-created")
-	readBack := readBackOutcome == probeProcessedResult
-
-	finding := e.finding(endpoint, schemes, createdTaskID, readReachable, readBack)
-	if cardReadReason != "" {
-		finding.Evidence += "\nunobserved card read: " + cardReadReason
+	if !rpcOK && len(bases) == 0 {
+		incomplete = errors.Join(incomplete, attack.ErrInconclusive)
 	}
-	return []attack.Finding{finding}, withCardReadReason(errors.Join(readErr, createErr, readBackErr))
+	return nil, withCardReadReason(incomplete)
+}
+
+func (e *CardSecurityUnenforcedExecutor) createRESTProbe(ctx context.Context, c *attack.HTTPClient,
+	sendURL, randID, version string) (string, error) {
+	headers := restVersionHeaders(version, nil)
+	if version == "1.0" {
+		headers["Content-Type"] = "application/a2a+json"
+	}
+	resp, err := c.POST(ctx, sendURL, headers, restTaskSendRequest(randID+"-cardsec-"+version,
+		"batesian card-security probe "+randID, version))
+	if err != nil || resp == nil {
+		return "", fmt.Errorf("%w: anonymous REST task creation at %s did not answer", attack.ErrInconclusive, sendURL)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return "", nil
+	}
+	if taskID := restPushTaskID(resp); taskID != "" {
+		return taskID, nil
+	}
+	return "", fmt.Errorf("%w: anonymous REST task creation at %s returned no valid Task (HTTP %d)",
+		attack.ErrInconclusive, sendURL, resp.StatusCode)
+}
+
+func (e *CardSecurityUnenforcedExecutor) readRESTTask(ctx context.Context, c *attack.HTTPClient,
+	readURL, taskID, version string) (probeOutcome, error) {
+	resp, err := c.GET(ctx, readURL, restVersionHeaders(version, nil))
+	if err != nil || resp == nil {
+		return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read at %s did not answer", attack.ErrInconclusive, readURL)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return probeAuthRejected, nil
+	}
+	if resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
+		if id, _ := taskResultContext(resp.Body); id == taskID {
+			return probeProcessedResult, nil
+		}
+	}
+	return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read at %s returned no matching Task (HTTP %d)",
+		attack.ErrInconclusive, readURL, resp.StatusCode)
 }
 
 // readTask issues an unauthenticated tasks/get for taskID (v1.0 GetTask then v0.3
@@ -244,13 +300,14 @@ func (e *CardSecurityUnenforcedExecutor) createProbe(ctx context.Context, c *att
 	return "", nil
 }
 
-func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []string, taskID string, readReachable, readBack bool) attack.Finding {
+func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []string, taskID string,
+	readReachable, readBack bool, sendOperation, readOperation string) attack.Finding {
 	schemeList := strings.Join(schemes, ", ")
-	readLine := "unauthenticated read (tasks/get) of the created task: not confirmed"
+	readLine := "unauthenticated read (" + readOperation + ") of the created task: not confirmed"
 	if readBack {
-		readLine = "unauthenticated read (tasks/get) of the created task: task returned"
+		readLine = "unauthenticated read (" + readOperation + ") of the created task: task returned"
 	} else if readReachable {
-		readLine = "unauthenticated read (tasks/get) path: reachable (not rejected at the auth layer)"
+		readLine = "unauthenticated read (" + readOperation + ") path: reachable (not rejected at the auth layer)"
 	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
@@ -260,13 +317,13 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 		Title:      "A2A agent card declares required authentication but the endpoint serves unauthenticated requests",
 		Description: fmt.Sprintf(
 			"The agent card declares a security requirement (scheme(s): %s) that a caller MUST satisfy, "+
-				"yet an unauthenticated message/send at %s created task %s and returned its result with no "+
+				"yet an unauthenticated %s at %s created task %s and returned its result with no "+
 				"credentials presented. The card is the agent's published security contract; the server does "+
 				"not enforce it, so any anonymous caller has the access the card says requires "+
-				"authentication.", schemeList, endpoint, taskID),
+				"authentication.", schemeList, sendOperation, endpoint, taskID),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ncard-declared security scheme(s): %s\nunauthenticated message/send: accepted (created task %s)\n%s",
-			endpoint, schemeList, taskID, readLine),
+			"endpoint: %s\ncard-declared security scheme(s): %s\nunauthenticated %s: accepted (created task %s)\n%s",
+			endpoint, schemeList, sendOperation, taskID, readLine),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
@@ -330,32 +387,8 @@ func declaredAuthRequirement(card map[string]interface{}) (schemes []string, req
 	return schemes, true
 }
 
-// requirementSchemeNames returns the scheme names one requirement entry demands.
-// ok is false when the entry permits anonymous access, which is what an entry
-// carrying no scheme at all means.
-//
-// Two wire shapes exist and both are read here, because the field name alone does
-// not tell them apart.
-//
-// v1.0 is proto-derived: SecurityRequirement holds a single map field named
-// schemes, so an entry serializes as
-//
-//	{"schemes": {"bearerAuth": {"list": ["a2a:invoke"]}}}
-//
-// and the scheme names are one level down. Both official SDKs define it this way
-// (a2a-sdk's proto descriptor and @a2a-js/sdk's SecurityRequirement interface),
-// so this is the shape every real v1.0 card serves. Reading the entry's own keys
-// yielded the literal "schemes" as the scheme name on every one of them.
-//
-// v0.3 and OpenAPI put the names at the top level:
-//
-//	{"bearerAuth": ["a2a:invoke"]}
-//
-// The two are told apart by structure rather than by which card field they came
-// from: an entry whose only key is "schemes" mapping to an object is the proto
-// shape. A v0.3 card could in principle declare a scheme actually named
-// "schemes", but then its value is a scope array, not an object, so the check
-// does not misfire on it.
+// requirementSchemeNames reads v1.0's nested "schemes" map or v0.3's flat map.
+// An empty map permits anonymous access.
 func requirementSchemeNames(entry map[string]interface{}) (names []string, ok bool) {
 	if len(entry) == 0 {
 		return nil, false
@@ -363,8 +396,6 @@ func requirementSchemeNames(entry map[string]interface{}) (names []string, ok bo
 	if len(entry) == 1 {
 		if inner, isObject := entry["schemes"].(map[string]interface{}); isObject {
 			if len(inner) == 0 {
-				// An explicit empty scheme map requires nothing, the same
-				// statement {} makes in the v0.3 shape.
 				return nil, false
 			}
 			for name := range inner {

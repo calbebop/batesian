@@ -214,6 +214,24 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			}
 		}
 	}
+	if !taskAccepted && listener != nil {
+		inlineID := "batesian-sm-inline-" + vars.RandID
+		inlineResp, inlineErr := client.POST(ctx, endpoint, a2aHeaders,
+			buildV1InlineSendRequest(callbackURL, token, credential, vars.RandID))
+		if inlineErr == nil && inlineResp != nil && inlineResp.StatusCode != 404 {
+			reached = true
+		}
+		inlineTaskID := pushTaskReplyID(inlineResp, inlineID)
+		if inlineErr == nil && inlineTaskID != "" {
+			taskAccepted = true
+			acceptedBinding = "JSONRPC/v1.0-SendMessage-inline"
+			acceptedTaskID = inlineTaskID
+			recordPossiblePushConfig(opts.TargetState, endpoint, inlineTaskID)
+		} else {
+			obs.observe(pushTaskSetupOutcome("sending a task with inline push configuration", endpoint,
+				credentialed, inlineResp, inlineID))
+		}
+	}
 
 	if !taskAccepted {
 		if !reached {
@@ -234,7 +252,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			return nil, nil
 		}
 		if !registrationConfirmed {
-			return nil, fmt.Errorf("%w: push config was sent inline, but registration was not confirmed by tasks/pushNotificationConfig/set", attack.ErrInconclusive)
+			return nil, fmt.Errorf("%w: inline push registration was not confirmed and delivery was not observed", attack.ErrInconclusive)
 		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,

@@ -23,13 +23,11 @@ info:
     Detection:
     - Fetch and parse the card; require a non-empty declared security requirement
       with no anonymous ({}) alternative, else no finding.
-    - Read probe (non-mutating): an unauthenticated tasks/get for a random,
-      non-existent task id, used to record whether the read path is reachable
-      anonymously.
-    - Confirmation (definitive): an unauthenticated message/send. A returned task
-      result proves a core write executed with no credentials. The created task is
-      then read back unauthenticated to corroborate. The finding is raised only on
-      a positive result envelope, never on an ambiguous application error.
+    - Read probe: an unauthenticated request for a random, non-existent task ID.
+    - Confirmation: an unauthenticated send over JSON-RPC or an advertised
+      HTTP+JSON interface. A valid Task response proves a core write executed
+      without credentials. A readback can corroborate it. Ambiguous responses
+      do not trigger a finding.
 
     This complements a2a-task-idor-001, which suppresses its finding when a server
     enforces no authentication at all: a wide-open agent is flagged here precisely
@@ -55,7 +53,7 @@ remediation: |
   1. Enforce, at the transport layer, the authentication your AgentCard declares
      in securitySchemes / security (securityRequirements): reject requests that
      omit valid credentials with HTTP 401 (and a WWW-Authenticate header) before
-     dispatching any JSON-RPC method.
+     dispatching A2A operations on every advertised interface.
   2. If some endpoints are intentionally public, reflect that in the card - do not
      declare a required security scheme the server does not enforce.
   3. Keep the published card and the server's actual enforcement in sync; treat

