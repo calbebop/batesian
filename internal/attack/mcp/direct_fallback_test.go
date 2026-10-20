@@ -62,11 +62,12 @@ func directFallbackServer(method, mode string) *httptest.Server {
 		} else {
 			result["resources"] = []map[string]string{{"uri": "public://guide", "name": "Guide"}}
 		}
-		if mode == "modern" {
+		switch mode {
+		case "modern":
 			result["resultType"] = "complete"
 			result["ttlMs"] = 0
 			result["cacheScope"] = "public"
-		} else if mode == "malformed" {
+		case "malformed":
 			result["resultType"] = "complete"
 			result["ttlMs"] = "not-an-integer"
 			result["cacheScope"] = "public"
