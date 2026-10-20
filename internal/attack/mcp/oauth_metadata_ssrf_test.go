@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,12 +18,13 @@ import (
 )
 
 func omRuleCtx() attack.RuleContext {
-	return attack.RuleContext{ID: "mcp-oauth-metadata-ssrf-001", Name: "MCP OAuth Metadata SSRF", Severity: "high", Remediation: "Allow-list metadata fetches."}
+	return attack.RuleContext{ID: "mcp-oauth-metadata-ssrf-001", Name: "MCP OAuth DCR Metadata Fetch", Severity: "high", Remediation: "Restrict metadata fetch destinations."}
 }
 
 // metadataSSRFServer models an OAuth authorization server with a DCR endpoint.
 // mode controls behaviour on registration:
-//   - "fetch":   fetches the registrant-supplied jwks_uri (vulnerable SSRF)
+//   - "fetch":   fetches the registrant-supplied jwks_uri
+//   - "fetch-reject": fetches jwks_uri, then rejects registration
 //   - "nofetch": stores metadata without fetching (safe)
 //   - "no-oauth": serves no authorization-server metadata
 //   - "fetch-managed": as "fetch", and implements RFC 7592 client management
@@ -60,7 +63,7 @@ func metadataSSRFServerManaged(mode string, deleted *[]string) *httptest.Server 
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 
-		if mode == "fetch" || mode == "fetch-managed" {
+		if mode == "fetch" || mode == "fetch-managed" || mode == "fetch-reject" {
 			if u, _ := body["jwks_uri"].(string); u != "" {
 				// VULNERABLE: fetch the registrant-supplied URL server-side.
 				c := &http.Client{Timeout: 3 * time.Second}
@@ -72,6 +75,10 @@ func metadataSSRFServerManaged(mode string, deleted *[]string) *httptest.Server 
 			}
 		}
 		out := map[string]interface{}{"client_id": "c-123", "client_name": body["client_name"]}
+		if mode == "fetch-reject" || mode == "reject" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		if mode == "fetch-managed" {
 			out["registration_client_uri"] = ts.URL + "/register/c-123"
 			out["registration_access_token"] = "rat-c-123"
@@ -99,7 +106,31 @@ func runMetadataSSRF(t *testing.T, ts *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestMetadataSSRF_Fetch: server fetches jwks_uri => confirmed SSRF.
+func assertMetadataCallbackGrade(t *testing.T, finding attack.Finding) {
+	t.Helper()
+	const prefix = "Callback destination: "
+	_, destination, ok := strings.Cut(finding.Evidence, prefix)
+	if !ok {
+		t.Fatalf("callback destination missing: %+v", finding)
+	}
+	destination, _, _ = strings.Cut(destination, "\n")
+	u, err := url.Parse(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := net.ParseIP(u.Hostname())
+	private := ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
+	if private {
+		if finding.Severity != "high" || finding.Confidence != attack.ConfirmedExploit ||
+			!strings.Contains(finding.Description, "this private address") {
+			t.Fatalf("private callback undergraded: %+v", finding)
+		}
+	} else if finding.Severity != "info" || finding.Confidence != attack.RiskIndicator ||
+		strings.Contains(finding.Title, "private") {
+		t.Fatalf("public callback overstated: %+v", finding)
+	}
+}
+
 func TestMetadataSSRF_Fetch(t *testing.T) {
 	ts := metadataSSRFServer("fetch")
 	defer ts.Close()
@@ -109,8 +140,29 @@ func TestMetadataSSRF_Fetch(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	assertMetadataCallbackGrade(t, f)
+}
+
+func TestMetadataSSRF_FetchThenReject(t *testing.T) {
+	ts := metadataSSRFServer("fetch-reject")
+	defer ts.Close()
+	findings := runMetadataSSRF(t, ts)
+	if len(findings) != 1 ||
+		!strings.Contains(findings[0].Evidence, "Registration status: HTTP 400") ||
+		!strings.Contains(findings[0].Evidence, "Fetched field: jwks_uri") {
+		t.Fatalf("fetch before rejection was missed: %+v", findings)
+	}
+	assertMetadataCallbackGrade(t, findings[0])
+}
+
+func TestMetadataSSRF_RejectWithoutCallbackIsIncomplete(t *testing.T) {
+	ts := metadataSSRFServer("reject")
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	findings, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).Execute(ctx, ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("rejected registration without a callback: findings=%+v err=%v", findings, err)
 	}
 }
 

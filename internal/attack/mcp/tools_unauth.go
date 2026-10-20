@@ -30,7 +30,7 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 
 	// A server may expose tools on both protocol wires, and need not gate them the
 	// same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
+	return runOnEachWireWithDirect(ctx, client, vars.BaseURL, "tools/list", "tools", func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session)
 	})
 }
@@ -38,7 +38,7 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 // determined is false when the wire returned no usable verdict.
 func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
 	// No advertised tools capability means there is no tool surface to check.
-	if !session.ServerSupports("tools") {
+	if !session.ServerSupports("tools") && !session.directProof {
 		return nil, true
 	}
 
@@ -126,14 +126,13 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	findings = []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "medium",
-		Confidence: attack.ConfirmedExploit,
+		Severity:   "info",
+		Confidence: attack.RiskIndicator,
 		Title:      fmt.Sprintf("MCP tools/list returned %d tool(s) without authentication", len(names)),
 		Description: fmt.Sprintf(
-			"tools/list at %s returned %d tool(s) without any authentication, disclosing tool names "+
-				"and metadata to an anonymous caller. The MCP spec "+
-				"requires servers to implement proper access controls; an attacker can map the callable "+
-				"functions and craft targeted invocations.", session.Endpoint, len(names)),
+			"tools/list at %s returned %d tool definitions to an anonymous caller. MCP authorization "+
+				"is optional, so this may be intentional. The rule does not call a tool or establish whether "+
+				"any listed operation requires authentication.", session.Endpoint, len(names)),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,

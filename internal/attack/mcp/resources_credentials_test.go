@@ -58,7 +58,7 @@ func TestResourcesUnauth_MetadataCannotEscalateRead(t *testing.T) {
 	if err != nil || len(findings) != 2 {
 		t.Fatalf("expected list and read findings, got findings=%+v err=%v", findings, err)
 	}
-	if findings[1].Severity != "high" || strings.Contains(findings[1].Evidence, secret) ||
+	if findings[1].Severity != "info" || strings.Contains(findings[1].Evidence, secret) ||
 		strings.Contains(findings[1].Evidence, "public overview") ||
 		!strings.Contains(findings[1].Evidence, "content: 15 bytes returned (omitted)") {
 		t.Fatalf("metadata must not affect or appear in the read finding: %+v", findings[1])
@@ -104,17 +104,14 @@ func TestResourcesUnauth_PayloadCredentialsAreRedacted(t *testing.T) {
 			if err != nil || len(findings) != 2 {
 				t.Fatalf("expected list and read findings, got findings=%+v err=%v", findings, err)
 			}
-			if findings[1].Severity != "critical" || strings.Contains(findings[1].Evidence, tc.secret) {
+			if findings[1].Severity != "high" || strings.Contains(findings[1].Evidence, tc.secret) {
 				t.Fatalf("payload secret should escalate without appearing in evidence: %+v", findings[1])
 			}
 		})
 	}
 }
 
-// Reading only the first listed resource made the escalation to critical an
-// accident of list order: a server that lists a public README ahead of its
-// database credentials was reported as merely readable. The order is the
-// server's choice, so it must not decide the severity.
+// A later resource with a credential pattern must affect the verdict.
 //
 // The harnesses below serve per-URI content, which the shared one in
 // resources_unauth_test.go does not: it returns the same body for every read, so
@@ -218,8 +215,8 @@ func TestResourcesUnauth_CredentialInALaterResource(t *testing.T) {
 	}
 
 	read := findings[1]
-	if read.Severity != "critical" {
-		t.Errorf("severity = %q, want critical: the third resource leaks a connection string", read.Severity)
+	if read.Severity != "high" {
+		t.Errorf("severity = %q, want high: the third resource exposes a credential pattern", read.Severity)
 	}
 	if !strings.Contains(read.Title, "config://database") {
 		t.Errorf("title should name the leaking resource, got %q", read.Title)
@@ -252,8 +249,7 @@ func TestResourcesUnauth_StopsReadingOnceCredentialFound(t *testing.T) {
 	}
 }
 
-// With nothing to escalate on, the behaviour is as before: the first readable
-// resource is reported, at high.
+// Without a credential pattern, report the first readable resource as public.
 func TestResourcesUnauth_NoCredentialAnywhereReportsFirst(t *testing.T) {
 	uris := []string{"config://readme", "config://app"}
 	contents := map[string]string{
@@ -272,8 +268,8 @@ func TestResourcesUnauth_NoCredentialAnywhereReportsFirst(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
-	if findings[1].Severity != "high" {
-		t.Errorf("severity = %q, want high with no credential present", findings[1].Severity)
+	if findings[1].Severity != "info" {
+		t.Errorf("severity = %q, want info with no credential present", findings[1].Severity)
 	}
 	if !strings.Contains(findings[1].Title, "config://readme") {
 		t.Errorf("title should name the first readable resource, got %q", findings[1].Title)
@@ -337,8 +333,8 @@ func TestResourcesUnauth_SkipsUnreadableResources(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
-	if findings[1].Severity != "critical" || !strings.Contains(findings[1].Title, "config://database") {
-		t.Errorf("want critical finding for config://database, got %q at %q", findings[1].Title, findings[1].Severity)
+	if findings[1].Severity != "high" || !strings.Contains(findings[1].Title, "config://database") {
+		t.Errorf("want high indicator for config://database, got %q at %q", findings[1].Title, findings[1].Severity)
 	}
 	if !strings.Contains(findings[0].Evidence, "1: incomplete (JSON-RPC error)") ||
 		!strings.Contains(findings[0].Evidence, "2: content returned") {

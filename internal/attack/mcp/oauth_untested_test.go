@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
@@ -109,19 +110,19 @@ func TestConfusedDeputy_RedirectRefusedAtRegistrationStaysClean(t *testing.T) {
 	}
 }
 
-// oauth_metadata_ssrf waited for an OOB callback without checking that the
-// registration carrying the seeded URLs had been accepted, so a DCR answering 401
-// produced a clean "no metadata-fetch SSRF" verdict.
+// A rejected registration with no callback leaves the fetch question unanswered.
 func TestOAuthMetadataSSRF_RefusedRegistrationIsNotClean(t *testing.T) {
 	srv := oauthOnlyServer(t, http.StatusUnauthorized)
 	defer srv.Close()
 
 	exec := mcpattack.NewOAuthMetadataSSRFExecutor(attack.RuleContext{ID: "mcp-oauth-metadata-ssrf-001"})
-	findings, err := exec.Execute(context.Background(), srv.URL, testOpts())
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	findings, err := exec.Execute(ctx, srv.URL, testOpts())
 	if len(findings) != 0 {
 		t.Fatalf("expected no findings, got %d", len(findings))
 	}
 	if !errors.Is(err, attack.ErrInconclusive) {
-		t.Errorf("a refused registration stored no URLs, so no fetch could occur; want inconclusive, got err=%v", err)
+		t.Errorf("rejected registration without a callback must be inconclusive, got err=%v", err)
 	}
 }

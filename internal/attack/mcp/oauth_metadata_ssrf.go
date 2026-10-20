@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -11,11 +13,9 @@ import (
 	"github.com/calbebop/batesian/internal/oob"
 )
 
-// OAuthMetadataSSRFExecutor tests whether an MCP OAuth server fetches
-// registrant-supplied URL metadata during dynamic client registration, enabling
-// SSRF (rule mcp-oauth-metadata-ssrf-001). It registers a client whose URL fields
-// point at the Batesian OOB listener and confirms only when the server actually
-// calls back.
+// OAuthMetadataSSRFExecutor checks whether an MCP OAuth server fetches
+// registrant-supplied URL metadata during dynamic client registration. A
+// private-address destination is required for a confirmed SSRF finding.
 type OAuthMetadataSSRFExecutor struct {
 	rule attack.RuleContext
 }
@@ -93,14 +93,10 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	if err != nil {
 		return nil, fmt.Errorf("oauth-metadata-ssrf: DCR registration failed: %w", err)
 	}
-
-	// A registration the server did not accept means the metadata URLs were never
-	// stored, so no fetch could follow and there is nothing to conclude. This
-	// applies to both OOB modes: reporting clean graded an untested SSRF surface
-	// as secure.
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	accepted := resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated
+	if !accepted && listener == nil {
 		return nil, fmt.Errorf("%w: the registration at %s was refused with HTTP %d, so the "+
-			"registrant-supplied metadata URLs were never stored and no fetch could occur",
+			"external OOB callback cannot be checked",
 			attack.ErrInconclusive, registrationEndpoint, resp.StatusCode)
 	}
 
@@ -114,10 +110,10 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 			RuleName:   e.rule.Name,
 			Severity:   "info",
 			Confidence: attack.RiskIndicator,
-			Title:      "MCP OAuth DCR accepted registrant-supplied metadata URLs (verify SSRF via your OOB server)",
+			Title:      "MCP OAuth DCR accepted metadata URLs (check your OOB server for a fetch)",
 			Description: fmt.Sprintf("The registration endpoint at %s accepted a client registration whose URL "+
 				"metadata fields pointed at %s. Check your OOB server for inbound requests to the marker paths to "+
-				"confirm a metadata-fetch SSRF.", registrationEndpoint, listenerURL),
+				"confirm a server-side fetch. A callback alone does not prove access to private addresses.", registrationEndpoint, listenerURL),
 			Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v\n%s", registrationEndpoint, listenerURL, urlMetadataFields, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   registrationEndpoint,
@@ -130,28 +126,56 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	// wait is over: deleting it first could cancel the very fetch this rule is
 	// listening for, trading a real finding for a tidier target.
 	cb, received := listener.WaitForMarker(ctx, 10*time.Second, "batesian-"+vars.RandID)
-	cleanup := deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, resp)
-	recordDCRState(opts.TargetState, registrationEndpoint, clientName, resp, cleanup)
+	cleanup := dcrCleanup{clientName: clientName, status: attack.CleanupUnavailable,
+		reason: "registration was not accepted, so no client was confirmed"}
+	if accepted {
+		cleanup = deregisterDCRClient(ctx, unauthClient, registrationEndpoint, clientName, resp)
+		recordDCRState(opts.TargetState, registrationEndpoint, clientName, resp, cleanup)
+	}
 	if !received {
+		if !accepted {
+			return nil, fmt.Errorf("%w: registration returned HTTP %d and no metadata callback was observed",
+				attack.ErrInconclusive, resp.StatusCode)
+		}
 		return nil, fmt.Errorf("%w: no metadata callback observed; the listener may be unreachable or the fetch delayed",
 			attack.ErrInconclusive)
 	}
 	field := matchMarker(cb.URL, markerFor)
+	if field == "unknown" {
+		return nil, fmt.Errorf("%w: the metadata callback did not match a seeded field", attack.ErrInconclusive)
+	}
+	severity := "info"
+	confidence := attack.RiskIndicator
+	title := "MCP OAuth server fetched a registrant-supplied metadata URL"
+	impact := "The callback confirms a metadata fetch, not access to private addresses or response contents."
+	if privateCallbackDestination(listenerURL) {
+		severity = "high"
+		confidence = attack.ConfirmedExploit
+		title = "MCP OAuth server fetched a registrant-supplied private metadata URL"
+		impact = "The callback confirms a request to this private address; it does not establish access to other private hosts or response contents."
+	}
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "MCP OAuth server fetched an attacker-controlled DCR metadata URL (SSRF)",
-		Description: fmt.Sprintf("The OAuth server at %s made an outbound request to a registrant-supplied metadata "+
-			"URL (field %q) during dynamic client registration. A registrant can point this field at internal "+
-			"services, cloud metadata endpoints, or other private resources, so the OAuth discovery chain is an SSRF "+
-			"vector.", registrationEndpoint, field),
-		Evidence: fmt.Sprintf("Registration endpoint: %s\nOOB callback: %s %s\nFetched field: %s\n%s",
-			registrationEndpoint, cb.Method, cb.URL, field, cleanup.evidenceLine()),
+		Severity:   severity,
+		Confidence: confidence,
+		Title:      title,
+		Description: fmt.Sprintf("The OAuth server at %s fetched the registrant-supplied %s URL during dynamic "+
+			"client registration. %s", registrationEndpoint, field, impact),
+		Evidence: fmt.Sprintf("Registration endpoint: %s\nRegistration status: HTTP %d\nCallback destination: %s\nOOB callback: %s %s\nFetched field: %s\n%s",
+			registrationEndpoint, resp.StatusCode, listenerURL, cb.Method, cb.URL, field, cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
 	}}, nil
+}
+
+func privateCallbackDestination(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
 }
 
 func (e *OAuthMetadataSSRFExecutor) discoverRegistrationEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (string, error) {

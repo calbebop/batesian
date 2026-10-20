@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,5 +226,74 @@ func TestVV_ModernWireMeta(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "CVE-2026-49471") {
 		t.Errorf("evidence should cite the Serena advisory, got: %q", findings[0].Evidence)
+	}
+}
+
+func TestVV_UsesSuppliedTokenForReadOnlyInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		modern bool
+	}{
+		{name: "legacy"},
+		{name: "modern", modern: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer inventory-token" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				var req struct {
+					Method string      `json:"method"`
+					ID     interface{} `json:"id"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				switch req.Method {
+				case "initialize":
+					if tc.modern {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"protocolVersion": "2025-06-18",
+							"serverInfo":      map[string]interface{}{"name": "mcp-server-git", "version": "2025.12.17"},
+							"capabilities":    map[string]interface{}{},
+						},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "server/discover":
+					if !tc.modern {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"supportedVersions": []string{"2026-07-28"},
+							"_meta": map[string]interface{}{
+								"io.modelcontextprotocol/serverInfo": map[string]interface{}{
+									"name": "mcp-server-git", "version": "2025.12.17",
+								},
+							},
+						},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer ts.Close()
+			exec := mcp.NewVulnerableVersionExecutor(vvRC())
+			findings, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, Token: "inventory-token"})
+			if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+				t.Fatalf("authenticated inventory: findings=%+v err=%v", findings, err)
+			}
+			findings, err = exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("anonymous inventory should be incomplete: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }

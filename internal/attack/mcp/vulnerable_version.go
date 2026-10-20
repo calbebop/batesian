@@ -10,25 +10,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// VulnerableVersionExecutor reads the server identity a target publishes and
-// matches it against documented advisories for MCP components with known
-// vulnerabilities (rule mcp-vulnerable-version-001).
-//
-// Every Tier-1 SDK and most product servers state who they are in the
-// handshake: result.serverInfo{name,version} on the legacy wire, the same
-// block under result._meta on 2026-07-28's server/discover. That is exactly
-// what an attacker needs to pick the right exploit, so it is also what a
-// scanner should check: a self-declared version inside a known-vulnerable
-// range is a lead no operator should have to find by hand.
-//
-// Everything here is an indicator. The version string is self-reported -
-// trivially spoofed, sometimes wrong in real deployments - and matching a
-// range is not proof that the vulnerable code path is reachable. Each finding
-// names the advisory so an operator can verify against the actual patch.
-//
-// The advisory table is deliberately short: only products whose patched
-// version is published and unambiguous get an entry. A table nobody maintains
-// rots into false confidence; additions follow the same review bar as rules.
+// VulnerableVersionExecutor compares self-reported server versions with a
+// closed advisory table. Matches are indicators, not proof of exploitability.
 type VulnerableVersionExecutor struct {
 	rule attack.RuleContext
 }
@@ -95,7 +78,8 @@ var vvTable = []vvAdvisory{
 
 func (e *VulnerableVersionExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	client := attack.NewUnauthHTTPClient(opts, vars)
+	// Inventory is read-only; use the supplied token when the server requires it.
+	client := attack.NewHTTPClient(opts, vars)
 
 	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		name, version, ok := vvExtractServerInfo(session.RawInit)

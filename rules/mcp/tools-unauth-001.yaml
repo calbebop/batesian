@@ -2,40 +2,32 @@ id: mcp-tools-unauth-001
 info:
   name: MCP Tools Listed Without Authentication
   author: batesian
-  severity: medium
+  severity: info
   description: |
     Tests whether tools/list exposes tool definitions without authentication.
 
-    Tools are the primary MCP attack surface: unlike resources (data) or prompts
-    (templates), a tool is a server-side function a caller can invoke - querying
-    databases, calling APIs, reading files, or running commands. The MCP spec
-    requires servers to implement proper access controls on tools.
-
-    A non-empty tools/list response discloses tool names and metadata to an
-    unauthenticated caller (MEDIUM). The rule sends no tools/call, so it does not
-    claim that any listed tool is callable without authentication. Fabricated
-    names cannot guarantee zero execution on a nonconforming server.
+    A non-empty tools/list response exposes tool names and metadata to an
+    unauthenticated caller. MCP authorization is optional, so a public catalog
+    is informational unless the deployment expects it to be protected. The
+    rule never invokes a tool and cannot establish invocation access.
 
   references:
-    - https://modelcontextprotocol.io/specification/2025-06-18/server/tools
-    - https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
-    - https://cwe.mitre.org/data/definitions/862.html
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
 
   tags:
     - mcp
     - auth
     - tools
     - access-control
-    - cwe-862
 
 attack:
   protocol: mcp
   type: mcp-tools-unauth
 
 remediation: |
-  1. Require authentication (OAuth 2.1 bearer token) before responding to
-     tools/list and tools/call requests.
-  2. Return a JSON-RPC error (code -32001) for unauthenticated tools/* calls,
-     and enforce the auth check before tool lookup or dispatch.
-  3. Apply per-tool authorization: a valid token for one scope should not grant
-     invocation of every tool the server exposes.
+  If the catalog is intended to be private, require authentication before
+  returning tools/list. For protected HTTP operations, reject missing or invalid
+  bearer tokens with HTTP 401 and insufficient scope with HTTP 403. Enforce
+  authorization separately for tools/call; listing a tool does not grant access
+  to invoke it.

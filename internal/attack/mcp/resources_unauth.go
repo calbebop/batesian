@@ -27,18 +27,11 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s:@]+@[^/\s]+`), // URI userinfo credentials
 }
 
-// maxResourceReads bounds how many resources one run will read. A server may
-// list hundreds, and reading all of them makes a scan's cost a function of the
-// target rather than of the rule. The count actually read is reported in the
-// evidence, so a bounded run never reads as an exhaustive one.
+// maxResourceReads bounds the scan and is reported in finding evidence.
 const maxResourceReads = 5
 
 // ResourcesUnauthExecutor probes MCP resources/list and resources/read without
 // authentication (rule mcp-resources-unauth-001).
-//
-// Unlike tool poisoning (LLM-mediated), resource disclosure is immediate:
-// the attacker retrieves data directly. Resources can contain file system
-// contents, database records, environment variables, or API credentials.
 type ResourcesUnauthExecutor struct {
 	rule attack.RuleContext
 }
@@ -54,24 +47,16 @@ func NewResourcesUnauthExecutor(r attack.RuleContext) *ResourcesUnauthExecutor {
 
 func (e *ResourcesUnauthExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	// Deliberately omit the bearer token so the probe represents unauthenticated
-	// access. Findings claim resources are accessible WITHOUT authentication; if
-	// opts.Token were injected the finding would be misleading.
+	// This probe must remain anonymous even when the scan has a token.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
-	// A server may expose resources on both protocol wires, and need not gate them
-	// the same way on each, so every wire it serves is probed.
-	return runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
+	// The two protocol wires can enforce different policies.
+	return runOnEachWireWithDirect(ctx, client, vars.BaseURL, "resources/list", "resources", func(session mcpSession) ([]attack.Finding, bool) {
 		return e.probeSession(ctx, client, session)
 	})
 }
 
-// probeSession runs the rule against one already-opened wire. determined reports
-// whether the wire established anything; see classifyProbe.
-//
-// Only the listing decides that. The per-resource reads below feed the credential
-// escalation, and they run after the listing finding is already confirmed, so a
-// read that fails cannot turn a confirmed finding into "not tested".
+// The list response sets the verdict; later reads only refine the finding.
 func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
 	// Step 1: resources/list - enumerate available resources
 	listResp, err := session.post(ctx, client, 3, "resources/list", nil)
@@ -175,23 +160,19 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	findings = append(findings, attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
+		Severity:   "info",
+		Confidence: attack.RiskIndicator,
 		Title:      fmt.Sprintf("MCP resources/list accessible without authentication (%d resources)", len(uris)),
 		Description: fmt.Sprintf(
-			"resources/list at %s returned %d resource URIs without authentication.",
+			"resources/list at %s returned %d resource URIs without authentication. This may be "+
+				"intentional; the listing alone does not establish a protection boundary or sensitive content.",
 			session.Endpoint, len(uris)),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
 	})
 
-	// Step 2: read resources, preferring one that demonstrates a credential leak.
-	//
-	// Reading only the first resource made the escalation to critical an accident
-	// of list order: a server that lists a public README ahead of its database
-	// credentials was reported as merely readable. The listing order is the
-	// server's choice, so the rule cannot let it decide the severity.
+	// Check later resources before settling on a benign read.
 	read, examined, outcomes := e.readResources(ctx, client, session, uris, nextID)
 	findings[0].Evidence += "\nresources/read attempts:"
 	for i, outcome := range outcomes {
@@ -202,20 +183,18 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		return findings, true
 	}
 
-	// Baseline: unauthenticated read of resource content is high. Escalate to
-	// critical only when the content actually contains a detected secret -
-	// severity should track demonstrated impact, not be flat-critical for every
-	// readable resource (which may be benign, e.g. a public README).
-	sev := "high"
+	// A readable public resource may be intentional. A credential pattern raises
+	// concern, but pattern matching alone cannot prove the credential is live.
+	sev := "info"
 	if read.credEvidence != "" {
-		sev = "critical"
+		sev = "high"
 	}
 
 	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\nresources examined: %d of %d listed\ncontent: %d bytes returned (omitted)",
 		read.statusCode, session.Endpoint, read.uri, examined, len(uris), read.contentLength)
 	title := fmt.Sprintf("MCP resource %q content readable without authentication", read.uri)
 	description := fmt.Sprintf("resources/read for %s returned content without authentication. "+
-		"Resource data is directly accessible to any unauthenticated caller.", read.uri)
+		"This may be intentional if the resource is public; review its intended audience.", read.uri)
 
 	if read.credEvidence != "" {
 		title = fmt.Sprintf("MCP resource %q contains potential credentials and is readable without authentication", read.uri)
@@ -227,7 +206,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		RuleID:      e.rule.ID,
 		RuleName:    e.rule.Name,
 		Severity:    sev,
-		Confidence:  attack.ConfirmedExploit,
+		Confidence:  attack.RiskIndicator,
 		Title:       title,
 		Description: description,
 		Evidence:    evidenceLines,
