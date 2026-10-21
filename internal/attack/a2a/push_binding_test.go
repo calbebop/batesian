@@ -21,6 +21,12 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 	type cfg struct{ url, owner, id string }
 	pushCfg := map[string]map[string]cfg{}
 	taskOwner := map[string]string{}
+	if mode == "reused-with-existing" {
+		pushCfg["task-tenant-a"] = map[string]cfg{
+			"existing": {url: "https://user.example/cb", owner: "tenant-a", id: "existing"},
+		}
+		taskOwner["task-tenant-a"] = "tenant-a"
+	}
 	var lastSetID, ownerGetID interface{}
 	var lastSetResult, ownerGetResult map[string]interface{}
 
@@ -76,7 +82,8 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			rpcErr("version not supported")
 			return
 		}
-		if v1Only && (method == "CreateTaskPushNotificationConfig" || method == "GetTaskPushNotificationConfig") &&
+		if v1Only && (method == "CreateTaskPushNotificationConfig" || method == "GetTaskPushNotificationConfig" ||
+			method == "DeleteTaskPushNotificationConfig") &&
 			r.Header.Get("A2A-Version") != "1.0" {
 			rpcErr("version not supported")
 			return
@@ -276,6 +283,33 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				}
 				rpcErr("config not found")
 			}
+		case "DeleteTaskPushNotificationConfig", "tasks/pushNotificationConfig/delete":
+			if mode == "delete-denied" {
+				rpcErr("not task owner")
+				return
+			}
+			if who != "tenant-a" {
+				rpcErr("not task owner")
+				return
+			}
+			tid, configID := "", ""
+			if method == "DeleteTaskPushNotificationConfig" {
+				tid, _ = params["taskId"].(string)
+				configID, _ = params["id"].(string)
+			} else {
+				tid, _ = params["id"].(string)
+				configID, _ = params["pushNotificationConfigId"].(string)
+			}
+			if _, ok := pushCfg[tid][configID]; !ok {
+				rpcErr("config not found")
+				return
+			}
+			delete(pushCfg[tid], configID)
+			if method == "tasks/pushNotificationConfig/delete" {
+				result(nil)
+				return
+			}
+			result(map[string]interface{}{})
 		default:
 			rpcErr("method not found")
 		}
@@ -329,6 +363,108 @@ func TestPushBinding_Unbound(t *testing.T) {
 	titles := findings[0].Title + "|" + findings[1].Title
 	if !strings.Contains(titles, "writable") || !strings.Contains(titles, "readable") {
 		t.Errorf("expected one write and one read finding, got: %s", titles)
+	}
+}
+
+func pushConfigObjects(objects []attack.TargetObject) []attack.TargetObject {
+	var configs []attack.TargetObject
+	for _, object := range objects {
+		if object.Kind == "a2a_push_config" {
+			configs = append(configs, object)
+		}
+	}
+	return configs
+}
+
+func TestPushBindingCleansVerifiedMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{
+		{"unbound", 2},
+		{"legacy-only", 2},
+		{"open", 2},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := pushServer(tc.mode)
+			defer ts.Close()
+			state := &attack.TargetState{}
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
+			if err != nil || len(findings) == 0 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			objects := pushConfigObjects(state.Snapshot())
+			if len(objects) != tc.want {
+				t.Fatalf("target objects = %+v", objects)
+			}
+			for _, object := range objects {
+				if object.Kind != "a2a_push_config" || object.Cleanup != attack.CleanupCompleted {
+					t.Fatalf("target objects = %+v", objects)
+				}
+			}
+			if !strings.Contains(findings[0].Evidence, "deleted after probe") {
+				t.Fatalf("cleanup omitted from finding evidence: %q", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestPushBindingPreservesExistingConfigOnReusedTask(t *testing.T) {
+	ts := pushServer("reused-with-existing")
+	defer ts.Close()
+	bb := attack.NewBlackboard()
+	bb.Publish(attack.Artifact{Kind: attack.ArtifactTaskID, Value: "task-tenant-a", Principal: "tenant-a"})
+	state := &attack.TargetState{}
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).ExecuteChained(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state}, bb)
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	objects := pushConfigObjects(state.Snapshot())
+	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
+		t.Fatalf("target objects = %+v", objects)
+	}
+	client := attack.NewHTTPClient(attack.Options{Token: "tok-a"}, attack.NewVars(ts.URL, ""))
+	resp, err := client.POST(t.Context(), ts.URL, map[string]string{"A2A-Version": "1.0"}, map[string]interface{}{
+		"jsonrpc": "2.0", "id": "existing-read", "method": "GetTaskPushNotificationConfig",
+		"params": map[string]string{"taskId": "task-tenant-a", "id": "existing"},
+	})
+	if err != nil || resp == nil || !strings.Contains(string(resp.Body), "https://user.example/cb") {
+		t.Fatalf("pre-existing config was changed: response=%v err=%v", resp, err)
+	}
+}
+
+func TestPushBindingSkipsUnconfirmedMarkerCleanup(t *testing.T) {
+	ts := pushServer("noop-write")
+	defer ts.Close()
+	state := &attack.TargetState{}
+	_, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
+	if !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected inconclusive write, got %v", err)
+	}
+	objects := pushConfigObjects(state.Snapshot())
+	if len(objects) != 2 || !strings.HasPrefix(objects[0].ID, "attacker-") ||
+		objects[0].Cleanup != attack.CleanupUnavailable || objects[1].Cleanup != attack.CleanupCompleted {
+		t.Fatalf("target objects = %+v", objects)
+	}
+}
+
+func TestPushBindingReportsRefusedCleanup(t *testing.T) {
+	ts := pushServer("delete-denied")
+	defer ts.Close()
+	state := &attack.TargetState{}
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	objects := pushConfigObjects(state.Snapshot())
+	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupAttempted || objects[1].Cleanup != attack.CleanupAttempted ||
+		!strings.Contains(objects[0].CleanupDetail, "JSON-RPC error -32600") ||
+		!strings.Contains(findings[0].Evidence, "verify on target") {
+		t.Fatalf("refused cleanup = %+v, evidence = %q", objects, findings[0].Evidence)
 	}
 }
 
@@ -401,8 +537,15 @@ func TestPushBinding_LegacyVersionStrict(t *testing.T) {
 					principals[i].Headers = map[string]string{"a2a-version": "1.0"}
 				}
 			}
-			if findings := runPushBinding(t, ts, principals); len(findings) != 2 {
-				t.Fatalf("expected read and write findings on a version-strict v0.3 server, got %+v", findings)
+			state := &attack.TargetState{}
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: principals, TargetState: state})
+			if err != nil || len(findings) != 2 {
+				t.Fatalf("expected read and write findings on a version-strict v0.3 server, got %+v, err=%v", findings, err)
+			}
+			configs := pushConfigObjects(state.Snapshot())
+			if len(configs) != 2 || configs[0].Cleanup != attack.CleanupCompleted || configs[1].Cleanup != attack.CleanupCompleted {
+				t.Fatalf("version-strict cleanup = %+v", configs)
 			}
 		})
 	}
@@ -600,9 +743,18 @@ func TestPushBinding_HeaderOnlyOwner(t *testing.T) {
 		{Name: "tenant-a", Headers: map[string]string{"X-API-Key": "key-a"}},
 		{Name: "tenant-b", Headers: map[string]string{"X-API-Key": "key-b"}},
 	}
-	findings := runPushBinding(t, ts, principals)
+	state := &attack.TargetState{}
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: principals, TargetState: state})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(findings) != 2 {
 		t.Fatalf("expected header-authenticated cross-principal findings, got %+v", findings)
+	}
+	objects := pushConfigObjects(state.Snapshot())
+	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
+		t.Fatalf("header-authenticated cleanup = %+v", objects)
 	}
 }
 

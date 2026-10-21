@@ -16,7 +16,7 @@ foreach ($name in $containers) {
 }
 
 try {
-    docker run --rm --name batesian-demo-build -v "${repo}:/src" -w /src golang:1.26.9 sh -c 'export PATH=/usr/local/go/bin:$PATH; go build -o bin/batesian-demo ./cmd/batesian'
+    docker run --rm --name batesian-demo-build -v "${repo}:/src" -w /src golang:1.26.10 sh -c 'export PATH=/usr/local/go/bin:$PATH; go build -o bin/batesian-demo ./cmd/batesian'
     if ($LASTEXITCODE -ne 0) { throw 'Could not build the demo CLI.' }
     docker run --rm -d --name $fixture -v "${repo}:/src:ro" -w /src python:3.12-slim sh -c 'pip install --quiet starlette==1.8.0 uvicorn==0.54.0 && python testdata/a2a_card_security_unenforced_server.py'
     if ($LASTEXITCODE -ne 0) { throw 'Could not start the demo fixture.' }
