@@ -50,7 +50,7 @@ Published releases include SHA-256 checksums, a Sigstore bundle for the checksum
 
 ### Go toolchain
 
-The current `main` branch requires Go 1.26.9 or newer. A release tag's `go.mod` specifies its own minimum:
+The current `main` branch requires Go 1.26.10 or newer. A release tag's `go.mod` specifies its own minimum:
 
 ```bash
 go install github.com/calbebop/batesian/cmd/batesian@latest
@@ -211,7 +211,7 @@ jobs:
     steps:
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
       - run: go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
       - name: Scan
         env:

@@ -200,7 +200,7 @@ go test ./...
 Both must pass with zero failures before committing.
 
 No local Go toolchain? `make docker-check` runs build, vet, race tests and
-golangci-lint inside the same pinned containers CI uses (`golang:1.26.9-bookworm`,
+golangci-lint inside the same pinned containers CI uses (`golang:1.26.10-bookworm`,
 `golangci-lint v2.11.4`), so the verdict matches before you push:
 
 ```sh
