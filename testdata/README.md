@@ -55,7 +55,7 @@ validation; selected fixtures also run in CI.
 | `a2a_context_fixation_server.py` | 3104 | `a2a-context-fixation-001` (two principals; needs two `--principal`s) |
 | `a2a_card_trust_server.py` | 3105 | `a2a-card-trust-001` |
 | `a2a_extension_downgrade_server.py` | 3106 | `a2a-extension-downgrade-001` |
-| `a2a_push_binding_server.py` | 3107 | `a2a-push-binding-001`, `a2a-push-lifecycle-001`, `a2a-subscription-scope-001` (two principals; vulnerable and bound postures) |
+| `a2a_push_binding_server.py` | 3107 | `a2a-push-binding-001`, `a2a-push-lifecycle-001`, `a2a-subscription-scope-001` (two principals; vulnerable and bound postures; optional HTTP+JSON subscription mode) |
 | `a2a_batch_bypass_server.py` | 3108 | `a2a-jsonrpc-batch-bypass-001` |
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |

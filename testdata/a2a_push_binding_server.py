@@ -14,6 +14,7 @@ Validate (two principals required):
 
 Run: python testdata/a2a_push_binding_server.py
 Set BATESIAN_PUSH_POSTURE=bound for a protected control.
+Set BATESIAN_A2A_BINDING=rest for the v1.0 HTTP+JSON subscription fixture.
 """
 import json
 import os
@@ -26,6 +27,7 @@ import uvicorn
 
 PORT = 3107
 BOUND = os.getenv("BATESIAN_PUSH_POSTURE", "vulnerable") == "bound"
+BINDING = os.getenv("BATESIAN_A2A_BINDING", "jsonrpc")
 TOKEN_TENANT = {"tok-a": "tenant-a", "tok-b": "tenant-b"}
 TASK_OWNER: dict = {}
 PUSH_CFG: dict = {}  # taskId -> configId -> config
@@ -50,6 +52,8 @@ def error(req_id, msg):
 
 
 async def rpc(request: Request) -> Response:
+    if BINDING != "jsonrpc":
+        return Response(status_code=404)
     global _counter
     body = await request.json()
     method = body.get("method", "")
@@ -146,10 +150,67 @@ async def rpc(request: Request) -> Response:
     return error(req_id, "Method not found")
 
 
-app = Starlette(routes=[Route("/", rpc, methods=["POST"])])
+async def rest_card(request: Request) -> Response:
+    if BINDING != "rest":
+        return Response(status_code=404)
+    base = str(request.base_url).rstrip("/")
+    return Response(json.dumps({"supportedInterfaces": [{
+        "url": base + "/agent", "protocolBinding": "HTTP+JSON",
+        "protocolVersion": "1.0",
+    }]}), media_type="application/json")
+
+
+async def rest_send(request: Request) -> Response:
+    global _counter
+    if BINDING != "rest":
+        return Response(status_code=404)
+    who = tenant_of(request)
+    if not who:
+        return Response(status_code=403)
+    _counter += 1
+    task_id = f"task-{who}-{_counter}"
+    TASK_OWNER[task_id] = who
+    task = {"id": task_id, "contextId": f"ctx-{who}",
+            "status": {"state": "TASK_STATE_WORKING"}}
+    return Response(json.dumps({"task": task}), media_type="application/a2a+json")
+
+
+async def rest_task(request: Request) -> Response:
+    if BINDING != "rest":
+        return Response(status_code=404)
+    task_id = request.path_params["task_id"]
+    owner = TASK_OWNER.get(task_id)
+    if not owner or tenant_of(request) != owner:
+        return Response(status_code=404)
+    task = {"id": task_id, "contextId": f"ctx-{owner}",
+            "status": {"state": "TASK_STATE_WORKING"}}
+    return Response(json.dumps(task), media_type="application/a2a+json")
+
+
+async def rest_subscribe(request: Request) -> Response:
+    if BINDING != "rest":
+        return Response(status_code=404)
+    task_id = request.path_params["task_id"]
+    owner = TASK_OWNER.get(task_id)
+    who = tenant_of(request)
+    if not owner or not who or (BOUND and owner != who):
+        return Response(status_code=404)
+    task = {"id": task_id, "contextId": f"ctx-{owner}",
+            "status": {"state": "TASK_STATE_WORKING"}}
+    return Response("data: " + json.dumps({"task": task}) + "\n\n",
+                    media_type="text/event-stream")
+
+
+app = Starlette(routes=[
+    Route("/", rpc, methods=["POST"]),
+    Route("/.well-known/agent-card.json", rest_card, methods=["GET"]),
+    Route("/agent/message:send", rest_send, methods=["POST"]),
+    Route("/agent/tasks/{task_id}:subscribe", rest_subscribe, methods=["POST"]),
+    Route("/agent/tasks/{task_id}", rest_task, methods=["GET"]),
+])
 
 if __name__ == "__main__":
-    print(f"[*] A2A push-config {os.getenv('BATESIAN_PUSH_POSTURE', 'vulnerable')} server on port {PORT}", flush=True)
+    print(f"[*] A2A {BINDING} {os.getenv('BATESIAN_PUSH_POSTURE', 'vulnerable')} server on port {PORT}", flush=True)
     print("[*] Tokens: tok-a (tenant-a), tok-b (tenant-b)", flush=True)
     print("[*] Vulnerable posture leaves push config and subscription access unbound", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

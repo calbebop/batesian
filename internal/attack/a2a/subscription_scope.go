@@ -33,12 +33,29 @@ func (e *SubscriptionScopeExecutor) Execute(ctx context.Context, target string, 
 		return nil, err
 	}
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
+	clientA, clientB := principalClient(opts, vars, owner), principalClient(opts, vars, other)
+	endpoint, jsonRPC := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	var partial error
+	if jsonRPC {
+		findings, err := e.probeJSONRPC(ctx, endpoint, vars.RandID, owner, other, clientA, clientB)
+		if len(findings) != 0 {
+			return findings, err
+		}
+		partial = errors.Join(partial, err)
+	}
+	findings, restErr, restAdvertised := e.probeREST(ctx, vars.BaseURL, vars.RandID, owner, other, clientA, clientB)
+	if len(findings) != 0 {
+		return findings, errors.Join(partial, restErr)
+	}
+	if !jsonRPC && !restAdvertised {
 		return nil, attack.ErrInconclusive
 	}
-	clientA, clientB := principalClient(opts, vars, owner), principalClient(opts, vars, other)
-	taskID, setup := NewPushBindingExecutor(e.rule).createTask(ctx, clientA, endpoint, owner, vars.RandID)
+	return nil, errors.Join(partial, restErr)
+}
+
+func (e *SubscriptionScopeExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
+	owner, other attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error) {
+	taskID, setup := NewPushBindingExecutor(e.rule).createTask(ctx, clientA, endpoint, owner, randID)
 	if taskID == "" {
 		return nil, setup.err()
 	}
@@ -52,7 +69,7 @@ func (e *SubscriptionScopeExecutor) Execute(ctx context.Context, target string, 
 		{true, "GetTask", "SubscribeToTask"},
 		{false, "tasks/get", "tasks/resubscribe"},
 	} {
-		ownerRead := e.readTask(ctx, clientA, endpoint, owner.Headers, taskID, wire.get, wire.v1, vars.RandID+"-owner")
+		ownerRead := e.readTask(ctx, clientA, endpoint, owner.Headers, taskID, wire.get, wire.v1, randID+"-owner")
 		if ownerRead.kind == subscriptionUnsupported {
 			continue
 		}
@@ -60,7 +77,7 @@ func (e *SubscriptionScopeExecutor) Execute(ctx context.Context, target string, 
 			partial = errors.Join(partial, fmt.Errorf("%w: owner task read did not confirm a nonterminal task on %s", attack.ErrInconclusive, wire.get))
 			continue
 		}
-		ownerStream := e.subscribe(ctx, clientA, endpoint, owner.Headers, taskID, wire.subscribe, wire.v1, vars.RandID+"-owner")
+		ownerStream := e.subscribe(ctx, clientA, endpoint, owner.Headers, taskID, wire.subscribe, wire.v1, randID+"-owner")
 		if ownerStream.kind == subscriptionUnsupported {
 			continue
 		}
@@ -69,19 +86,19 @@ func (e *SubscriptionScopeExecutor) Execute(ctx context.Context, target string, 
 			partial = errors.Join(partial, fmt.Errorf("%w: owner subscription did not return matching task data on %s", attack.ErrInconclusive, wire.subscribe))
 			continue
 		}
-		otherRead := e.readTask(ctx, clientB, endpoint, other.Headers, taskID, wire.get, wire.v1, vars.RandID+"-other")
+		otherRead := e.readTask(ctx, clientB, endpoint, other.Headers, taskID, wire.get, wire.v1, randID+"-other")
 		if otherRead.kind != subscriptionDenied {
 			partial = errors.Join(partial, fmt.Errorf("%w: second principal was not confirmed outside the task's access scope on %s", attack.ErrInconclusive, wire.get))
 			continue
 		}
-		otherStream := e.subscribe(ctx, clientB, endpoint, other.Headers, taskID, wire.subscribe, wire.v1, vars.RandID+"-other")
+		otherStream := e.subscribe(ctx, clientB, endpoint, other.Headers, taskID, wire.subscribe, wire.v1, randID+"-other")
 		switch otherStream.kind {
 		case subscriptionData:
 			if otherStream.contextID != ownerStream.contextID {
 				partial = errors.Join(partial, fmt.Errorf("%w: second principal's %s event did not match the owner's context", attack.ErrInconclusive, wire.subscribe))
 				continue
 			}
-			return []attack.Finding{e.finding(endpoint, owner, other, wire.subscribe)}, partial
+			return []attack.Finding{e.finding(endpoint, owner, other, wire.get, wire.subscribe)}, partial
 		case subscriptionDenied:
 			// The owner can subscribe, while this principal cannot read or subscribe.
 		default:
@@ -194,14 +211,14 @@ func subscriptionContextID(result json.RawMessage) string {
 	return value.ContextID
 }
 
-func (e *SubscriptionScopeExecutor) finding(endpoint string, owner, other attack.Principal, method string) attack.Finding {
+func (e *SubscriptionScopeExecutor) finding(endpoint string, owner, other attack.Principal, readMethod, method string) attack.Finding {
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.RiskIndicator,
 		Title: "A2A subscription returned task data despite read denial",
 		Description: fmt.Sprintf("Principal %q could not read principal %q's task, but received its task data from %s. Confirm whether the subscription grant is intended.",
 			other.Name, owner.Name, method),
-		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\n%s: owner event received; other principal's GetTask denied; other principal's subscription returned data for the same task and context",
-			owner.Name, other.Name, method),
+		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\n%s: owner event received; other principal's %s denied; other principal's subscription returned data for the same task and context",
+			owner.Name, other.Name, method, readMethod),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create and subscribe to a nonterminal task", Outcome: "owner task event received"},

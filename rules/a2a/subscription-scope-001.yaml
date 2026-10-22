@@ -13,7 +13,7 @@ info:
     an indicator to review against the agent's access policy, not proof that
     the subscription was unauthorized.
 
-    Supports v1.0 and v0.3 JSON-RPC. HTTP+JSON and gRPC are not tested.
+    Supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON. gRPC is not tested.
 
   references:
     - https://a2a-protocol.org/v1.0.1/specification/#316-subscribe-to-task
@@ -34,4 +34,4 @@ attack:
 remediation: |
   Confirm whether the second principal should have subscription access. If
   not, authorize each SubscribeToTask or tasks/resubscribe request against the
-  task's access policy before starting the stream.
+  task's access policy before starting the stream, on every advertised binding.
