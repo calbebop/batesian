@@ -94,6 +94,9 @@ func taskSetupRules() map[string]func(attack.RuleContext) attack.Executor {
 		"a2a-push-lifecycle-001": func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewPushLifecycleExecutor(rc)
 		},
+		"a2a-subscription-scope-001": func(rc attack.RuleContext) attack.Executor {
+			return a2aattack.NewSubscriptionScopeExecutor(rc)
+		},
 		"a2a-task-cancel-idor-001": func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskCancelIDORExecutor(rc)
 		},
@@ -191,7 +194,7 @@ func TestTaskSetup_FeatureAbsentStaysClean(t *testing.T) {
 
 	for _, id := range []string{
 		"a2a-multitenant-isolation-001", "a2a-delegation-integrity-001",
-		"a2a-push-binding-001", "a2a-push-lifecycle-001", "a2a-task-cancel-idor-001",
+		"a2a-push-binding-001", "a2a-push-lifecycle-001", "a2a-subscription-scope-001", "a2a-task-cancel-idor-001",
 	} {
 		t.Run(id, func(t *testing.T) {
 			exec := taskSetupRules()[id](attack.RuleContext{ID: id, Severity: "high"})
