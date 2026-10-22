@@ -160,7 +160,7 @@ func TestSubscriptionScope(t *testing.T) {
 			for _, finding := range findings {
 				if finding.Confidence != attack.RiskIndicator || finding.Severity != "high" ||
 					strings.Contains(finding.Evidence, "task-subscription-") ||
-					!strings.Contains(finding.Evidence, "GetTask denied") {
+					!strings.Contains(finding.Evidence, "denied") {
 					t.Fatalf("finding=%+v", finding)
 				}
 			}

@@ -37,11 +37,10 @@ inconsistencies without another wire revision. Two details affect this rule set:
 
 The catalog checks JSON-RPC push-config List/Delete authorization with a
 scanner-created config, bounded pagination, and task-access controls. It also
-checks task subscription access against a scanner-created nonterminal task,
-reading only the first stream event. These checks do not cover HTTP+JSON or gRPC.
-The official SDK validation fixture disables streaming and push, so the
-List/Delete and subscription rules have local protected and vulnerable fixtures
-but no live SDK baseline yet.
+checks JSON-RPC and advertised HTTP+JSON task subscription access against a
+scanner-created nonterminal task, reading one bounded stream response. The
+official SDK validation fixture disables streaming and push, so these rules
+have local protected and vulnerable fixtures but no live SDK baseline yet.
 
 ## Endpoint discovery
 
@@ -505,18 +504,19 @@ ambiguous and the rule reports not tested.
 **Subscription and Task-Read Scope Mismatch** | Severity: High | CWE-639
 
 Creates a nonterminal task as one principal and requires that principal to read
-and subscribe to it. A second principal must be denied `GetTask` before the rule
-tests whether it receives the same task and context in a subscription event.
-The rule reads only the first JSON-RPC SSE response, then closes the stream. It
-expects a task snapshot on v1.0 `SubscribeToTask`; v0.3 `tasks/resubscribe` may
-start with a task or status/artifact update. A missing task,
+and subscribe to it. A second principal must be denied task read access before
+the rule tests whether it receives the same task and context in a subscription
+event. The rule captures one bounded response event, then closes the stream.
+It expects a task snapshot on v1.0; v0.3 may start with a task or
+status/artifact update. A missing task,
 terminal task, malformed stream, or ambiguous access control is not reported as
 clean. Task identifiers and stream content are omitted from findings. Because
 the agent may intentionally grant subscription without task-read access, a
 matching stream is an **indicator** to review against its authorization policy.
 
-The rule does not test HTTP+JSON or gRPC subscriptions. It requires two distinct
-configured principals and creates a task on the target.
+The rule tests v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings, but not
+gRPC. It requires two distinct configured principals and creates a task on the
+target.
 
 ---
 

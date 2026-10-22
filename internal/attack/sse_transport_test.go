@@ -117,3 +117,20 @@ func TestSSE_MalformedPayloadIsSurfaced(t *testing.T) {
 		t.Error("the malformed payload should be surfaced so rules can see what the server sent")
 	}
 }
+
+func TestSSE_FirstDataReturnsBeforeStreamCloses(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, ": keepalive\n\ndata: {\"task\":{\"id\":\"task-1\"}}\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 2}, attack.NewVars(srv.URL, ""))
+	resp, err := c.POSTFirstSSE(t.Context(), srv.URL, nil, map[string]string{"id": "task-1"})
+	if err != nil || resp == nil || resp.BodyString() != `{"task":{"id":"task-1"}}` {
+		t.Fatalf("first SSE data event = %+v, %v", resp, err)
+	}
+}

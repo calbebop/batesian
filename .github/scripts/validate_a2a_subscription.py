@@ -31,9 +31,10 @@ def wait_for_fixture(proc, log):
     raise RuntimeError(f"subscription fixture did not start:\n{log.read()}")
 
 
-def scan(posture):
+def scan(posture, binding):
     env = os.environ.copy()
     env["BATESIAN_PUSH_POSTURE"] = posture
+    env["BATESIAN_A2A_BINDING"] = binding
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as log:
         proc = subprocess.Popen(
             [sys.executable, "testdata/a2a_push_binding_server.py"],
@@ -62,19 +63,20 @@ def scan(posture):
 
 
 def validate():
-    vulnerable = scan("vulnerable")
-    findings = [finding for finding in vulnerable.get("findings", []) if finding.get("rule_id") == RULE]
-    if rule_statuses(vulnerable, {RULE})[RULE] != "findings" or len(findings) != 1:
-        raise AssertionError(f"vulnerable subscription was not reported: {vulnerable}")
-    finding = findings[0]
-    if finding.get("confidence") != "indicator" or "task-tenant-a" in json.dumps(finding):
-        raise AssertionError(f"subscription finding overstated or leaked task ID: {finding}")
-    print("[PASS] vulnerable subscription reported as an indicator")
+    for binding in ("jsonrpc", "rest"):
+        vulnerable = scan("vulnerable", binding)
+        findings = [finding for finding in vulnerable.get("findings", []) if finding.get("rule_id") == RULE]
+        if rule_statuses(vulnerable, {RULE})[RULE] != "findings" or len(findings) != 1:
+            raise AssertionError(f"vulnerable {binding} subscription was not reported: {vulnerable}")
+        finding = findings[0]
+        if finding.get("confidence") != "indicator" or "task-tenant-a" in json.dumps(finding):
+            raise AssertionError(f"{binding} finding overstated or leaked task ID: {finding}")
+        print(f"[PASS] vulnerable {binding} subscription reported as an indicator")
 
-    bound = scan("bound")
-    if rule_statuses(bound, {RULE})[RULE] != "no_findings" or bound.get("findings"):
-        raise AssertionError(f"bound subscription was not clean: {bound}")
-    print("[PASS] bound subscription returned no findings")
+        bound = scan("bound", binding)
+        if rule_statuses(bound, {RULE})[RULE] != "no_findings" or bound.get("findings"):
+            raise AssertionError(f"bound {binding} subscription was not clean: {bound}")
+        print(f"[PASS] bound {binding} subscription returned no findings")
 
 
 if __name__ == "__main__":

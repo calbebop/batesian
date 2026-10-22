@@ -412,6 +412,15 @@ func (c *HTTPClient) DELETEOAuth(ctx context.Context, urlTpl string, headers map
 
 // POST sends a POST request with a JSON body. body may be a map or struct.
 func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
+	return c.post(ctx, urlTpl, headers, body, false)
+}
+
+// POSTFirstSSE captures the first data event from an SSE response.
+func (c *HTTPClient) POSTFirstSSE(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
+	return c.post(ctx, urlTpl, headers, body, true)
+}
+
+func (c *HTTPClient) post(ctx context.Context, urlTpl string, headers map[string]string, body interface{}, firstSSE bool) (*Response, error) {
 	url := c.vars.Expand(urlTpl)
 	expandedHeaders := c.vars.ExpandMap(headers)
 	url, body = augmentRequest(ctx, http.MethodPost, url, expandedHeaders, body)
@@ -423,7 +432,7 @@ func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string
 	for k, v := range expandedHeaders {
 		merged[k] = v
 	}
-	resp, err := c.do(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes), merged)
+	resp, err := c.doWithSSE(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes), merged, firstSSE)
 	recordA2ATask(c.state, url, jsonBytes, resp)
 	recordMCPTask(c.state, url, jsonBytes, resp)
 	return resp, err
@@ -440,6 +449,10 @@ func (c *HTTPClient) POSTOAuth(ctx context.Context, urlTpl string, headers map[s
 
 // do executes an HTTP request and returns the captured Response.
 func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader, headers map[string]string) (*Response, error) {
+	return c.doWithSSE(ctx, method, url, body, headers, false)
+}
+
+func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.Reader, headers map[string]string, firstSSE bool) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("building %s %s: %w", method, url, err)
@@ -475,7 +488,14 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
 		// SSE streams never close; read only up to the response event then stop.
-		respBody, err = readSSEResponse(resp.Body)
+		if firstSSE {
+			respBody, err = sse.FirstData(resp.Body, maxBody)
+			if err == nil && respBody == nil {
+				err = errors.New("stream carried no data event")
+			}
+		} else {
+			respBody, err = readSSEResponse(resp.Body)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading SSE response from %s: %w", url, err)
 		}
