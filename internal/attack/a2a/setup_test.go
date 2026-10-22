@@ -67,8 +67,8 @@ func securedAgent(t *testing.T, validTokens ...string) *securedAgentFixture {
 	return fixture
 }
 
-// theEightRules are every rule whose oracle needs a task it has to create first.
-func theEightRules() map[string]func(attack.RuleContext) attack.Executor {
+// taskSetupRules exercise task creation before their authorization probes.
+func taskSetupRules() map[string]func(attack.RuleContext) attack.Executor {
 	return map[string]func(attack.RuleContext) attack.Executor{
 		"a2a-task-idor-001": func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskIDORExecutor(rc)
@@ -90,6 +90,9 @@ func theEightRules() map[string]func(attack.RuleContext) attack.Executor {
 		},
 		"a2a-push-binding-001": func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewPushBindingExecutor(rc)
+		},
+		"a2a-push-lifecycle-001": func(rc attack.RuleContext) attack.Executor {
+			return a2aattack.NewPushLifecycleExecutor(rc)
 		},
 		"a2a-task-cancel-idor-001": func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskCancelIDORExecutor(rc)
@@ -114,7 +117,7 @@ func TestTaskSetup_RejectedCredentialIsNotTestedForEveryRule(t *testing.T) {
 	srv := securedAgent(t, "the-valid-token")
 	defer srv.Close()
 
-	for id, build := range theEightRules() {
+	for id, build := range taskSetupRules() {
 		t.Run(id, func(t *testing.T) {
 			exec := build(attack.RuleContext{ID: id, Severity: "high"})
 			findings, err := exec.Execute(context.Background(), srv.URL, twoRejectedPrincipals())
@@ -150,7 +153,7 @@ func TestTaskSetup_AcceptedCredentialGetsPastSetup(t *testing.T) {
 			{Name: "b", Token: "valid-b", Tenant: "B"},
 		},
 	}
-	for id, build := range theEightRules() {
+	for id, build := range taskSetupRules() {
 		t.Run(id, func(t *testing.T) {
 			exec := build(attack.RuleContext{ID: id, Severity: "high"})
 			before := srv.authorizedCreates.Load()
@@ -188,10 +191,10 @@ func TestTaskSetup_FeatureAbsentStaysClean(t *testing.T) {
 
 	for _, id := range []string{
 		"a2a-multitenant-isolation-001", "a2a-delegation-integrity-001",
-		"a2a-push-binding-001", "a2a-task-cancel-idor-001",
+		"a2a-push-binding-001", "a2a-push-lifecycle-001", "a2a-task-cancel-idor-001",
 	} {
 		t.Run(id, func(t *testing.T) {
-			exec := theEightRules()[id](attack.RuleContext{ID: id, Severity: "high"})
+			exec := taskSetupRules()[id](attack.RuleContext{ID: id, Severity: "high"})
 			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
 				TimeoutSeconds: 5,
 				Principals: []attack.Principal{
@@ -250,7 +253,7 @@ func TestTaskSetup_HTTPFailureWithUnsupportedBodyIsIncomplete(t *testing.T) {
 				id    string
 				build func(attack.RuleContext) attack.Executor
 			}{
-				{"a2a-task-cancel-idor-001", theEightRules()["a2a-task-cancel-idor-001"]},
+				{"a2a-task-cancel-idor-001", taskSetupRules()["a2a-task-cancel-idor-001"]},
 				{"a2a-task-enumeration-001", func(rc attack.RuleContext) attack.Executor {
 					return a2aattack.NewTaskEnumerationExecutor(rc)
 				}},

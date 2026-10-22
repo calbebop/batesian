@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **19 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **20 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -35,15 +35,13 @@ inconsistencies without another wire revision. Two details affect this rule set:
   binding. It is a SHOULD rather than a MUST, and the JSON-RPC binding these
   rules primarily drive explicitly keeps `application/json`.
 
-The catalog does not yet check task subscriptions or push-config List/Delete
-authorization. These operations are defined in the
-[A2A v1.0.1 specification](https://a2a-protocol.org/v1.0.1/specification/),
-but neither live validation target can exercise them: the official SDK fixture
-disables streaming and push, and the secured fixture has no handlers for those
-three methods. Subscription checks need a live, nonterminal task and a bounded
-stream read. Push List/Delete checks need owner and unauthorized controls,
-bounded pagination, readback, and cleanup of scanner-owned configs. Different
-credentials alone do not establish different task access policies.
+The catalog checks JSON-RPC push-config List/Delete authorization with a
+scanner-created config, bounded pagination, and task-access controls. It does
+not yet check task subscriptions or List/Delete on HTTP+JSON and gRPC bindings.
+Subscription checks need a live, nonterminal task and a bounded stream read.
+The official SDK validation fixture disables streaming and push, so the
+List/Delete rule has local protected and vulnerable fixtures but no live SDK
+baseline yet.
 
 ## Endpoint discovery
 
@@ -91,10 +89,11 @@ evidence. A card rule with no card has nothing to say either way.
 
 ### Rules that need a task first
 
-Ten rules cannot say anything until they have created a task: `a2a-task-idor-001`,
+Eleven rules cannot say anything until they have created a task: `a2a-task-idor-001`,
 `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-context-fixation-001`,
 `a2a-delegation-integrity-001`, `a2a-multitenant-isolation-001`,
-`a2a-push-binding-001`, `a2a-task-cancel-idor-001`, `a2a-task-enumeration-001` and `a2a-push-callback-auth-001`.
+`a2a-push-binding-001`, `a2a-push-lifecycle-001`, `a2a-task-cancel-idor-001`,
+`a2a-task-enumeration-001` and `a2a-push-callback-auth-001`.
 Against an agent that enforces authorization, whether they can depends on the
 credential the scan was given, so a failure to create one is reported as **not
 tested**, naming the refusal and whether the request carried a credential at all. A
@@ -130,6 +129,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
 | `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
+| `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | confirmed | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium | indicator or confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
@@ -476,6 +476,25 @@ It attempts to delete each accepted marker after the task owner's readback
 confirms its callback URL. Unconfirmed markers or refused deletions remain in
 the scan report. On single-config servers, a marker can replace an existing
 callback on a reused task; use test tasks for this rule.
+
+---
+
+### a2a-push-lifecycle-001
+
+**Push Config List/Delete Outside Task Scope** | Severity: High | CWE-639
+
+Creates an owner task and push config, confirms the owner can read both, and
+requires the second principal to be denied task access before judging it as
+unauthorized. It then checks whether that principal can list the marker or
+delete it. A List finding requires the marker ID and URL in a correlated
+response. A Delete finding requires a correlated success and owner readback
+showing the marker is gone while the task still exists. The rule follows up to
+eight v1.0 list pages and detects repeated page tokens. It never deletes a
+pre-existing config and records cleanup of the scanner-created one.
+
+The rule supports v1.0 and v0.3 JSON-RPC. HTTP+JSON and gRPC bindings are not
+covered. If the second principal can read the task, the access relationship is
+ambiguous and the rule reports not tested.
 
 ---
 

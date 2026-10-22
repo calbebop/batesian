@@ -74,7 +74,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			rpcErr("method not found")
 			return
 		}
-		if (mode == "legacy-only" || mode == "legacy-version-strict") && !strings.Contains(method, "/") {
+		if (mode == "legacy-only" || mode == "legacy-version-strict" || mode == "lifecycle-legacy-open") && !strings.Contains(method, "/") {
 			rpcErr("method not found")
 			return
 		}
@@ -90,6 +90,17 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 		}
 
 		switch method {
+		case "GetTask", "tasks/get":
+			tid, _ := params["id"].(string)
+			if taskOwner[tid] == "" {
+				rpcErr("task not found")
+				return
+			}
+			if who != taskOwner[tid] && mode != "lifecycle-shared" {
+				rpcErr("not task owner")
+				return
+			}
+			result(map[string]interface{}{"id": tid, "contextId": "ctx-tenant-a", "status": map[string]string{"state": "working"}})
 		case "SendMessage", "message/send":
 			if method == "SendMessage" && (mode == "v1-create-unavailable" || mode == "v1-create-unavailable-bound") {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -283,12 +294,53 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				}
 				rpcErr("config not found")
 			}
+		case "ListTaskPushNotificationConfigs", "tasks/pushNotificationConfig/list":
+			tid, _ := params["id"].(string)
+			if method == "ListTaskPushNotificationConfigs" {
+				tid, _ = params["taskId"].(string)
+			}
+			if who != taskOwner[tid] && mode != "lifecycle-list-open" && mode != "lifecycle-open" &&
+				mode != "lifecycle-legacy-open" && mode != "lifecycle-list-wrong-id" &&
+				mode != "lifecycle-list-malformed" && mode != "lifecycle-paged-open" {
+				rpcErr("not task owner")
+				return
+			}
+			if mode == "lifecycle-paged-open" && params["pageToken"] == nil {
+				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": "second"})
+				return
+			}
+			if mode == "lifecycle-list-loop" && who == "tenant-a" {
+				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": "loop"})
+				return
+			}
+			if mode == "lifecycle-list-wrong-id" && who == "tenant-b" {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request", "result": map[string]interface{}{"configs": []interface{}{}}})
+				return
+			}
+			if mode == "lifecycle-list-malformed" && who == "tenant-b" {
+				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": nil})
+				return
+			}
+			configs := make([]interface{}, 0, len(pushCfg[tid]))
+			for _, c := range pushCfg[tid] {
+				if method == "ListTaskPushNotificationConfigs" {
+					configs = append(configs, map[string]string{"taskId": tid, "id": c.id, "url": c.url})
+				} else {
+					configs = append(configs, map[string]interface{}{"taskId": tid, "pushNotificationConfig": map[string]string{"id": c.id, "url": c.url}})
+				}
+			}
+			if method == "ListTaskPushNotificationConfigs" {
+				result(map[string]interface{}{"configs": configs})
+			} else {
+				result(configs)
+			}
 		case "DeleteTaskPushNotificationConfig", "tasks/pushNotificationConfig/delete":
 			if mode == "delete-denied" {
 				rpcErr("not task owner")
 				return
 			}
-			if who != "tenant-a" {
+			if who != "tenant-a" && mode != "lifecycle-delete-open" && mode != "lifecycle-open" &&
+				mode != "lifecycle-legacy-open" && mode != "lifecycle-delete-noop" && mode != "lifecycle-delete-wrong-id" {
 				rpcErr("not task owner")
 				return
 			}
@@ -304,7 +356,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("config not found")
 				return
 			}
-			delete(pushCfg[tid], configID)
+			if mode != "lifecycle-delete-noop" || who != "tenant-b" {
+				delete(pushCfg[tid], configID)
+			}
+			if mode == "lifecycle-delete-wrong-id" && who == "tenant-b" {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request", "result": map[string]interface{}{}})
+				return
+			}
 			if method == "tasks/pushNotificationConfig/delete" {
 				result(nil)
 				return
