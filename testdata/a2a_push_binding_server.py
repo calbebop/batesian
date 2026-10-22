@@ -6,6 +6,7 @@ Two principals by bearer token:
 
 Validate (two principals required):
   Use --rule-ids a2a-push-lifecycle-001 for List/Delete checks.
+  Use --rule-ids a2a-subscription-scope-001 for task subscription checks.
   python testdata/a2a_push_binding_server.py
   batesian scan --target http://127.0.0.1:3107 --rule-ids a2a-push-binding-001 \\
       --principal name=tenant-a,token=tok-a,tenant=A \\
@@ -71,6 +72,17 @@ async def rpc(request: Request) -> Response:
             return error(req_id, "not task owner")
         return result(req_id, {"id": tid, "contextId": f"ctx-{who}",
                                "status": {"state": "working"}})
+
+    if method in ("SubscribeToTask", "tasks/resubscribe"):
+        tid = params.get("id", "")
+        owner = TASK_OWNER.get(tid)
+        if not owner or not who or (BOUND and owner != who):
+            return error(req_id, "Task not found")
+        event = {"jsonrpc": "2.0", "id": req_id,
+                 "result": {"id": tid, "contextId": f"ctx-{owner}",
+                            "status": {"state": "working"}}}
+        return Response("data: " + json.dumps(event) + "\n\n",
+                        media_type="text/event-stream")
 
     if method in ("CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set"):
         if not who:
@@ -139,5 +151,5 @@ app = Starlette(routes=[Route("/", rpc, methods=["POST"])])
 if __name__ == "__main__":
     print(f"[*] A2A push-config {os.getenv('BATESIAN_PUSH_POSTURE', 'vulnerable')} server on port {PORT}", flush=True)
     print("[*] Tokens: tok-a (tenant-a), tok-b (tenant-b)", flush=True)
-    print("[*] Vulnerable posture leaves push config set/get/list/delete unbound", flush=True)
+    print("[*] Vulnerable posture leaves push config and subscription access unbound", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)

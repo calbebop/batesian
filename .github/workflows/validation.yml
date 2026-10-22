@@ -89,12 +89,20 @@ jobs:
       - name: Test fixture safety
         run: python -m unittest discover -s .github/scripts -p 'test_fixture_safety.py'
 
+      - name: Test A2A subscription fixture
+        run: python -m unittest discover -s .github/scripts -p 'test_a2a_subscription_fixture.py'
+
       - name: Build batesian
         # Inject version and commit so validation scans do not use batesian/dev.
         run: go build -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse --short HEAD)" -o batesian ./cmd/batesian
 
       - name: Run the secured-agent validation
         run: python .github/scripts/validate_secured_agent.py
+        env:
+          BATESIAN_BIN: ./batesian
+
+      - name: Validate A2A subscription scope
+        run: python .github/scripts/validate_a2a_subscription.py
         env:
           BATESIAN_BIN: ./batesian
 
