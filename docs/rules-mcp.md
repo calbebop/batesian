@@ -974,17 +974,18 @@ definitions to models as context. Four checks use only listing responses; no
 tool is invoked:
 
 1. **Hidden characters** (indicator, medium). Zero-width and bidirectional
-   format characters can obscure a tool definition, but some are legitimate
-   in Unicode text. The evidence names the code point and renders it visibly
-   for review. Injection patterns are checked independently.
+   marks, Unicode tags, supplementary variation selectors, selector runs, and
+   terminal controls can obscure a definition. A single emoji variation selector
+   and ordinary whitespace are ignored. Evidence names the code point and
+   renders it visibly for review; legitimate Unicode remains possible.
 2. **Duplicate tool names or JSON members** (indicator, medium). Repeated tool
    names can make approval and dispatch ambiguous. Repeated JSON members can
    make parsers disagree on a tool definition. Those members remain visible to
    the injection and drift checks.
 3. **Injection patterns** (indicator, medium). Imperative phrases aimed at the
-   model ("ignore previous instructions"), credential paths paired with
-   send/upload verbs, and fetch-and-exfiltrate chains match the recurring
-   shapes of published poisoning samples. Heuristic by nature: security
+   model ("ignore previous instructions"), concealed instructions, credential
+   paths paired with send/upload verbs, and fetch-and-exfiltrate chains match
+   recurring shapes of published poisoning samples. Heuristic by nature: security
    tooling can legitimately describe such operations, and the finding says so.
    Each decoded JSON string is checked separately, including schema text and
    keys, so unrelated fields cannot form a match. One finding per entry keeps
