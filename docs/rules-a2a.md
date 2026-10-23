@@ -35,9 +35,9 @@ inconsistencies without another wire revision. Two details affect this rule set:
   binding. It is a SHOULD rather than a MUST, and the JSON-RPC binding these
   rules primarily drive explicitly keeps `application/json`.
 
-The catalog checks JSON-RPC push-config List/Delete authorization with a
-scanner-created config, bounded pagination, and task-access controls. It also
-checks JSON-RPC and advertised HTTP+JSON task subscription access against a
+The catalog checks JSON-RPC and advertised HTTP+JSON push-config List/Delete
+authorization with a scanner-created config, bounded pagination, and task-access
+controls. It also checks task subscription access on both bindings against a
 scanner-created nonterminal task, reading one bounded stream response. The
 official SDK validation fixture disables streaming and push, so these rules
 have local protected and vulnerable fixtures but no live SDK baseline yet.
@@ -493,9 +493,11 @@ showing the marker is gone while the task still exists. The rule follows up to
 eight v1.0 list pages and detects repeated page tokens. It never deletes a
 pre-existing config and records cleanup of the scanner-created one.
 
-The rule supports v1.0 and v0.3 JSON-RPC. HTTP+JSON and gRPC bindings are not
-covered. If the second principal can read the task, the access relationship is
-ambiguous and the rule reports not tested.
+The rule supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings,
+including `GET /tasks/{id}/pushNotificationConfigs` and
+`DELETE /tasks/{id}/pushNotificationConfigs/{configId}` (with `/v1` prefixes on
+v0.3). It does not cover gRPC. If the second principal can read the task, the
+access relationship is ambiguous and the rule reports not tested.
 
 ---
 

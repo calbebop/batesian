@@ -41,11 +41,24 @@ func (e *PushLifecycleExecutor) ExecuteChained(ctx context.Context, target strin
 		return nil, err
 	}
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
+	clientA, clientB := principalClient(opts, vars, a), principalClient(opts, vars, b)
+	endpoint, jsonRPC := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	if jsonRPC {
+		rpcFindings, rpcErr := e.probeJSONRPC(ctx, endpoint, opts, vars, a, b, clientA, clientB)
+		findings = append(findings, rpcFindings...)
+		err = errors.Join(err, rpcErr)
+	}
+	restFindings, restErr, restAdvertised := e.probeREST(ctx, vars.BaseURL, opts, vars.RandID, a, b, clientA, clientB)
+	findings = append(findings, restFindings...)
+	err = errors.Join(err, restErr)
+	if !jsonRPC && !restAdvertised {
 		return nil, attack.ErrInconclusive
 	}
-	clientA, clientB := principalClient(opts, vars, a), principalClient(opts, vars, b)
+	return findings, err
+}
+
+func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint string, opts attack.Options,
+	vars attack.Vars, a, b attack.Principal, clientA, clientB *attack.HTTPClient) (findings []attack.Finding, err error) {
 	binding := NewPushBindingExecutor(e.rule)
 	taskID, setup := binding.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	if taskID == "" {
@@ -101,7 +114,7 @@ func (e *PushLifecycleExecutor) ExecuteChained(ctx context.Context, target strin
 	if ownerList.found {
 		otherList := e.listConfigs(ctx, clientB, endpoint, b.Headers, taskID, set, markerURL, vars.RandID+"-other")
 		if otherList.found {
-			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "list"))
+			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "list", "GetTask"))
 		} else if !otherList.complete && !otherList.denied {
 			partial = errors.Join(partial, fmt.Errorf("%w: cross-principal push-config list was unjudged", attack.ErrInconclusive))
 		}
@@ -117,7 +130,7 @@ func (e *PushLifecycleExecutor) ExecuteChained(ctx context.Context, target strin
 	if readback == configAbsent && e.readTask(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-after-delete") == taskPresent {
 		deleted = true
 		if deleteReply == deleteAccepted {
-			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "delete"))
+			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "delete", "GetTask"))
 		} else {
 			deletionDetail = "absent after probe; deletion source unconfirmed"
 			partial = errors.Join(partial, fmt.Errorf("%w: marker disappeared without a confirmed delete response", attack.ErrInconclusive))
@@ -396,7 +409,7 @@ func (e *PushLifecycleExecutor) deleteConfig(ctx context.Context, c *attack.HTTP
 	return deleteUnknown
 }
 
-func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Principal, taskID, configID, markerURL, operation string) attack.Finding {
+func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Principal, taskID, configID, markerURL, operation, readMethod string) attack.Finding {
 	title := "A2A push-notification configs listed outside task scope"
 	detail := "listed the owner's scanner-created push config, including its callback URL"
 	if operation == "delete" {
@@ -408,8 +421,8 @@ func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Pri
 		Title: title,
 		Description: fmt.Sprintf("Principal %q could not read principal %q's task %s, but %s using its own credentials.",
 			other.Name, owner.Name, taskID, detail),
-		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\ntask: %s\nconfig: %s\ncallback URL: %s\nGetTask control: denied for other principal\noperation: %s",
-			owner.Name, other.Name, taskID, configID, markerURL, operation),
+		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\ntask: %s\nconfig: %s\ncallback URL: %s\n%s control: denied for other principal\noperation: %s",
+			owner.Name, other.Name, taskID, configID, markerURL, readMethod, operation),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task and push config", Outcome: "owner readback confirmed marker"},
