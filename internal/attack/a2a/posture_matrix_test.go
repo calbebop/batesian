@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -322,30 +323,31 @@ func TestA2APostureMatrix(t *testing.T) {
 	rules := []struct {
 		id    string
 		build func(attack.RuleContext) attack.Executor
-		// Ownership-sensitive rules must fire on idor and stay silent on secured.
-		ownershipSensitive bool
+		// Push binding needs a denied task read before judging config access.
+		ownershipSensitive  bool
+		needsDeniedTaskRead bool
 	}{
 		{"a2a-multitenant-isolation-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewMultiTenantIsolationExecutor(rc)
-		}, true},
+		}, true, false},
 		{"a2a-delegation-integrity-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewDelegationIntegrityExecutor(rc)
-		}, true},
+		}, true, false},
 		{"a2a-task-cancel-idor-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskCancelIDORExecutor(rc)
-		}, true},
+		}, true, false},
 		{"a2a-push-binding-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewPushBindingExecutor(rc)
-		}, true},
+		}, true, true},
 		{"a2a-task-enumeration-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskEnumerationExecutor(rc)
-		}, true},
+		}, true, false},
 		// Not ownership-sensitive: its oracle is an ANONYMOUS read, which both
 		// postures refuse. It is here as a false-positive control, since it is the
 		// rule most likely to be tripped by a cross-principal fixture.
 		{"a2a-task-idor-001", func(rc attack.RuleContext) attack.Executor {
 			return a2aattack.NewTaskIDORExecutor(rc)
-		}, false},
+		}, false, false},
 	}
 
 	for _, posture := range []string{"secured", "idor"} {
@@ -356,6 +358,12 @@ func TestA2APostureMatrix(t *testing.T) {
 
 				exec := r.build(attack.RuleContext{ID: r.id, Severity: "high"})
 				findings, err := exec.Execute(context.Background(), srv.URL, matrixOpts())
+				if posture == "idor" && r.needsDeniedTaskRead {
+					if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+						t.Fatalf("task-read scope was not established: findings=%+v err=%v", findings, err)
+					}
+					return
+				}
 
 				wantFires := posture == "idor" && r.ownershipSensitive
 				switch {

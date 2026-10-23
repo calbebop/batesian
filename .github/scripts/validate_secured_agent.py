@@ -19,16 +19,15 @@ FIXTURE = os.environ.get("BATESIAN_FIXTURE", "testdata/a2a_secured_agent.py")
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 SCAN_TIMEOUT = 20  # seconds, per request
 
-# Rule ids that MUST fire on the idor posture (membership, not count: some fire
-# more than once).
+# Rule ids that must fire on the idor posture.
 IDOR_RULES = {
     "a2a-multitenant-isolation-001",
     "a2a-delegation-integrity-001",
     "a2a-task-cancel-idor-001",
-    "a2a-push-binding-001",
     "a2a-task-enumeration-001",
 }
-SECURED_RULES = IDOR_RULES | {"a2a-task-idor-001"}
+PUSH_RULE = "a2a-push-binding-001"
+SECURED_RULES = IDOR_RULES | {PUSH_RULE, "a2a-task-idor-001"}
 IDOR_CONFIDENCE = {rid: "confirmed" for rid in IDOR_RULES}
 IDOR_CONFIDENCE["a2a-task-enumeration-001"] = "indicator"
 
@@ -143,10 +142,20 @@ def main():
     missing = IDOR_RULES - rules
     statuses = rule_statuses(doc, IDOR_RULES)
     quality = finding_quality_issues(doc, IDOR_CONFIDENCE)
-    ok = not missing and not quality and all(status == "findings" for status in statuses.values())
+    ok = not missing and not quality and PUSH_RULE not in rules and \
+        all(status == "findings" for status in statuses.values())
     all_ok &= ok
-    check("idor (the five ownership rules must fire)", ok,
+    check("idor (four ownership rules fire; push binding stays inconclusive)", ok,
           f"missing {sorted(missing)}; quality {quality}; fired {sorted(rules)}")
+
+    rules, doc = scan_posture("push-binding")
+    quality = finding_quality_issues(doc, {PUSH_RULE: "confirmed"})
+    unexpected = rules & (SECURED_RULES - {PUSH_RULE})
+    ok = PUSH_RULE in rules and not quality and not unexpected and \
+        rule_statuses(doc, {PUSH_RULE})[PUSH_RULE] == "findings"
+    all_ok &= ok
+    check("push-binding (scoped task reads, unscoped push config)", ok,
+          f"quality {quality}; unexpected {sorted(unexpected)}; fired {sorted(rules)}")
 
     rules, doc = scan_posture("idor-paged")
     quality = finding_quality_issues(doc, {"a2a-task-enumeration-001": "indicator"})

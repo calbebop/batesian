@@ -101,11 +101,19 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if !e.getPush(ctx, clientA, endpoint, a.Headers, taskID, ownerSet, markerURL, vars.RandID+"-owner") {
 		return nil, attack.ErrInconclusive
 	}
+	if readTaskAccess(ctx, clientA, endpoint, a.Headers, taskID, ownerSet.v1, vars.RandID+"-owner") != taskPresent {
+		return nil, fmt.Errorf("%w: owner could not read the probe task", attack.ErrInconclusive)
+	}
 
 	// Confirm an anonymous write through the owner's readback.
 	openURL := "https://batesian-open-" + vars.RandID + ".example/cb"
-	openSet := e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
-		taskID, openURL, "x", "open-"+vars.RandID, vars.RandID)
+	var openSet pushSet
+	if readTaskAccess(ctx, unauthClient, endpoint, nil, taskID, ownerSet.v1, vars.RandID+"-anonymous") == taskDenied {
+		openSet = e.setPush(ctx, unauthClient, endpoint, nil, "configuring a push-notification webhook anonymously",
+			taskID, openURL, "x", "open-"+vars.RandID, vars.RandID)
+	} else {
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous task-read scope was not confirmed", attack.ErrInconclusive))
+	}
 	if openSet.accepted {
 		register(openSet, openURL)
 		incomplete = errors.Join(incomplete, openSet.partialErr("anonymous push configuration"))
@@ -128,6 +136,9 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		return nil, err
 	}
 	clientB := principalClient(opts, vars, b)
+	if readTaskAccess(ctx, clientB, endpoint, b.Headers, taskID, ownerSet.v1, vars.RandID+"-other") != taskDenied {
+		return nil, fmt.Errorf("%w: principal %q was not confirmed outside the task's access scope", attack.ErrInconclusive, b.Name)
+	}
 
 	// Read before writing so B can observe A's original config.
 	crossRead, crossReadJudged := e.getPushOutcome(ctx, clientB, endpoint, b.Headers, taskID,
@@ -420,7 +431,7 @@ func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attac
 			"An unauthenticated request attached a push-notification callback (%s) to task %s, owned by %q. "+
 				"The owner read back the stored config. Notification delivery was not tested.",
 			callbackURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s",
+		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\nGetTask control: denied anonymously",
 			owner.Name, taskID, callbackURL, taskOrigin(consumed)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
@@ -443,7 +454,7 @@ func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker atta
 				"principal %q, using only its own valid credentials. The push control plane is "+
 				"authenticated but not bound to the task owner. Notification delivery was not tested.",
 			attacker.Name, attackerURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s",
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\nGetTask control: denied for other principal",
 			owner.Name, attacker.Name, taskID, attackerURL, taskOrigin(consumed)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
@@ -465,7 +476,7 @@ func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attac
 			"Principal %q read the push-notification config of task %s, owned by principal %q, and "+
 				"the response disclosed %q's configured callback URL (%s). The callback token was not verified.",
 			attacker.Name, taskID, owner.Name, owner.Name, markerURL),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nleaked callback URL: %s\ntask origin: %s",
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nleaked callback URL: %s\ntask origin: %s\nGetTask control: denied for other principal",
 			owner.Name, attacker.Name, taskID, markerURL, taskOrigin(consumed)),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,

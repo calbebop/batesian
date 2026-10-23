@@ -24,9 +24,11 @@ Postures, selected by the first argument:
   idor      a bearer token is required but ownership is NOT enforced: any valid
             token may act on any task, and ListTasks returns every task rather than
             the caller's. a2a-multitenant-isolation-001,
-            a2a-delegation-integrity-001, a2a-task-cancel-idor-001,
-            a2a-push-binding-001 and a2a-task-enumeration-001 MUST fire. Silence here
-            is a false negative.
+            a2a-delegation-integrity-001, a2a-task-cancel-idor-001 and
+            a2a-task-enumeration-001 MUST fire. Task reads are shared, so push
+            binding is not an ownership finding here.
+  push-binding  task reads enforce ownership, but any authenticated principal
+                can read or write another task's push config.
   idor-paged  reads enforce ownership, but ListTasks leaks another principal's task
               on page two.
 
@@ -62,7 +64,7 @@ import uvicorn
 
 PORT = 3111
 
-POSTURES = ("secured", "idor", "idor-paged", "unauth-read")
+POSTURES = ("secured", "idor", "push-binding", "idor-paged", "unauth-read")
 POSTURE = sys.argv[1] if len(sys.argv) > 1 else "secured"
 
 # The multi-principal fixtures in this directory all expect these two tokens
@@ -132,6 +134,10 @@ def _may_touch(task: dict, caller: str) -> bool:
     if POSTURE == "unauth-read" and caller == ANON_READER:
         return True  # reads are not bound to the owner: the bug under test
     return task["owner"] == caller
+
+
+def _may_push(task: dict, caller: str) -> bool:
+    return POSTURE == "push-binding" or _may_touch(task, caller)
 
 
 def _task_body(task_id: str, v1: bool, nest: bool):
@@ -239,7 +245,7 @@ def _set_push(req_id, params, caller, v1):
     task_id = (params or {}).get("taskId") or ""
     if task_id not in TASKS:
         return _error(req_id, -32001, "Task not found")
-    if not _may_touch(TASKS[task_id], caller):
+    if not _may_push(TASKS[task_id], caller):
         return _error(req_id, -32600, "not authorized for this task")
     config = params if v1 else params.get("pushNotificationConfig") or {}
     config_id = config.get("id") or uuid.uuid4().hex
@@ -257,7 +263,7 @@ def _get_push(req_id, params, caller, v1):
     config_id = (params or {}).get("id" if v1 else "pushNotificationConfigId") or ""
     if task_id not in TASKS:
         return _error(req_id, -32001, "Task not found")
-    if not _may_touch(TASKS[task_id], caller):
+    if not _may_push(TASKS[task_id], caller):
         return _error(req_id, -32600, "not authorized for this task")
     config = PUSH_CFG.get(task_id, {}).get(config_id)
     if config is None:
@@ -343,8 +349,10 @@ if __name__ == "__main__":
               "must fire.", flush=True)
     if POSTURE == "secured":
         print("[*] Expected: no findings. Any finding is a false positive.", flush=True)
-    else:
+    elif POSTURE == "idor":
         print("[*] Expected: multitenant-isolation, delegation-integrity, "
-              "task-cancel-idor, push-binding and task-enumeration all fire.", flush=True)
+              "task-cancel-idor and task-enumeration fire; push-binding stays silent.", flush=True)
+    elif POSTURE == "push-binding":
+        print("[*] Expected: push-binding fires; other ownership rules stay silent.", flush=True)
     print("[*] Credentials: --token tok-a plus two principals (tok-a, tok-b)", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT)
