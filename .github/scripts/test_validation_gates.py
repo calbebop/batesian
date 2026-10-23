@@ -107,6 +107,7 @@ class OutcomeTests(unittest.TestCase):
     def test_secured_agent_rejects_incomplete_rule(self):
         rid = "a2a-task-idor-001"
         positive = report(findings=validate_secured_agent.IDOR_RULES)
+        push = report(findings=[validate_secured_agent.PUSH_RULE])
         paged = report(findings=["a2a-task-enumeration-001"])
         read = report(findings=[rid])
         for field in ("skipped", "errors"):
@@ -114,6 +115,7 @@ class OutcomeTests(unittest.TestCase):
                 secured = report(outcomes=validate_secured_agent.SECURED_RULES,
                                  **{field: [rid]})
                 scans = [(set(), secured), (set(validate_secured_agent.IDOR_RULES), positive),
+                         ({validate_secured_agent.PUSH_RULE}, push),
                          ({"a2a-task-enumeration-001"}, paged), ({rid}, read)]
                 with patch.object(validate_secured_agent, "scan_posture", side_effect=scans):
                     with contextlib.redirect_stdout(io.StringIO()):
