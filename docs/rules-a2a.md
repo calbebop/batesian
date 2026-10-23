@@ -465,11 +465,13 @@ card's required-extension policy and make this check inconclusive.
 
 The rule creates or reuses an authenticated principal's task, stores a marker
 push config, and verifies it through the owner's readback. It then checks whether
-an anonymous caller can store a different callback on that task. A persisted
-anonymous write is reported with one configured principal. If that write does
-not persist, two distinct principals enable cross-principal read and write
-checks; those findings require the owner's marker URL or an owner-confirmed
-write, respectively.
+an anonymous caller can store a different callback on that task, but only after
+confirming anonymous task read is denied. A persisted anonymous write is reported
+with one configured principal. If that write does not persist, two distinct
+principals enable cross-principal read and write checks. The second principal
+must be denied task read access first; a shared task or unjudged task read is
+not treated as an ownership breach. Findings require the owner's marker URL or
+an owner-confirmed write, respectively.
 
 The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
 `pushNotificationConfig`. It does not test notification delivery.

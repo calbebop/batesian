@@ -96,7 +96,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("task not found")
 				return
 			}
-			if who != taskOwner[tid] && mode != "lifecycle-shared" {
+			if mode == "push-binding-owner-unreadable" && who == "tenant-a" ||
+				mode == "push-binding-unknown" && who == "tenant-b" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if who != taskOwner[tid] && mode != "lifecycle-shared" && mode != "push-binding-public" &&
+				(mode != "push-binding-shared" || who != "tenant-b") {
 				rpcErr("not task owner")
 				return
 			}
@@ -171,7 +177,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("invalid params")
 				return
 			}
-			if mode != "open" && mode != "v1-anon-set-unavailable-open" &&
+			if mode != "open" && mode != "push-binding-public" && mode != "v1-anon-set-unavailable-open" &&
 				mode != "open-anon-readback-unavailable" && mode != "noop-anon" && who == "" {
 				rpcErr("auth required")
 				return
@@ -690,6 +696,27 @@ func TestPushBinding_Bound(t *testing.T) {
 
 	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 0 {
 		t.Errorf("expected zero findings against an owner-bound server, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestPushBindingRequiresTaskScope(t *testing.T) {
+	for _, mode := range []string{
+		"push-binding-shared", "push-binding-public", "push-binding-unknown", "push-binding-owner-unreadable",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			ts := pushServer(mode)
+			defer ts.Close()
+			state := &attack.TargetState{}
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			configs := pushConfigObjects(state.Snapshot())
+			if len(configs) != 1 || configs[0].Cleanup != attack.CleanupCompleted {
+				t.Fatalf("cleanup=%+v", configs)
+			}
+		})
 	}
 }
 

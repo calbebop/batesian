@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 	endpointpkg "github.com/calbebop/batesian/internal/endpoint"
@@ -128,11 +129,13 @@ func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listUR
 
 func restVersionHeaders(version string, extra map[string]string) map[string]string {
 	headers := map[string]string{}
+	for key, value := range extra {
+		if !strings.EqualFold(key, "A2A-Version") {
+			headers[key] = value
+		}
+	}
 	if version == "1.0" {
 		headers["A2A-Version"] = version
-	}
-	for key, value := range extra {
-		headers[key] = value
 	}
 	return headers
 }

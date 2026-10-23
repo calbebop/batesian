@@ -101,11 +101,11 @@ func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint strin
 	if ownerConfig != configPresent {
 		return nil, fmt.Errorf("%w: owner push config was not confirmed after creation", attack.ErrInconclusive)
 	}
-	ownerTask := e.readTask(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-owner")
+	ownerTask := readTaskAccess(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-owner")
 	if ownerTask != taskPresent {
 		return nil, fmt.Errorf("%w: owner could not read the probe task", attack.ErrInconclusive)
 	}
-	otherTask := e.readTask(ctx, clientB, endpoint, b.Headers, taskID, set.v1, vars.RandID+"-other")
+	otherTask := readTaskAccess(ctx, clientB, endpoint, b.Headers, taskID, set.v1, vars.RandID+"-other")
 	if otherTask != taskDenied {
 		return nil, fmt.Errorf("%w: principal %q was not confirmed outside task %s's access scope", attack.ErrInconclusive, b.Name, taskID)
 	}
@@ -127,7 +127,7 @@ func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint strin
 	}
 	deleteReply := e.deleteConfig(ctx, clientB, endpoint, b.Headers, taskID, set, vars.RandID)
 	readback := e.readConfig(ctx, clientA, endpoint, a.Headers, taskID, set, markerURL, vars.RandID+"-after-delete")
-	if readback == configAbsent && e.readTask(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-after-delete") == taskPresent {
+	if readback == configAbsent && readTaskAccess(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-after-delete") == taskPresent {
 		deleted = true
 		if deleteReply == deleteAccepted {
 			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "delete", "GetTask"))
@@ -151,7 +151,7 @@ const (
 	taskDenied
 )
 
-func (e *PushLifecycleExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, headers map[string]string,
+func readTaskAccess(ctx context.Context, c *attack.HTTPClient, endpoint string, headers map[string]string,
 	taskID string, v1 bool, suffix string) taskAccess {
 	method := "tasks/get"
 	if v1 {
