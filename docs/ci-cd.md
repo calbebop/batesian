@@ -173,6 +173,25 @@ silently reduce the selected set.
             --output sarif > results.sarif
 ```
 
+### Review an MCP server before admission
+
+Run only the read-only manifest rule, then require a completed, clean outcome:
+
+```sh
+batesian scan --no-config --target "$MCP_TARGET_URL" --protocol mcp \
+  --rule-ids mcp-tool-poisoning-001 --output json > manifest.json
+jq -e '
+  .schema_version == 1 and .ruleset.selected == 1 and
+  ([.rule_outcomes[] |
+    select(.rule_id == "mcp-tool-poisoning-001" and .status == "no_findings")]
+    | length) == 1 and (.findings | length) == 0
+' manifest.json
+```
+
+Use an authorized target and supply the intended credential if its tool list is
+protected. A finding is a review signal, not proof of a malicious server. A clean
+listing is only a snapshot; rescan when a server or its tool definitions change.
+
 ## Repository Variables and Secrets
 
 | Name | Type | Description |

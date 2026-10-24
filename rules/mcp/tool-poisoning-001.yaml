@@ -10,9 +10,10 @@ info:
     completed listings:
 
       1. Hidden characters (INDICATOR, medium). Zero-width and bidirectional
-         format characters may obscure tool definitions, but some are needed
-         for legitimate Unicode text. The finding shows the code point and
-         context so an operator can review it.
+         marks, Unicode tags, supplementary variation selectors, repeated BMP
+         selectors, and terminal controls may obscure definitions. A single
+         emoji selector and ordinary whitespace are ignored. The finding shows
+         the code point and context.
 
       2. Duplicate tool names or JSON members (INDICATOR, medium). Repeated
          tool names can make approval and dispatch ambiguous. Repeated JSON
@@ -20,9 +21,9 @@ info:
          remain visible to injection and drift checks.
 
       3. Injection patterns (INDICATOR, medium). Imperative phrases aimed at
-         the model ("ignore previous instructions"), credential paths paired
-         with send/upload verbs, and fetch-and-exfiltrate chains match the
-         recurring shapes of published poisoning samples. Heuristic by
+         the model ("ignore previous instructions"), concealed instructions,
+         credential paths paired with send/upload verbs, and fetch-and-exfiltrate
+         chains match recurring poisoning samples. Heuristic by
          nature: security tooling can legitimately describe such operations,
          so read the flagged text before trusting the tool. Each decoded JSON
          string, including schema text and keys, is checked separately. One
@@ -65,7 +66,7 @@ attack:
 remediation: |
   1. Treat tool definitions as code: review names and descriptions in version
      control, pin them, and diff on every server deploy.
-  2. Show format characters visibly during review; remove unexpected ones
+  2. Show non-printing characters visibly during review; remove unexpected ones
      without breaking legitimate Unicode text.
   3. Enforce unique tool names and JSON members; refuse to serve a manifest
      that violates either constraint.

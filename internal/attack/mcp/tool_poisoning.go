@@ -23,14 +23,14 @@ import (
 //
 // Agents may pass tool definitions to models as context. Four heuristic checks:
 //
-//  1. Hidden characters. Format characters can obscure tool definitions but
-//     may also be legitimate Unicode text. Indicator, medium.
+//  1. Hidden characters. Format, tag, variation-selector, and terminal-control
+//     characters can obscure definitions. Indicator, medium.
 //  2. Duplicate names or JSON members. Dispatch or parsing may be ambiguous.
 //     Indicator, medium.
 //  3. Instruction-injection patterns. Imperative phrases aimed at the model
 //     ("ignore previous instructions"), credential paths paired with send/
-//     upload verbs, and fetch-and-post chains are the recurring shapes of
-//     published poisoning samples. Pattern matches are reported as an
+//     upload verbs, fetch-and-post chains, and concealed instructions are
+//     recurring shapes of published poisoning samples. Matches are reported as an
 //     indicator at medium: a security scanner's own description can trip a
 //     pattern without being malicious, and the finding says so.
 //  4. Manifest drift between consecutive reads. Rapid changes may affect
@@ -320,13 +320,15 @@ func canonEntriesByName(canon string) map[string][]string {
 	return out
 }
 
-// hiddenRunes includes zero-width and bidirectional format characters.
-const hiddenRunes = "\u200B\u200C\u200D\u2060\uFEFF\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069"
+// hiddenRunes includes common zero-width and bidirectional format characters.
+const hiddenRunes = "\u200B\u200C\u200D\u200E\u200F\u2060\uFEFF\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069"
 
 var (
-	injectionImperative = regexp.MustCompile(`(?i)(ignore|disregard|forget)[^\n.]{0,40}(previous|prior|above|earlier|system|instructions)`)
-	injectionCredential = regexp.MustCompile(`(?i)(read|send|upload|post|exfiltrat\w*)[^\n.]{0,60}(\.env\b|\.ssh|id_rsa|credential|\bpassword\b|api[_ ]?key|access[_ ]?token)`)
-	injectionFetchPost  = regexp.MustCompile(`(?i)(post|send|upload|curl|wget|fetch)\b[^\n.]{0,40}https?://`)
+	injectionImperative     = regexp.MustCompile(`(?i)(ignore|disregard|forget)[^\n.]{0,40}(previous|prior|above|earlier|system|instructions)`)
+	injectionCredential     = regexp.MustCompile(`(?i)(read|send|upload|post|exfiltrat\w*)[^\n.]{0,60}(\.env\b|\.ssh|id_rsa|credential|\bpassword\b|api[_ ]?key|access[_ ]?token)`)
+	injectionFetchPost      = regexp.MustCompile(`(?i)(post|send|upload|curl|wget|fetch)\b[^\n.]{0,40}https?://`)
+	injectionConceal        = regexp.MustCompile(`(?i)\b(hide|conceal|keep secret|(do not|never) (tell|mention|inform|notify|reveal|disclose))\b[^\n.]{0,60}\b(instruction|prompt|directive)s?\b[^\n.]{0,40}\b(user|human|operator)\b`)
+	injectionConcealReverse = regexp.MustCompile(`(?i)\b(do not|never) (tell|mention|inform|notify|reveal|disclose)\b[^\n.]{0,30}\b(user|human|operator)\b[^\n.]{0,60}\b(instruction|prompt|directive)s?\b`)
 )
 
 var injectionPatterns = []struct {
@@ -336,6 +338,8 @@ var injectionPatterns = []struct {
 	{"instruction override", injectionImperative},
 	{"credential access instruction", injectionCredential},
 	{"fetch-and-exfiltrate chain", injectionFetchPost},
+	{"concealed agent instruction", injectionConceal},
+	{"concealed agent instruction", injectionConcealReverse},
 }
 
 func jsonStringValues(line string) []string {
@@ -359,14 +363,19 @@ func jsonStringValues(line string) []string {
 
 func matchHiddenText(values []string) (rune, int, string, bool) {
 	for _, value := range values {
-		if idx := strings.IndexAny(value, hiddenRunes); idx >= 0 {
-			r, _ := utf8.DecodeRuneInString(value[idx:])
+		previous := rune(0)
+		for idx, r := range value {
+			suspicious := isHiddenRune(r) || (isBMPVariationSelector(r) && isBMPVariationSelector(previous))
+			if !suspicious {
+				previous = r
+				continue
+			}
 			runes := []rune(value)
 			pos := utf8.RuneCountInString(value[:idx])
 			start := max(0, pos-12)
 			end := min(len(runes), pos+13)
 			snippet := strings.Map(func(r rune) rune {
-				if strings.ContainsRune(hiddenRunes, r) {
+				if isHiddenRune(r) || isBMPVariationSelector(r) {
 					return '\u25A1'
 				}
 				return r
@@ -375,6 +384,15 @@ func matchHiddenText(values []string) (rune, int, string, bool) {
 		}
 	}
 	return 0, 0, "", false
+}
+
+func isBMPVariationSelector(r rune) bool { return r >= 0xFE00 && r <= 0xFE0F }
+
+func isHiddenRune(r rune) bool {
+	return strings.ContainsRune(hiddenRunes, r) ||
+		r >= 0xE0000 && r <= 0xE007F ||
+		r >= 0xE0100 && r <= 0xE01EF ||
+		r < 0x20 && r != '\t' && r != '\n' && r != '\r' || r == 0x7F
 }
 
 func matchInjectionText(values []string) (string, string, bool) {
@@ -455,7 +473,7 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 				Title:      fmt.Sprintf("MCP tool %q carries hidden characters in its definition", name),
 				Description: fmt.Sprintf(
 					"Entry %d of the tools/list response from %s contains U+%04X (shown as \u25A1 in the evidence). "+
-						"Format characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
+						"Non-printing characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
 						"Review the code point and surrounding text before treating the definition as poisoned.",
 					i+1, endpoint, r),
 				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\n...%s...", endpoint, name, r, idx, snippet),
