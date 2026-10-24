@@ -9,7 +9,8 @@ info:
     principal can read the owner's callback URL. Each write must persist in an
     owner readback before it is reported. One authenticated principal is enough
     for the anonymous-write check. If that write does not persist, two distinct
-    principals are needed for cross-principal checks.
+    principals are needed for cross-principal checks. Tests JSON-RPC and
+    advertised HTTP+JSON bindings.
 
     This rule does not verify callback delivery or token disclosure.
 

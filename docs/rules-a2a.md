@@ -474,7 +474,10 @@ not treated as an ownership breach. Findings require the owner's marker URL or
 an owner-confirmed write, respectively.
 
 The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
-`pushNotificationConfig`. It does not test notification delivery.
+`pushNotificationConfig` over JSON-RPC and advertised HTTP+JSON bindings.
+The REST checks use `POST /tasks/{id}/pushNotificationConfigs` and
+`GET /tasks/{id}/pushNotificationConfigs/{configId}`, with `/v1` prefixes for
+v0.3. The rule does not test notification delivery or gRPC.
 It attempts to delete each accepted marker after the task owner's readback
 confirms its callback URL. Unconfirmed markers or refused deletions remain in
 the scan report. On single-config servers, a marker can replace an existing

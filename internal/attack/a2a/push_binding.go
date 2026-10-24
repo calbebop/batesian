@@ -40,13 +40,29 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	if len(opts.Principals) == 0 || len(principalHeaders(opts.Principals[0])) == 0 {
 		return nil, fmt.Errorf("%w: an authenticated task owner is required", attack.ErrInconclusive)
 	}
+	vars := attack.NewVars(target, opts.OOBListenerURL)
+	endpoint, jsonRPC := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
+	if jsonRPC {
+		rpcFindings, rpcErr := e.probeJSONRPC(ctx, target, endpoint, opts, bb)
+		findings = append(findings, rpcFindings...)
+		err = errors.Join(err, rpcErr)
+	}
+	restFindings, restErr, restAdvertised := e.probeREST(ctx, vars.BaseURL, opts, vars.RandID)
+	findings = append(findings, restFindings...)
+	err = errors.Join(err, restErr)
+	if !jsonRPC {
+		err = errors.Join(err, advertisedJSONRPCUnavailable(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL))
+	}
+	if !jsonRPC && !restAdvertised {
+		return nil, errors.Join(err, attack.ErrInconclusive)
+	}
+	return findings, err
+}
+
+func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
 	a := opts.Principals[0]
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
-		return nil, attack.ErrInconclusive
-	}
 	clientA := principalClient(opts, vars, a)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
 
@@ -119,7 +135,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 		incomplete = errors.Join(incomplete, openSet.partialErr("anonymous push configuration"))
 		matched, judged := e.getPushOutcome(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open")
 		if matched {
-			return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed)}, nil
+			return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed, "GetTask")}, nil
 		}
 		if !judged {
 			incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous push-config write readback was unjudged", attack.ErrInconclusive))
@@ -144,7 +160,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	crossRead, crossReadJudged := e.getPushOutcome(ctx, clientB, endpoint, b.Headers, taskID,
 		ownerSet, markerURL, vars.RandID+"-cross-read")
 	if crossRead {
-		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed))
+		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed, "GetTask"))
 	}
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
 	attackerSet := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
@@ -155,7 +171,7 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 	}
 	attackerWriteVerified := attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write")
 	if attackerWriteVerified {
-		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed))
+		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed, "GetTask"))
 	}
 	if attackerSet.accepted && !attackerWriteVerified {
 		return findings, attack.ErrInconclusive
@@ -420,7 +436,7 @@ func pushBindingHeaders(extra map[string]string, v1 bool) map[string]string {
 	return headers
 }
 
-func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attack.Principal, taskID, callbackURL string, consumed bool) attack.Finding {
+func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attack.Principal, taskID, callbackURL string, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -431,8 +447,8 @@ func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attac
 			"An unauthenticated request attached a push-notification callback (%s) to task %s, owned by %q. "+
 				"The owner read back the stored config. Notification delivery was not tested.",
 			callbackURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\nGetTask control: denied anonymously",
-			owner.Name, taskID, callbackURL, taskOrigin(consumed)),
+		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\n%s control: denied anonymously",
+			owner.Name, taskID, callbackURL, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
@@ -442,7 +458,7 @@ func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attac
 	}
 }
 
-func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, taskID, attackerURL string, consumed bool) attack.Finding {
+func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, taskID, attackerURL string, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -454,8 +470,8 @@ func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker atta
 				"principal %q, using only its own valid credentials. The push control plane is "+
 				"authenticated but not bound to the task owner. Notification delivery was not tested.",
 			attacker.Name, attackerURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\nGetTask control: denied for other principal",
-			owner.Name, attacker.Name, taskID, attackerURL, taskOrigin(consumed)),
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\n%s control: denied for other principal",
+			owner.Name, attacker.Name, taskID, attackerURL, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
@@ -465,7 +481,7 @@ func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker atta
 	}
 }
 
-func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attack.Principal, taskID, markerURL string, consumed bool) attack.Finding {
+func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attack.Principal, taskID, markerURL string, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -476,8 +492,8 @@ func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attac
 			"Principal %q read the push-notification config of task %s, owned by principal %q, and "+
 				"the response disclosed %q's configured callback URL (%s). The callback token was not verified.",
 			attacker.Name, taskID, owner.Name, owner.Name, markerURL),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nleaked callback URL: %s\ntask origin: %s\nGetTask control: denied for other principal",
-			owner.Name, attacker.Name, taskID, markerURL, taskOrigin(consumed)),
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nleaked callback URL: %s\ntask origin: %s\n%s control: denied for other principal",
+			owner.Name, attacker.Name, taskID, markerURL, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
