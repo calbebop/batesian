@@ -327,14 +327,19 @@ name=...,token=...,tenant=...` flags.
 Both principals also need nonempty, distinct tenant labels. These labels are
 operator-supplied; verify that they match the target's actual tenant assignments.
 
-Sequence: (1) authenticate as A and B and have each create its own task - both
-must succeed, proving two valid, distinct authorization contexts (shared tokens => skip); (2)
-confirm the server is not simply open - an unauthenticated read of A's task must
-be rejected (if it succeeds, that's `a2a-task-idor-001` territory, not a tenant
-breach, so no finding here); (3) attempt the cross-tenant reads in both
-directions. A **confirmed** finding is raised only when a principal retrieves the
-other tenant's task content using its own valid credentials, with a hop-by-hop
-provenance trail attached to the finding.
+Sequence: (1) authenticate as A and B and have each create its own task; (2)
+confirm each owner can read its unique probe text, since task history is not
+guaranteed to persist every message; (3) check anonymous access so public
+content is not mislabeled as a tenant breach; (4) read across tenants in both
+directions. A **confirmed** finding requires the other principal to retrieve the
+owner's probe text with its own valid credentials. An unverified owner read is
+reported as incomplete for that direction, while the other direction can still
+produce a finding.
+
+The rule tests JSON-RPC and advertised HTTP+JSON `POST /message:send` and
+`GET /tasks/{id}` routes, with `/v1` prefixes for v0.3. REST reads request up
+to ten history messages. JSON-RPC tasks can feed chained rules; REST tasks are
+tested separately and are not reused across bindings.
 
 ---
 

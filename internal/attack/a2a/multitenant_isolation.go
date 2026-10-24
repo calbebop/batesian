@@ -36,12 +36,12 @@ func (e *MultiTenantIsolationExecutor) Requires() []attack.ArtifactKind { return
 // Execute satisfies attack.Executor by running the chained logic against a
 // throwaway blackboard, so the rule still works if invoked outside the engine.
 func (e *MultiTenantIsolationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	ctx = withTenantRouting(ctx)
 	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
 }
 
 // ExecuteChained runs the multi-tenant isolation check.
 func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, target string, opts attack.Options, bb *attack.Blackboard) ([]attack.Finding, error) {
+	ctx = withTenantRouting(ctx)
 	// Cross-tenant reads require distinct principals and tenant labels.
 	a, b, err := twoPrincipals(opts)
 	if err != nil {
@@ -54,15 +54,30 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	}
 
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	endpoint, ok := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
-	if !ok {
-		return nil, attack.ErrInconclusive
-	}
-
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
+	endpoint, jsonRPC := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
+	var findings []attack.Finding
+	var incomplete error
+	if jsonRPC {
+		rpcFindings, rpcErr := e.probeJSONRPC(ctx, endpoint, vars, bb, a, b, clientA, clientB, unauthClient)
+		findings = append(findings, rpcFindings...)
+		incomplete = errors.Join(incomplete, rpcErr)
+	} else {
+		incomplete = advertisedJSONRPCUnavailable(ctx, unauthClient, vars.BaseURL)
+	}
+	restFindings, restErr, restAdvertised := e.probeREST(ctx, vars.BaseURL, vars.RandID, a, b, clientA, clientB, unauthClient)
+	findings = append(findings, restFindings...)
+	incomplete = errors.Join(incomplete, restErr)
+	if !jsonRPC && !restAdvertised {
+		return nil, errors.Join(incomplete, attack.ErrInconclusive)
+	}
+	return findings, incomplete
+}
 
+func (e *MultiTenantIsolationExecutor) probeJSONRPC(ctx context.Context, endpoint string, vars attack.Vars,
+	bb *attack.Blackboard, a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
 	// Each principal creates a task with unique content.
 	taskA, ctxA, okA, obsA := e.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	taskB, ctxB, okB, obsB := e.createTask(ctx, clientB, endpoint, b, vars.RandID)
@@ -72,6 +87,9 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 		obs.observe(obsB)
 		return nil, obs.err()
 	}
+	if taskA == taskB {
+		return nil, fmt.Errorf("%w: two principals received the same task ID", attack.ErrInconclusive)
+	}
 	setupErr := errors.Join(obsA.partialErr(), obsB.partialErr())
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: a.Token, Principal: a.Name, Producer: e.rule.ID})
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactToken, Value: b.Token, Principal: b.Name, Producer: e.rule.ID})
@@ -80,21 +98,42 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 
 	markerA := "batesian mt probe " + a.Name + " " + vars.RandID
 	markerB := "batesian mt probe " + b.Name + " " + vars.RandID
+	read := func(c *attack.HTTPClient, headers map[string]string, taskID, marker, phase string) tenantRead {
+		return e.readTask(ctx, c, endpoint, headers, taskID, marker, vars.RandID, phase)
+	}
+	findings, readErr := e.compareTaskReads(endpoint, taskA, taskB, markerA, markerB, a, b,
+		clientA, clientB, unauthClient, read)
+	return findings, errors.Join(setupErr, readErr)
+}
+
+func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, markerA, markerB string,
+	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient,
+	read func(*attack.HTTPClient, map[string]string, string, string, string) tenantRead) ([]attack.Finding, error) {
+	ownerA := read(clientA, a.Headers, taskA, markerA, "owner-a")
+	ownerB := read(clientB, b.Headers, taskB, markerB, "owner-b")
 	// Anonymous disclosure belongs to the task IDOR rule.
-	anonA := e.readTask(ctx, unauthClient, endpoint, nil, taskA, markerA, vars.RandID, "anon-a")
-	anonB := e.readTask(ctx, unauthClient, endpoint, nil, taskB, markerB, vars.RandID, "anon-b")
+	anonA := read(unauthClient, nil, taskA, markerA, "anon-a")
+	anonB := read(unauthClient, nil, taskB, markerB, "anon-b")
 
 	// Check both directions for the owner's probe content.
 	var findings []attack.Finding
-	readA := e.readTask(ctx, clientB, endpoint, b.Headers, taskA, markerA, vars.RandID, "cross-a")
-	if readA.location != "" && anonA.location == "" && !anonA.unknown && (anonA.denied || anonA.matched) {
+	readA := read(clientB, b.Headers, taskA, markerA, "cross-a")
+	if ownerA.location != "" && readA.location != "" && anonA.location == "" &&
+		!anonA.unknown && (anonA.denied || anonA.matched) {
 		findings = append(findings, e.finding(endpoint, b, a, taskA, markerA, readA))
 	}
-	readB := e.readTask(ctx, clientA, endpoint, a.Headers, taskB, markerB, vars.RandID, "cross-b")
-	if readB.location != "" && anonB.location == "" && !anonB.unknown && (anonB.denied || anonB.matched) {
+	readB := read(clientA, a.Headers, taskB, markerB, "cross-b")
+	if ownerB.location != "" && readB.location != "" && anonB.location == "" &&
+		!anonB.unknown && (anonB.denied || anonB.matched) {
 		findings = append(findings, e.finding(endpoint, a, b, taskB, markerB, readB))
 	}
 	var missing []string
+	if ownerA.location == "" {
+		missing = append(missing, "owner read of A")
+	}
+	if ownerB.location == "" {
+		missing = append(missing, "owner read of B")
+	}
 	for _, check := range []struct {
 		name  string
 		read  tenantRead
@@ -109,10 +148,10 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 		}
 	}
 	if len(missing) > 0 {
-		return findings, errors.Join(setupErr, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
-			attack.ErrInconclusive, strings.Join(missing, ", ")))
+		return findings, fmt.Errorf("%w: task reads did not establish all comparisons: %s",
+			attack.ErrInconclusive, strings.Join(missing, ", "))
 	}
-	return findings, setupErr
+	return findings, nil
 }
 
 // createTask tries v1 and v0.3 and keeps setup diagnostics from both.
