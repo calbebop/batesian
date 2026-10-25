@@ -70,6 +70,9 @@ func tenantServer(mode string) *httptest.Server {
 				tn = "anon"
 			}
 			taskID := "task-" + tn + "-1"
+			if mode == "same-id" {
+				taskID = "task-shared"
+			}
 			mu.Lock()
 			owner[taskID] = tn
 			probeText[taskID] = rpcMessageText(req)
@@ -130,6 +133,10 @@ func tenantServer(mode string) *httptest.Server {
 				} else {
 					taskWithHistory(w, id, taskID, "ctx-"+own, text)
 				}
+				return
+			}
+			if mode == "owner-redacted" && tenant == "A" && own == "A" {
+				taskResult(w, id, taskID, "ctx-"+own)
 				return
 			}
 			switch mode {
@@ -213,6 +220,28 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 			!strings.Contains(f.Evidence, "response: ") {
 			t.Errorf("expected probe and response evidence, got %q", f.Evidence)
 		}
+	}
+}
+
+func TestMultiTenantOwnerReadbackRequired(t *testing.T) {
+	ts := tenantServer("owner-redacted")
+	defer ts.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+		mtOpts(tenantPrincipals()...))
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "owner read of A") {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestMultiTenantDistinctTaskIDsRequired(t *testing.T) {
+	ts := tenantServer("same-id")
+	defer ts.Close()
+	findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
+		mtOpts(tenantPrincipals()...))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "same task ID") {
+		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 }
 

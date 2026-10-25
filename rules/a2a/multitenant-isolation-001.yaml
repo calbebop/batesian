@@ -5,7 +5,9 @@ info:
   severity: high
   description: |
     Creates a task with unique probe text for each of two authenticated
-    principals, then reads each task using the other principal's credentials.
+    principals, confirms each owner can read its probe text, then reads each
+    task using the other principal's credentials. Tests JSON-RPC and advertised
+    HTTP+JSON bindings.
     Reports a cross-tenant disclosure only when the returned task contains the
     owner's probe text in history, an artifact, or a status message. An echoed
     task ID or context ID alone does not establish content access. If an
@@ -42,10 +44,10 @@ attack:
 
 remediation: |
   1. Bind every task and contextId to the authenticated tenant at creation time,
-     and verify tenant ownership on every tasks/get, tasks/cancel, and tasks/list
-     request - authentication alone is not authorization.
-  2. Return JSON-RPC error -32001 (TaskNotFoundError) for any task that does not
-     belong to the requesting tenant; do not reveal whether the task exists.
+     and verify tenant ownership on every task read, cancel, and list request.
+     Authentication alone is not authorization.
+  2. Return TaskNotFoundError (JSON-RPC -32001 or HTTP 404) for tasks outside
+     the requesting tenant; do not reveal whether the task exists.
   3. Scope task storage per tenant (separate namespaces/partitions) so a lookup
      cannot cross a tenant boundary even if an ID is guessed or leaked.
   4. Include the tenant identifier in audit logs for every task access so
