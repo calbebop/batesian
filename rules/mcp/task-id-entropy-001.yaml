@@ -7,7 +7,8 @@ info:
     Checks task IDs returned by the MCP 2026-07-28 Tasks extension. The rule
     advertises io.modelcontextprotocol/tasks on each approved tools/call and
     requires a matching resultType: task response. It flags numeric IDs minted
-    with a constant stride and IDs with a low observed-alphabet estimate.
+    with a constant stride, including UUID-shaped counters, and IDs with a
+    low variable-position estimate.
 
     Invoking a tool requires its exact name in --mcp-invoke-tool or
     mcp_invoke_tools and a readOnlyHint: true annotation. Annotations are

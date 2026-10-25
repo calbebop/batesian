@@ -36,12 +36,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 
-	// Step 1: Confirm the server participates in OAuth 2.1 / OIDC before forging
-	// tokens against it. Probe every recognized discovery document, not just the
-	// RFC 8414 authorization-server path: an MCP resource server commonly exposes
-	// only RFC 9728 protected-resource-metadata (its authorization server may be a
-	// separate host), and OIDC deployments expose openid-configuration. Skip when
-	// none is present.
+	// Confirm OAuth via a challenge or discovery document before token probes.
 	metadataPresent, err := oauthMetadataPresent(ctx, client, vars.BaseURL)
 	if err != nil {
 		return nil, err
@@ -310,10 +305,11 @@ var oauthWellKnownPaths = []string{
 	"/.well-known/openid-configuration",
 }
 
-// oauthMetadataPresent reports whether the target exposes any recognized OAuth /
-// OIDC discovery document. This is only a gate to avoid forging tokens against
-// servers that plainly do not use OAuth; the document contents are not used.
+// oauthMetadataPresent checks a challenge or discovery document for an OAuth surface.
 func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) (bool, error) {
+	if advertised, _, _ := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL); advertised != "" {
+		return true, nil
+	}
 	var incomplete []string
 	for _, p := range oauthWellKnownPaths {
 		resp, reason := readOAuthMetadata(ctx, client, baseURL, p)

@@ -146,6 +146,9 @@ func fetchClientCredentialsTokenWithClient(ctx context.Context, cfg ClientCreden
 	if tok.AccessToken == "" {
 		return nil, fmt.Errorf("token endpoint returned HTTP 200 but no access_token in response")
 	}
+	if err := validateBearerTokenType(tok.TokenType); err != nil {
+		return nil, err
+	}
 
 	return &tok, nil
 }
@@ -263,8 +266,21 @@ func exchangeAuthCodeWithClient(ctx context.Context, cfg AuthCodeConfig, client 
 	if tok.AccessToken == "" {
 		return nil, fmt.Errorf("token endpoint returned HTTP 200 but no access_token in response")
 	}
+	if err := validateBearerTokenType(tok.TokenType); err != nil {
+		return nil, err
+	}
 
 	return &tok, nil
+}
+
+func validateBearerTokenType(tokenType string) error {
+	if tokenType == "" {
+		return fmt.Errorf("token endpoint returned HTTP 200 but no token_type in response")
+	}
+	if !strings.EqualFold(tokenType, "Bearer") {
+		return fmt.Errorf("token endpoint returned an unsupported token_type (Bearer required)")
+	}
+	return nil
 }
 
 // tokenEndpointClient returns a client that never follows redirects. Token

@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
 )
 
 // OAuthAudienceExecutor tests audience-matching traps on both MCP wires.
@@ -342,12 +341,17 @@ func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HT
 			return resource, mcpReached, observed, incomplete
 		}
 	}
-	wellKnown := endpoint.AppendPath(baseURL, "/.well-known/oauth-protected-resource")
-	resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown, true)
-	if err != nil {
-		err = fmt.Errorf("well-known protected-resource metadata: %w", err)
+	for _, wellKnown := range oauthWellKnownURLs(baseURL, "/.well-known/oauth-protected-resource") {
+		resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown, true)
+		if err != nil {
+			incomplete = errors.Join(incomplete, fmt.Errorf("well-known protected-resource metadata: %w", err))
+			continue
+		}
+		if resource != "" {
+			return resource, mcpReached, observed, incomplete
+		}
 	}
-	return resource, mcpReached, observed, errors.Join(incomplete, err)
+	return "", mcpReached, observed, incomplete
 }
 
 // probeWWWAuthenticateResourceMetadata sends an unauth initialize request to

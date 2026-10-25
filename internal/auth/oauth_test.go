@@ -61,7 +61,7 @@ func TestExchangeAuthCode_SendsResource(t *testing.T) {
 			http.Error(w, "bad resource", http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte(`{"access_token":"token"}`))
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer"}`))
 	}))
 	defer srv.Close()
 
@@ -72,6 +72,44 @@ func TestExchangeAuthCode_SendsResource(t *testing.T) {
 	}, srv.Client())
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTokenExchange_RequiresBearerType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"missing", `{"access_token":"secret"}`, "no token_type"},
+		{"unsupported", `{"access_token":"secret","token_type":"MAC"}`, "unsupported token_type"},
+		{"bearer case insensitive", `{"access_token":"secret","token_type":"bearer"}`, ""},
+	} {
+		for _, grant := range []string{"client_credentials", "authorization_code"} {
+			t.Run(grant+"/"+tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer srv.Close()
+				var err error
+				if grant == "client_credentials" {
+					_, err = auth.FetchClientCredentialsTokenWithClient(t.Context(), auth.ClientCredentialsConfig{
+						TokenURL: srv.URL, ClientID: "client",
+					}, srv.Client())
+				} else {
+					_, err = auth.ExchangeAuthCodeWithClient(t.Context(), auth.AuthCodeConfig{
+						TokenURL: srv.URL, ClientID: "client", Code: "code", RedirectURI: "http://127.0.0.1/callback", PKCEVerifier: "verifier",
+					}, srv.Client())
+				}
+				if tc.want == "" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "secret") {
+					t.Fatalf("expected safe %s error, got %v", tc.want, err)
+				}
+			})
+		}
 	}
 }
 

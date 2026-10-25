@@ -326,7 +326,7 @@ func TestPerformPKCEFlowUsesProxyAndSkipTLS(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"proxied-token"}`))
+		_, _ = w.Write([]byte(`{"access_token":"proxied-token","token_type":"Bearer"}`))
 	}))
 	defer target.Close()
 
@@ -406,7 +406,7 @@ func TestPerformPKCEFlow_StateMismatchKeepsLoginPending(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"valid-token"}`)
+		_, _ = io.WriteString(w, `{"access_token":"valid-token","token_type":"Bearer"}`)
 	}))
 	defer srv.Close()
 
@@ -531,7 +531,7 @@ func TestPerformPKCEFlowIssuerCallback(t *testing.T) {
 				}
 				exchanges.Add(1)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, `{"access_token":"valid-token"}`)
+				_, _ = io.WriteString(w, `{"access_token":"valid-token","token_type":"Bearer"}`)
 			}))
 			defer srv.Close()
 

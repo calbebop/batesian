@@ -131,6 +131,8 @@ OAuth `resource` in token requests. Use `--oauth-resource https://mcp.example.co
 if the resource server's canonical URI differs from `--target`. A2A-only scans
 omit `resource` unless this flag is set. `--oauth-audience` remains a separate,
 provider-specific parameter.
+OAuth token responses must declare a Bearer `token_type`; other or missing
+types are rejected before the token can be used in a scan.
 
 ### Authorization code with PKCE
 
