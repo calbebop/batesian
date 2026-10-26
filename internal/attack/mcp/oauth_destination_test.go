@@ -155,3 +155,150 @@ func TestOAuthDCR_AllowsExplicitAdditionalOrigin(t *testing.T) {
 		t.Fatalf("external registration request carried operator credential %q", authorization)
 	}
 }
+
+func TestOAuthDCR_PathResourceDiscoversExternalIssuer(t *testing.T) {
+	for _, tc := range []struct {
+		name, issuerSuffix, resourceSuffix string
+		approve, scanRoot                  bool
+		wantRegistration                   bool
+	}{
+		{"unapproved", "", "", false, false, false},
+		{"approved", "", "", true, false, true},
+		{"root target", "", "", true, true, true},
+		{"issuer mismatch", "/wrong", "", true, false, false},
+		{"resource mismatch", "", "/other", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var metadataHits, registrations atomic.Int32
+			var authServer *httptest.Server
+			authServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/oauth-authorization-server/tenant":
+					metadataHits.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"issuer":                authServer.URL + "/tenant" + tc.issuerSuffix,
+						"registration_endpoint": authServer.URL + "/register",
+					})
+				case "/register":
+					registrations.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer authServer.Close()
+
+			var target *httptest.Server
+			target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"resource":              target.URL + "/mcp" + tc.resourceSuffix,
+						"authorization_servers": []string{authServer.URL + "/tenant"},
+					})
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer target.Close()
+
+			opts := testOpts()
+			if tc.approve {
+				opts.OAuthOrigins = []string{authServer.URL}
+			}
+			scanTarget := target.URL + "/mcp"
+			if tc.scanRoot {
+				scanTarget = target.URL
+			}
+			findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(t.Context(), scanTarget, opts)
+			if len(findings) != 0 {
+				t.Fatalf("unexpected finding: %+v", findings)
+			}
+			if tc.wantRegistration {
+				if err != nil || metadataHits.Load() != 1 || registrations.Load() != 1 {
+					t.Fatalf("approved issuer not reached: metadata=%d registrations=%d err=%v", metadataHits.Load(), registrations.Load(), err)
+				}
+			} else if !errors.Is(err, attack.ErrInconclusive) || registrations.Load() != 0 || ((!tc.approve || tc.resourceSuffix != "") && metadataHits.Load() != 0) {
+				t.Fatalf("issuer should remain untested: metadata=%d registrations=%d err=%v", metadataHits.Load(), registrations.Load(), err)
+			}
+		})
+	}
+}
+
+func TestOAuthDCR_ChallengeOnlyResourceMetadata(t *testing.T) {
+	var registrations atomic.Int32
+	var metadataCredential atomic.Bool
+	var authServer *httptest.Server
+	authServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                authServer.URL,
+				"registration_endpoint": authServer.URL + "/register",
+			})
+		case "/register":
+			registrations.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authServer.Close()
+
+	var target *httptest.Server
+	target = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/prm"`, target.URL))
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/prm":
+			if r.Header.Get("Authorization") != "" {
+				metadataCredential.Store(true)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource":              target.URL + "/mcp",
+				"authorization_servers": []string{authServer.URL},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+
+	opts := testOpts()
+	opts.OAuthOrigins = []string{authServer.URL}
+	opts.Token = "operator-secret"
+	findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(t.Context(), target.URL, opts)
+	if err != nil || len(findings) != 0 || registrations.Load() != 1 || metadataCredential.Load() {
+		t.Fatalf("challenge-only metadata was not followed safely: findings=%+v registrations=%d credential=%t err=%v",
+			findings, registrations.Load(), metadataCredential.Load(), err)
+	}
+}
+
+func TestOAuthDCR_RejectsUnapprovedChallengeMetadataOrigin(t *testing.T) {
+	var metadataHits atomic.Int32
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metadataHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource":"https://example.test/mcp"}`))
+	}))
+	defer collector.Close()
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/prm"`, collector.URL))
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer target.Close()
+
+	findings, err := mcpattack.NewOAuthDCRExecutor(oauthRC()).Execute(t.Context(), target.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || metadataHits.Load() != 0 {
+		t.Fatalf("unapproved metadata origin was contacted: findings=%+v hits=%d err=%v", findings, metadataHits.Load(), err)
+	}
+}

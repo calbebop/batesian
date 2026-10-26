@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -299,6 +300,52 @@ func TestTokenReplay_AlternateDiscoveryPaths(t *testing.T) {
 				t.Fatalf("expected findings when discovery is at %s, got none", path)
 			}
 		})
+	}
+}
+
+func TestTokenReplay_PathMountedResourceMetadata(t *testing.T) {
+	var forged atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"resource":"https://example.test/mcp","authorization_servers":["https://issuer.example"]}`))
+		case "/mcp":
+			if r.Header.Get("Authorization") != "" {
+				forged.Add(1)
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
+	if err != nil || len(findings) != 0 || forged.Load() == 0 {
+		t.Fatalf("path metadata did not enable token probes: findings=%+v forged=%d err=%v", findings, forged.Load(), err)
+	}
+}
+
+func TestTokenReplay_ChallengeOnlyMetadata(t *testing.T) {
+	var forged atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "" {
+			forged.Add(1)
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="https://issuer.example/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(t.Context(), srv.URL, testOpts())
+	if err != nil || len(findings) != 0 || forged.Load() == 0 {
+		t.Fatalf("challenge metadata did not enable token probes: findings=%+v forged=%d err=%v", findings, forged.Load(), err)
 	}
 }
 

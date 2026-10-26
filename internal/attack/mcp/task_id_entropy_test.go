@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ const (
 	styleSequential entropyStyle = "sequential"
 	styleLowAlpha   entropyStyle = "low-alpha"
 	styleUUID       entropyStyle = "uuid"
+	styleRandomUUID entropyStyle = "random-uuid"
 )
 
 // entropyServer mints modern task handles for one read-only tool.
@@ -59,8 +61,17 @@ func (s *entropyServer) nextHandle(callIdx int) string {
 		// check must stay out of this posture), and thin: 8 positions over
 		// a narrow alphabet lands far under the bit bar.
 		return fmt.Sprintf("k%07x", callIdx+0x1000)
+	case styleRandomUUID:
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			panic(err)
+		}
+		raw[6] = (raw[6] & 0x0f) | 0x40
+		raw[8] = (raw[8] & 0x3f) | 0x80
+		h := fmt.Sprintf("%x", raw)
+		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 	default:
-		// uuid-shaped: 32 hex chars, dashes in the canonical spots.
+		// Fixed-width counter with UUID formatting.
 		h := fmt.Sprintf("%032x", callIdx+0xdeadbeefcafe)
 		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 	}
@@ -310,7 +321,7 @@ func TestEntropy_LowAlphabetFiresMedium(t *testing.T) {
 	}
 }
 
-func TestEntropy_UUIDCleanSilent(t *testing.T) {
+func TestEntropy_UUIDCounterFires(t *testing.T) {
 	ts := httptest.NewServer((&entropyServer{style: styleUUID}).handler())
 	defer ts.Close()
 
@@ -318,8 +329,22 @@ func TestEntropy_UUIDCleanSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings against uuid-style handles, got %d: %+v", len(findings), findings)
+	var sequential bool
+	for _, finding := range findings {
+		sequential = sequential || strings.Contains(finding.Title, "sequential UUID-shaped values")
+	}
+	if !sequential {
+		t.Errorf("expected a counter finding against UUID-shaped handles, got %+v", findings)
+	}
+}
+
+func TestEntropy_RandomUUIDCleanSilent(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{style: styleRandomUUID}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("random UUID handles should be silent: findings=%+v err=%v", findings, err)
 	}
 }
 

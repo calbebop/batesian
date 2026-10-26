@@ -85,7 +85,7 @@ func TestFetchOAuthTokenUsesExplicitProxy(t *testing.T) {
 func TestFetchOAuthTokenUsesSkipTLS(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"token"}`))
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer"}`))
 	}))
 	defer target.Close()
 

@@ -77,6 +77,11 @@ the authorized scan scope with `--oauth-origin https://login.example.com` or the
 `oauth_origins` config field. Scheme, host, and effective port must match; redirects
 remain disabled.
 
+Discovery follows a `WWW-Authenticate` metadata URL when advertised. Otherwise,
+it checks path-specific protected-resource metadata before the root fallback,
+then follows its advertised authorization server. An unapproved
+authorization-server origin leaves those rules not tested, not clean.
+
 ### Client registrations are cleaned up
 
 Three of them register an OAuth client, because what DCR accepts cannot be tested
@@ -1072,11 +1077,11 @@ acceptance of those headers alone no longer produces a confirmed finding.
 
 This rule probes only the MCP 2026-07-28 Tasks extension. It advertises
 `io.modelcontextprotocol/tasks` per request and samples top-level
-`resultType: "task"` handles. Numeric IDs with a constant stride receive a
-high-severity indicator; a low observed-alphabet estimate receives a medium
-indicator. The estimate cannot prove the generator's full alphabet or actual
-entropy. Reports include the sample count and derived measurements, not the
-sampled handles or a predicted next handle.
+`resultType: "task"` handles. Numeric and UUID-shaped IDs with a constant
+stride receive a high-severity indicator; a low estimate from positions that
+vary across samples receives a medium indicator. The estimate cannot prove
+the generator's full alphabet or actual entropy. Reports include the sample
+count and derived measurements, not sampled handles or a predicted next handle.
 
 The call requires an exact `--mcp-invoke-tool` approval and a
 `readOnlyHint: true` annotation. The annotation is untrusted. If the modern

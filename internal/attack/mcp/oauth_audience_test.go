@@ -347,6 +347,35 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_AutoDiscovery_PathMountedResource(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource":              srv.URL + "/mcp",
+				"authorization_servers": []string{"https://issuer.example"},
+			})
+		case "/mcp":
+			aud, ok := decodeJWTAud(t, r.Header.Get("Authorization")).(string)
+			if ok && strings.Contains(aud, srv.URL+"/mcp") {
+				initializeOK(w)
+				return
+			}
+			challenge401(w)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("path metadata should drive the audience probe: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/broken-metadata", func(w http.ResponseWriter, r *http.Request) {

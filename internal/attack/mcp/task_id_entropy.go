@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -257,6 +257,7 @@ func teFindSafeToolFiltered(ctx context.Context, client *attack.HTTPClient, s mc
 }
 
 var teNumericOnly = regexp.MustCompile(`^[0-9]+$`)
+var teUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // entropyThresholdBits is the minimum accepted bearer-handle search space.
 const entropyThresholdBits = 64
@@ -265,58 +266,82 @@ const entropyThresholdBits = 64
 func (e *TaskIDEntropyExecutor) teGradeHandles(endpoint, tool string, ids []string) []attack.Finding {
 	var findings []attack.Finding
 
-	allNumeric := true
-	for _, id := range ids {
-		if !teNumericOnly.MatchString(id) {
-			allNumeric = false
-			break
-		}
-	}
-	if allNumeric {
-		if step, ok := teConstantStep(ids); ok {
-			findings = append(findings, e.sequenceFinding(endpoint, tool, ids, step))
-		}
+	if step, kind, ok := teConstantStep(ids); ok {
+		findings = append(findings, e.sequenceFinding(endpoint, tool, ids, step, kind))
 	}
 
-	bits, alphabet, maxLen := teAlphabetBits(ids)
+	bits, alphabet, maxLen, variablePositions := teVariableBits(ids)
 	if bits < entropyThresholdBits {
-		findings = append(findings, e.entropyFinding(endpoint, tool, ids, bits, alphabet, maxLen))
+		findings = append(findings, e.entropyFinding(endpoint, tool, ids, bits, alphabet, maxLen, variablePositions))
 	}
 	return findings
 }
 
-// teConstantStep reports whether every consecutive delta between mints is
-// identical and non-zero - the signature of a counter, whatever its stride.
-func teConstantStep(ids []string) (int64, bool) {
-	values := make([]int64, 0, len(ids))
+// teConstantStep recognizes decimal and UUID-shaped counters.
+func teConstantStep(ids []string) (string, string, bool) {
+	if len(ids) < 3 {
+		return "", "", false
+	}
+	kind, base := "integers", 10
+	if teUUID.MatchString(ids[0]) {
+		kind, base = "UUID-shaped values", 16
+	}
+	values := make([]*big.Int, 0, len(ids))
 	for _, id := range ids {
-		v, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
-			return 0, false
+		if (base == 10 && !teNumericOnly.MatchString(id)) || (base == 16 && !teUUID.MatchString(id)) {
+			return "", "", false
+		}
+		v, ok := new(big.Int).SetString(strings.ReplaceAll(id, "-", ""), base)
+		if !ok {
+			return "", "", false
 		}
 		values = append(values, v)
 	}
-	step := values[1] - values[0]
-	if step == 0 {
-		return 0, false // repeated ids are a different defect
+	step := new(big.Int).Sub(values[1], values[0])
+	if step.Sign() == 0 {
+		return "", "", false
 	}
 	for i := 2; i < len(values); i++ {
-		if values[i]-values[i-1] != step {
-			return 0, false
+		if new(big.Int).Sub(values[i], values[i-1]).Cmp(step) != 0 {
+			return "", "", false
 		}
 	}
-	return step, true
+	return step.String(), kind, true
 }
 
-// teAlphabetBits estimates search space from the sampled characters.
-func teAlphabetBits(ids []string) (bits float64, alphabet string, maxLen int) {
+// teVariableBits excludes formatting and other positions fixed in every sample.
+func teVariableBits(ids []string) (bits float64, alphabet string, maxLen, variablePositions int) {
 	set := map[rune]bool{}
-	maxLen = 0
+	rows := make([][]rune, len(ids))
 	for _, id := range ids {
-		if len(id) > maxLen {
-			maxLen = len(id)
+		if n := len([]rune(id)); n > maxLen {
+			maxLen = n
 		}
-		for _, r := range id {
+	}
+	for i, id := range ids {
+		rows[i] = []rune(id)
+	}
+	for pos := 0; pos < maxLen; pos++ {
+		observed := map[rune]bool{}
+		for _, row := range rows {
+			if pos < len(row) {
+				observed[row[pos]] = true
+			}
+		}
+		if len(observed) == 1 {
+			allPresent := true
+			for _, row := range rows {
+				if pos >= len(row) {
+					allPresent = false
+					break
+				}
+			}
+			if allPresent {
+				continue
+			}
+		}
+		variablePositions++
+		for r := range observed {
 			set[r] = true
 		}
 	}
@@ -328,47 +353,47 @@ func teAlphabetBits(ids []string) (bits float64, alphabet string, maxLen int) {
 	alphabet = string(runes)
 	n := float64(len(set))
 	if n <= 1 || maxLen == 0 {
-		return 0, alphabet, maxLen
+		return 0, alphabet, maxLen, variablePositions
 	}
-	return float64(maxLen) * math.Log2(n), alphabet, maxLen
+	return float64(variablePositions) * math.Log2(n), alphabet, maxLen, variablePositions
 }
 
-func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []string, step int64) attack.Finding {
+func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []string, step, kind string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
 		Confidence: attack.RiskIndicator,
-		Title:      fmt.Sprintf("MCP task handles minted by %q are sequential integers", tool),
+		Title:      fmt.Sprintf("MCP task handles minted by %q are sequential %s", tool, kind),
 		Description: fmt.Sprintf(
-			"%d handles requested back to back from %q at %s were integers with a constant "+
-				"stride (%d). This suggests a predictable generator; other callers' requests may "+
+			"%d handles requested back to back from %q at %s were %s with a constant "+
+				"stride (%s). This suggests a predictable generator; other callers' requests may "+
 				"interleave, and task access still requires authorization.",
-			len(ids), tool, endpoint, step),
-		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nconstant stride: %d\nhandle values: [redacted]",
+			len(ids), tool, endpoint, kind, step),
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nconstant stride: %s\nhandle values: [redacted]",
 			endpoint, tool, len(ids), step),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskIDEntropyExecutor) entropyFinding(endpoint, tool string, ids []string, bits float64, alphabet string, maxLen int) attack.Finding {
+func (e *TaskIDEntropyExecutor) entropyFinding(endpoint, tool string, ids []string, bits float64, alphabet string, maxLen, variablePositions int) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "medium",
 		Confidence: attack.RiskIndicator,
-		Title: fmt.Sprintf("MCP task handles have a ~%.0f-bit observed-alphabet estimate (below %d bits)",
+		Title: fmt.Sprintf("MCP task handles have a ~%.0f-bit variable-position estimate (below %d bits)",
 			bits, entropyThresholdBits),
 		Description: fmt.Sprintf(
-			"%d handles minted by %q at %s contain %d distinct observed characters over at most %d "+
-				"positions, yielding a ~%.0f-bit search-space estimate. Unseen characters and the "+
+			"%d handles minted by %q at %s vary in %d of at most %d positions, with %d observed "+
+				"characters in those positions. This yields a ~%.0f-bit estimate from the sample. Unseen characters and the "+
 				"generator's actual entropy cannot be determined from these samples. Review the "+
 				"generator before treating task IDs as unguessable.",
-			len(ids), tool, endpoint, len(alphabet), maxLen, bits),
-		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nhandle values: [redacted]\ndistinct characters: %q\n"+
-			"longest handle: %d positions\nobserved-alphabet estimate: %.1f bits (threshold %d)",
-			endpoint, tool, len(ids), alphabet, maxLen, bits, entropyThresholdBits),
+			len(ids), tool, endpoint, variablePositions, maxLen, len(alphabet), bits),
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nhandle values: [redacted]\nvariable-position characters: %q\n"+
+			"variable positions: %d of %d\nvariable-position estimate: %.1f bits (threshold %d)",
+			endpoint, tool, len(ids), alphabet, variablePositions, maxLen, bits, entropyThresholdBits),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}

@@ -387,6 +387,13 @@ func (c *HTTPClient) GETOAuth(ctx context.Context, urlTpl string, headers map[st
 	return c.GET(ctx, urlTpl, headers)
 }
 
+// GETOAuthUnauth reads public OAuth metadata without the scan token.
+func (c *HTTPClient) GETOAuthUnauth(ctx context.Context, urlTpl string) (*Response, error) {
+	unauth := *c
+	unauth.token = ""
+	return unauth.GETOAuth(ctx, urlTpl, nil)
+}
+
 // OPTIONS sends an OPTIONS request (used for CORS preflight probes).
 func (c *HTTPClient) OPTIONS(ctx context.Context, urlTpl string, headers map[string]string) (*Response, error) {
 	return c.do(ctx, http.MethodOptions, c.vars.Expand(urlTpl), nil, c.vars.ExpandMap(headers))
