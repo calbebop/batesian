@@ -8,7 +8,9 @@ info:
     advertises io.modelcontextprotocol/tasks on each approved tools/call and
     requires a matching resultType: task response. It flags numeric IDs minted
     with a constant stride, including UUID-shaped counters, and IDs with a
-    low variable-position estimate.
+    low variable-position estimate. Reuse of a handle across distinct tool
+    arguments is reported separately; reuse for identical arguments is
+    inconclusive because the server may deduplicate calls.
 
     Invoking a tool requires its exact name in --mcp-invoke-tool or
     mcp_invoke_tools and a readOnlyHint: true annotation. Annotations are

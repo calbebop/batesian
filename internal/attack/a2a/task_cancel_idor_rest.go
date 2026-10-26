@@ -139,7 +139,14 @@ func cancelRESTTask(ctx context.Context, caller, owner *attack.HTTPClient, cance
 			attack.ErrInconclusive, taskID)
 	}
 	if isCanceledState(state) {
-		return cancelCanceled, nil
+		if err == nil && resp != nil && resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
+			returned, matched := restTaskStateForID(resp.Body, taskID)
+			if matched && isCanceledState(returned) {
+				return cancelCanceled, nil
+			}
+		}
+		return cancelOther, fmt.Errorf("%w: REST task %s was canceled without a matching success reply at %s",
+			attack.ErrInconclusive, taskID, cancelURL)
 	}
 	if !activeTaskState(state) {
 		return cancelOther, fmt.Errorf("%w: REST task %s left its cancelable state without a confirmed cancellation",

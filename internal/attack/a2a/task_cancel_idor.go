@@ -216,18 +216,13 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 		if err == nil && resp != nil {
 			_, code, hasErr, valid = discoveryResponse(resp.Body, requestID)
 		}
-		replyUnjudged := err != nil || resp == nil ||
-			(resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden &&
-				(resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
-					resp.StatusCode >= http.StatusInternalServerError || !valid))
 		read := e.readTaskState(ctx, owner, endpoint, ownerHeaders, taskID, randID, phase+"-"+s.method)
 		if read.seen && isCanceledState(read.state) {
-			method := s.method
-			if priorUncertain {
-				method = "CancelTask or tasks/cancel"
+			if err == nil && resp != nil && resp.IsSuccess() && valid && !hasErr &&
+				bodyShowsCanceled(resp.Body, taskID) && !priorUncertain {
+				return cancelProbe{outcome: cancelCanceled, method: s.method, incomplete: read.incomplete}
 			}
-			return cancelProbe{outcome: cancelCanceled, method: method,
-				incomplete: uncertain || read.incomplete || replyUnjudged}
+			return cancelProbe{outcome: cancelOther, incomplete: true}
 		}
 		if !read.seen || read.incomplete {
 			uncertain = true

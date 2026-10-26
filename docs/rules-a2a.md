@@ -561,12 +561,15 @@ principals' tasks. Needs two authenticated principals and reports two confirmed
 failures:
 
 - **Unauthenticated cancellation (CWE-862).** The rule creates a task as A, then
-  cancels it with no credentials. If that cancel is accepted (the task becomes
-  `canceled`), authentication is missing on a state-changing operation.
+  cancels it with no credentials. A matching successful cancel reply and an
+  owner read-back showing `canceled` confirm the failure.
 - **Cross-principal cancellation (CWE-639).** If the unauthenticated cancel is
   rejected (so auth is enforced), the rule cancels A's task as the wrong principal
-  B. A **confirmed** finding is raised only when B's cancel succeeds and a
-  read-back as owner A shows the task is now `canceled`.
+  B. A **confirmed** finding is raised only when B's cancel returns a matching
+  success and a read-back as owner A shows the task is now `canceled`.
+
+A denial followed by an independently canceled task is inconclusive, not an
+authorization finding.
 
 A server that rejects the wrong-principal cancel produces no finding: the
 boundary was tested and held. Two outcomes are not clean results: an anonymous

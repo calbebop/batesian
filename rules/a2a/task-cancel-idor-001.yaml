@@ -7,10 +7,11 @@ info:
     Creates a throwaway task as one principal and confirms its live state.
     Probes CancelTask and tasks/cancel anonymously, then as a second principal
     only if anonymous cancellation is conclusively denied.
-    Reports unauthenticated or cross-principal cancellation only when an owner
-    read-back confirms that the same task became canceled. A rejection on one
-    method does not mask a vulnerable second method.
+    Reports unauthenticated or cross-principal cancellation only when a matching
+    successful cancel reply and an owner read-back both show the task canceled.
+    A rejection on one method does not mask a vulnerable second method.
 
+    A denied cancel followed by a separate cancellation is inconclusive.
     Ambiguous responses or an already-terminal task are inconclusive. If both
     methods are unavailable, the rule does not apply. The rule never cancels a
     pre-existing task.

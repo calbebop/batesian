@@ -1082,6 +1082,9 @@ stride receive a high-severity indicator; a low estimate from positions that
 vary across samples receives a medium indicator. The estimate cannot prove
 the generator's full alphabet or actual entropy. Reports include the sample
 count and derived measurements, not sampled handles or a predicted next handle.
+Reusing a handle across different tool arguments produces a medium indicator.
+Reuse for identical arguments is inconclusive because the server may deduplicate
+requests.
 
 The call requires an exact `--mcp-invoke-tool` approval and a
 `readOnlyHint: true` annotation. The annotation is untrusted. If the modern

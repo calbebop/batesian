@@ -122,11 +122,13 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 	}
 
 	var ids []string
+	var argumentKeys []string
 	for i := 0; i < entropySampleTarget; i++ {
 		requestID := entropyCallBase + i
+		args := synthesizeArgs(safeTool.schema, "batesian-"+fmt.Sprint(i))
 		resp, err := teCallTaskTool(ctx, client, session, requestID, map[string]interface{}{
 			"name":      safeTool.name,
-			"arguments": synthesizeArgs(safeTool.schema, "batesian-"+fmt.Sprint(i)),
+			"arguments": args,
 		}, safeTool.schema)
 		if isMCPHeaderMismatch(resp) {
 			return nil, fmt.Sprintf("tools/call for %q returned HeaderMismatch; task handles were not fully sampled",
@@ -150,12 +152,35 @@ func (e *TaskIDEntropyExecutor) probeSession(ctx context.Context, client *attack
 			break
 		}
 		ids = append(ids, id)
+		key, _ := json.Marshal(args)
+		argumentKeys = append(argumentKeys, string(key))
 	}
 	if len(ids) < entropySampleTarget {
 		return nil, fmt.Sprintf("only %d of %d task handles were sampled from %q; %s",
 			len(ids), entropySampleTarget, safeTool.name, stopReason), false, nil
 	}
+	if repeated, distinctInputs := teRepeatedHandles(ids, argumentKeys); repeated {
+		if distinctInputs {
+			return []attack.Finding{e.repeatedFinding(session.Endpoint, safeTool.name, ids)}, "", true, nil
+		}
+		return nil, fmt.Sprintf("repeated task handles from %q occurred only for identical tool arguments; generator entropy could not be assessed", safeTool.name), false, nil
+	}
 	return e.teGradeHandles(session.Endpoint, safeTool.name, ids), "", true, nil
+}
+
+func teRepeatedHandles(ids, argumentKeys []string) (repeated, distinctInputs bool) {
+	seen := make(map[string]string, len(ids))
+	for i, id := range ids {
+		if first, ok := seen[id]; ok {
+			repeated = true
+			if first != argumentKeys[i] {
+				return true, true
+			}
+		} else {
+			seen[id] = argumentKeys[i]
+		}
+	}
+	return repeated, false
 }
 
 func teCallTaskTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int,
@@ -374,6 +399,25 @@ func (e *TaskIDEntropyExecutor) sequenceFinding(endpoint, tool string, ids []str
 			endpoint, tool, len(ids), step),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+	}
+}
+
+func (e *TaskIDEntropyExecutor) repeatedFinding(endpoint, tool string, ids []string) attack.Finding {
+	return attack.Finding{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "medium",
+		Confidence: attack.RiskIndicator,
+		Title:      fmt.Sprintf("MCP task handle reused across distinct inputs to %q", tool),
+		Description: fmt.Sprintf(
+			"%q at %s returned the same task handle for different tool arguments in a sample of %d calls. "+
+				"Review task identity and isolation; this observation does not establish cross-user access or the generator's entropy.",
+			tool, endpoint, len(ids)),
+		Evidence: fmt.Sprintf("endpoint: %s\ntool: %s\nhandles sampled: %d\nsame handle for distinct arguments: yes\nhandle values: [redacted]",
+			endpoint, tool, len(ids)),
+		Remediation: "Use separate task identities for distinct work unless deduplication is intentional. " +
+			"Generate handles with a cryptographically secure random source and authorize every task operation.",
+		TargetURL: endpoint,
 	}
 }
 
