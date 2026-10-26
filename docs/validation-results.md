@@ -109,8 +109,9 @@ Scan Results (10 finding(s))    critical 0 · high 6 · medium 4
 
 The `mcp-tools-unauth-001` high-severity call result is historical. Current scans
 do not send an unapproved `tools/call`; they report only observed list exposure.
-Current versions grade public tool catalogs and benign resources as informational;
-the severities in the table are from the recorded historical run.
+Current versions grade public tool catalogs, prompt visibility, and completion
+suggestions as indicators rather than confirmed exploits. The severities in the
+table are from the recorded historical run.
 
 The summary is byte-identical to the capture recorded when the shipped set was
 half this size - same six rules, same severities - which is itself a finding:

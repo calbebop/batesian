@@ -173,8 +173,8 @@ func TestA2ATaskIDOR_RealDisclosureStillFires(t *testing.T) {
 		t.Fatalf("an anonymous read that returned the owner's task IS the finding, got %d: %+v",
 			len(findings), findings)
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %s/%s", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator, got %s/%s", findings[0].Severity, findings[0].Confidence)
 	}
 }
 
@@ -307,8 +307,8 @@ func TestA2ATaskIDOR_RESTBaseComesFromTheCard(t *testing.T) {
 			"paths probed: %v", len(findings), findings, hits)
 	}
 	f := findings[0]
-	if f.Severity != "high" {
-		t.Errorf("want high, got %s", f.Severity)
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator, got %s/%s", f.Severity, f.Confidence)
 	}
 	if !strings.Contains(f.TargetURL, prefix) {
 		t.Errorf("the finding should name the advertised REST base, got %q", f.TargetURL)

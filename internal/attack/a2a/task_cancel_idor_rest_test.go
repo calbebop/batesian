@@ -286,6 +286,9 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 			if want != 0 && !strings.Contains(findings[0].Title, tc.title) {
 				t.Fatalf("unexpected finding: %+v", findings[0])
 			}
+			if want != 0 && findings[0].Confidence != attack.RiskIndicator {
+				t.Fatalf("cancellation without a policy oracle must be an indicator: %+v", findings[0])
+			}
 			mu.Lock()
 			gotHits := append([]string(nil), (*hits)...)
 			mu.Unlock()

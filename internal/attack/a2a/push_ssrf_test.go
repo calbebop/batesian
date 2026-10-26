@@ -97,8 +97,8 @@ func TestPushSSRF_PrivateCallbackConfirmed(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one private callback finding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupCompleted ||
@@ -168,8 +168,8 @@ func TestPushSSRF_V03BindingConfirmed(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one private callback finding over the v0.3 binding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 }
 
@@ -280,8 +280,8 @@ func TestPushSSRF_RESTBindingFromCard(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one private callback finding over the REST binding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/indicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 }
 

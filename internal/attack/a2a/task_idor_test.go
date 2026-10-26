@@ -94,8 +94,7 @@ func rpcErr(w http.ResponseWriter, id interface{}, code int, msg string) {
 	})
 }
 
-// TestTaskIDOR_Vulnerable: the server authenticates task creation but returns
-// task history to an unauthenticated tasks/get. The rule MUST fire (confirmed).
+// Auth-gated task creation does not establish the task's read policy.
 func TestTaskIDOR_Vulnerable(t *testing.T) {
 	const taskID, ctxID = "task-vuln-abc", "ctx-vuln-xyz"
 	var mu sync.Mutex
@@ -137,11 +136,11 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 		t.Fatalf("expected exactly one IDOR finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want ConfirmedExploit, got %q", f.Confidence)
+	if f.Confidence != attack.RiskIndicator {
+		t.Errorf("want indicator, got %q", f.Confidence)
 	}
-	if f.Severity != "high" {
-		t.Errorf("want high severity, got %q", f.Severity)
+	if f.Severity != "medium" {
+		t.Errorf("want medium severity, got %q", f.Severity)
 	}
 }
 
@@ -287,11 +286,11 @@ func TestTaskIDOR_Vulnerable_V03Only(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly one IDOR finding against v0.3-only server, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want indicator, got %q", findings[0].Confidence)
 	}
-	if findings[0].Severity != "high" {
-		t.Errorf("want high severity, got %q", findings[0].Severity)
+	if findings[0].Severity != "medium" {
+		t.Errorf("want medium severity, got %q", findings[0].Severity)
 	}
 }
 
@@ -452,11 +451,7 @@ func TestTaskIDOR_UnjudgedTaskListIsInconclusive(t *testing.T) {
 	}
 }
 
-// TestTaskIDOR_OpenServerIsNotIDOR: the server enforces NO authentication at all
-// (anonymous creation succeeds). Reading a task back without credentials is then
-// expected behaviour, not broken object-level authorization. The rule MUST stay
-// silent - this is the false-positive class the auth-enforcement discriminator
-// exists to suppress.
+// A fully public task service does not imply an authorization failure.
 func TestTaskIDOR_OpenServerIsNotIDOR(t *testing.T) {
 	const taskID, ctxID = "task-open-abc", "ctx-open-xyz"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -743,8 +738,8 @@ func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if tc.wantFinding {
-				if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-					t.Fatalf("want high/confirmed, got %s/%s", findings[0].Severity, findings[0].Confidence)
+				if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+					t.Fatalf("want medium/indicator, got %s/%s", findings[0].Severity, findings[0].Confidence)
 				}
 				if !strings.Contains(findings[0].Evidence, "task-owner") {
 					t.Fatalf("finding must identify the disclosed owner task: %s", findings[0].Evidence)

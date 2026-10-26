@@ -1,22 +1,13 @@
 id: mcp-prompt-unauth-001
 info:
-  name: MCP Prompt Templates Accessible Without Authentication
+  name: MCP Prompt Visibility Without Authentication
   author: batesian
-  severity: high
+  severity: medium
   description: |
-    Tests whether an MCP server exposes its prompt templates via prompts/list
-    and prompts/get without requiring authentication.
-
-    MCP prompt templates are reusable message structures that often encode:
-    - System-level instructions that define the agent's behavior
-    - Hard-coded context that reveals internal architecture or data sources
-    - Default inputs that can be manipulated by an attacker who knows them
-
-    Unlike tool descriptions (which are visible to the LLM), system-level prompt
-    templates may contain operator-confidential instructions that were not intended
-    to be publicly readable. An unauthenticated attacker who can enumerate and
-    retrieve all prompt templates gains significant insight into the agent's
-    trust model, knowledge boundaries, and attack surface.
+    Reports prompt names returned by anonymous prompts/list and content returned
+    by anonymous prompts/get. Public prompts are valid. Name visibility is an
+    informational indicator; readable content is a medium indicator until the
+    deployment's intended access policy is known.
 
   references:
     - https://modelcontextprotocol.io/docs/concepts/prompts
@@ -35,8 +26,6 @@ attack:
   type: mcp-prompt-unauth
 
 remediation: |
-  1. Require authentication (OAuth 2.1 bearer token) before responding to
-     prompts/list and prompts/get requests.
-  2. Return a JSON-RPC error (code -32001) for unauthenticated prompts/* calls.
-  3. Treat prompt templates as potentially sensitive operator configuration;
-     apply the same access control as you would to internal API documentation.
+  Review which prompts are intended to be public. Require authorization for
+  private prompts and avoid placing secrets in templates. Scope prompts/list
+  and prompts/get consistently with that policy.

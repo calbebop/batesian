@@ -135,11 +135,11 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "A2A task content readable without owner credentials",
+		Severity:   "medium",
+		Confidence: attack.RiskIndicator,
+		Title:      "A2A task content visible without owner credentials",
 		Description: fmt.Sprintf("An anonymous REST task read returned the owner's unique probe text in task %s's %s, "+
-			"despite the same task-creation endpoint rejecting anonymous callers.", taskID, location),
+			"despite the same task-creation endpoint rejecting anonymous callers. Confirm whether this task is meant to be private.", taskID, location),
 		Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous GET: HTTP %d\n%s",
 			taskID, marker, location, read.StatusCode, snippet(read.Body, 500)),
 		Remediation: e.rule.Remediation,

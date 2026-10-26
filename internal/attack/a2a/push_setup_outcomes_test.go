@@ -303,7 +303,11 @@ func TestPushSetup_InlineCallbackConfirmsFinding(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			findings, err := rule.exec.Execute(ctx, srv.URL, attack.Options{TimeoutSeconds: 5})
-			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || findings[0].Confidence != attack.ConfirmedExploit {
+			confidence := attack.ConfirmedExploit
+			if rule.name == "SSRF" {
+				confidence = attack.RiskIndicator
+			}
+			if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || findings[0].Confidence != confidence {
 				t.Fatalf("observed callback must retain the finding and failed set attempt: findings=%+v err=%v", findings, err)
 			}
 		})

@@ -395,10 +395,10 @@ func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID, baseline, metho
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
+		Confidence: attack.RiskIndicator,
 		Title:      "A2A task cancellation accepted without authentication",
 		Description: fmt.Sprintf(
-			"An unauthenticated %s request canceled owner task %s at %s. The owner read-back changed from %s to canceled.",
+			"An unauthenticated %s request canceled owner task %s at %s. The owner read-back changed from %s to canceled. Review whether anonymous cancellation is allowed by the agent's policy.",
 			method, taskID, endpoint, baseline),
 		Evidence: fmt.Sprintf("endpoint: %s\ntask: %s\nmethod: %s\nowner state: %s -> canceled\ncaller: anonymous",
 			endpoint, taskID, method, baseline),
@@ -412,10 +412,10 @@ func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker at
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title:      "A2A task canceled by a non-owning principal (IDOR)",
+		Confidence: attack.RiskIndicator,
+		Title:      "A2A task canceled by a non-owning principal",
 		Description: fmt.Sprintf(
-			"Principal %q canceled task %s owned by principal %q through %s. The owner read-back changed from %s to canceled.",
+			"Principal %q canceled task %s created by principal %q through %s. The owner read-back changed from %s to canceled. Confirm these principals are not permitted to share task access.",
 			attacker.Name, taskID, owner.Name, method, baseline),
 		Evidence: fmt.Sprintf(
 			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\ntask: %s\nmethod: %s\n"+

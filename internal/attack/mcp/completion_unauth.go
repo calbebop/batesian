@@ -141,19 +141,17 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		base = disclosure
 	}
 
-	confidence := attack.ConfirmedExploit
 	title := "MCP completion/complete returned a result without authentication"
 	description := fmt.Sprintf("completion/complete at %s returned a result for an anonymous request (probed via %s). The result alone does not establish that sensitive suggestions were disclosed.", session.Endpoint, base.ref.label)
 	if base.signal == dispatchError {
-		confidence = attack.RiskIndicator
 		title = "MCP completion/complete returned a non-authentication error to an anonymous request"
 		description = fmt.Sprintf("completion/complete at %s returned a non-authentication JSON-RPC error for an anonymous request (probed via %s). The error may have come from validation before method dispatch; access to completion suggestions was not demonstrated.", session.Endpoint, base.ref.label)
 	}
 	findings = []attack.Finding{{
 		RuleID:      e.rule.ID,
 		RuleName:    e.rule.Name,
-		Severity:    "medium",
-		Confidence:  confidence,
+		Severity:    "info",
+		Confidence:  attack.RiskIndicator,
 		Title:       title,
 		Description: description,
 		Evidence:    fmt.Sprintf("HTTP %d from %s\nprobe: %s\n%s", base.status, session.Endpoint, base.ref.label, base.reason),
@@ -180,14 +178,14 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
+			Severity:   "medium",
+			Confidence: attack.RiskIndicator,
 			Title:      fmt.Sprintf("MCP completion/complete disclosed suggestion values without authentication (%s)", disclosure.ref.label),
 			Description: fmt.Sprintf(
 				"completion/complete for %s at %s returned %d suggestion value(s) to an unauthenticated "+
-					"caller. Completions expose valid argument values and URI-template segments (identifiers, "+
-					"file paths, usernames), giving an attacker a live enumeration oracle over the server's "+
-					"internal namespace.", disclosure.ref.label, session.Endpoint, len(disclosure.values)),
+					"caller. Values may include identifiers, file paths, or usernames. Review whether these "+
+					"suggestions should be public; this does not establish a policy violation.",
+				disclosure.ref.label, session.Endpoint, len(disclosure.values)),
 			Evidence:    fmt.Sprintf("HTTP %d from %s\n%s\nvalues (%d): %v", disclosure.status, session.Endpoint, disclosure.ref.label, len(disclosure.values), sampleValues(disclosure.values)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,

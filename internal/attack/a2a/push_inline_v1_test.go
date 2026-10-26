@@ -66,7 +66,7 @@ func TestPushSSRF_V1InlineFastTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, srv.URL, testOpts())
-	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit {
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
 		t.Fatalf("inline push finding = %+v, error = %v", findings, err)
 	}
 	if !strings.Contains(findings[0].Evidence, "SendMessage-inline") {

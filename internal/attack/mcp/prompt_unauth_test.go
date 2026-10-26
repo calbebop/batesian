@@ -547,28 +547,27 @@ func TestPromptUnauth_PromptsExposed(t *testing.T) {
 	if len(findings) != 2 || getCalls.Load() != 1 {
 		t.Fatalf("expected list and one get finding, got %d findings and %d reads", len(findings), getCalls.Load())
 	}
-	hasMedium, hasHigh := false, false
+	hasInfo, hasMedium := false, false
 	for _, f := range findings {
+		if f.Severity == "info" {
+			hasInfo = true
+		}
 		if f.Severity == "medium" {
 			hasMedium = true
 		}
-		if f.Severity == "high" {
-			hasHigh = true
+		if f.Confidence != attack.RiskIndicator {
+			t.Errorf("expected indicator, got %v", f.Confidence)
 		}
-		if f.Confidence != attack.ConfirmedExploit {
-			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
-		}
+	}
+	if !hasInfo {
+		t.Error("expected info finding for prompts/list")
 	}
 	if !hasMedium {
-		t.Error("expected medium finding for prompts/list")
-	}
-	if !hasHigh {
-		t.Error("expected high finding for prompts/get content")
+		t.Error("expected medium finding for prompts/get content")
 	}
 }
 
-// TestPromptUnauth_ListExposedGetRejected: prompts/list leaks names but
-// prompts/get enforces auth. Only the medium list finding should fire.
+// A public prompt list with protected content yields only the list indicator.
 func TestPromptUnauth_ListExposedGetRejected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
@@ -615,8 +614,8 @@ func TestPromptUnauth_ListExposedGetRejected(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly 1 finding (list only), got %d: %v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" {
-		t.Errorf("expected medium list finding, got %q", findings[0].Severity)
+	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("expected info/indicator list finding, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 	if !strings.Contains(findings[0].Evidence, "1: denied (JSON-RPC error)") ||
 		!strings.Contains(findings[0].Evidence, "prompt content access not confirmed") {

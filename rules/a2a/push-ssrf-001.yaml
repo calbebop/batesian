@@ -1,13 +1,13 @@
 id: a2a-push-ssrf-001
 info:
-  name: A2A Push Notification SSRF
+  name: A2A Private Push Callback Delivery
   author: batesian
-  severity: high
+  severity: medium
   description: |
-    Registers the scanner's push callback URL and checks for delivery. A finding
-    requires an observed callback to a local or private address. A callback to
-    a public webhook is normal A2A behavior, not SSRF evidence. This probe does
-    not test reachability to other internal services.
+    Registers the scanner's push callback URL and checks for delivery. A medium
+    indicator requires an observed callback to a local or private address. This
+    proves delivery to the scanner's listener, not access to other internal
+    services or a violation of the deployment's callback policy.
 
   references:
     - https://a2a-protocol.org/latest/specification/#132-push-notification-security
@@ -27,7 +27,6 @@ attack:
   type: push-notification-ssrf
 
 remediation: |
-  Validate callback URLs before registration and again before delivery. Reject
-  private, loopback, link-local, and metadata service destinations after DNS
-  resolution; prevent redirect or DNS rebinding bypasses. Require HTTPS for
-  production webhooks and use an allowlist where appropriate.
+  Review which callback destinations are permitted. If private callbacks are
+  not intended, validate resolved destinations before registration and delivery,
+  including redirects and DNS changes. Prefer HTTPS for production webhooks.
