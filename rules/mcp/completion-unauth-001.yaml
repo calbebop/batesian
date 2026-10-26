@@ -1,25 +1,23 @@
 id: mcp-completion-unauth-001
 info:
-  name: MCP completion/complete Reachable Without Authentication
+  name: MCP Completion Visibility Without Authentication
   author: batesian
-  severity: high
+  severity: medium
   description: |
     Tests whether an MCP server answers completion/complete requests without
     requiring authentication.
 
     completion/complete returns autocompletion suggestions for prompt arguments
     and resource-template URIs. Servers that support it advertise the
-    "completions" capability in the initialize handshake. The MCP specification's
-    Security section requires implementations to control access to sensitive
-    suggestions and to prevent completion-based information disclosure.
+    "completions" capability in initialize or server/discover. Suggestions can be
+    public or restricted by the deployment's policy.
 
     The rule reports two outcomes:
-    - An anonymous completion result (medium) confirms the method answered.
+    - An anonymous completion result (info) shows the method answered.
       A non-authentication JSON-RPC error is only an indicator because it may
       come from validation before dispatch.
-    - completion/complete returns real suggestion values for a discovered prompt
-      argument or resource template (high): the values are visible to an
-      anonymous caller. Whether they are sensitive depends on the deployment.
+    - Real suggestion values for a discovered prompt argument or resource
+      template are a medium indicator. Visibility is not itself a policy failure.
 
     completion/complete is read-only; the probe never executes a tool or mutates
     state and sends an empty prefix to request suggestions.
@@ -43,10 +41,6 @@ attack:
   type: mcp-completion-unauth
 
 remediation: |
-  1. Require authentication (OAuth 2.1 bearer token) before responding to
-     completion/complete requests, the same as any other data-bearing method.
-  2. Return a JSON-RPC auth error (or HTTP 401/403) for unauthenticated
-     completion/complete calls instead of dispatching them.
-  3. Scope completion suggestions to what the authenticated caller is authorized
-     to see, and rate-limit the endpoint so it cannot be used to brute-force the
-     server's internal namespace.
+  Review whether the returned suggestions are intended to be public. Require
+  authorization for sensitive values, scope results to the caller, and rate-limit
+  queries where enumeration is a concern.

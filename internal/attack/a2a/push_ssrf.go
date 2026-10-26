@@ -280,11 +280,11 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
-				Severity:   "high",
-				Confidence: attack.ConfirmedExploit,
-				Title:      "A2A agent reached a local or private push callback address",
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
+				Title:      "A2A agent delivered to a local or private push callback",
 				Description: fmt.Sprintf("The A2A server at %s made an HTTP request to the local or private callback address %s. "+
-					"The probe demonstrates reachability to this address; access to other internal services was not tested.",
+					"Review whether private callbacks are allowed. Access to other internal services was not tested.",
 					target, callbackURL),
 				Evidence:    evidence,
 				Remediation: e.rule.Remediation,

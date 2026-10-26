@@ -273,7 +273,7 @@ func runCompletionUnauth(t *testing.T, srv *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestCompletionUnauth_Oracle: real ref returns values => medium + high.
+// Public completion values are visible, but policy is unknown.
 func TestCompletionUnauth_Oracle(t *testing.T) {
 	srv := completionServer("oracle")
 	defer srv.Close()
@@ -282,26 +282,25 @@ func TestCompletionUnauth_Oracle(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings (reachability + disclosure), got %d: %+v", len(findings), findings)
 	}
-	hasMedium, hasHigh := false, false
+	hasInfo, hasMedium := false, false
 	for _, f := range findings {
-		if f.Confidence != attack.ConfirmedExploit {
-			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
+		if f.Confidence != attack.RiskIndicator {
+			t.Errorf("expected indicator, got %v", f.Confidence)
 		}
 		switch f.Severity {
+		case "info":
+			hasInfo = true
 		case "medium":
 			hasMedium = true
-		case "high":
-			hasHigh = true
 		}
 	}
-	if !hasMedium || !hasHigh {
-		t.Errorf("expected both medium and high findings, got medium=%v high=%v", hasMedium, hasHigh)
+	if !hasInfo || !hasMedium {
+		t.Errorf("expected both info and medium findings, got info=%v medium=%v", hasInfo, hasMedium)
 	}
 }
 
 // TestCompletionUnauth_ResourceOracle: the prompt arg discloses nothing but the
-// resource-template variable leaks values => medium + high, high naming the
-// resource template.
+// resource-template variable returns values; the indicator names the template.
 func TestCompletionUnauth_ResourceOracle(t *testing.T) {
 	srv := completionServer("resource-oracle")
 	defer srv.Close()
@@ -310,17 +309,17 @@ func TestCompletionUnauth_ResourceOracle(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings (reachability + disclosure), got %d: %+v", len(findings), findings)
 	}
-	var high *attack.Finding
+	var disclosure *attack.Finding
 	for i := range findings {
-		if findings[i].Severity == "high" {
-			high = &findings[i]
+		if findings[i].Severity == "medium" {
+			disclosure = &findings[i]
 		}
 	}
-	if high == nil {
-		t.Fatal("expected a high disclosure finding")
+	if disclosure == nil {
+		t.Fatal("expected a medium disclosure indicator")
 	}
-	if !strings.Contains(high.Title, "resource template") {
-		t.Errorf("expected high finding to name the resource template, got %q", high.Title)
+	if !strings.Contains(disclosure.Title, "resource template") {
+		t.Errorf("expected disclosure to name the resource template, got %q", disclosure.Title)
 	}
 }
 
@@ -374,8 +373,8 @@ func TestCompletionUnauth_ReachableEmpty(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly 1 finding (reachability only), got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" {
-		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
+	if findings[0].Severity != "info" {
+		t.Errorf("expected info reachability finding, got %q", findings[0].Severity)
 	}
 }
 
@@ -389,8 +388,8 @@ func TestCompletionUnauth_ReachableSynthetic(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly 1 finding (synthetic reachability), got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" {
-		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
+	if findings[0].Severity != "info" {
+		t.Errorf("expected info reachability finding, got %q", findings[0].Severity)
 	}
 	if findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("generic validation error must be an indicator, got %q", findings[0].Confidence)
@@ -406,8 +405,8 @@ func TestCompletionUnauth_ReachableViaInternalError(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly 1 reachability finding for the -32603 response, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Severity != "medium" {
-		t.Errorf("expected medium reachability finding, got %q", findings[0].Severity)
+	if findings[0].Severity != "info" {
+		t.Errorf("expected info reachability finding, got %q", findings[0].Severity)
 	}
 	if findings[0].Confidence != attack.RiskIndicator || strings.Contains(findings[0].Evidence, "was dispatched") {
 		t.Errorf("generic error must not prove dispatch: %+v", findings[0])

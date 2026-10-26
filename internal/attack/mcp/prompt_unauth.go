@@ -112,13 +112,13 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 	findings = append(findings, attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
-		Severity:   "medium",
-		Confidence: attack.ConfirmedExploit,
+		Severity:   "info",
+		Confidence: attack.RiskIndicator,
 		Title: fmt.Sprintf(
 			"MCP prompts/list returned %d template(s) without authentication", len(names)),
 		Description: fmt.Sprintf(
 			"prompts/list at %s returned %d prompt names without authentication. "+
-				"This confirms name disclosure, not access to prompt contents.",
+				"This shows name visibility, not access to prompt contents. Whether it violates policy depends on the deployment.",
 			session.Endpoint, len(names)),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
@@ -152,13 +152,13 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
+			Severity:   "medium",
+			Confidence: attack.RiskIndicator,
 			Title: fmt.Sprintf(
 				"MCP prompt %q full content readable without authentication", name),
 			Description: fmt.Sprintf(
 				"prompts/get for %q at %s returned full template content without authentication. "+
-					"The content is now directly readable by any unauthenticated caller.",
+					"The content is readable by unauthenticated callers; whether that violates policy depends on the deployment.",
 				name, session.Endpoint),
 			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent snippet: %.400s", getResp.StatusCode, session.Endpoint, name, content),
 			Remediation: e.rule.Remediation,

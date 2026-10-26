@@ -128,7 +128,7 @@ func TestPushSSRF_V03RESTBindingConfirmed(t *testing.T) {
 	opts := testOpts()
 	opts.TargetState = state
 	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(ctx, server.URL, opts)
-	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit || registrations.Load() != 1 {
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator || registrations.Load() != 1 {
 		t.Fatalf("v0.3 REST push was not confirmed: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
 	}
 	objects := state.Snapshot()

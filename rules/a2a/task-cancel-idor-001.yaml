@@ -7,9 +7,11 @@ info:
     Creates a throwaway task as one principal and confirms its live state.
     Probes CancelTask and tasks/cancel anonymously, then as a second principal
     only if anonymous cancellation is conclusively denied.
-    Reports unauthenticated or cross-principal cancellation only when a matching
+    Reports observed anonymous or cross-principal cancellation only when a matching
     successful cancel reply and an owner read-back both show the task canceled.
-    A rejection on one method does not mask a vulnerable second method.
+    These are indicators until the agent's authorization policy establishes that
+    the caller should have been denied.
+    A rejection on one method does not mask a successful second method.
 
     A denied cancel followed by a separate cancellation is inconclusive.
     Ambiguous responses or an already-terminal task are inconclusive. If both
@@ -34,9 +36,6 @@ attack:
   type: a2a-task-cancel-idor
 
 remediation: |
-  1. Authenticate every cancel request and bind cancellation to the task's owning
-     principal; reject a cancel from any other identity with an authorization
-     error.
-  2. Never allow unauthenticated cancellation of a task.
-  3. Apply the same owner-scoping to all task-lifecycle operations (get, cancel,
-     resubscribe, push-config), not just task creation.
+  Review who may cancel each task. If cancellation should be private, authenticate
+  the caller and enforce that policy on every cancel binding. Apply consistent
+  authorization to other task-lifecycle operations.

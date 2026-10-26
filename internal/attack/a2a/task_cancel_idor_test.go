@@ -321,11 +321,29 @@ func TestTaskCancelIDOR_CrossPrincipal(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
-		t.Errorf("expected high/confirmed, got %q/%v", f.Severity, f.Confidence)
+	if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
+		t.Errorf("expected high/indicator, got %q/%v", f.Severity, f.Confidence)
 	}
 	if !strings.Contains(f.Title, "non-owning") {
 		t.Errorf("expected the cross-principal IDOR finding, got title %q", f.Title)
+	}
+}
+
+func TestTaskCancelIDOR_SharedRoleIsIndicator(t *testing.T) {
+	srv := cancelServer("vuln")
+	defer srv.Close()
+
+	exec := a2aattack.NewTaskCancelIDORExecutor(attack.RuleContext{ID: "a2a-task-cancel-idor-001"})
+	findings, err := exec.Execute(t.Context(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "member-a", Token: "tok-a", Tenant: "shared"},
+			{Name: "member-b", Token: "tok-b", Tenant: "shared"},
+		},
+	})
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
+		!strings.Contains(findings[0].Description, "Confirm these principals") {
+		t.Fatalf("shared-role cancellation must remain an indicator: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -345,9 +363,12 @@ func TestTaskCancelIDOR_Unauthenticated(t *testing.T) {
 	if !strings.Contains(findings[0].Title, "without authentication") {
 		t.Errorf("expected the unauthenticated-cancel finding, got title %q", findings[0].Title)
 	}
+	if findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("anonymous cancellation must remain an indicator, got %q", findings[0].Confidence)
+	}
 }
 
-func TestTaskCancelIDOR_ConfirmedWireVariants(t *testing.T) {
+func TestTaskCancelIDOR_ObservedWireVariants(t *testing.T) {
 	tests := []struct {
 		mode   string
 		title  string

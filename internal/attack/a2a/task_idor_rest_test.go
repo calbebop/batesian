@@ -244,6 +244,9 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 				t.Fatalf("findings=%+v; want %d", findings, wantFindings)
 			}
 			if tc.finding {
+				if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
+					t.Fatalf("task visibility must be a medium indicator: %+v", findings[0])
+				}
 				if !strings.Contains(findings[0].TargetURL, "/agent/") ||
 					!strings.Contains(findings[0].Evidence, "batesian idor probe") {
 					t.Fatalf("finding lacks REST task evidence: %+v", findings[0])

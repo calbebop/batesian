@@ -258,11 +258,11 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
-			Title:      "A2A task content readable without owner credentials",
+			Severity:   "medium",
+			Confidence: attack.RiskIndicator,
+			Title:      "A2A task content visible without owner credentials",
 			Description: fmt.Sprintf(
-				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers.", read.method, taskID, read.location),
+				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers. Confirm whether the task is meant to be private before treating this as an authorization failure.", read.method, taskID, read.location),
 			Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous %s: HTTP %d\n%s",
 				taskID, marker, read.location, read.method, read.response.StatusCode, snippet(read.response.Body, 500)),
 			Remediation: e.rule.Remediation,
@@ -440,11 +440,11 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 					probe.findings = []attack.Finding{{
 						RuleID:     e.rule.ID,
 						RuleName:   e.rule.Name,
-						Severity:   "high",
-						Confidence: attack.ConfirmedExploit,
-						Title:      "A2A task list exposes an authenticated owner's task to an anonymous caller",
+						Severity:   "medium",
+						Confidence: attack.RiskIndicator,
+						Title:      "A2A task list includes an authenticated owner's task for an anonymous caller",
 						Description: fmt.Sprintf(
-							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation but did not scope the task list to the caller.", pageURL, ownerTaskID),
+							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation; review whether the task should be visible publicly.", pageURL, ownerTaskID),
 						Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: %s",
 							listResp.StatusCode, pageURL, ownerTaskID, snippet(listResp.Body, 400)),
 						Remediation: e.rule.Remediation,

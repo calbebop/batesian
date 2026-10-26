@@ -8,10 +8,10 @@ identity) rather than generic web hygiene.
 
 Each finding carries a **confidence**:
 
-- **confirmed** - the attack was demonstrably successful (e.g. the tampered value
-  was read back, the forged token was accepted against a rejecting baseline).
-- **indicator** - a suspicious posture was observed but exploitation could not be
-  proven from the response alone; manual verification is recommended.
+- **confirmed** - a tested security boundary failed (for example, a tampered
+  value was read back despite a rejecting control).
+- **indicator** - access or another risk-relevant posture was observed, but the
+  response alone does not establish a policy violation.
 
 ## Protocol currency
 
@@ -116,8 +116,8 @@ report them not tested against a secured agent, and say so.
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High / Critical | confirmed | CWE-862 |
-| `a2a-push-ssrf-001` | [Push Notification SSRF](#a2a-push-ssrf-001) | High | confirmed | CWE-918 |
-| `a2a-task-idor-001` | [Task IDOR via Unauthenticated tasks/get](#a2a-task-idor-001) | High / Critical | confirmed | CWE-639 |
+| `a2a-push-ssrf-001` | [Private Push Callback Delivery](#a2a-push-ssrf-001) | Medium | indicator | CWE-918 |
+| `a2a-task-idor-001` | [Anonymous Task Read or List Exposure](#a2a-task-idor-001) | Medium | indicator | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Signature Configuration](#a2a-jws-algconf-001) | Critical / High / Medium / Info | indicator | CWE-327 |
@@ -132,7 +132,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | confirmed | CWE-639 |
 | `a2a-subscription-scope-001` | [Subscription and Task-Read Scope Mismatch](#a2a-subscription-scope-001) | High | indicator | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium | indicator or confirmed | CWE-288 |
-| `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | confirmed | CWE-639 / CWE-862 |
+| `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | indicator | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
 | `a2a-push-callback-auth-001` | [Push Notification Missing Webhook Authentication](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
@@ -162,13 +162,14 @@ implementation ([issue #340](https://github.com/google-a2a/a2a-samples/issues/34
 
 ### a2a-push-ssrf-001
 
-**Push Notification SSRF** | Severity: High | CWE-918
+**Private Push Callback Delivery** | Severity: Medium | indicator
 
 Registers an attacker-controlled URL as a push-notification callback, submits a
 task, and waits to see whether the server makes an outbound request to that URL.
-Detection is **out-of-band**: by default Batesian starts a local listener and only
-reports a **confirmed** SSRF when the target actually calls back. Merely accepting
-a push-notification config is normal A2A behaviour and is **not** reported.
+Detection is **out-of-band**: by default Batesian starts a local listener and
+reports a **medium indicator** when the target actually calls back to its private
+address. This proves delivery, not access to another internal service or a policy
+violation. Merely accepting a push-notification config is not reported.
 Supplying `--oob-url` points the callback at an external collector and emits
 operator guidance for manual confirmation.
 
@@ -192,7 +193,7 @@ them after verification.
 A callback can only fire for a task that is still running: a config registered
 against a task the agent has already completed has no status update left to
 notify on. Against a long-running agent on the official SDK this reports a
-confirmed finding, with the echoed token as evidence.
+callback indicator, with the echoed token as evidence.
 
 Confirmed unfixed in the reference `a2a-python` SDK as of April 2026
 ([issue #786](https://github.com/google-a2a/a2a-python/issues/786)).
@@ -201,24 +202,25 @@ Confirmed unfixed in the reference `a2a-python` SDK as of April 2026
 
 ### a2a-task-idor-001
 
-**Task IDOR via Unauthenticated tasks/get** | Severity: High / Critical | CWE-639
+**Anonymous Task Read or List Exposure** | Severity: Medium | indicator
 
-Detects broken object-level authorization (IDOR / BOLA) on task lookup using an
-**auth-enforcement discriminator** so an open server is not mislabelled. It (1)
+Reports observed task access using an **auth-enforcement discriminator** so an
+open server is not mislabelled. It (1)
 creates a task as the authenticated owner, (2) confirms the server *rejects* the
 same creation with no credentials, then (3) reads the owner's task from an
 unauthenticated connection. It checks JSON-RPC `GetTask` and advertised HTTP+JSON
 `GET /tasks/{id}` (v1.0) or `/v1/tasks/{id}` (v0.3). The REST path first confirms
 that the owner can read the stored probe text. The finding fires only when creation
-was auth-gated yet the unauthenticated read returns that text. If anonymous creation
-succeeds, the server enforces no auth at all and no IDOR finding is raised (that
-posture belongs to other checks). The rule additionally probes `GET /v1/tasks`
+was auth-gated yet the unauthenticated read returns that text. The result is an
+indicator until the agent's sharing policy establishes that access was forbidden.
+If anonymous creation succeeds, the server is openly accessible and this rule
+stays silent. The rule additionally probes `GET /v1/tasks`
 and `/tasks` for unauthenticated server-wide task disclosure. It follows REST
 `nextPageToken` cursors for up to ten pages per endpoint; incomplete scans are
 inconclusive rather than clean.
 
 **Precondition:** supply `--token` so there is an authenticated owner identity to
-test against. Without a token the IDOR step is skipped; the unauthenticated
+test against. Without a token the owner-task read is skipped; the unauthenticated
 task-list probe still runs.
 
 ---
@@ -550,26 +552,27 @@ checks as for single requests.
 
 ### a2a-task-cancel-idor-001
 
-**Cross-Principal Task Cancellation** | Severity: High | CWE-639 / CWE-862
+**Cross-Principal Task Cancellation** | Severity: High | indicator
 
 Tests whether task cancellation (`CancelTask` / `tasks/cancel`, plus the advertised
 HTTP+JSON `POST /tasks/{id}:cancel` or v0.3 `/v1/tasks/{id}:cancel`) is bound to the
 task's owner. Cancellation is a distinct handler from reading a task
 (`a2a-task-idor-001`) or continuing it (`a2a-delegation-integrity-001`) and can be
 left unprotected on its own, giving an attacker a targeted way to terminate other
-principals' tasks. Needs two authenticated principals and reports two confirmed
-failures:
+principals' tasks. Needs two authenticated principals and reports two observed
+cancellation outcomes:
 
 - **Unauthenticated cancellation (CWE-862).** The rule creates a task as A, then
   cancels it with no credentials. A matching successful cancel reply and an
-  owner read-back showing `canceled` confirm the failure.
+  owner read-back showing `canceled` confirm the action occurred.
 - **Cross-principal cancellation (CWE-639).** If the unauthenticated cancel is
   rejected (so auth is enforced), the rule cancels A's task as the wrong principal
-  B. A **confirmed** finding is raised only when B's cancel returns a matching
+  B. An **indicator** is raised only when B's cancel returns a matching
   success and a read-back as owner A shows the task is now `canceled`.
 
-A denial followed by an independently canceled task is inconclusive, not an
-authorization finding.
+A denial followed by an independently canceled task is inconclusive. A successful
+cross-principal cancellation is not called IDOR without a policy that forbids B's
+access to A's task.
 
 A server that rejects the wrong-principal cancel produces no finding: the
 boundary was tested and held. Two outcomes are not clean results: an anonymous

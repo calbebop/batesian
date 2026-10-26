@@ -1,13 +1,14 @@
 id: a2a-task-idor-001
 info:
-  name: A2A Task Read or List Authorization Bypass
+  name: A2A Task Read or List Exposure
   author: batesian
-  severity: high
+  severity: medium
   description: |
-    Detects broken object-level authorization (IDOR / BOLA) on A2A task reads
-    and listings. A confirmed read finding requires the authenticated owner's
-    unique probe text in an anonymous task response. An echoed task ID or generic
-    status alone does not prove content disclosure.
+    Reports anonymous access to an A2A task or task list. A read indicator requires
+    the authenticated owner's unique probe text in an anonymous task response.
+    An echoed task ID or generic
+    status alone does not prove content visibility. Whether access is unauthorized
+    depends on the agent's sharing and authorization policy.
 
     To avoid mislabelling a server that simply has no authentication, the check
     uses an auth-enforcement discriminator. It (1) creates a task as the
@@ -40,7 +41,6 @@ attack:
   type: a2a-task-idor
 
 remediation: |
-  Bind every task and contextId to the authenticated session identity at creation
-  time. Verify ownership on every tasks/get, tasks/cancel, and tasks/list request.
-  Return JSON-RPC error -32001 (TaskNotFoundError) for any task that does not
-  belong to the requesting caller - do not reveal whether the task exists.
+  Review whether these tasks should be public or shared. For private tasks,
+  scope GetTask and ListTasks to authorized callers and return TaskNotFoundError
+  for callers without access.
