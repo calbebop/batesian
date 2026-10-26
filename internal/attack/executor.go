@@ -82,6 +82,9 @@ type Options struct {
 	// Token is the only identity.
 	Principals []Principal
 
+	// ExpectedDenials are explicit authorization boundaries for observed access.
+	ExpectedDenials []ExpectedDenial
+
 	// DryRun records a redacted request plan without sending traffic.
 	DryRun bool
 
@@ -116,7 +119,7 @@ type Principal struct {
 }
 
 // Confidence describes how certain the finding is.
-// "confirmed" means the attack demonstrably succeeded (e.g., unauthenticated data returned).
+// "confirmed" means an observed action crossed an established boundary.
 // "indicator" means exploitability is not proven.
 type Confidence string
 
@@ -131,7 +134,7 @@ type Finding struct {
 	RuleName string
 	Severity string
 	// Confidence describes whether the finding is a confirmed exploit or a risk indicator.
-	// Confirmed findings: the attack demonstrably succeeded (auth bypass proven, data returned).
+	// Confirmed findings crossed an intrinsic or operator-declared boundary.
 	// Indicator findings require manual verification.
 	Confidence  Confidence
 	Title       string
@@ -139,6 +142,8 @@ type Finding struct {
 	Evidence    string
 	Remediation string
 	TargetURL   string
+	// Access is internal policy-matching metadata, not part of scan output.
+	Access *AccessObservation `json:"-"`
 	// Chain is the optional provenance trail for findings produced by a
 	// multi-step chained rule. Nil/empty for single-shot rules.
 	Chain []ChainStep

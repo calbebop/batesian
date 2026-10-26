@@ -262,11 +262,12 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			Confidence: attack.RiskIndicator,
 			Title:      "A2A task content visible without owner credentials",
 			Description: fmt.Sprintf(
-				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers. Confirm whether the task is meant to be private before treating this as an authorization failure.", read.method, taskID, read.location),
+				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers. The observation alone does not establish whether the task is private.", read.method, taskID, read.location),
 			Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous %s: HTTP %d\n%s",
 				taskID, marker, read.location, read.method, read.response.StatusCode, snippet(read.response.Body, 500)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
+			Access:      &attack.AccessObservation{Operation: attack.A2ATasksGet, Caller: "anonymous", Owner: "default"},
 		})
 	}
 
@@ -444,11 +445,12 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 						Confidence: attack.RiskIndicator,
 						Title:      "A2A task list includes an authenticated owner's task for an anonymous caller",
 						Description: fmt.Sprintf(
-							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation; review whether the task should be visible publicly.", pageURL, ownerTaskID),
+							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation; public task visibility may still be intentional.", pageURL, ownerTaskID),
 						Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: %s",
 							listResp.StatusCode, pageURL, ownerTaskID, snippet(listResp.Body, 400)),
 						Remediation: e.rule.Remediation,
 						TargetURL:   pageURL,
+						Access:      &attack.AccessObservation{Operation: attack.A2ATasksList, Caller: "anonymous", Owner: "default"},
 					}}
 					return probe
 				}

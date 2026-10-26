@@ -123,6 +123,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
+		Access:      &attack.AccessObservation{Operation: attack.MCPPromptsList, Caller: "anonymous"},
 	})
 
 	const maxPromptReads = 10
@@ -163,6 +164,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent snippet: %.400s", getResp.StatusCode, session.Endpoint, name, content),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
+			Access:      &attack.AccessObservation{Operation: attack.MCPPromptsGet, Caller: "anonymous"},
 		})
 		break
 	}

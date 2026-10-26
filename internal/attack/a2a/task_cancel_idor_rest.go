@@ -100,7 +100,7 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 	}
 	switch anonOutcome {
 	case cancelCanceled:
-		return []attack.Finding{e.unauthFinding(cancelURL, taskID, baseline, method)}, nil, true
+		return []attack.Finding{e.unauthFinding(cancelURL, a, taskID, baseline, method)}, nil, true
 	case cancelDenied:
 	default:
 		return nil, fmt.Errorf("%w: anonymous REST cancellation of task %s was not conclusively denied",
