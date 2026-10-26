@@ -36,6 +36,7 @@ func cancelServer(mode string) *httptest.Server {
 	store := map[string]*task{}
 	counter := 0
 	readFailuresRemaining := 0
+	pendingIndependentCancel := false
 
 	bearer := func(r *http.Request) string {
 		return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -103,6 +104,20 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			if mode == "wrong-task-independent-cancel" && tok == "" {
+				mu.Lock()
+				pendingIndependentCancel = true
+				mu.Unlock()
+				result(map[string]interface{}{"id": "other-task", "status": map[string]string{"state": "canceled"}})
+				return
+			}
+			if mode == "independent-cancel" && tok == "" {
+				mu.Lock()
+				pendingIndependentCancel = true
+				mu.Unlock()
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			if strings.HasPrefix(requestID, "batesian-cancel-") {
 				if mode == "wrong-anon-cancel-error" && tok == "" ||
 					mode == "wrong-cross-cancel-error" && tok == "tok-b" {
@@ -246,6 +261,12 @@ func cancelServer(mode string) *httptest.Server {
 
 		case "GetTask", "tasks/get":
 			mu.Lock()
+			if pendingIndependentCancel {
+				if t := store[taskID]; t != nil {
+					t.state = "canceled"
+				}
+				pendingIndependentCancel = false
+			}
 			if readFailuresRemaining > 0 {
 				readFailuresRemaining--
 				mu.Unlock()
@@ -336,10 +357,6 @@ func TestTaskCancelIDOR_ConfirmedWireVariants(t *testing.T) {
 		{"v1-deny-legacy-idor", "non-owning", "tasks/cancel"},
 		{"legacy-only", "non-owning", "tasks/cancel"},
 		{"stale-v1-get", "non-owning", "CancelTask"},
-		{"empty-success", "without authentication", "CancelTask"},
-		{"mutate-then-403", "without authentication", "CancelTask"},
-		{"mutate-then-notfound", "without authentication", "CancelTask"},
-		{"b-mutate-then-403", "non-owning", "CancelTask"},
 		{"anon-hidden-vuln", "non-owning", "CancelTask"},
 	}
 	for _, tt := range tests {
@@ -360,7 +377,7 @@ func TestTaskCancelIDOR_ConfirmedWireVariants(t *testing.T) {
 }
 
 func TestTaskCancelIDOR_AmbiguousResponsesAreInconclusive(t *testing.T) {
-	for _, mode := range []string{"misleading-response", "wrong-task-response", "unpersisted", "transport", "already-canceled", "anon-ambiguous-b-vuln"} {
+	for _, mode := range []string{"misleading-response", "wrong-task-response", "unpersisted", "transport", "already-canceled", "anon-ambiguous-b-vuln", "empty-success", "mutate-then-403", "mutate-then-notfound", "b-mutate-then-403", "independent-cancel", "wrong-task-independent-cancel", "wrong-v1-cancel-legacy-open"} {
 		t.Run(mode, func(t *testing.T) {
 			srv := cancelServer(mode)
 			defer srv.Close()
@@ -403,7 +420,7 @@ func TestTaskCancelIDOR_MismatchedRepliesAreIncomplete(t *testing.T) {
 }
 
 func TestTaskCancelIDOR_MismatchedFallbackRetainsFinding(t *testing.T) {
-	for _, mode := range []string{"wrong-v1-create", "wrong-v1-read-fallback", "wrong-v1-cancel-legacy-open"} {
+	for _, mode := range []string{"wrong-v1-create", "wrong-v1-read-fallback"} {
 		t.Run(mode, func(t *testing.T) {
 			srv := cancelServer(mode)
 			defer srv.Close()

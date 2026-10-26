@@ -32,6 +32,8 @@ const (
 	styleLowAlpha   entropyStyle = "low-alpha"
 	styleUUID       entropyStyle = "uuid"
 	styleRandomUUID entropyStyle = "random-uuid"
+	styleRepeated   entropyStyle = "repeated"
+	styleDedup      entropyStyle = "dedup"
 )
 
 // entropyServer mints modern task handles for one read-only tool.
@@ -47,6 +49,7 @@ type entropyServer struct {
 	legacyOnly           bool
 	noExtension          bool
 	headerParam          bool
+	inputParam           bool
 	headerMismatchStatus int
 	failAfter            int
 	completeAfter        int
@@ -61,7 +64,7 @@ func (s *entropyServer) nextHandle(callIdx int) string {
 		// check must stay out of this posture), and thin: 8 positions over
 		// a narrow alphabet lands far under the bit bar.
 		return fmt.Sprintf("k%07x", callIdx+0x1000)
-	case styleRandomUUID:
+	case styleRandomUUID, styleDedup:
 		var raw [16]byte
 		if _, err := rand.Read(raw[:]); err != nil {
 			panic(err)
@@ -70,6 +73,8 @@ func (s *entropyServer) nextHandle(callIdx int) string {
 		raw[8] = (raw[8] & 0x3f) | 0x80
 		h := fmt.Sprintf("%x", raw)
 		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+	case styleRepeated:
+		return "reused-task-handle"
 	default:
 		// Fixed-width counter with UUID formatting.
 		h := fmt.Sprintf("%032x", callIdx+0xdeadbeefcafe)
@@ -79,6 +84,7 @@ func (s *entropyServer) nextHandle(callIdx int) string {
 
 func (s *entropyServer) handler() http.HandlerFunc {
 	callCount := 0
+	dedup := map[string]string{}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Method string                 `json:"method"`
@@ -142,6 +148,9 @@ func (s *entropyServer) handler() http.HandlerFunc {
 			properties := map[string]interface{}{}
 			if s.headerParam {
 				properties["message"] = map[string]interface{}{"type": "string", "x-mcp-header": "Message"}
+			}
+			if s.inputParam {
+				properties["query"] = map[string]interface{}{"type": "string"}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req.ID,
@@ -213,6 +222,14 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				return
 			}
 			handle := s.nextHandle(callCount)
+			if s.style == styleDedup {
+				args, _ := json.Marshal(req.Params["arguments"])
+				if prior := dedup[string(args)]; prior != "" {
+					handle = prior
+				} else {
+					dedup[string(args)] = handle
+				}
+			}
 			callCount++
 			result := map[string]interface{}{
 				"resultType": "task", "taskId": handle, "status": "working",
@@ -345,6 +362,40 @@ func TestEntropy_RandomUUIDCleanSilent(t *testing.T) {
 	findings, err := runEntropy(t, ts)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("random UUID handles should be silent: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEntropy_RepeatedHandleAcrossInputs(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{style: styleRepeated, inputParam: true}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) != 1 ||
+		!strings.Contains(findings[0].Title, "reused across distinct inputs") ||
+		findings[0].Confidence != attack.RiskIndicator ||
+		strings.Contains(findings[0].Evidence, "reused-task-handle") {
+		t.Fatalf("expected redacted repeated-handle indicator: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEntropy_IdenticalInputDedupIsInconclusive(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{style: styleDedup}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "identical tool arguments") {
+		t.Fatalf("deduplicated calls cannot grade entropy: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestEntropy_DedupWithDistinctInputsIsClean(t *testing.T) {
+	ts := httptest.NewServer((&entropyServer{style: styleDedup, inputParam: true}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("distinct calls with random handles should be silent: findings=%+v err=%v", findings, err)
 	}
 }
 

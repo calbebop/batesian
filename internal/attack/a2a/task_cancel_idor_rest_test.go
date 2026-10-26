@@ -25,6 +25,7 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 		taskID = "task/a?b"
 	}
 	state := "submitted"
+	pendingIndependentCancel := false
 	if mode == "terminal" {
 		state = "completed"
 	}
@@ -128,6 +129,10 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				return
 			}
 			mu.Lock()
+			if pendingIndependentCancel {
+				state = "canceled"
+				pendingIndependentCancel = false
+			}
 			current := state
 			mu.Unlock()
 			writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": current}})
@@ -149,6 +154,20 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 			if json.NewDecoder(r.Body).Decode(&body) != nil ||
 				(!legacy && body.ID != taskID) || (legacy && body.Name != "tasks/"+taskID) {
 				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if mode == "wrong-task-independent-cancel" && caller == "" {
+				mu.Lock()
+				pendingIndependentCancel = true
+				mu.Unlock()
+				writeJSON(w, map[string]interface{}{"id": "other-task", "status": map[string]string{"state": "canceled"}})
+				return
+			}
+			if mode == "independent-cancel" && caller == "" {
+				mu.Lock()
+				pendingIndependentCancel = true
+				mu.Unlock()
+				w.WriteHeader(http.StatusForbidden)
 				return
 			}
 			anonymousError := caller == "" && (mode == "anon-408-auth-body" ||
@@ -218,8 +237,10 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 		{"REST-only cross-principal cancel", "cross-leak", false, false, "non-owning", false},
 		{"off-origin card pinned", "off-origin", false, false, "non-owning", false},
 		{"task ID escaped", "escaped-id", false, false, "non-owning", false},
-		{"anonymous response denied after mutation", "anon-mutate-403", false, false, "without authentication", false},
-		{"other response denied after mutation", "cross-mutate-403", false, false, "non-owning", false},
+		{"anonymous response denied after mutation", "anon-mutate-403", false, false, "", true},
+		{"other response denied after mutation", "cross-mutate-403", false, false, "", true},
+		{"independent cancellation after denial", "independent-cancel", false, false, "", true},
+		{"independent cancellation with mismatched success", "wrong-task-independent-cancel", false, false, "", true},
 		{"owner-bound cancel", "secure", false, false, "", false},
 		{"legacy owner-bound cancel", "secure", true, false, "", false},
 		{"cancel surface absent", "no-cancel", false, false, "", false},
