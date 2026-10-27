@@ -28,8 +28,12 @@ IDOR_RULES = {
 }
 PUSH_RULE = "a2a-push-binding-001"
 SECURED_RULES = IDOR_RULES | {PUSH_RULE, "a2a-task-idor-001"}
-IDOR_CONFIDENCE = {rid: "confirmed" for rid in IDOR_RULES}
-IDOR_CONFIDENCE["a2a-task-enumeration-001"] = "indicator"
+IDOR_CONFIDENCE = {
+    "a2a-multitenant-isolation-001": "confirmed",
+    "a2a-delegation-integrity-001": "confirmed",
+    "a2a-task-cancel-idor-001": "indicator",
+    "a2a-task-enumeration-001": "indicator",
+}
 
 # Two principals are required by the cross-principal rules; --token drives the
 # rules that read a single credential. Verbatim from the fixture's docstring.
@@ -166,7 +170,7 @@ def main():
           f"quality {quality}; fired {sorted(rules)}")
 
     rules, doc = scan_posture("unauth-read")
-    quality = finding_quality_issues(doc, {"a2a-task-idor-001": "confirmed"})
+    quality = finding_quality_issues(doc, {"a2a-task-idor-001": "indicator"})
     ok = "a2a-task-idor-001" in rules and \
         rule_statuses(doc, {"a2a-task-idor-001"})["a2a-task-idor-001"] == "findings" and not quality
     all_ok &= ok

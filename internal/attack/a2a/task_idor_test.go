@@ -142,6 +142,9 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 	if f.Severity != "medium" {
 		t.Errorf("want medium severity, got %q", f.Severity)
 	}
+	if f.Access == nil || f.Access.Operation != attack.A2ATasksGet || f.Access.Caller != "anonymous" || f.Access.Owner != "default" {
+		t.Errorf("task read needs owner/caller access metadata: %+v", f.Access)
+	}
 }
 
 func TestTaskIDOR_EmptyTaskResultIsInconclusive(t *testing.T) {

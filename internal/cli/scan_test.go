@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/config"
 	"github.com/calbebop/batesian/internal/rules"
 )
@@ -162,6 +163,48 @@ func TestBuildPrincipals_Empty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected no principals, got %d", len(got))
+	}
+}
+
+func TestBuildExpectedDenials(t *testing.T) {
+	principals := []attack.Principal{{Name: "tenant-a", Tenant: "A"}, {Name: "tenant-b", Tenant: "B"}}
+	entry := config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "tenant-b", CallerTenant: "B", Owner: "tenant-a", OwnerTenant: "A"}
+	got, err := buildExpectedDenials([]config.ExpectedDenialConfig{entry}, principals)
+	if err != nil || len(got) != 1 || got[0].Caller != "tenant-b" || got[0].Owner != "tenant-a" {
+		t.Fatalf("denials = %+v, error = %v", got, err)
+	}
+	for _, tt := range []struct {
+		name  string
+		entry config.ExpectedDenialConfig
+		want  string
+	}{
+		{"unknown caller", config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "missing", Owner: "tenant-a"}, "unknown caller principal"},
+		{"unknown owner", config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
+		{"wrong caller tenant", config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "tenant-b", CallerTenant: "A", Owner: "tenant-a"}, "caller_tenant does not match"},
+		{"wrong owner tenant", config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "tenant-b", Owner: "tenant-a", OwnerTenant: "B"}, "owner_tenant does not match"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildExpectedDenials([]config.ExpectedDenialConfig{tt.entry}, principals)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanExpectedDenialsRejectDifferentTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := "target: https://agent.example.com\nexpected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", "https://other.example.com")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(), "cannot be used with a different --target") {
+		t.Fatalf("error = %v, want policy target mismatch", err)
 	}
 }
 

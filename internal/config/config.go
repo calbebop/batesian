@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/httpx"
 	"gopkg.in/yaml.v3"
 )
@@ -84,6 +86,19 @@ type Config struct {
 	// handoff chained rules. Each needs a valid token; cross-tenant isolation
 	// rules use two or more to attempt access that must fail.
 	Principals []PrincipalConfig `yaml:"principals"`
+
+	// ExpectedDenials are operator-declared access boundaries. They do not
+	// change which requests a scan sends.
+	ExpectedDenials []ExpectedDenialConfig `yaml:"expected_denials"`
+}
+
+// ExpectedDenialConfig names one operation and caller/owner relationship.
+type ExpectedDenialConfig struct {
+	Operation    string `yaml:"operation"`
+	Caller       string `yaml:"caller"`
+	CallerTenant string `yaml:"caller_tenant"`
+	Owner        string `yaml:"owner"`
+	OwnerTenant  string `yaml:"owner_tenant"`
 }
 
 // PrincipalConfig is one authenticated identity declared in batesian.yaml.
@@ -194,7 +209,49 @@ func (c *Config) validate(path string) error {
 		}
 		seen[p.Name] = true
 	}
+	seenDenials := map[ExpectedDenialConfig]bool{}
+	if len(c.ExpectedDenials) > 0 && strings.TrimSpace(c.Target) == "" {
+		return fmt.Errorf("config %s: expected_denials requires a target in the same config file", path)
+	}
+	for i, denial := range c.ExpectedDenials {
+		if err := validateExpectedDenial(denial); err != nil {
+			return fmt.Errorf("config %s: expected_denials[%d]: %w", path, i, err)
+		}
+		if seenDenials[denial] {
+			return fmt.Errorf("config %s: duplicate expected_denials[%d]", path, i)
+		}
+		seenDenials[denial] = true
+	}
 
+	return nil
+}
+
+func validateExpectedDenial(d ExpectedDenialConfig) error {
+	for name, value := range map[string]string{
+		"operation": d.Operation, "caller": d.Caller, "caller_tenant": d.CallerTenant,
+		"owner": d.Owner, "owner_tenant": d.OwnerTenant,
+	} {
+		if value != strings.TrimSpace(value) {
+			return fmt.Errorf("%s must not have surrounding whitespace", name)
+		}
+	}
+	switch d.Operation {
+	case attack.MCPPromptsList, attack.MCPPromptsGet, attack.MCPCompletionComplete:
+		if d.Caller != "anonymous" || d.Owner != "" || d.CallerTenant != "" || d.OwnerTenant != "" {
+			return errors.New("MCP access policy requires caller: anonymous and no owner or tenant")
+		}
+	case attack.A2ATasksGet, attack.A2ATasksList:
+		if d.Caller != "anonymous" || d.Owner != "default" || d.CallerTenant != "" || d.OwnerTenant != "" {
+			return errors.New("A2A task-read policy requires caller: anonymous, owner: default, and no tenant")
+		}
+	case attack.A2ATasksCancel:
+		if d.Caller == "" || d.Owner == "" || d.Caller == d.Owner ||
+			(d.Caller == "anonymous" && d.CallerTenant != "") {
+			return errors.New("A2A task-cancel policy requires distinct caller and owner names")
+		}
+	default:
+		return fmt.Errorf("unsupported operation %q", d.Operation)
+	}
 	return nil
 }
 
@@ -316,5 +373,18 @@ func Example() string {
 #     tenant: B
 #     headers:
 #       X-Tenant-Id: B
+
+# Optional expected denials for observed access. Without these, public access
+# findings remain indicators. Names must match configured or CLI principals.
+# For A2A task reads, owner: default refers to --token.
+# Set target above; a different --target cannot reuse this policy.
+# expected_denials:
+#   - operation: a2a.tasks.cancel
+#     caller: tenant-b
+#     caller_tenant: B
+#     owner: tenant-a
+#     owner_tenant: A
+#   - operation: mcp.prompts.get
+#     caller: anonymous
 `
 }

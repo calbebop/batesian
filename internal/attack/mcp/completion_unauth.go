@@ -147,6 +147,10 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		title = "MCP completion/complete returned a non-authentication error to an anonymous request"
 		description = fmt.Sprintf("completion/complete at %s returned a non-authentication JSON-RPC error for an anonymous request (probed via %s). The error may have come from validation before method dispatch; access to completion suggestions was not demonstrated.", session.Endpoint, base.ref.label)
 	}
+	var allowedAccess *attack.AccessObservation
+	if base.signal == dispatchResult {
+		allowedAccess = &attack.AccessObservation{Operation: attack.MCPCompletionComplete, Caller: "anonymous"}
+	}
 	findings = []attack.Finding{{
 		RuleID:      e.rule.ID,
 		RuleName:    e.rule.Name,
@@ -157,6 +161,7 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 		Evidence:    fmt.Sprintf("HTTP %d from %s\nprobe: %s\n%s", base.status, session.Endpoint, base.ref.label, base.reason),
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
+		Access:      allowedAccess,
 	}}
 	if len(discovery) > 0 {
 		findings[0].Evidence += "\nreference discovery:"
@@ -183,12 +188,13 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 			Title:      fmt.Sprintf("MCP completion/complete disclosed suggestion values without authentication (%s)", disclosure.ref.label),
 			Description: fmt.Sprintf(
 				"completion/complete for %s at %s returned %d suggestion value(s) to an unauthenticated "+
-					"caller. Values may include identifiers, file paths, or usernames. Review whether these "+
-					"suggestions should be public; this does not establish a policy violation.",
+					"caller. Values may include identifiers, file paths, or usernames. Without an explicit "+
+					"access policy, this does not establish a policy violation.",
 				disclosure.ref.label, session.Endpoint, len(disclosure.values)),
 			Evidence:    fmt.Sprintf("HTTP %d from %s\n%s\nvalues (%d): %v", disclosure.status, session.Endpoint, disclosure.ref.label, len(disclosure.values), sampleValues(disclosure.values)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
+			Access:      &attack.AccessObservation{Operation: attack.MCPCompletionComplete, Caller: "anonymous"},
 		})
 	}
 

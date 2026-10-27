@@ -169,6 +169,26 @@ batesian scan --target https://agent.example.com \
 
 In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment references. An unset or empty variable stops the scan before requests are sent.
 
+### Expected protection
+
+Some rules can prove that an operation succeeded but cannot know whether the deployment intended to allow it. Add exact `expected_denials` to `batesian.yaml` when you know the boundary:
+
+```yaml
+target: https://agent.example.com
+expected_denials:
+  - operation: a2a.tasks.cancel
+    caller: tenant-b
+    caller_tenant: B
+    owner: tenant-a
+    owner_tenant: A
+  - operation: mcp.prompts.get
+    caller: anonymous
+```
+
+An observed access matching the operation and caller/owner names is marked `confirmed`; tenant fields, when supplied, must also match. No policy means the finding remains an `indicator`. This changes verdicts, not scan traffic or severity. A policy requires a target in the same config file and cannot be reused with a different `--target`. Each entry covers the entire operation, so do not use it when only selected prompts or tasks are private.
+
+Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, `mcp.prompts.list`, `mcp.prompts.get`, and `mcp.completion.complete`. The A2A names cover both JSON-RPC and HTTP+JSON. A2A task reads use `owner: default` for the identity supplied with `--token`; task cancellation uses configured principal names. Error responses and unverified access are never promoted. A completed access subcheck may still be reported when another subcheck is incomplete.
+
 ## Safe operation
 
 - `--dry-run` records a redacted request plan and sends no network traffic. Header values, URL userinfo and queries, and request body values are hidden; hosts and paths remain visible. Requests that depend on live responses, acquired tokens, or callbacks cannot be expanded fully until a real scan.
@@ -191,7 +211,7 @@ In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment refe
 
 For A2A probes, JSON `agent_card` is a parsed, redacted view, not the original response bytes. `agent_card_provenance` records the fetched URL and SHA-256 of those bytes.
 
-A finding is marked `confirmed` only when the rule observes exploit evidence. An `indicator` identifies a risky condition without claiming successful exploitation.
+A finding is marked `confirmed` when the rule proves a failed boundary, including observed access that matches an explicit expected denial. An `indicator` identifies a risky condition without claiming a policy violation.
 
 `scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. Check rule outcomes in JSON or SARIF before treating a scan as complete; a zero exit code alone is not a clean bill of health. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 

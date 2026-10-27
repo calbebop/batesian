@@ -101,6 +101,12 @@ func TestPromptUnauth_GetRequiresContent(t *testing.T) {
 			if errors.Is(err, attack.ErrInconclusive) != tc.incomplete || len(findings) != tc.findings {
 				t.Fatalf("want %d findings, got %+v (err=%v)", tc.findings, findings, err)
 			}
+			if findings[0].Access == nil || findings[0].Access.Operation != attack.MCPPromptsList {
+				t.Fatalf("listing needs an access observation: %+v", findings[0])
+			}
+			if tc.findings == 2 && (findings[1].Access == nil || findings[1].Access.Operation != attack.MCPPromptsGet) {
+				t.Fatalf("content needs a separate access observation: %+v", findings[1])
+			}
 			if !strings.Contains(findings[0].Evidence, "1: "+tc.wantOutcome) {
 				t.Errorf("missing get outcome %q in listing evidence: %s", tc.wantOutcome, findings[0].Evidence)
 			}

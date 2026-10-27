@@ -327,6 +327,9 @@ func TestTaskCancelIDOR_CrossPrincipal(t *testing.T) {
 	if !strings.Contains(f.Title, "non-owning") {
 		t.Errorf("expected the cross-principal IDOR finding, got title %q", f.Title)
 	}
+	if f.Access == nil || f.Access.Operation != attack.A2ATasksCancel || f.Access.Caller != "tenant-b" || f.Access.Owner != "tenant-a" || f.Access.CallerTenant != "B" || f.Access.OwnerTenant != "A" {
+		t.Errorf("cancel needs owner/caller access metadata: %+v", f.Access)
+	}
 }
 
 func TestTaskCancelIDOR_SharedRoleIsIndicator(t *testing.T) {
@@ -342,7 +345,7 @@ func TestTaskCancelIDOR_SharedRoleIsIndicator(t *testing.T) {
 		},
 	})
 	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
-		!strings.Contains(findings[0].Description, "Confirm these principals") {
+		!strings.Contains(findings[0].Description, "does not establish whether") {
 		t.Fatalf("shared-role cancellation must remain an indicator: findings=%+v err=%v", findings, err)
 	}
 }
@@ -365,6 +368,9 @@ func TestTaskCancelIDOR_Unauthenticated(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("anonymous cancellation must remain an indicator, got %q", findings[0].Confidence)
+	}
+	if access := findings[0].Access; access == nil || access.Caller != "anonymous" || access.Owner != "tenant-a" || access.Operation != attack.A2ATasksCancel {
+		t.Errorf("anonymous cancel needs owner/caller access metadata: %+v", access)
 	}
 }
 
