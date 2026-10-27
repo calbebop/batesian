@@ -31,7 +31,7 @@ var scanCmd = &cobra.Command{
 	Long: `Scan executes Batesian attack rules against a target A2A or MCP endpoint.
 
 Each rule performs an active attack and evaluates assertions against
-the responses. Confirmed findings are output as a table, JSON, or
+the responses. Findings are output as a table, JSON, or
 SARIF for GitHub Security tab integration.
 
 Rules are loaded from the built-in rules directory. Use --rules-dir to
@@ -139,6 +139,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if target == "" {
 		target = cfg.Target
 	}
+	if len(cfg.ExpectedDenials) > 0 && target != cfg.Target {
+		return errors.New("expected_denials cannot be used with a different --target")
+	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
@@ -241,6 +244,10 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 			redactor.addCredentialHeader(name, value)
 		}
 	}
+	expectedDenials, err := buildExpectedDenials(cfg.ExpectedDenials, principals)
+	if err != nil {
+		return err
+	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
 	if err != nil {
@@ -314,17 +321,18 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 
 	opts := attackpkg.Options{
-		OOBListenerURL: oobURL,
-		Token:          token,
-		TimeoutSeconds: timeoutSecs,
-		SkipTLS:        skipTLS,
-		Proxy:          proxy,
-		OAuthOrigins:   oauthOrigins,
-		MCPScopeTools:  mcpScopeTools,
-		MCPInvokeTools: mcpInvokeTools,
-		Verbose:        verbose,
-		AudienceClaim:  audienceClaim,
-		Principals:     principals,
+		OOBListenerURL:  oobURL,
+		Token:           token,
+		TimeoutSeconds:  timeoutSecs,
+		SkipTLS:         skipTLS,
+		Proxy:           proxy,
+		OAuthOrigins:    oauthOrigins,
+		MCPScopeTools:   mcpScopeTools,
+		MCPInvokeTools:  mcpInvokeTools,
+		Verbose:         verbose,
+		AudienceClaim:   audienceClaim,
+		Principals:      principals,
+		ExpectedDenials: expectedDenials,
 	}
 
 	var recorder *attackpkg.Recorder
@@ -545,6 +553,45 @@ func buildPrincipals(cfgPrincipals []config.PrincipalConfig, flags []string) ([]
 		if err := add(p); err != nil {
 			return nil, err
 		}
+	}
+	return out, nil
+}
+
+func buildExpectedDenials(entries []config.ExpectedDenialConfig, principals []attackpkg.Principal) ([]attackpkg.ExpectedDenial, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	byName := make(map[string]attackpkg.Principal, len(principals))
+	for _, principal := range principals {
+		if principal.Name == "anonymous" || principal.Name == "default" {
+			return nil, fmt.Errorf("principal name %q is reserved by expected_denials", principal.Name)
+		}
+		byName[principal.Name] = principal
+	}
+	out := make([]attackpkg.ExpectedDenial, 0, len(entries))
+	for i, entry := range entries {
+		if entry.Operation == attackpkg.A2ATasksCancel {
+			owner, ok := byName[entry.Owner]
+			if !ok {
+				return nil, fmt.Errorf("expected_denials[%d]: unknown owner principal %q", i, entry.Owner)
+			}
+			if entry.OwnerTenant != "" && entry.OwnerTenant != owner.Tenant {
+				return nil, fmt.Errorf("expected_denials[%d]: owner_tenant does not match principal %q", i, entry.Owner)
+			}
+			if entry.Caller != "anonymous" {
+				caller, ok := byName[entry.Caller]
+				if !ok {
+					return nil, fmt.Errorf("expected_denials[%d]: unknown caller principal %q", i, entry.Caller)
+				}
+				if entry.CallerTenant != "" && entry.CallerTenant != caller.Tenant {
+					return nil, fmt.Errorf("expected_denials[%d]: caller_tenant does not match principal %q", i, entry.Caller)
+				}
+			}
+		}
+		out = append(out, attackpkg.ExpectedDenial{
+			Operation: entry.Operation, Caller: entry.Caller, CallerTenant: entry.CallerTenant,
+			Owner: entry.Owner, OwnerTenant: entry.OwnerTenant,
+		})
 	}
 	return out, nil
 }

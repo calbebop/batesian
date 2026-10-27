@@ -43,6 +43,7 @@ func cloneOptions(opts attackpkg.Options) attackpkg.Options {
 	opts.MCPScopeTools = slices.Clone(opts.MCPScopeTools)
 	opts.MCPInvokeTools = slices.Clone(opts.MCPInvokeTools)
 	opts.Principals = slices.Clone(opts.Principals)
+	opts.ExpectedDenials = slices.Clone(opts.ExpectedDenials)
 	for i := range opts.Principals {
 		opts.Principals[i].Headers = maps.Clone(opts.Principals[i].Headers)
 	}
@@ -135,6 +136,7 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	}
 	for i := range findings {
 		findings[i].Confidence = findings[i].EffectiveConfidence()
+		attackpkg.ApplyExpectedDenial(&findings[i], opts.ExpectedDenials)
 	}
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("%w: scan context %v", attackpkg.ErrInconclusive, ctx.Err())

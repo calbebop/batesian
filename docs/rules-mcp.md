@@ -15,6 +15,10 @@ Each finding carries a **confidence**:
 - **indicator** - access or another risk-relevant posture was observed, but the
   response alone does not establish a policy violation.
 
+An exact `expected_denials` entry can confirm observed anonymous prompt or
+completion access when the operator declares that operation forbidden. It does
+not promote errors or unverified access.
+
 Acceptance is judged at the **protocol layer** throughout: a probe counts as
 accepted only on HTTP 200 carrying a JSON-RPC `result` envelope. A 200 with a
 JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
@@ -160,9 +164,9 @@ wire is usable, the rule reports that it could not test.
 | `mcp-oauth-audience-002` | [OAuth Audience Matching Bug Probes](#mcp-oauth-audience-002) | High | confirmed / indicator | CWE-863 |
 | `mcp-token-replay-001` | [OAuth Token Signature and Audience Validation Bypass](#mcp-token-replay-001) | High / Critical | confirmed | CWE-294 |
 | `mcp-resources-unauth-001` | [Unauthenticated Resource Read](#mcp-resources-unauth-001) | Info / High | indicator | CWE-200 |
-| `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium / Info | indicator | CWE-862 |
+| `mcp-prompt-unauth-001` | [Prompt Templates Without Authentication](#mcp-prompt-unauth-001) | Medium / Info | indicator / policy-confirmed | CWE-862 |
 | `mcp-tools-unauth-001` | [Tools Listed Without Authentication](#mcp-tools-unauth-001) | Info | indicator | - |
-| `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | Medium / Info | indicator | CWE-862 |
+| `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | Medium / Info | indicator / policy-confirmed | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed / indicator | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
@@ -312,7 +316,7 @@ distinguishable from one that saw everything.
 
 ### mcp-prompt-unauth-001
 
-**Prompt Templates Without Authentication** | Severity: Medium / Info | indicator
+**Prompt Templates Without Authentication** | Severity: Medium / Info | indicator / policy-confirmed
 
 Sends `prompts/list` and `prompts/get` without credentials. Prompt templates can
 encode system-level instructions and internal context that were not intended to be
@@ -321,8 +325,9 @@ public. The prompts capability is read from the `initialize` or
 The rule tries up to ten listed prompts, stopping at the first readable
 template. A list-only observation is **info**; retrieving template content as
 well is **medium**. Both are indicators until the intended access policy is
-known. A server that requires auth, or does not
-advertise the prompts capability, produces no finding.
+known. An exact `expected_denials` entry for `mcp.prompts.list` or
+`mcp.prompts.get` can confirm the matching observation. A server that requires
+auth, or does not advertise the prompts capability, produces no finding.
 Pagination follows at most ten pages. A malformed cursor, non-authorization
 JSON-RPC error or interrupted read leaves the verdict incomplete; observed
 content remains in the findings.
@@ -345,7 +350,7 @@ test. A protected list produces no finding.
 
 ### mcp-completion-unauth-001
 
-**completion/complete Without Authentication** | Severity: Medium / Info | indicator
+**completion/complete Without Authentication** | Severity: Medium / Info | indicator / policy-confirmed
 
 `completion/complete` returns autocompletion suggestions for prompt arguments and
 resource-template URIs; servers that support it advertise the `completions`
@@ -355,6 +360,8 @@ An anonymous result envelope is an **info indicator**; a generic
 non-authentication JSON-RPC error is also an indicator because validation
 middleware may have produced it before method dispatch. Real suggestion values
 for a discovered prompt or resource template produce a **medium indicator**.
+An exact `expected_denials` entry for `mcp.completion.complete` can confirm a
+result or value disclosure, but not an error response.
 The rule falls back to a synthetic reference when discovery is unavailable.
 Prompt and resource-template discovery follows pagination for up to ten pages.
 Malformed entries, failed pages, repeated cursors, and the reference cap leave the
