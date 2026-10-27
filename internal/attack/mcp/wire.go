@@ -38,13 +38,14 @@ import (
 // nameBearingMethods maps each modern-era method that addresses a named subject to
 // the params field carrying that name, which the Mcp-Name header must mirror.
 //
-// Taken from the SDK's own NAME_BEARING_METHODS table rather than inferred: it is
-// exactly three methods, and the server only checks the header when the body
-// carries the field.
+// Task methods also carry Mcp-Name for routing by task ID.
 var nameBearingMethods = map[string]string{
 	"tools/call":     "name",
 	"prompts/get":    "name",
 	"resources/read": "uri",
+	"tasks/get":      "taskId",
+	"tasks/update":   "taskId",
+	"tasks/cancel":   "taskId",
 }
 
 const headerMismatchCode = -32020

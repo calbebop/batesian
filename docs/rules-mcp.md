@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **29 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **30 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -169,6 +169,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-completion-unauth-001` | [completion/complete Without Authentication](#mcp-completion-unauth-001) | Medium / Info | indicator / policy-confirmed | CWE-862 |
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed / indicator | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
+| `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
@@ -457,7 +458,41 @@ budget and requests the result only once the task has finished.
 replaced by polling `tasks/get`, `tasks/update` is added, and **`tasks/list` is
 removed**. This rule targets the 2025-11-25 core shape and gates on the core
 `tasks` capability, so a 2026-07-28 server advertising the extension instead is
-skipped rather than mis-tested. Covering the extension is separate work.
+skipped rather than mis-tested. The modern extension is covered by
+`mcp-task-access-001`.
+
+---
+
+### mcp-task-access-001
+
+**MCP Tasks Extension Cross-Principal Access** | Severity: High | CWE-639
+
+This rule probes the MCP 2026-07-28 `io.modelcontextprotocol/tasks` extension.
+It requires two named principals with distinct credentials and an exact
+`--mcp-invoke-tool` approval for a tool advertising `readOnlyHint: true`. The
+rule creates a disposable task as principal A, confirms A can read it, then
+tries `tasks/get` as principal B after a nonexistent-ID control. A completed
+result can be returned in `tasks/get`, so the rule treats a valid task response
+as observed access. It does not include the task ID or result content in evidence.
+
+When A's task is waiting on a form elicitation, B sends `tasks/update` with a
+`decline` response to one outstanding request. The rule creates a separate
+task for `tasks/cancel` and sends cancellation as B only while A observes it
+active. Accepted update and cancel acknowledgements show that the server
+accepted those requests; they do not prove the task changed state or stopped.
+The rule first checks that the same method rejects a nonexistent task; a
+server that acknowledges any task ID yields no update or cancel finding.
+The rule does not send form data, answer sampling requests, or cancel tasks it
+did not create.
+
+Cross-principal access is an **indicator** because a task ID can be an
+intentional bearer capability. If the deployment should deny a specific
+relationship, set `expected_denials` for `mcp.tasks.get`, `mcp.tasks.update`,
+or `mcp.tasks.cancel` with the caller and owner principal names. Only a
+matching observed access is promoted to **confirmed**. Absent task handles,
+missing approval, malformed replies, and unanswered subchecks remain **not
+tested**. `tasks/update` is skipped when no safe form elicitation is pending.
+The scan then reports that subcheck as not tested rather than clean.
 
 ---
 

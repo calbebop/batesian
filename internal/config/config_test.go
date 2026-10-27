@@ -36,9 +36,11 @@ func TestLoadExpectedDenials(t *testing.T) {
 	}{
 		{"MCP anonymous operation", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n", ""},
 		{"A2A tenant relationship", "expected_denials:\n  - operation: a2a.tasks.cancel\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
+		{"MCP task relationship", "expected_denials:\n  - operation: mcp.tasks.update\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
 		{"unknown operation", "expected_denials:\n  - operation: mcp.other\n    caller: anonymous\n", "unsupported operation"},
 		{"wildcard caller", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: '*'\n", "requires caller: anonymous"},
 		{"same caller and owner", "expected_denials:\n  - operation: a2a.tasks.cancel\n    caller: tenant-a\n    owner: tenant-a\n", "distinct caller and owner"},
+		{"MCP task anonymous caller", "expected_denials:\n  - operation: mcp.tasks.get\n    caller: anonymous\n    owner: tenant-a\n", "distinct named caller and owner"},
 		{"task read requires default owner", "expected_denials:\n  - operation: a2a.tasks.get\n    caller: anonymous\n    owner: tenant-a\n", "owner: default"},
 		{"unknown field", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n    wildcard: true\n", "field wildcard not found"},
 		{"duplicate", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n  - operation: mcp.prompts.get\n    caller: anonymous\n", "duplicate expected_denials"},

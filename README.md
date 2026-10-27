@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **50 bundled rules:** 21 A2A and 29 MCP checks focused on protocol-specific weaknesses.
+- **51 bundled rules:** 21 A2A and 30 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,7 +87,7 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [29 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [30 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
@@ -175,6 +175,13 @@ Some rules can prove that an operation succeeded but cannot know whether the dep
 
 ```yaml
 target: https://agent.example.com
+principals:
+  - name: tenant-a
+    token: "${TOKEN_A}"
+    tenant: A
+  - name: tenant-b
+    token: "${TOKEN_B}"
+    tenant: B
 expected_denials:
   - operation: a2a.tasks.cancel
     caller: tenant-b
@@ -183,11 +190,16 @@ expected_denials:
     owner_tenant: A
   - operation: mcp.prompts.get
     caller: anonymous
+  - operation: mcp.tasks.get
+    caller: tenant-b
+    caller_tenant: B
+    owner: tenant-a
+    owner_tenant: A
 ```
 
 An observed access matching the operation and caller/owner names is marked `confirmed`; tenant fields, when supplied, must also match. No policy means the finding remains an `indicator`. This changes verdicts, not scan traffic or severity. A policy requires a target in the same config file and cannot be reused with a different `--target`. Each entry covers the entire operation, so do not use it when only selected prompts or tasks are private.
 
-Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, `mcp.prompts.list`, `mcp.prompts.get`, and `mcp.completion.complete`. The A2A names cover both JSON-RPC and HTTP+JSON. A2A task reads use `owner: default` for the identity supplied with `--token`; task cancellation uses configured principal names. Error responses and unverified access are never promoted. A completed access subcheck may still be reported when another subcheck is incomplete.
+Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, `mcp.prompts.list`, `mcp.prompts.get`, `mcp.completion.complete`, `mcp.tasks.get`, `mcp.tasks.update`, and `mcp.tasks.cancel`. The A2A names cover both JSON-RPC and HTTP+JSON. A2A task reads use `owner: default` for the identity supplied with `--token`; task cancellation and modern MCP task operations use configured principal names. Error responses and unverified access are never promoted. A completed access subcheck may still be reported when another subcheck is incomplete.
 
 ## Safe operation
 

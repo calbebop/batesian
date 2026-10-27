@@ -1,0 +1,36 @@
+id: mcp-task-access-001
+info:
+  name: MCP Tasks Extension Cross-Principal Access
+  author: batesian
+  severity: high
+  description: |
+    Creates disposable tasks through an approved read-only tool on the MCP
+    2026-07-28 Tasks extension. Probes tasks/get, tasks/update, and tasks/cancel
+    as a second named principal. A tasks/update probe only declines an
+    outstanding form elicitation on a scanner-created task. Cancellation uses
+    a separate active scanner-created task.
+
+    Accepted cross-principal requests are indicators. Task IDs can be shared
+    as capabilities, so an expected_denials entry is required to confirm that
+    the observed access violates the target's permission boundary. A known
+    task ID alone is not proof of IDOR. Missing approvals or task handles and
+    inconclusive responses are reported as not tested.
+
+  references:
+    - https://tasks.extensions.modelcontextprotocol.io/specification/2026-07-28/tasks
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - mcp
+    - tasks
+    - authorization
+    - cwe-639
+
+attack:
+  protocol: mcp
+  type: mcp-task-access
+
+remediation: |
+  Authorize each tasks/get, tasks/update, and tasks/cancel request against
+  the task and caller. If task IDs act as bearer capabilities, protect them
+  as secrets and issue them only to callers allowed to access the task.
