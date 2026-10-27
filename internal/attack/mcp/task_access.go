@@ -105,10 +105,11 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 			verdict := taskAccessAck(ctx, client, session, b, 45, "tasks/update", map[string]interface{}{
 				"taskId": firstID, "inputResponses": responses,
 			})
-			if verdict == probeAnswered {
+			switch verdict {
+			case probeAnswered:
 				findings = append(findings, e.finding(session.Endpoint, "tasks/update", a, b,
 					"acknowledged a decline for the owner's outstanding elicitation", "The acknowledgement does not prove the task changed state."))
-			} else if verdict == probeInconclusive {
+			case probeInconclusive:
 				incomplete = append(incomplete, fmt.Errorf("%w: tasks/update as principal %s returned no verdict", attack.ErrInconclusive, b.name))
 			}
 		}
@@ -139,10 +140,11 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 				attack.ErrInconclusive))
 		} else {
 			verdict := taskAccessAck(ctx, client, session, b, 53, "tasks/cancel", map[string]interface{}{"taskId": cancelID})
-			if verdict == probeAnswered {
+			switch verdict {
+			case probeAnswered:
 				findings = append(findings, e.finding(session.Endpoint, "tasks/cancel", a, b,
 					"acknowledged cancellation intent for the owner's active task", "Cancellation is cooperative; the acknowledgement does not prove the task stopped."))
-			} else if verdict == probeInconclusive {
+			case probeInconclusive:
 				incomplete = append(incomplete, fmt.Errorf("%w: tasks/cancel as principal %s returned no verdict", attack.ErrInconclusive, b.name))
 			}
 		}
