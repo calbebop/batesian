@@ -13,6 +13,10 @@ Each finding carries a **confidence**:
 - **indicator** - access or another risk-relevant posture was observed, but the
   response alone does not establish a policy violation.
 
+An exact `expected_denials` entry can confirm an observed task read, list, or
+cancellation when the operator declares that caller/owner relationship forbidden.
+It does not promote errors or unverified access.
+
 ## Protocol currency
 
 The catalog covers selected **A2A v1.0** operations, including the v1.0.1
@@ -117,7 +121,7 @@ report them not tested against a secured agent, and say so.
 |---|---|:---:|:---:|---|
 | `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High / Critical | confirmed | CWE-862 |
 | `a2a-push-ssrf-001` | [Private Push Callback Delivery](#a2a-push-ssrf-001) | Medium | indicator | CWE-918 |
-| `a2a-task-idor-001` | [Anonymous Task Read or List Exposure](#a2a-task-idor-001) | Medium | indicator | CWE-639 |
+| `a2a-task-idor-001` | [Anonymous Task Read or List Exposure](#a2a-task-idor-001) | Medium | indicator / policy-confirmed | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
 | `a2a-wellknown-hostinject-001` | [Agent Card Host Header Injection](#a2a-wellknown-hostinject-001) | High / Medium | indicator | CWE-601 |
 | `a2a-jws-algconf-001` | [AgentCard JWS Signature Configuration](#a2a-jws-algconf-001) | Critical / High / Medium / Info | indicator | CWE-327 |
@@ -132,7 +136,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | confirmed | CWE-639 |
 | `a2a-subscription-scope-001` | [Subscription and Task-Read Scope Mismatch](#a2a-subscription-scope-001) | High | indicator | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium | indicator or confirmed | CWE-288 |
-| `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | indicator | CWE-639 / CWE-862 |
+| `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | indicator / policy-confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
 | `a2a-push-callback-auth-001` | [Push Notification Missing Webhook Authentication](#a2a-push-callback-auth-001) | High | confirmed | CWE-345 |
@@ -202,7 +206,7 @@ Confirmed unfixed in the reference `a2a-python` SDK as of April 2026
 
 ### a2a-task-idor-001
 
-**Anonymous Task Read or List Exposure** | Severity: Medium | indicator
+**Anonymous Task Read or List Exposure** | Severity: Medium | indicator / policy-confirmed
 
 Reports observed task access using an **auth-enforcement discriminator** so an
 open server is not mislabelled. It (1)
@@ -213,6 +217,9 @@ unauthenticated connection. It checks JSON-RPC `GetTask` and advertised HTTP+JSO
 that the owner can read the stored probe text. The finding fires only when creation
 was auth-gated yet the unauthenticated read returns that text. The result is an
 indicator until the agent's sharing policy establishes that access was forbidden.
+An exact `expected_denials` entry for `a2a.tasks.get` or `a2a.tasks.list` with
+`caller: anonymous` and `owner: default` provides that policy for the matching
+observation.
 If anonymous creation succeeds, the server is openly accessible and this rule
 stays silent. The rule additionally probes `GET /v1/tasks`
 and `/tasks` for unauthenticated server-wide task disclosure. It follows REST
@@ -552,7 +559,7 @@ checks as for single requests.
 
 ### a2a-task-cancel-idor-001
 
-**Cross-Principal Task Cancellation** | Severity: High | indicator
+**Cross-Principal Task Cancellation** | Severity: High | indicator / policy-confirmed
 
 Tests whether task cancellation (`CancelTask` / `tasks/cancel`, plus the advertised
 HTTP+JSON `POST /tasks/{id}:cancel` or v0.3 `/v1/tasks/{id}:cancel`) is bound to the
@@ -572,7 +579,8 @@ cancellation outcomes:
 
 A denial followed by an independently canceled task is inconclusive. A successful
 cross-principal cancellation is not called IDOR without a policy that forbids B's
-access to A's task.
+access to A's task. An exact `expected_denials` entry for `a2a.tasks.cancel`
+can confirm the observed cancellation when it names the denied caller and owner.
 
 A server that rejects the wrong-principal cancel produces no finding: the
 boundary was tested and held. Two outcomes are not clean results: an anonymous

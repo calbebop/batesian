@@ -287,6 +287,9 @@ func TestCompletionUnauth_Oracle(t *testing.T) {
 		if f.Confidence != attack.RiskIndicator {
 			t.Errorf("expected indicator, got %v", f.Confidence)
 		}
+		if f.Access == nil || f.Access.Operation != attack.MCPCompletionComplete {
+			t.Errorf("result needs a completion access observation: %+v", f)
+		}
 		switch f.Severity {
 		case "info":
 			hasInfo = true
@@ -393,6 +396,9 @@ func TestCompletionUnauth_ReachableSynthetic(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("generic validation error must be an indicator, got %q", findings[0].Confidence)
+	}
+	if findings[0].Access != nil {
+		t.Errorf("validation error must not establish access: %+v", findings[0].Access)
 	}
 }
 

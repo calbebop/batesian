@@ -108,7 +108,7 @@ func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, ran
 	}
 	switch anon.outcome {
 	case cancelCanceled:
-		return []attack.Finding{e.unauthFinding(endpoint, taskID, baseline.state, anon.method)}, partial
+		return []attack.Finding{e.unauthFinding(endpoint, a, taskID, baseline.state, anon.method)}, partial
 	case cancelOther:
 		return nil, errors.Join(partial, fmt.Errorf("%w: anonymous cancellation of task %s was not conclusively denied", attack.ErrInconclusive, taskID))
 	}
@@ -390,7 +390,7 @@ func activeTaskState(state string) bool {
 	return false
 }
 
-func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID, baseline, method string) attack.Finding {
+func (e *TaskCancelIDORExecutor) unauthFinding(endpoint string, owner attack.Principal, taskID, baseline, method string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -398,12 +398,13 @@ func (e *TaskCancelIDORExecutor) unauthFinding(endpoint, taskID, baseline, metho
 		Confidence: attack.RiskIndicator,
 		Title:      "A2A task cancellation accepted without authentication",
 		Description: fmt.Sprintf(
-			"An unauthenticated %s request canceled owner task %s at %s. The owner read-back changed from %s to canceled. Review whether anonymous cancellation is allowed by the agent's policy.",
+			"An unauthenticated %s request canceled owner task %s at %s. The owner read-back changed from %s to canceled. The observation alone does not establish whether anonymous cancellation is forbidden.",
 			method, taskID, endpoint, baseline),
 		Evidence: fmt.Sprintf("endpoint: %s\ntask: %s\nmethod: %s\nowner state: %s -> canceled\ncaller: anonymous",
 			endpoint, taskID, method, baseline),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+		Access:      &attack.AccessObservation{Operation: attack.A2ATasksCancel, Caller: "anonymous", Owner: owner.Name, OwnerTenant: owner.Tenant},
 	}
 }
 
@@ -415,7 +416,7 @@ func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker at
 		Confidence: attack.RiskIndicator,
 		Title:      "A2A task canceled by a non-owning principal",
 		Description: fmt.Sprintf(
-			"Principal %q canceled task %s created by principal %q through %s. The owner read-back changed from %s to canceled. Confirm these principals are not permitted to share task access.",
+			"Principal %q canceled task %s created by principal %q through %s. The owner read-back changed from %s to canceled. The observation alone does not establish whether these principals may share task access.",
 			attacker.Name, taskID, owner.Name, method, baseline),
 		Evidence: fmt.Sprintf(
 			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\ntask: %s\nmethod: %s\n"+
@@ -423,6 +424,10 @@ func (e *TaskCancelIDORExecutor) idorFinding(endpoint string, owner, attacker at
 			owner.Name, owner.Tenant, attacker.Name, attacker.Tenant, taskID, method, baseline),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+		Access: &attack.AccessObservation{
+			Operation: attack.A2ATasksCancel, Caller: attacker.Name, CallerTenant: attacker.Tenant,
+			Owner: owner.Name, OwnerTenant: owner.Tenant,
+		},
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task " + taskID, Outcome: "task owned by " + owner.Name},
 			{Hop: 2, Principal: attacker.Name, Action: method + " task " + taskID + " as a different principal", Outcome: "GRANTED - task canceled by non-owner"},

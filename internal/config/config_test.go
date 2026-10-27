@@ -28,6 +28,49 @@ func TestLoad_EmptyPath_NoFile(t *testing.T) {
 	}
 }
 
+func TestLoadExpectedDenials(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantError string
+	}{
+		{"MCP anonymous operation", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n", ""},
+		{"A2A tenant relationship", "expected_denials:\n  - operation: a2a.tasks.cancel\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
+		{"unknown operation", "expected_denials:\n  - operation: mcp.other\n    caller: anonymous\n", "unsupported operation"},
+		{"wildcard caller", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: '*'\n", "requires caller: anonymous"},
+		{"same caller and owner", "expected_denials:\n  - operation: a2a.tasks.cancel\n    caller: tenant-a\n    owner: tenant-a\n", "distinct caller and owner"},
+		{"task read requires default owner", "expected_denials:\n  - operation: a2a.tasks.get\n    caller: anonymous\n    owner: tenant-a\n", "owner: default"},
+		{"unknown field", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n    wildcard: true\n", "field wildcard not found"},
+		{"duplicate", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n  - operation: mcp.prompts.get\n    caller: anonymous\n", "duplicate expected_denials"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(path, []byte("target: https://agent.example.com\n"+tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tt.wantError == "" {
+				if err != nil || len(cfg.ExpectedDenials) != 1 {
+					t.Fatalf("config = %+v, error = %v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestLoadExpectedDenialsRequiresTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(path, []byte("expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "requires a target") {
+		t.Fatalf("error = %v, want target requirement", err)
+	}
+}
+
 func TestLoadWithSource_ReportsDiscoveredParent(t *testing.T) {
 	parent := t.TempDir()
 	child := filepath.Join(parent, "child")
