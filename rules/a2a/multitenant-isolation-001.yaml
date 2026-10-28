@@ -17,6 +17,8 @@ info:
     Requires two distinct principals with nonempty, different tenant labels,
     configured in batesian.yaml or with repeated --principal flags. Labels are
     operator-supplied and should match the target's actual tenant assignments.
+    If the card advertises HTTP+JSON tenant values, each configured tenant
+    label must match a distinct interface at the same URL.
     A confirmed finding demonstrates disclosure of the observed probe content;
     it does not assume that all task history or artifacts are accessible.
 

@@ -53,8 +53,9 @@ tries advertised JSON-RPC interfaces in preference order, pinned to the target's
 own scheme and host. Legacy cards default an omitted `preferredTransport` to
 `JSONRPC`. If none answers, discovery probes conventional paths.
 Discovery checks at most 16 distinct advertised JSON-RPC URLs.
-HTTP+JSON probes likewise try up to 16 advertised bases in order. Their route
-prefixes come from the card; they are not inferred from the JSON-RPC URL.
+HTTP+JSON probes likewise try up to 16 advertised interfaces in order. Their
+route prefixes and v1 `tenant` values come from the card, even when several
+interfaces share one URL. An ambiguous tenant comparison is reported as not tested.
 
 A probed path is judged by a read-only task lookup for a non-existent id, in both
 the v0.3 (`tasks/get`) and v1.0 (`GetTask`) spellings. **"Method not found" is
@@ -348,9 +349,11 @@ reported as incomplete for that direction, while the other direction can still
 produce a finding.
 
 The rule tests JSON-RPC and advertised HTTP+JSON `POST /message:send` and
-`GET /tasks/{id}` routes, with `/v1` prefixes for v0.3. REST reads request up
-to ten history messages. JSON-RPC tasks can feed chained rules; REST tasks are
-tested separately and are not reused across bindings.
+`GET /tasks/{id}` routes, with `/v1` prefixes for v0.3. When a v1 interface
+advertises `tenant`, both principals need distinct routes at the same URL that
+match their configured labels. A missing or ambiguous match is not tested. REST
+reads request up to ten history messages. JSON-RPC tasks can feed chained rules;
+REST tasks are tested separately and are not reused across bindings.
 
 ---
 

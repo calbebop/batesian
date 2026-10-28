@@ -14,13 +14,15 @@ import (
 
 func (e *TaskCancelIDORExecutor) probeREST(ctx context.Context, target, randID string,
 	a, b attack.Principal, owner, other, anon *attack.HTTPClient) ([]attack.Finding, error, bool) {
-	bases := resolveHTTPJSONBases(ctx, owner, target)
-	if len(bases) == 0 {
+	interfaces := resolveHTTPJSONInterfaces(ctx, owner, target)
+	if len(interfaces) == 0 {
 		return nil, nil, false
 	}
 	var incomplete error
 	anyTested := false
-	for baseIndex, base := range bases {
+	for baseIndex, iface := range interfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		baseTested := false
 		var setupErr error
 		for _, route := range []struct{ send, tasks, version string }{

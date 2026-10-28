@@ -114,6 +114,40 @@ func TestPushCleanupREST(t *testing.T) {
 	}
 }
 
+func TestPushCleanupRESTTenantRoute(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Query().Get("tenant") != "team-a" {
+			http.Error(w, "missing tenant", http.StatusBadRequest)
+			return
+		}
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"taskId":"task-1","id":"config-1","url":"https://callback.example/probe"}`))
+			return
+		}
+		if r.Method != http.MethodDelete {
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	base := srv.URL + "/api"
+	tenant := "team-a"
+	ctx := withHTTPJSONInterface(withTenantRouting(t.Context()), httpJSONInterface{base: base, tenant: &tenant})
+	registration := newPushRegistration(base+"/tasks/task-1/pushNotificationConfigs", "task-1", "1.0",
+		"https://callback.example/probe", &attack.Response{Body: []byte(`{"id":"config-1"}`)}, true)
+	state := &attack.TargetState{}
+	client := attack.NewHTTPClient(attack.Options{}, attack.NewVars(srv.URL, ""))
+	registration.finish(ctx, client, state, false)
+	objects := state.Snapshot()
+	if calls.Load() != 2 || len(objects) != 1 || objects[0].Cleanup != attack.CleanupCompleted {
+		t.Fatalf("calls=%d objects=%+v", calls.Load(), objects)
+	}
+}
+
 func TestPushCleanupSkipsUnknownOrUnsafeID(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

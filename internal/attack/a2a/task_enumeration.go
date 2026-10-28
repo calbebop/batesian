@@ -40,12 +40,12 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 	clientA := principalClient(opts, vars, a)
 	clientB := principalClient(opts, vars, b)
 	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
-	restBases := resolveHTTPJSONBases(ctx, clientA, vars.BaseURL)
+	restInterfaces := resolveHTTPJSONInterfaces(ctx, clientA, vars.BaseURL)
 	var incomplete error
 	if !ok {
 		incomplete = advertisedJSONRPCUnavailable(ctx, unauthClient, vars.BaseURL)
 	}
-	if !ok && len(restBases) == 0 {
+	if !ok && len(restInterfaces) == 0 {
 		if incomplete != nil {
 			return nil, incomplete
 		}
@@ -59,7 +59,9 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 		}
 		incomplete = err
 	}
-	for _, base := range restBases {
+	for _, iface := range restInterfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		baseTested := false
 		for _, route := range []struct{ send, list, version string }{
 			{"/message:send", "/tasks", "1.0"},

@@ -42,39 +42,68 @@ func (i a2aDiscoveryInterface) isHTTPJSON() bool {
 	return strings.EqualFold(i.ProtocolBinding, "HTTP+JSON") || strings.EqualFold(i.Transport, "HTTP+JSON")
 }
 
-const maxCardHTTPJSONBases = 16
+const maxCardHTTPJSONInterfaces = 16
 
-// resolveHTTPJSONBases returns advertised REST bases on the target origin.
-func resolveHTTPJSONBases(ctx context.Context, client *attack.HTTPClient, baseURL string) []string {
+type httpJSONInterface struct {
+	base    string
+	tenant  *string
+	version string
+}
+
+func sharedHTTPJSONTenants(interfaces []httpJSONInterface, base string) bool {
+	var first *string
+	seen := false
+	for _, iface := range interfaces {
+		if iface.base != base {
+			continue
+		}
+		if !seen {
+			first = iface.tenant
+			seen = true
+			continue
+		}
+		if (first == nil) != (iface.tenant == nil) ||
+			first != nil && iface.tenant != nil && *first != *iface.tenant {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveHTTPJSONInterfaces keeps each advertised REST route on the target origin.
+func resolveHTTPJSONInterfaces(ctx context.Context, client *attack.HTTPClient, baseURL string) []httpJSONInterface {
 	card, found := fetchDiscoveryCard(ctx, client, baseURL)
 	if !found {
 		return nil
 	}
-	var bases []string
+	var interfaces []httpJSONInterface
 	seen := map[string]bool{}
-	add := func(rawURL string, tenant *string) {
+	add := func(rawURL string, tenant *string, version string) {
 		if !hasHTTPScheme(rawURL) {
 			return
 		}
 		base := strings.TrimSuffix(pinToTargetOrigin(rawURL, baseURL), "/")
-		if seen[base] || len(bases) == maxCardHTTPJSONBases {
+		key := base + "\x00" + version + "\x00"
+		if tenant != nil {
+			key += "1" + *tenant
+		}
+		if seen[key] || len(interfaces) == maxCardHTTPJSONInterfaces {
 			return
 		}
-		seen[base] = true
-		bases = append(bases, base)
-		registerTenantRoute(ctx, base, "HTTP+JSON", tenant)
+		seen[key] = true
+		interfaces = append(interfaces, httpJSONInterface{base: base, tenant: tenant, version: version})
 	}
 	for _, group := range [][]a2aDiscoveryInterface{card.SupportedInterfaces, card.AdditionalInterfaces} {
 		for _, iface := range group {
 			if iface.isHTTPJSON() {
-				add(iface.URL, iface.Tenant)
+				add(iface.URL, iface.Tenant, iface.ProtocolVersion)
 			}
 		}
 	}
 	if strings.EqualFold(card.PreferredTransport, "HTTP+JSON") {
-		add(card.URL, nil)
+		add(card.URL, nil, "0.3.0")
 	}
-	return bases
+	return interfaces
 }
 
 const maxCardJSONRPCProbes = 16

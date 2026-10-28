@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/calbebop/batesian/internal/attack"
 )
 
 func TestJSONRPCInterfaceTenant(t *testing.T) {
@@ -115,19 +117,93 @@ func TestRESTInterfaceTenant(t *testing.T) {
 
 	ctx := withTenantRouting(context.Background())
 	client := newClient(server.URL)
-	bases := resolveHTTPJSONBases(ctx, client, server.URL)
-	if len(bases) != 1 || bases[0] != server.URL+"/api" {
-		t.Fatalf("REST bases = %q", bases)
+	interfaces := resolveHTTPJSONInterfaces(ctx, client, server.URL)
+	if len(interfaces) != 1 || interfaces[0].base != server.URL+"/api" {
+		t.Fatalf("REST interfaces = %+v", interfaces)
 	}
+	ctx = withHTTPJSONInterface(ctx, interfaces[0])
 	headers := map[string]string{"A2A-Version": "1.0"}
-	if response, err := client.POST(ctx, bases[0]+"/message:send", headers, map[string]any{"message": map[string]any{}}); err != nil || !response.IsSuccess() {
+	if response, err := client.POST(ctx, interfaces[0].base+"/message:send", headers, map[string]any{"message": map[string]any{}}); err != nil || !response.IsSuccess() {
 		t.Fatalf("REST send response = %v, error = %v", response, err)
 	}
-	if response, err := client.GET(ctx, bases[0]+"/tasks?pageToken=next", headers); err != nil || !response.IsSuccess() {
+	if response, err := client.GET(ctx, interfaces[0].base+"/tasks?pageToken=next", headers); err != nil || !response.IsSuccess() {
 		t.Fatalf("REST list response = %v, error = %v", response, err)
 	}
-	if response, err := client.DELETE(ctx, bases[0]+"/tasks/task-1/pushNotificationConfigs/config-1", headers); err != nil || !response.IsSuccess() {
+	if response, err := client.DELETE(ctx, interfaces[0].base+"/tasks/task-1/pushNotificationConfigs/config-1", headers); err != nil || !response.IsSuccess() {
 		t.Fatalf("REST delete response = %v, error = %v", response, err)
+	}
+}
+
+func TestRESTSharedURLKeepsDistinctTenants(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			_, _ = fmt.Fprintf(w, `{"supportedInterfaces":[`+
+				`{"url":%q,"protocolBinding":"HTTP+JSON","protocolVersion":"1.0","tenant":"alpha"},`+
+				`{"url":%q,"protocolBinding":"HTTP+JSON","protocolVersion":"1.0","tenant":"beta"},`+
+				`{"url":%q,"protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}]}`,
+				server.URL+"/api", server.URL+"/api", server.URL+"/api")
+			return
+		}
+		var request map[string]any
+		if r.URL.Path != "/api/message:send" || json.NewDecoder(r.Body).Decode(&request) != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(request)
+	}))
+	defer server.Close()
+
+	ctx := withTenantRouting(t.Context())
+	client := newClient(server.URL)
+	interfaces := resolveHTTPJSONInterfaces(ctx, client, server.URL)
+	if len(interfaces) != 3 || !sharedHTTPJSONTenants(interfaces, server.URL+"/api") {
+		t.Fatalf("interfaces = %+v", interfaces)
+	}
+	for i, want := range []string{"alpha", "beta", ""} {
+		response, err := client.POST(withHTTPJSONInterface(ctx, interfaces[i]), server.URL+"/api/message:send",
+			map[string]string{"A2A-Version": "1.0"}, map[string]any{"message": map[string]any{}})
+		if err != nil || !response.IsSuccess() {
+			t.Fatalf("route %d response = %v, error = %v", i, response, err)
+		}
+		var request map[string]any
+		if json.Unmarshal(response.Body, &request) != nil {
+			t.Fatalf("route %d returned invalid JSON", i)
+		}
+		value, present := request["tenant"]
+		if present != (i < 2) || present && value != want {
+			t.Errorf("route %d tenant = %v (present %t)", i, value, present)
+		}
+	}
+}
+
+func TestAnonymousRESTListSkipsSharedTenantURL(t *testing.T) {
+	var server *httptest.Server
+	listReads := 0
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			_, _ = fmt.Fprintf(w, `{"supportedInterfaces":[`+
+				`{"url":%q,"protocolBinding":"HTTP+JSON","protocolVersion":"1.0","tenant":"A"},`+
+				`{"url":%q,"protocolBinding":"HTTP+JSON","protocolVersion":"1.0","tenant":"B"}]}`,
+				server.URL+"/api", server.URL+"/api")
+			return
+		}
+		if r.URL.Path == "/api/tasks" {
+			listReads++
+			_ = json.NewEncoder(w).Encode(map[string]any{"tasks": []any{map[string]string{"id": "owner-task"}}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	vars := attack.NewVars(server.URL, "")
+	ctx := withTenantRouting(t.Context())
+	client := newClient(server.URL)
+	probe := NewTaskIDORExecutor(attack.RuleContext{}).probeTaskList(ctx, client, client, vars, "owner-task", "", true)
+	if len(probe.findings) != 0 || !probe.unverified || probe.reason == "" || listReads != 0 {
+		t.Fatalf("probe = %+v, shared-route list reads = %d", probe, listReads)
 	}
 }
 

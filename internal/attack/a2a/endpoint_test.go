@@ -117,7 +117,7 @@ func TestPinToTargetOrigin(t *testing.T) {
 	}
 }
 
-func TestResolveHTTPJSONBases_PreferenceAndPinning(t *testing.T) {
+func TestResolveHTTPJSONInterfaces_PreferenceAndPinning(t *testing.T) {
 	var card string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/agent-card.json" {
@@ -134,7 +134,7 @@ func TestResolveHTTPJSONBases_PreferenceAndPinning(t *testing.T) {
 		`"additionalInterfaces":[{"url":"` + srv.URL + `/live","transport":"HTTP+JSON"}],` +
 		`"preferredTransport":"HTTP+JSON","url":"` + srv.URL + `/top"}`
 
-	got := resolveHTTPJSONBases(context.Background(), newClient(srv.URL), srv.URL)
+	got := httpJSONBaseURLs(resolveHTTPJSONInterfaces(context.Background(), newClient(srv.URL), srv.URL))
 	want := []string{srv.URL + "/old", srv.URL + "/live", srv.URL + "/top"}
 	if !slices.Equal(got, want) {
 		t.Errorf("REST bases = %q, want %q", got, want)
@@ -196,7 +196,7 @@ func TestFetchDiscoveryCard_V03AtCanonicalPath(t *testing.T) {
 	}
 }
 
-func TestResolveHTTPJSONBases_FallsBackFromUnusablePrimaryCard(t *testing.T) {
+func TestResolveHTTPJSONInterfaces_FallsBackFromUnusablePrimaryCard(t *testing.T) {
 	for _, primary := range []string{
 		`{}`,
 		`null`,
@@ -217,7 +217,7 @@ func TestResolveHTTPJSONBases_FallsBackFromUnusablePrimaryCard(t *testing.T) {
 			defer server.Close()
 			serverURL = server.URL
 
-			got := resolveHTTPJSONBases(t.Context(), newClient(server.URL), server.URL)
+			got := httpJSONBaseURLs(resolveHTTPJSONInterfaces(t.Context(), newClient(server.URL), server.URL))
 			if want := []string{server.URL + "/legacy-rest"}; !slices.Equal(got, want) {
 				t.Errorf("REST bases = %q, want %q", got, want)
 			}
@@ -225,7 +225,7 @@ func TestResolveHTTPJSONBases_FallsBackFromUnusablePrimaryCard(t *testing.T) {
 	}
 }
 
-func TestResolveHTTPJSONBases_PrefersUsablePrimaryCard(t *testing.T) {
+func TestResolveHTTPJSONInterfaces_PrefersUsablePrimaryCard(t *testing.T) {
 	var serverURL string
 	legacyReads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +242,7 @@ func TestResolveHTTPJSONBases_PrefersUsablePrimaryCard(t *testing.T) {
 	defer server.Close()
 	serverURL = server.URL
 
-	got := resolveHTTPJSONBases(t.Context(), newClient(server.URL), server.URL)
+	got := httpJSONBaseURLs(resolveHTTPJSONInterfaces(t.Context(), newClient(server.URL), server.URL))
 	if want := []string{server.URL + "/current"}; !slices.Equal(got, want) {
 		t.Errorf("REST bases = %q, want %q", got, want)
 	}
@@ -274,7 +274,7 @@ func TestResolveA2AEndpoint_FallsBackFromUnusablePrimaryCard(t *testing.T) {
 	}
 }
 
-func TestResolveHTTPJSONBases_CapsResults(t *testing.T) {
+func TestResolveHTTPJSONInterfaces_CapsResults(t *testing.T) {
 	interfaces := make([]map[string]string, 18)
 	for i := range interfaces {
 		interfaces[i] = map[string]string{
@@ -290,10 +290,18 @@ func TestResolveHTTPJSONBases_CapsResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := resolveHTTPJSONBases(context.Background(), newClient(srv.URL), srv.URL)
-	if len(got) != maxCardHTTPJSONBases || got[0] != srv.URL+"/rest-0" || got[15] != srv.URL+"/rest-15" {
+	got := httpJSONBaseURLs(resolveHTTPJSONInterfaces(context.Background(), newClient(srv.URL), srv.URL))
+	if len(got) != maxCardHTTPJSONInterfaces || got[0] != srv.URL+"/rest-0" || got[15] != srv.URL+"/rest-15" {
 		t.Errorf("bounded REST bases = %q", got)
 	}
+}
+
+func httpJSONBaseURLs(interfaces []httpJSONInterface) []string {
+	var bases []string
+	for _, iface := range interfaces {
+		bases = append(bases, iface.base)
+	}
+	return bases
 }
 
 func newClient(target string) *attack.HTTPClient {

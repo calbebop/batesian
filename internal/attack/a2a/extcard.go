@@ -81,11 +81,13 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 		}
 	}
 
-	restBases := resolveHTTPJSONBases(ctx, unauthClient, vars.BaseURL)
-	if len(restBases) == 0 {
-		restBases = []string{vars.BaseURL}
+	restInterfaces := resolveHTTPJSONInterfaces(ctx, unauthClient, vars.BaseURL)
+	if len(restInterfaces) == 0 {
+		restInterfaces = []httpJSONInterface{{base: vars.BaseURL}}
 	}
-	for _, base := range restBases {
+	for _, iface := range restInterfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range []struct{ path, version string }{
 			{extCardHTTPPath, "1.0"},
 			{"/v1/card", "0.3.0"},

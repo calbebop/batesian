@@ -45,6 +45,39 @@ func registerTenantRoute(ctx context.Context, base, binding string, tenant *stri
 	routes.routes = append(routes.routes, tenantRoute{base: base, binding: binding, tenant: tenant})
 }
 
+func withHTTPJSONInterface(ctx context.Context, iface httpJSONInterface) context.Context {
+	routes, ok := ctx.Value(tenantRoutesKey{}).(*tenantRoutes)
+	if !ok {
+		return ctx
+	}
+	return attack.WithRequestAugmenter(ctx, func(method, requestURL string, headers map[string]string, body interface{}) (map[string]string, interface{}) {
+		if isA2AV1(headers) && routeContains(iface.base, requestURL) && !isJSONRPCRequest(body) {
+			return augmentHTTPJSONTenant(method, body, iface.tenant)
+		}
+		return routes.augment(method, requestURL, headers, body)
+	})
+}
+
+func augmentHTTPJSONTenant(method string, body interface{}, tenant *string) (map[string]string, interface{}) {
+	if tenant == nil {
+		return nil, body
+	}
+	if method == http.MethodGet || method == http.MethodDelete {
+		return map[string]string{"tenant": *tenant}, body
+	}
+	if method == http.MethodPost {
+		if request, ok := body.(map[string]interface{}); ok {
+			copy := make(map[string]interface{}, len(request)+1)
+			for key, value := range request {
+				copy[key] = value
+			}
+			copy["tenant"] = *tenant
+			return nil, copy
+		}
+	}
+	return nil, body
+}
+
 func (r *tenantRoutes) augment(method, requestURL string, headers map[string]string, body interface{}) (map[string]string, interface{}) {
 	if !isA2AV1(headers) {
 		return nil, body
@@ -67,23 +100,10 @@ func (r *tenantRoutes) augment(method, requestURL string, headers map[string]str
 			selected = route
 		}
 	}
-	if selected == nil || selected.tenant == nil {
+	if selected == nil {
 		return nil, body
 	}
-	if method == http.MethodGet || method == http.MethodDelete {
-		return map[string]string{"tenant": *selected.tenant}, body
-	}
-	if method == http.MethodPost {
-		if request, ok := body.(map[string]interface{}); ok {
-			copy := make(map[string]interface{}, len(request)+1)
-			for key, value := range request {
-				copy[key] = value
-			}
-			copy["tenant"] = *selected.tenant
-			return nil, copy
-		}
-	}
-	return nil, body
+	return augmentHTTPJSONTenant(method, body, selected.tenant)
 }
 
 func isA2AV1(headers map[string]string) bool {
