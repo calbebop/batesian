@@ -56,6 +56,7 @@ type authEvidence struct {
 type taskPrincipal struct {
 	name    string
 	token   string
+	tenant  string
 	headers map[string]string
 }
 

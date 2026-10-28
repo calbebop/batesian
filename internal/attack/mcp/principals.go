@@ -19,7 +19,7 @@ func configuredTaskPrincipal(p attack.Principal) (taskPrincipal, error) {
 		}
 		headers[key] = value
 	}
-	return taskPrincipal{name: p.Name, token: p.Token, headers: headers}, nil
+	return taskPrincipal{name: p.Name, token: p.Token, tenant: p.Tenant, headers: headers}, nil
 }
 
 func attachPrincipal(h map[string]string, p taskPrincipal) {

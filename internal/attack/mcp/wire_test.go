@@ -637,6 +637,16 @@ func TestSessionRequest_EncodesMcpName(t *testing.T) {
 	}
 }
 
+func TestModernTaskMethodsCarryTaskName(t *testing.T) {
+	s := mcpSession{Era: EraModern}
+	for _, method := range []string{"tasks/get", "tasks/update", "tasks/cancel"} {
+		headers, _ := s.request(1, method, map[string]interface{}{"taskId": "task-123"})
+		if headers["Mcp-Name"] != "task-123" || headers["Mcp-Method"] != method {
+			t.Errorf("%s headers = %v", method, headers)
+		}
+	}
+}
+
 func TestSessionPost_ModernEncodedNameMatchesBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
