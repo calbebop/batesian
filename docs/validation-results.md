@@ -213,11 +213,14 @@ almost immediately and the probe task reached a terminal state before it could b
 cancelled. That limitation is documented in the rule catalog rather than papered
 over.
 
-The historical sample results above date from those pull requests. The daily
-validation workflow now runs a small agent built with the current official
-Python SDK (`testdata/a2a_sdk_agent.py`). It checks card discovery, a real
-`SendMessage`/`GetTask` exchange, and the confirmed role-injection finding.
-This gate does not reproduce the original sample's full security posture.
+The historical sample results above date from those pull requests. The daily and
+pull-request validation workflow runs a small agent built with the current
+official Python SDK (`testdata/a2a_sdk_agent.py`). It checks card discovery,
+JSON-RPC and HTTP+JSON task exchanges, and a confirmed role-injection finding
+on JSON-RPC. The MCP era watch also runs on PRs and weekly against the current
+official Python SDK. These gates do not reproduce the full security posture of
+the original A2A sample. See the [protocol and advisory coverage matrix](protocol-coverage.md)
+for their limits.
 
 ---
 

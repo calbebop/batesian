@@ -100,7 +100,7 @@ The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [30 MCP rules
 | Tool and manifest integrity | Argument traversal, hidden characters, description injection, duplicate-name ambiguity, manifest drift |
 | Deployment exposure | Shadow listeners, secret leakage, and known vulnerable component versions |
 
-The suite is validated against vulnerable fixtures and third-party reference implementations. See [validation results](docs/validation-results.md) for expected findings, secure controls, and known applicability limits.
+The suite is validated against vulnerable fixtures and third-party reference implementations. See [validation results](docs/validation-results.md) for expected findings and secure controls, and the [protocol coverage matrix](docs/protocol-coverage.md) for compatibility gates and advisory limits.
 
 ## Authentication and identity
 

@@ -17,6 +17,7 @@ from validation_outcomes import rule_statuses
 PORT = 3120
 BASE = f"http://127.0.0.1:{PORT}"
 RPC = f"{BASE}/a2a/jsonrpc"
+REST = f"{BASE}/a2a/rest"
 BINARY = os.environ.get("BATESIAN_BIN", "./batesian")
 
 
@@ -53,7 +54,7 @@ def run_batesian(*args):
     return json.loads(result.stdout)
 
 
-def check_task_exchange():
+def check_task_exchange_rpc():
     sent = request(
         RPC,
         {
@@ -87,16 +88,48 @@ def check_task_exchange():
         )
         task = fetched.get("result", {})
         if task.get("id") == task_id and task.get("status", {}).get("state") == "TASK_STATE_COMPLETED":
-            print("[PASS] SDK SendMessage/GetTask task exchange")
+            print("[PASS] SDK JSON-RPC SendMessage/GetTask task exchange")
             return
         time.sleep(0.2)
     raise AssertionError(f"SDK task did not complete: {fetched}")
 
 
+def check_task_exchange_rest():
+    sent = request(
+        f"{REST}/message:send",
+        {
+            "message": {
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}],
+                "messageId": str(uuid4()),
+            },
+            "configuration": {"returnImmediately": True},
+        },
+    )
+    task_id = sent.get("task", {}).get("id")
+    if not task_id:
+        raise AssertionError(f"HTTP+JSON message:send did not return a v1 task: {sent}")
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        fetched = request(f"{REST}/tasks/{task_id}")
+        if fetched.get("id") == task_id and fetched.get("status", {}).get("state") == "TASK_STATE_COMPLETED":
+            print("[PASS] SDK HTTP+JSON message:send/tasks task exchange")
+            return
+        time.sleep(0.2)
+    raise AssertionError(f"SDK HTTP+JSON task did not complete: {fetched}")
+
+
 def validate(card):
     interfaces = card.get("supportedInterfaces", [])
-    if not any(i.get("protocolBinding") == "JSONRPC" and i.get("url") == RPC for i in interfaces):
-        raise AssertionError(f"SDK card did not advertise JSON-RPC endpoint: {interfaces}")
+    for binding, url in (("JSONRPC", RPC), ("HTTP+JSON", REST)):
+        if not any(
+            i.get("protocolBinding") == binding
+            and i.get("protocolVersion") == "1.0"
+            and i.get("url") == url
+            for i in interfaces
+        ):
+            raise AssertionError(f"SDK card did not advertise {binding} v1 endpoint: {interfaces}")
 
     probed = run_batesian(
         "probe", "--target", BASE, "--protocol", "a2a", "--output", "json", "--timeout", "10"
@@ -105,7 +138,8 @@ def validate(card):
         raise AssertionError(f"Batesian did not resolve the SDK card and endpoint: {probed}")
     print("[PASS] Batesian card discovery and JSON-RPC routing")
 
-    check_task_exchange()
+    check_task_exchange_rpc()
+    check_task_exchange_rest()
 
     scanned = run_batesian(
         "scan", "--target", BASE, "--protocol", "a2a", "--rule-ids",

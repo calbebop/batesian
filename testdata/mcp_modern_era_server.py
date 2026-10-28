@@ -1,6 +1,6 @@
 """Dual-era MCP target for protocol detection tests.
 
-Requires the MCP Python SDK v2 (`pip install "mcp>=2"`). Serves legacy
+Requires the MCP Python SDK v2 (`pip install "mcp>=2,<3"`). Serves legacy
 `initialize` and modern `server/discover` on the same endpoint.
 
 Run: python testdata/mcp_modern_era_server.py [port]

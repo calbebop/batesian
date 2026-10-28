@@ -4,6 +4,8 @@ name: MCP era watch
 # indicate protocol, SDK, or detector drift.
 
 on:
+  pull_request:
+    branches: [main, dev]
   schedule:
     # Weekly, Tuesday 07:23 UTC. An odd minute keeps this off the top-of-hour
     # spike that every scheduled workflow lands on.
@@ -38,7 +40,7 @@ jobs:
 
       - name: Install the MCP Python SDK
         # Intentionally track the current SDK to detect upstream protocol drift.
-        run: pip install "mcp>=2" uvicorn
+        run: pip install "mcp>=2,<3" uvicorn
 
       - name: Start the modern-era server
         run: |
