@@ -25,9 +25,9 @@ info:
       with no anonymous ({}) alternative, else no finding.
     - Read probe: an unauthenticated request for a random, non-existent task ID.
     - Confirmation: an unauthenticated send over JSON-RPC or an advertised
-      HTTP+JSON interface. A valid Task response proves a core write executed
-      without credentials. A readback can corroborate it. Ambiguous responses
-      do not trigger a finding.
+      HTTP+JSON interface. A valid Task or direct agent Message proves the
+      core request was served without credentials. Task readback can corroborate
+      a Task response. Malformed replies and request echoes are inconclusive.
 
     This complements a2a-task-idor-001, which suppresses its finding when a server
     enforces no authentication at all: a wide-open agent is flagged here precisely
