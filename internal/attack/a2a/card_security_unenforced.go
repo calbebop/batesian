@@ -107,8 +107,10 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 		incomplete = advertisedJSONRPCUnavailable(ctx, client, vars.BaseURL)
 	}
 
-	bases := resolveHTTPJSONBases(ctx, client, vars.BaseURL)
-	for _, base := range bases {
+	interfaces := resolveHTTPJSONInterfaces(ctx, client, vars.BaseURL)
+	for _, iface := range interfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range restPushRoutes {
 			sendURL := endpoint.AppendPath(base, route.sendPath)
 			missingURL := endpoint.AppendPath(base, route.taskPath+"/batesian-missing-"+vars.RandID)
@@ -132,7 +134,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 			return []attack.Finding{finding}, withCardReadReason(errors.Join(incomplete, readErr, createErr, readBackErr))
 		}
 	}
-	if !rpcOK && len(bases) == 0 {
+	if !rpcOK && len(interfaces) == 0 {
 		incomplete = errors.Join(incomplete, attack.ErrInconclusive)
 	}
 	return nil, withCardReadReason(incomplete)

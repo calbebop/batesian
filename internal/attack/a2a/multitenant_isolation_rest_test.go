@@ -166,3 +166,106 @@ func TestMultiTenantRESTHeaderScopedPrincipals(t *testing.T) {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 }
+
+func TestMultiTenantRESTSharedTenantURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, firstTenant, secondTenant string
+		findings                              int
+		inconclusive                          bool
+	}{
+		{"vulnerable", "vulnerable", "A", "B", 2, false},
+		{"protected", "protected", "A", "B", 0, false},
+		{"unmapped", "vulnerable", "unknown", "B", 0, true},
+		{"single tenant", "vulnerable", "A", "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			var mu sync.Mutex
+			markers := map[string]string{}
+			badRoute := false
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/agent-card.json" {
+					w.Header().Set("Content-Type", "application/json")
+					interfaces := []any{map[string]string{"url": server.URL + "/agent", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0", "tenant": tc.firstTenant}}
+					if tc.secondTenant != "" {
+						interfaces = append(interfaces, map[string]string{"url": server.URL + "/agent", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0", "tenant": tc.secondTenant})
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"supportedInterfaces": interfaces})
+					return
+				}
+				if r.URL.Path == "/agent/message:send" && r.Method == http.MethodPost {
+					var body struct {
+						Tenant  string `json:"tenant"`
+						Message struct {
+							Parts []struct {
+								Text string `json:"text"`
+							} `json:"parts"`
+						} `json:"message"`
+					}
+					who := tenantOf(r)
+					if json.NewDecoder(r.Body).Decode(&body) != nil || body.Tenant != who || who == "" || len(body.Message.Parts) == 0 {
+						mu.Lock()
+						badRoute = true
+						mu.Unlock()
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					id := "task-" + who
+					mu.Lock()
+					markers[id] = body.Message.Parts[0].Text
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"task": map[string]any{
+						"id": id, "status": map[string]string{"state": "TASK_STATE_WORKING"},
+					}})
+					return
+				}
+				if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/agent/tasks/") {
+					http.NotFound(w, r)
+					return
+				}
+				id := strings.TrimPrefix(r.URL.Path, "/agent/tasks/")
+				who := tenantOf(r)
+				queryTenant := r.URL.Query().Get("tenant")
+				if queryTenant == "" || who != "" && queryTenant != who {
+					mu.Lock()
+					badRoute = true
+					mu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				marker, exists := markers[id]
+				mu.Unlock()
+				if !exists {
+					http.NotFound(w, r)
+					return
+				}
+				if who == "" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if tc.mode == "protected" && who != strings.TrimPrefix(id, "task-") {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": map[string]string{"state": "TASK_STATE_WORKING"}, "history": []any{
+					map[string]any{"parts": []any{map[string]string{"text": marker}}},
+				}})
+			}))
+			defer server.Close()
+			findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).Execute(t.Context(), server.URL,
+				attack.Options{TimeoutSeconds: 3, Principals: tenantPrincipals()})
+			if len(findings) != tc.findings || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				err != nil && !tc.inconclusive {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if badRoute {
+				t.Fatal("request used the wrong advertised tenant route")
+			}
+		})
+	}
+}

@@ -148,7 +148,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if owner.acceptedWire == 0 {
 		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, "", "", false)
 		if list.unverified {
-			return nil, fmt.Errorf("%w: an anonymous task list answered, but no authenticated owner task was created to establish disclosure", attack.ErrInconclusive)
+			return nil, list.inconclusive("no authenticated owner task was created to establish task-list disclosure")
 		}
 		if !ok && !list.reached {
 			return nil, attack.ErrInconclusive
@@ -159,7 +159,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 	if taskID == "" {
 		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, "", "", false)
 		if list.unverified {
-			return nil, fmt.Errorf("%w: an anonymous task list answered, but no authenticated owner task ID was returned to establish disclosure", attack.ErrInconclusive)
+			return nil, list.inconclusive("no authenticated owner task ID was returned to establish task-list disclosure")
 		}
 		if !ok && !list.reached {
 			return nil, attack.ErrInconclusive
@@ -282,7 +282,7 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
 		findings = append(findings, list.findings...)
 		if list.unverified {
-			return findings, errors.Join(partial, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive))
+			return findings, errors.Join(partial, list.inconclusive("ownership of the listed tasks could not be established"))
 		}
 	}
 	if ownerProtected && (read.unknown || !read.denied) && read.location == "" {
@@ -404,29 +404,44 @@ type taskListProbe struct {
 	findings   []attack.Finding
 	reached    bool
 	unverified bool
+	reason     string
+}
+
+func (p taskListProbe) inconclusive(fallback string) error {
+	if p.reason != "" {
+		return fmt.Errorf("%w: %s", attack.ErrInconclusive, p.reason)
+	}
+	return fmt.Errorf("%w: %s", attack.ErrInconclusive, fallback)
 }
 
 // probeTaskList compares an anonymous REST listing with the owner task ID.
 func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, cardClient *attack.HTTPClient,
 	vars attack.Vars, ownerTaskID, anonTaskID string, ownerProtected bool) taskListProbe {
-	// Resolve advertised REST bases with owner credentials; list anonymously.
-	bases := resolveHTTPJSONBases(ctx, cardClient, vars.BaseURL)
-	if !slices.Contains(bases, vars.BaseURL) {
-		bases = append(bases, vars.BaseURL)
+	// Resolve advertised REST interfaces with owner credentials; list anonymously.
+	interfaces := resolveHTTPJSONInterfaces(ctx, cardClient, vars.BaseURL)
+	if !slices.ContainsFunc(interfaces, func(iface httpJSONInterface) bool { return iface.base == vars.BaseURL }) {
+		interfaces = append(interfaces, httpJSONInterface{base: vars.BaseURL})
 	}
 	type listEndpoint struct {
 		url     string
 		headers map[string]string
+		iface   httpJSONInterface
 	}
 	var listEndpoints []listEndpoint
-	for _, b := range bases {
+	var probe taskListProbe
+	for _, iface := range interfaces {
+		if sharedHTTPJSONTenants(interfaces, iface.base) {
+			probe.unverified = true
+			probe.reason = "anonymous REST task listing was not tested because the shared HTTP+JSON URL advertises multiple tenant routes"
+			continue
+		}
 		listEndpoints = append(listEndpoints,
-			listEndpoint{url: endpoint.AppendPath(b, "/v1/tasks")},
-			listEndpoint{url: endpoint.AppendPath(b, "/tasks"), headers: map[string]string{"A2A-Version": "1.0"}},
+			listEndpoint{url: endpoint.AppendPath(iface.base, "/v1/tasks"), iface: iface},
+			listEndpoint{url: endpoint.AppendPath(iface.base, "/tasks"), headers: map[string]string{"A2A-Version": "1.0"}, iface: iface},
 		)
 	}
-	var probe taskListProbe
 	for _, le := range listEndpoints {
+		ctx := withHTTPJSONInterface(ctx, le.iface)
 		next := ""
 		seen := map[string]bool{}
 		for page := 0; page < maxTaskListPages; page++ {

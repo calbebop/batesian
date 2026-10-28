@@ -18,13 +18,15 @@ func (e *TaskIDORExecutor) probeRESTTaskReads(ctx context.Context, target string
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	owner := attack.NewHTTPClient(opts, vars)
 	anon := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
-	bases := resolveHTTPJSONBases(ctx, owner, vars.BaseURL)
-	if len(bases) == 0 {
+	interfaces := resolveHTTPJSONInterfaces(ctx, owner, vars.BaseURL)
+	if len(interfaces) == 0 {
 		return nil, nil, false
 	}
 	var incomplete error
 	anyTested := false
-	for _, base := range bases {
+	for _, iface := range interfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		baseTested := false
 		for _, route := range []struct{ send, tasks, version string }{
 			{"/message:send", "/tasks", "1.0"},

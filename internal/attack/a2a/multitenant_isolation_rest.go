@@ -13,16 +13,41 @@ import (
 
 func (e *MultiTenantIsolationExecutor) probeREST(ctx context.Context, target, randID string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error, bool) {
-	bases := resolveHTTPJSONBases(ctx, clientA, target)
-	if len(bases) == 0 {
+	interfaces := resolveHTTPJSONInterfaces(ctx, clientA, target)
+	if len(interfaces) == 0 {
 		return nil, nil, false
 	}
 	var findings []attack.Finding
 	var incomplete error
-	for baseIndex, base := range bases {
+	sharedHandled := map[string]bool{}
+	for baseIndex, iface := range interfaces {
+		base := iface.base
+		ctxA := withHTTPJSONInterface(ctx, iface)
+		ctxB := ctxA
+		if iface.tenant != nil || sharedHTTPJSONTenants(interfaces, base) {
+			if iface.tenant == nil || *iface.tenant != a.Tenant {
+				continue
+			}
+			matched := false
+			for _, other := range interfaces {
+				if other.base == base && other.tenant != nil && *other.tenant == b.Tenant &&
+					other.version == iface.version {
+					ctxB = withHTTPJSONInterface(ctx, other)
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				incomplete = errors.Join(incomplete, fmt.Errorf("%w: HTTP+JSON interface at %s has no distinct advertised routes for principals %s and %s",
+					attack.ErrInconclusive, base, a.Name, b.Name))
+				sharedHandled[base] = true
+				continue
+			}
+			sharedHandled[base] = true
+		}
 		baseTested := false
 		for _, route := range restPushRoutes {
-			routeFindings, routeErr, tested := e.probeRESTRoute(ctx, base, route,
+			routeFindings, routeErr, tested := e.probeRESTRoute(ctxA, ctxB, base, route,
 				fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version), a, b,
 				clientA, clientB, unauthClient)
 			findings = append(findings, routeFindings...)
@@ -34,10 +59,17 @@ func (e *MultiTenantIsolationExecutor) probeREST(ctx context.Context, target, ra
 				attack.ErrInconclusive, base))
 		}
 	}
+	for _, iface := range interfaces {
+		if (iface.tenant != nil || sharedHTTPJSONTenants(interfaces, iface.base)) && !sharedHandled[iface.base] {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: HTTP+JSON interface at %s does not map to both configured tenant labels",
+				attack.ErrInconclusive, iface.base))
+			sharedHandled[iface.base] = true
+		}
+	}
 	return findings, incomplete, true
 }
 
-func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctx context.Context, base string, route restPushRoute,
+func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctxA, ctxB context.Context, base string, route restPushRoute,
 	randID string, a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error, bool) {
 	sendURL := endpoint.AppendPath(base, route.sendPath)
 	markers := [2]string{
@@ -52,7 +84,11 @@ func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctx context.Context, base 
 		if route.version == "1.0" {
 			headers["Content-Type"] = "application/a2a+json"
 		}
-		resp, err := clients[i].POST(ctx, sendURL, headers,
+		requestCtx := ctxA
+		if i == 1 {
+			requestCtx = ctxB
+		}
+		resp, err := clients[i].POST(requestCtx, sendURL, headers,
 			restTaskSendRequest(randID+"-"+owners[i].Name, markers[i], route.version))
 		if err != nil || resp == nil {
 			return nil, fmt.Errorf("%w: REST task creation for %s did not answer", attack.ErrInconclusive, owners[i].Name), false
@@ -73,7 +109,11 @@ func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctx context.Context, base 
 		return nil, fmt.Errorf("%w: two principals received the same REST task ID", attack.ErrInconclusive), false
 	}
 	tasksURL := endpoint.AppendPath(base, route.taskPath)
-	read := func(client *attack.HTTPClient, headers map[string]string, taskID, marker, _ string) tenantRead {
+	read := func(client *attack.HTTPClient, headers map[string]string, taskID, marker, phase string) tenantRead {
+		requestCtx := ctxA
+		if client == clientB || phase == "anon-b" {
+			requestCtx = ctxB
+		}
 		readURL := endpoint.AppendPath(tasksURL, "/"+url.PathEscape(taskID))
 		u, parseErr := url.Parse(readURL)
 		if parseErr != nil {
@@ -82,7 +122,7 @@ func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctx context.Context, base 
 		query := u.Query()
 		query.Set("historyLength", "10")
 		u.RawQuery = query.Encode()
-		resp, err := client.GET(ctx, u.String(), restVersionHeaders(route.version, headers))
+		resp, err := client.GET(requestCtx, u.String(), restVersionHeaders(route.version, headers))
 		if err != nil || resp == nil {
 			return tenantRead{unknown: true}
 		}

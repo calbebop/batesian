@@ -15,14 +15,16 @@ func (e *PushBindingExecutor) probeREST(ctx context.Context, target string, opts
 	owner := opts.Principals[0]
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	clientA := principalClient(opts, vars, owner)
-	bases := resolveHTTPJSONBases(ctx, clientA, target)
-	if len(bases) == 0 {
+	interfaces := resolveHTTPJSONInterfaces(ctx, clientA, target)
+	if len(interfaces) == 0 {
 		return nil, nil, false
 	}
 	var findings []attack.Finding
 	var partial error
 	taskReached := false
-	for baseIndex, base := range bases {
+	for baseIndex, iface := range interfaces {
+		base := iface.base
+		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range restPushRoutes {
 			routeFindings, routeErr := e.probeRESTRoute(ctx, base, route, opts,
 				fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version), owner, clientA, &taskReached)

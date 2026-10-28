@@ -57,8 +57,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 
 	client := attack.NewHTTPClient(opts, vars)
 	var registration *pushRegistration
+	registrationCtx := ctx
 	defer func() {
-		if line := registration.finish(ctx, client, opts.TargetState, opts.OOBListenerURL != ""); line != "" {
+		if line := registration.finish(registrationCtx, client, opts.TargetState, opts.OOBListenerURL != ""); line != "" {
 			for i := range findings {
 				findings[i].Evidence += "\n" + line
 			}
@@ -184,7 +185,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 
 	// Attempt 3: HTTP+JSON binding, driven only where the card advertises one.
 	if !taskAccepted {
-		for _, restBase := range resolveHTTPJSONBases(ctx, client, vars.BaseURL) {
+		for _, iface := range resolveHTTPJSONInterfaces(ctx, client, vars.BaseURL) {
+			restBase := iface.base
+			ctx := withHTTPJSONInterface(ctx, iface)
 			for _, route := range restPushRoutes {
 				headers := restVersionHeaders(route.version, nil)
 				sendURL := endpointpkg.AppendPath(restBase, route.sendPath)
@@ -207,6 +210,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 						acceptedBinding = "HTTP+JSON/" + route.version + "-pushNotificationConfigs"
 						acceptedTaskID = taskID
 						registration = newPushRegistration(cfgURL, taskID, route.version, callbackURL, cfgResp, true)
+						registrationCtx = ctx
 					} else {
 						obs.observe(restPushRegistrationOutcome("HTTP+JSON/"+route.version+" pushNotificationConfigs",
 							cfgResp, taskID, callbackURL, route.version))
