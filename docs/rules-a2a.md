@@ -606,12 +606,12 @@ with **no anonymous alternative** (an empty `{}` requirement object, per OpenAPI
 convention, explicitly permits anonymous access and is not flagged), then sends an
 unauthenticated core request. A first, non-mutating `tasks/get` for a random
 non-existent id records whether the read path is reachable anonymously; the
-definitive confirmation is an unauthenticated `message/send` that returns a task
-result (the created task is then read back unauthenticated to corroborate). The
-rule checks advertised HTTP+JSON interfaces as well as JSON-RPC. A
-**confirmed** finding is raised only on a positive result envelope - never on an
-ambiguous application error - so a server that answers the unauthenticated request
-with HTTP 401/403 produces no finding.
+definitive confirmation is an unauthenticated send that returns a valid Task or
+direct agent Message. A created Task is read back to corroborate it. The rule
+checks advertised HTTP+JSON interfaces as well as JSON-RPC. Malformed replies,
+request echoes, and ambiguous application errors do not trigger a finding. A
+server that answers the unauthenticated request with HTTP 401/403 produces no
+finding.
 
 This complements `a2a-task-idor-001`, which keys off whether anonymous creation is
 rejected and **suppresses** its finding when the server enforces no authentication

@@ -131,6 +131,33 @@ func cardSecServer(mode string) *httptest.Server {
 		switch method {
 		case "SendMessage", "message/send":
 			switch mode {
+			case "direct-message-v1", "direct-message-v03", "direct-message-echo", "direct-message-malformed":
+				if (method == "SendMessage") == (mode == "direct-message-v03") {
+					rpcErr(-32601, "Method not found")
+					return
+				}
+				if mode == "direct-message-v03" {
+					result(map[string]interface{}{
+						"kind": "message", "messageId": "reply-v03", "role": "agent",
+						"parts": []interface{}{map[string]string{"kind": "text", "text": "pong"}},
+					})
+					return
+				}
+				if mode == "direct-message-echo" {
+					message, _ := params["message"].(map[string]interface{})
+					message["role"] = "ROLE_AGENT"
+					message["contextId"] = "ctx-v1"
+					result(map[string]interface{}{"message": message})
+					return
+				}
+				parts := []interface{}{map[string]string{"text": "pong"}}
+				if mode == "direct-message-malformed" {
+					parts = nil
+				}
+				result(map[string]interface{}{"message": map[string]interface{}{
+					"messageId": "reply-v1", "contextId": "ctx-v1", "role": "ROLE_AGENT", "parts": parts,
+				}})
+				return
 			case "wrong-create-error-id":
 				rpcErr(-32000, "unauthorized")
 				return
@@ -291,6 +318,35 @@ func TestCardSecurity_VulnV03(t *testing.T) {
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for a v0.3 secured-but-open card, got %d: %+v", len(findings), findings)
+	}
+}
+
+func TestCardSecurity_DirectMessages(t *testing.T) {
+	for _, tc := range []struct {
+		mode        string
+		wantFinding bool
+	}{
+		{"direct-message-v1", true},
+		{"direct-message-v03", true},
+		{"direct-message-echo", false},
+		{"direct-message-malformed", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := cardSecServer(tc.mode)
+			defer srv.Close()
+			findings, err := runCardSec(t, srv)
+			if (len(findings) == 1) != tc.wantFinding {
+				t.Fatalf("findings=%+v err=%v, want finding %t", findings, err, tc.wantFinding)
+			}
+			if tc.wantFinding {
+				if err != nil || !strings.Contains(findings[0].Evidence, "agent Message") ||
+					!strings.Contains(findings[0].Evidence, "readback: not applicable") {
+					t.Fatalf("direct Message finding=%+v err=%v", findings, err)
+				}
+			} else if !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("invalid Message must be inconclusive: %v", err)
+			}
+		})
 	}
 }
 
