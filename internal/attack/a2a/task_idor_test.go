@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -144,6 +145,125 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 	}
 	if f.Access == nil || f.Access.Operation != attack.A2ATasksGet || f.Access.Caller != "anonymous" || f.Access.Owner != "default" {
 		t.Errorf("task read needs owner/caller access metadata: %+v", f.Access)
+	}
+}
+
+func TestTaskIDOR_AnonymousJSONRPCList(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFinding  bool
+		inconclusive bool
+	}{
+		{"open", true, false},
+		{"paged-open", true, false},
+		{"both-bindings", true, false},
+		{"scoped", false, false},
+		{"unrelated", false, false},
+		{"list-absent", false, false},
+		{"refused", false, false},
+		{"wrong-reply-id", false, true},
+		{"malformed", false, true},
+		{"public-send", false, false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var restHits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/agent-card.json" {
+					interfaces := []interface{}{
+						map[string]string{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+					}
+					if tc.mode == "both-bindings" {
+						interfaces = append(interfaces, map[string]string{
+							"url": "http://" + r.Host + "/", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"})
+					}
+					writeJSON(w, map[string]interface{}{
+						"name": "List fixture", "description": "test", "version": "1.0.0",
+						"capabilities": map[string]interface{}{}, "skills": []interface{}{},
+						"supportedInterfaces": interfaces,
+					})
+					return
+				}
+				if r.Method == http.MethodGet && r.URL.Path == "/tasks" {
+					restHits.Add(1)
+					if tc.mode == "both-bindings" {
+						writeJSON(w, map[string]interface{}{"tasks": []interface{}{map[string]string{"id": "owner-task"}}})
+					} else {
+						http.NotFound(w, r)
+					}
+					return
+				}
+				if r.Method != http.MethodPost || r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				method, _ := request["method"].(string)
+				id := request["id"]
+				switch method {
+				case "SendMessage", "message/send":
+					if !hasOwnerAuth(r) && tc.mode != "public-send" {
+						rpcErr(w, id, -32600, "authentication required")
+						return
+					}
+					taskResult(w, id, "owner-task", "owner-context")
+				case "GetTask", "tasks/get":
+					rpcErr(w, id, -32001, "Task not found")
+				case "ListTasks":
+					if r.Header.Get("A2A-Version") != "1.0" {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if tc.mode == "list-absent" {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					if tc.mode == "refused" && !hasOwnerAuth(r) {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					if tc.mode == "wrong-reply-id" {
+						id = "other-request"
+					}
+					if tc.mode == "malformed" {
+						writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+							"result": map[string]interface{}{"tasks": []interface{}{map[string]string{"id": "owner-task"}}, "nextPageToken": 7}})
+						return
+					}
+					params, _ := request["params"].(map[string]interface{})
+					pageToken, _ := params["pageToken"].(string)
+					ids := []interface{}{map[string]string{"id": "owner-task"}}
+					next := ""
+					if tc.mode == "scoped" {
+						ids = []interface{}{}
+					} else if tc.mode == "unrelated" {
+						ids = []interface{}{map[string]string{"id": "unrelated-task"}}
+					} else if tc.mode == "paged-open" && pageToken == "" {
+						ids = []interface{}{map[string]string{"id": "older-task"}}
+						next = "next"
+					}
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
+						"result": map[string]interface{}{"tasks": ids, "nextPageToken": next}})
+				default:
+					rpcErr(w, id, -32601, "Method not found")
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), srv.URL, idorOpts())
+			if (len(findings) == 1) != tc.wantFinding || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("findings=%+v err=%v, want finding=%t inconclusive=%t", findings, err, tc.wantFinding, tc.inconclusive)
+			}
+			if tc.wantFinding {
+				f := findings[0]
+				if f.Confidence != attack.RiskIndicator || f.Access == nil ||
+					f.Access.Operation != attack.A2ATasksList || !strings.Contains(f.Evidence, "owner-task") {
+					t.Fatalf("unexpected list finding: %+v", f)
+				}
+			}
+			if tc.mode == "both-bindings" && restHits.Load() != 0 {
+				t.Fatalf("REST list was probed after JSON-RPC disclosure: %d requests", restHits.Load())
+			}
+		})
 	}
 }
 

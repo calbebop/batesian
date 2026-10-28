@@ -90,7 +90,7 @@ func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, ra
 		return nil, obs.err()
 	}
 	list := func(c *attack.HTTPClient, headers map[string]string, phase string) taskListing {
-		return e.listTasks(ctx, c, endpoint, headers, randID, taskID, phase)
+		return listJSONRPCTasks(ctx, c, endpoint, headers, randID, taskID, phase, true)
 	}
 	findings, err := e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
 	return findings, errors.Join(obs.partialErr(), err)
@@ -220,18 +220,18 @@ type taskListing struct {
 	partial bool
 }
 
-// listTasks walks bounded pages until the task is found or the list ends.
-func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
-	extraHeaders map[string]string, randID, wantedID, phase string) taskListing {
-	attempts := []struct {
+// listJSONRPCTasks walks bounded pages until the task is found or the list ends.
+func listJSONRPCTasks(ctx context.Context, c *attack.HTTPClient, endpoint string,
+	extraHeaders map[string]string, randID, wantedID, phase string, legacyFallback bool) taskListing {
+	type attempt struct {
 		method  string
 		headers map[string]string
-	}{
+	}
+	attempts := []attempt{
 		{"ListTasks", withV1Version(extraHeaders)},
-		// v0.3 defines no list method, so this only reaches an implementation that
-		// chose the slash spelling anyway. It costs one request on a path that would
-		// otherwise report the surface absent.
-		{"tasks/list", extraHeaders},
+	}
+	if legacyFallback {
+		attempts = append(attempts, attempt{"tasks/list", extraHeaders})
 	}
 
 	absentEverywhere := true
@@ -255,6 +255,9 @@ func (e *TaskEnumerationExecutor) listTasks(ctx context.Context, c *attack.HTTPC
 				}
 				absentEverywhere = false
 				partial = true
+				break
+			}
+			if page == 0 && (resp.StatusCode == 404 || resp.StatusCode == 405) && !json.Valid(resp.Body) {
 				break
 			}
 			result, code, hasError, valid := discoveryResponse(resp.Body, requestID)

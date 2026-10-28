@@ -271,10 +271,19 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		})
 	}
 
-	list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
-	findings = append(findings, list.findings...)
-	if list.unverified {
-		return findings, errors.Join(partial, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive))
+	rpcListFound := false
+	if ownerProtected {
+		rpcFindings, rpcErr := e.probeAnonymousRPCList(ctx, unauthClient, endpoint, vars.RandID, taskID)
+		findings = append(findings, rpcFindings...)
+		partial = errors.Join(partial, rpcErr)
+		rpcListFound = len(rpcFindings) != 0
+	}
+	if !rpcListFound {
+		list := e.probeTaskList(ctx, unauthClient, authedClient, vars, taskID, anonTaskID, ownerProtected)
+		findings = append(findings, list.findings...)
+		if list.unverified {
+			return findings, errors.Join(partial, fmt.Errorf("%w: an anonymous task list answered, but ownership of the listed tasks could not be established", attack.ErrInconclusive))
+		}
 	}
 	if ownerProtected && (read.unknown || !read.denied) && read.location == "" {
 		return findings, errors.Join(partial, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
@@ -294,6 +303,32 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		}
 	}
 	return findings, partial
+}
+
+func (e *TaskIDORExecutor) probeAnonymousRPCList(ctx context.Context, client *attack.HTTPClient,
+	endpoint, randID, ownerTaskID string) ([]attack.Finding, error) {
+	listing := listJSONRPCTasks(ctx, client, endpoint, nil, randID, ownerTaskID, "anonymous-idor", false)
+	if listing.outcome == listIncomplete || listing.partial {
+		return nil, fmt.Errorf("%w: anonymous ListTasks at %s could not be judged", attack.ErrInconclusive, endpoint)
+	}
+	if listing.outcome != listOK || !containsTaskID(listing.ids, ownerTaskID) {
+		return nil, nil
+	}
+	return []attack.Finding{{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "medium",
+		Confidence: attack.RiskIndicator,
+		Title:      "A2A ListTasks exposes an authenticated owner's task to anonymous callers",
+		Description: fmt.Sprintf(
+			"Anonymous JSON-RPC ListTasks at %s returned task %q, created with the owner's credential. "+
+				"The server rejected anonymous task creation, but public task visibility may still be intentional.", endpoint, ownerTaskID),
+		Evidence: fmt.Sprintf("endpoint: %s\nowner task: %s\nanonymous SendMessage: rejected\n"+
+			"anonymous ListTasks: returned owner task ID\nauthorization policy: not verified", endpoint, ownerTaskID),
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+		Access:      &attack.AccessObservation{Operation: attack.A2ATasksList, Caller: "anonymous", Owner: "default"},
+	}}, nil
 }
 
 func redactedTaskStub(result json.RawMessage, taskID, marker string) bool {

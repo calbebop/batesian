@@ -221,10 +221,12 @@ An exact `expected_denials` entry for `a2a.tasks.get` or `a2a.tasks.list` with
 `caller: anonymous` and `owner: default` provides that policy for the matching
 observation.
 If anonymous creation succeeds, the server is openly accessible and this rule
-stays silent. The rule additionally probes `GET /v1/tasks`
-and `/tasks` for unauthenticated server-wide task disclosure. It follows REST
-`nextPageToken` cursors for up to ten pages per endpoint; incomplete scans are
-inconclusive rather than clean.
+stays silent. The rule also probes JSON-RPC `ListTasks` and REST `GET /v1/tasks`
+and `/tasks` for unauthenticated task disclosure. A list finding requires the
+owner's task ID in a correlated response. Both bindings follow `nextPageToken`
+for up to ten pages; incomplete scans are inconclusive. When JSON-RPC already
+shows the owner's task, the REST list probe is skipped to avoid duplicate
+findings.
 
 **Precondition:** supply `--token` so there is an authenticated owner identity to
 test against. Without a token the owner-task read is skipped; the unauthenticated
@@ -634,10 +636,11 @@ must differ, so the result is an **indicator** for policy review.
 
 **A distinct surface**, not a second look at an existing one.
 `a2a-multitenant-isolation-001` reads a task **by id**, so it only shows that a caller
-who already knows an identifier can fetch it. `a2a-task-idor-001` probes the REST list
-paths **anonymously**, so a server that correctly requires a credential passes it and
-can still hand every tenant's tasks to any authenticated caller. The listing is
-separate code from the per-task fetch, and a server can scope one and not the other:
+who already knows an identifier can fetch it. `a2a-task-idor-001` probes JSON-RPC
+and REST lists **anonymously**, so a server that correctly requires a credential
+passes it and can still hand every tenant's tasks to any authenticated caller.
+The listing is separate code from the per-task fetch. A server can scope one
+and not the other:
 the fetch has an obvious owner to compare against, while the list has to be filtered.
 
 Two principals are required, and three controls keep it off servers where the listing

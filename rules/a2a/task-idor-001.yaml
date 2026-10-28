@@ -6,17 +6,18 @@ info:
   description: |
     Reports anonymous access to an A2A task or task list. A read indicator requires
     the authenticated owner's unique probe text in an anonymous task response.
-    An echoed task ID or generic
-    status alone does not prove content visibility. Whether access is unauthorized
-    depends on the agent's sharing and authorization policy.
+    An echoed task ID or generic status alone does not prove content visibility.
+    Whether access is unauthorized depends on the agent's sharing and
+    authorization policy.
 
     To avoid mislabelling a server that simply has no authentication, the check
     uses an auth-enforcement discriminator. It (1) creates a task as the
     authenticated owner, (2) confirms the same creation method rejects anonymous
     callers, then (3) reads the task without credentials. The rule also probes
-    GET /v1/tasks and /tasks. A list finding requires the authenticated
-    owner's task ID in the anonymous response; unrelated or anonymous-owned tasks
-    do not establish disclosure.
+    JSON-RPC ListTasks and REST GET /v1/tasks and /tasks. A list finding requires
+    the authenticated owner's task ID in the anonymous response; unrelated or
+    anonymous-owned tasks do not establish disclosure. Only one list finding is
+    emitted if both JSON-RPC and REST expose the same task.
 
     Precondition: supply --token so the executor has an authenticated owner
     identity to test against. Without a token, a properly auth-gated server
