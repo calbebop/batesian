@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -146,5 +147,98 @@ func TestOAuthDiscovery_UsesReadableFallback(t *testing.T) {
 				t.Fatalf("readable fallback should reach the rule's probe: %v", err)
 			}
 		})
+	}
+}
+
+func TestOAuthDiscovery_RejectsMismatchedFallbackIssuer(t *testing.T) {
+	var registrations atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL + "/other", "registration_endpoint": srv.URL + "/register",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/register":
+			registrations.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	for _, rule := range oauthDiscoveryRules() {
+		if rule.name == "token replay" {
+			continue
+		}
+		t.Run(rule.name, func(t *testing.T) {
+			findings, err := rule.exec.Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "issuer") {
+				t.Fatalf("mismatched issuer was accepted: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+	if registrations.Load() != 0 {
+		t.Fatalf("untrusted metadata reached registration %d times", registrations.Load())
+	}
+}
+
+func TestOAuthDiscovery_UsesRootAfterInvalidPathIssuer(t *testing.T) {
+	var registrations atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server/mcp":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL + "/wrong", "registration_endpoint": srv.URL + "/register",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL, "registration_endpoint": srv.URL + "/register",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/register":
+			registrations.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
+	if len(findings) != 0 || err != nil || registrations.Load() != 1 {
+		t.Fatalf("valid root issuer was not reached: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
+	}
+}
+
+func TestOAuthDiscovery_PathIssuerDoesNotUseRootMetadata(t *testing.T) {
+	var rootReads atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource": srv.URL + "/mcp", "authorization_servers": []string{srv.URL + "/issuer"},
+			})
+			return
+		}
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			rootReads.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL + "/issuer", "registration_endpoint": srv.URL + "/register",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || rootReads.Load() != 0 {
+		t.Fatalf("path issuer used root metadata: findings=%+v rootReads=%d err=%v", findings, rootReads.Load(), err)
 	}
 }

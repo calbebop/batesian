@@ -68,7 +68,7 @@ func TestRun_MCPMetadataCallbackNotObservedIsSkipped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"registration_endpoint":"http://%s/register"}`, r.Host)
+			_, _ = fmt.Fprintf(w, `{"issuer":"http://%s","registration_endpoint":"http://%s/register"}`, r.Host, r.Host)
 			return
 		}
 		if r.URL.Path == "/register" {

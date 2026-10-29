@@ -266,22 +266,15 @@ func TestUnauthWires_BothGatedIsClean(t *testing.T) {
 	}
 }
 
-// For the three rules that gate on a capability, the gate is read per wire. A rule
-// must not carry one wire's capabilities across to the other: the surface would be
-// probed where the server does not expose it, and the -32601 that comes back is not
-// evidence about authorization.
-//
-// mcp-resources-unauth-001 is deliberately absent, and TestUnauthWires_ResourcesDoNotGate
-// below is why.
+// Modern tools and prompts are tested even without an advertised capability.
+// Completions still require the capability to select a safe subject.
 func TestUnauthWires_CapabilityIsPerWire(t *testing.T) {
 	for _, rule := range unauthRules {
 		if rule.name == "resources" {
 			continue
 		}
 		t.Run(rule.name, func(t *testing.T) {
-			// The surface is advertised on the legacy wire only, and BOTH wires would
-			// answer it if asked. Any modern-labelled finding means the rule probed a
-			// capability that wire never advertised.
+			// The surface is advertised on the legacy wire only, but both wires serve it.
 			ts := unauthWireServer{
 				legacy: true, modern: true,
 				legacyCaps: []string{rule.cap},
@@ -296,11 +289,15 @@ func TestUnauthWires_CapabilityIsPerWire(t *testing.T) {
 			if len(findings) == 0 {
 				t.Fatal("the legacy wire advertises the surface and is open, so it must be reported")
 			}
+			modernFinding := false
 			for _, f := range findings {
 				if strings.Contains(f.Title, "2026-07-28 wire") {
-					t.Errorf("the modern wire advertises no capability, so it must not be probed: %q",
-						f.Title)
+					modernFinding = true
 				}
+			}
+			wantModern := rule.name == "tools" || rule.name == "prompts"
+			if modernFinding != wantModern {
+				t.Errorf("modern finding=%v, want %v: %+v", modernFinding, wantModern, findings)
 			}
 		})
 	}

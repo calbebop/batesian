@@ -40,6 +40,7 @@ func (e *EraDowngradeExecutor) Execute(ctx context.Context, target string, opts 
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
 	sessions, err := openSessions(ctx, client, vars.BaseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if err != nil {
 		return nil, err
 	}

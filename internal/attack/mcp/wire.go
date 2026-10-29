@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -314,6 +315,7 @@ func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (
 func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL string,
 	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	sessions, sessionErr := openSessions(ctx, client, baseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	return runOnSessions(sessions, sessionErr, baseURL, probe)
 }
 
@@ -323,6 +325,7 @@ func runOnEachWire(ctx context.Context, client *attack.HTTPClient, baseURL strin
 func runOnEachWireWithDirect(ctx context.Context, client *attack.HTTPClient, baseURL, method, field string,
 	probe func(mcpSession) ([]attack.Finding, bool)) ([]attack.Finding, error) {
 	sessions, sessionErr := openSessions(ctx, client, baseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	modernSeen := false
 	legacyEndpoint := ""
 	for _, session := range sessions {
@@ -350,6 +353,26 @@ func runOnEachWireWithDirect(ctx context.Context, client *attack.HTTPClient, bas
 		}
 	}
 	return runOnSessions(sessions, sessionErr, baseURL, probe)
+}
+
+func closeLegacySessions(ctx context.Context, client *attack.HTTPClient, sessions []mcpSession) {
+	closeLegacySessionsWith(ctx, client, sessions, nil)
+}
+
+func closeLegacySessionsWith(ctx context.Context, client *attack.HTTPClient, sessions []mcpSession,
+	attach func(map[string]string)) {
+	for _, session := range sessions {
+		if session.Era != EraLegacy || session.SessionID == "" {
+			continue
+		}
+		headers := session.header()
+		if attach != nil {
+			attach(headers)
+		}
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_, _ = client.DELETE(closeCtx, session.Endpoint, headers)
+		cancel()
+	}
 }
 
 func directModernList(ctx context.Context, client *attack.HTTPClient, endpoint, method, field string) (mcpSession, bool) {

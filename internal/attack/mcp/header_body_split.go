@@ -33,6 +33,7 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	client := attack.NewHTTPClient(opts, vars)
 
 	sessions, sessionErr := openSessions(ctx, client, vars.BaseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if len(sessions) == 0 {
 		return nil, sessionErr
 	}

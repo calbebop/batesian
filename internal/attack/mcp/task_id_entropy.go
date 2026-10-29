@@ -39,6 +39,7 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 	client := attack.NewHTTPClient(opts, vars)
 
 	sessions, sessErr := openSessions(ctx, client, vars.BaseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if sessErr != nil {
 		return nil, sessErr
 	}
@@ -54,7 +55,7 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 			continue
 		}
 		modernSeen = true
-		if !session.ServerSupports("tools") || !teSupportsTasks(session) {
+		if !teSupportsTasks(session) {
 			continue
 		}
 		taskSurface = true
@@ -76,7 +77,7 @@ func (e *TaskIDEntropyExecutor) Execute(ctx context.Context, target string, opts
 			attack.ErrInconclusive, modernEraVersion, vars.BaseURL)
 	}
 	if !taskSurface {
-		return nil, fmt.Errorf("%w: no modern wire advertises both tools and the Tasks extension at %s",
+		return nil, fmt.Errorf("%w: no modern wire advertises the Tasks extension at %s",
 			attack.ErrInconclusive, vars.BaseURL)
 	}
 	if len(findings) == 0 && len(pending) > 0 {
@@ -226,32 +227,23 @@ func teFindSafeTool(ctx context.Context, client *attack.HTTPClient, s mcpSession
 }
 
 func teFindSafeToolFiltered(ctx context.Context, client *attack.HTTPClient, s mcpSession, approved []string, requireParamHeader bool) (teSafeTool, bool, []string, bool) {
-	resp, err := s.post(ctx, client, 20, "tools/list", nil)
-	if verdict, _ := classifyProbe(resp, err, 20); verdict != probeAnswered {
-		return teSafeTool{}, false, nil, false
-	}
-	var body struct {
-		Result struct {
-			Tools []struct {
-				Name        string                 `json:"name"`
-				InputSchema map[string]interface{} `json:"inputSchema"`
-				Annotations *struct {
-					ReadOnlyHint    *bool `json:"readOnlyHint"`
-					DestructiveHint *bool `json:"destructiveHint"`
-				} `json:"annotations"`
-			} `json:"tools"`
-			ResultType string `json:"resultType"`
-		} `json:"result"`
-		JSONRPC string                 `json:"jsonrpc"`
-		ID      int                    `json:"id"`
-		Error   map[string]interface{} `json:"error"`
-	}
-	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" || body.ID != 20 ||
-		body.Result.ResultType != "complete" || body.Error != nil {
+	listedTools, ok := listToolPages(ctx, client, s, 20)
+	if !ok {
 		return teSafeTool{}, false, nil, false
 	}
 	var pending []string
-	for _, t := range body.Result.Tools {
+	for _, raw := range listedTools {
+		var t struct {
+			Name        string                 `json:"name"`
+			InputSchema map[string]interface{} `json:"inputSchema"`
+			Annotations *struct {
+				ReadOnlyHint    *bool `json:"readOnlyHint"`
+				DestructiveHint *bool `json:"destructiveHint"`
+			} `json:"annotations"`
+		}
+		if json.Unmarshal(raw, &t) != nil {
+			return teSafeTool{}, false, nil, false
+		}
 		if s.Era == EraModern {
 			var bindings []toolHeaderBinding
 			if err := collectToolHeaderBindings(t.InputSchema, nil, true, map[string]bool{}, &bindings); err != nil {

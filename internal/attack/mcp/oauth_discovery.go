@@ -168,37 +168,66 @@ func prmMatchesTarget(targetURL, resourceURL, metadataURL string) bool {
 func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer string, checkIssuer bool, fields ...string) (map[string]string, []string, error) {
 	var incomplete []string
 	for _, path := range oauthServerMetadataPaths {
-		resp, reason := readOAuthMetadata(ctx, client, issuer, path)
-		if reason != "" {
-			incomplete = append(incomplete, reason)
-			continue
-		}
-		if resp == nil {
-			continue
-		}
-		if checkIssuer && resp.JSONField("issuer") != issuer {
-			incomplete = append(incomplete, path+" issuer does not match the advertised authorization server")
-			continue
-		}
-		values := make(map[string]string, len(fields))
-		complete := true
-		for _, field := range fields {
-			value := resp.JSONField(field)
-			if value == "" {
-				complete = false
-				break
+		for _, metadataURL := range oauthWellKnownURLs(issuer, path) {
+			if checkIssuer && metadataIssuerForURL(metadataURL, path) != issuer {
+				continue
 			}
-			values[field] = value
-		}
-		if !complete {
-			continue
-		}
-		for _, field := range fields {
-			if err := client.ValidateOAuthEndpoint(values[field]); err != nil {
-				return nil, incomplete, fmt.Errorf("%w: authorization-server metadata contains an invalid or unapproved %s", attack.ErrInconclusive, field)
+			resp, err := client.GETOAuthUnauth(ctx, metadataURL)
+			if err != nil || resp == nil {
+				incomplete = append(incomplete, metadataURL+" did not answer")
+				continue
 			}
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+				continue
+			}
+			if !resp.IsSuccess() || !resp.IsJSON() {
+				incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d or invalid JSON", metadataURL, resp.StatusCode))
+				continue
+			}
+			expectedIssuer := issuer
+			if !checkIssuer {
+				expectedIssuer = metadataIssuerForURL(metadataURL, path)
+			}
+			if expectedIssuer == "" || resp.JSONField("issuer") != expectedIssuer {
+				incomplete = append(incomplete, metadataURL+" issuer does not match the expected authorization server")
+				continue
+			}
+			values := make(map[string]string, len(fields))
+			complete := true
+			for _, field := range fields {
+				value := resp.JSONField(field)
+				if value == "" {
+					complete = false
+					break
+				}
+				values[field] = value
+			}
+			if !complete {
+				continue
+			}
+			for _, field := range fields {
+				if err := client.ValidateOAuthEndpoint(values[field]); err != nil {
+					return nil, incomplete, fmt.Errorf("%w: authorization-server metadata contains an invalid or unapproved %s", attack.ErrInconclusive, field)
+				}
+			}
+			return values, nil, nil
 		}
-		return values, nil, nil
 	}
 	return nil, incomplete, nil
+}
+
+func metadataIssuerForURL(metadataURL, wellKnownPath string) string {
+	u, err := url.Parse(metadataURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	path := u.EscapedPath()
+	origin := u.Scheme + "://" + u.Host
+	if strings.HasPrefix(path, wellKnownPath) {
+		return origin + strings.TrimPrefix(path, wellKnownPath)
+	}
+	if wellKnownPath == "/.well-known/openid-configuration" && strings.HasSuffix(path, wellKnownPath) {
+		return origin + strings.TrimSuffix(path, wellKnownPath)
+	}
+	return ""
 }

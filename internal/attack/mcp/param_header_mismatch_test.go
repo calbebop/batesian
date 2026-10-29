@@ -17,6 +17,9 @@ type paramHeaderFixture struct {
 	acceptMismatch bool
 	noAnnotation   bool
 	notReadOnly    bool
+	noToolsCap     bool
+	toolPage       bool
+	repeatCursor   bool
 	badBaseline    bool
 	badMismatch    bool
 	calls          atomic.Int32
@@ -46,9 +49,13 @@ func (f *paramHeaderFixture) serve(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		respond(nil, -32601, "Method not found")
 	case "server/discover":
+		capabilities := map[string]interface{}{"tools": map[string]interface{}{}}
+		if f.noToolsCap {
+			delete(capabilities, "tools")
+		}
 		respond(map[string]interface{}{
 			"resultType": "complete", "supportedVersions": []string{modernEraVersion},
-			"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+			"capabilities": capabilities,
 			"serverInfo":   map[string]interface{}{"name": "param-fixture", "version": "1"},
 		}, 0, "")
 	case "tools/list":
@@ -60,14 +67,22 @@ func (f *paramHeaderFixture) serve(w http.ResponseWriter, r *http.Request) {
 		if f.notReadOnly {
 			annotations["readOnlyHint"] = false
 		}
-		respond(map[string]interface{}{
+		result := map[string]interface{}{
 			"resultType": "complete", "tools": []map[string]interface{}{{
 				"name": "lookup", "annotations": annotations,
 				"inputSchema": map[string]interface{}{
 					"type": "object", "properties": map[string]interface{}{"region": property},
 				},
 			}},
-		}, 0, "")
+		}
+		if f.toolPage {
+			cursor, _ := request.Params["cursor"].(string)
+			if cursor == "" || f.repeatCursor {
+				result["tools"] = []interface{}{}
+				result["nextCursor"] = "next"
+			}
+		}
+		respond(result, 0, "")
 	case "tools/call":
 		f.calls.Add(1)
 		args, _ := request.Params["arguments"].(map[string]interface{})
@@ -126,6 +141,20 @@ func TestParamHeaderMismatch_RejectedIsClean(t *testing.T) {
 	findings, err := runParamHeaderFixture(t, fixture, true)
 	if err != nil || len(findings) != 0 || fixture.calls.Load() != 2 {
 		t.Fatalf("findings=%+v err=%v calls=%d", findings, err, fixture.calls.Load())
+	}
+}
+
+func TestParamHeaderMismatch_PaginatedToolAndCapabilityFallback(t *testing.T) {
+	fixture := &paramHeaderFixture{acceptMismatch: true, toolPage: true, noToolsCap: true}
+	findings, err := runParamHeaderFixture(t, fixture, true)
+	if err != nil || len(findings) != 1 || fixture.calls.Load() != 2 {
+		t.Fatalf("second-page unadvertised tool was missed: findings=%+v calls=%d err=%v", findings, fixture.calls.Load(), err)
+	}
+
+	fixture = &paramHeaderFixture{toolPage: true, repeatCursor: true}
+	findings, err = runParamHeaderFixture(t, fixture, true)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || fixture.calls.Load() != 0 {
+		t.Fatalf("repeated cursor must remain untested: findings=%+v calls=%d err=%v", findings, fixture.calls.Load(), err)
 	}
 }
 
