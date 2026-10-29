@@ -21,6 +21,10 @@ run records its assessed target, including runs with no findings.
 
 ### Basic scan (upload SARIF to Code Scanning)
 
+This example checks an unauthenticated Agent Card. It selects a card rule
+whose only prerequisite is a reachable card; a full catalog scan would need
+additional credentials, identities, and callback routing.
+
 ```yaml
 # .github/workflows/agent-security.yml
 name: Agent Security Scan
@@ -40,9 +44,11 @@ jobs:
       security-events: write   # Required to upload SARIF to Code Scanning
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
 
@@ -52,18 +58,18 @@ jobs:
       - name: Run scan (SARIF output)
         run: |
           batesian scan \
+            --no-config \
             --target "$AGENT_TARGET_URL" \
             --protocol a2a \
+            --rule-ids a2a-card-trust-001 \
             --output sarif \
             --timeout 30 \
             > results.sarif
         env:
           AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
-          # Optional: bearer token for authenticated targets
-          BATESIAN_TOKEN: ${{ secrets.AGENT_TOKEN }}
 
       - name: Upload SARIF to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif
           category: batesian
@@ -85,14 +91,60 @@ jobs:
           ' results.sarif
 ```
 
-The workflow runs manually or on a schedule against the configured target. Do
-not pass deployment credentials to a workflow that executes pull-request code.
+The workflow runs manually or on a schedule against the configured target. Set
+the `AGENT_TARGET_URL` repository variable first. Do not pass deployment
+credentials to a workflow that executes pull-request code.
 
 Skipped and errored rules are stored as SARIF invocation notifications, not
 alerts. GitHub accepts these fields but does not display them, so the explicit
 coverage check prevents a partial scan from passing unnoticed. Select only rules
 whose identity, authentication, and callback prerequisites the job can meet.
 The gate checks selected rules, not every rule in the catalog.
+
+### Scan with two principals
+
+For task authorization checks, supply a default owner token and two distinct
+principal tokens. Replace the basic scan step with these steps after installing
+Batesian. The target must allow principal A to create and read its own task.
+The temporary config contains environment references, not token values.
+
+```yaml
+      - name: Scan task authorization
+        env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+          AGENT_TOKEN_A: ${{ secrets.AGENT_TOKEN_A }}
+          AGENT_TOKEN_B: ${{ secrets.AGENT_TOKEN_B }}
+          BATESIAN_TOKEN: ${{ secrets.AGENT_TOKEN_A }}
+        run: |
+          scan_config=$(mktemp --suffix=.yaml)
+          trap 'rm -f "$scan_config"' EXIT
+          cat > "$scan_config" <<'YAML'
+          principals:
+            - name: tenant-a
+              token: "${AGENT_TOKEN_A}"
+              tenant: A
+            - name: tenant-b
+              token: "${AGENT_TOKEN_B}"
+              tenant: B
+          YAML
+          batesian scan --config "$scan_config" \
+            --target "$AGENT_TARGET_URL" --protocol a2a \
+            --rule-ids a2a-task-idor-001,a2a-multitenant-isolation-001,a2a-task-enumeration-001 \
+            --output json --timeout 30 > ownership-results.json
+
+      - name: Require task-rule coverage
+        run: |
+          jq -e '
+            .schema_version == 1 and .ruleset.selected == 3 and
+            (.rule_outcomes | length) == 3 and
+            all(.rule_outcomes[]; .status == "findings" or .status == "no_findings")
+          ' ownership-results.json
+```
+
+Use separate scheduled or manually triggered workflows for scans that carry
+deployment credentials. If the agent intentionally shares tasks between these
+identities, findings remain indicators unless an exact expected-denial policy
+declares that access forbidden.
 
 ### Fail the build on findings above a severity threshold
 
@@ -101,10 +153,14 @@ does not prove the selected rules ran. Check coverage and severity together:
 
 ```yaml
       - name: Run scan
+        env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
         run: |
           batesian scan \
-            --target ${{ vars.AGENT_TARGET_URL }} \
+            --no-config \
+            --target "$AGENT_TARGET_URL" \
             --protocol a2a \
+            --rule-ids a2a-card-trust-001 \
             --output json \
             --timeout 30 \
             > scan-results.json
@@ -156,20 +212,30 @@ silently reduce the selected set.
 
 ```yaml
       # A2A only
-      - run: batesian scan --target ${{ vars.AGENT_TARGET_URL }} --protocol a2a --output sarif > results.sarif
+      - env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+        run: batesian scan --no-config --target "$AGENT_TARGET_URL" --protocol a2a --output sarif > results.sarif
 
       # MCP only
-      - run: batesian scan --target ${{ vars.AGENT_TARGET_URL }} --protocol mcp --output sarif > results.sarif
+      - env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+        run: batesian scan --no-config --target "$AGENT_TARGET_URL" --protocol mcp --output sarif > results.sarif
 ```
+
+These protocol-only scans can report skipped rules when a target lacks the
+credentials or features a selected rule needs. Use explicit rule IDs when
+requiring complete coverage.
 
 ### Scan specific rule IDs
 
 ```yaml
-      # Run the SSRF and IDOR rules only
-      - run: |
-          batesian scan \
-            --target ${{ vars.AGENT_TARGET_URL }} \
-            --rule-ids a2a-push-ssrf-001,a2a-task-idor-001 \
+      # Run the card check without task or callback prerequisites
+      - env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+        run: |
+          batesian scan --no-config \
+            --target "$AGENT_TARGET_URL" \
+            --rule-ids a2a-card-trust-001 \
             --output sarif > results.sarif
 ```
 
@@ -197,7 +263,8 @@ listing is only a snapshot; rescan when a server or its tool definitions change.
 | Name | Type | Description |
 |---|---|---|
 | `AGENT_TARGET_URL` | Variable (not secret) | The full URL of the agent endpoint to test. Example: `https://agent.example.com` |
-| `AGENT_TOKEN` | Secret | Bearer token for authenticated A2A/MCP endpoints. Leave unset for unauthenticated targets. |
+| `AGENT_TOKEN` | Secret | Owner token for the OOB example; leave unset for public card checks. |
+| `AGENT_TOKEN_A`, `AGENT_TOKEN_B` | Secrets | Distinct identities for the two-principal task example. |
 
 Set these in **Settings > Secrets and variables > Actions**.
 
@@ -206,13 +273,18 @@ Set these in **Settings > Secrets and variables > Actions**.
 The push-notification SSRF rule (`a2a-push-ssrf-001`) and OAuth metadata-fetch
 rule (`mcp-oauth-metadata-ssrf-001`) use out-of-band callbacks. A public-address
 OAuth callback confirms a metadata fetch, not private-network access. Each rule
-starts a local HTTP listener automatically, so no extra flag is needed:
+starts a local HTTP listener automatically. The A2A example needs a token that
+can create a task:
 
 ```yaml
       - name: Run scan (local OOB listeners)
+        env:
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+          BATESIAN_TOKEN: ${{ secrets.AGENT_TOKEN }}
         run: |
-          batesian scan \
-            --target ${{ vars.AGENT_TARGET_URL }} \
+          batesian scan --no-config \
+            --target "$AGENT_TARGET_URL" \
+            --protocol a2a --rule-ids a2a-push-ssrf-001 \
             --output sarif \
             > results.sarif
 ```
@@ -234,7 +306,7 @@ batesian-scan:
   script:
     - apt-get update && apt-get install -y --no-install-recommends jq
     - go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
-    - batesian scan --target $AGENT_TARGET_URL --output json > batesian-results.json
+    - batesian scan --no-config --target "$AGENT_TARGET_URL" --protocol a2a --rule-ids a2a-card-trust-001 --output json > batesian-results.json
     - |
       jq -e '
         .schema_version == 1 and
@@ -259,7 +331,10 @@ stage('Agent Security Scan') {
         sh 'go install github.com/calbebop/batesian/cmd/batesian@v1.8.1'
         sh '''
             batesian scan \
-              --target ${AGENT_TARGET_URL} \
+              --no-config \
+              --target "$AGENT_TARGET_URL" \
+              --protocol a2a \
+              --rule-ids a2a-card-trust-001 \
               --output sarif \
               --timeout 30 \
               > batesian-results.sarif

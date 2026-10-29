@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -389,6 +390,58 @@ func TestValidateOAuthAcquisition(t *testing.T) {
 			}
 			if tc.want != "" && (err == nil || err.Error() != tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestScanClientSecretEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, want string
+	}{
+		{"environment", "", "env-secret"},
+		{"flag overrides environment", "flag-secret", "flag-secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BATESIAN_TOKEN", "")
+			t.Setenv("BATESIAN_CLIENT_SECRET", "env-secret")
+			received := make(chan string, 1)
+			oauth := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					t.Errorf("parsing token request: %v", err)
+				}
+				received <- r.Form.Get("client_secret")
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer oauth.Close()
+
+			if scanCmd.Flags().Lookup("target") == nil {
+				scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+			}
+			setScanFlag(t, "no-config", "true")
+			setScanFlag(t, "target", "https://agent.example.com")
+			setScanFlag(t, "protocol", "a2a")
+			setScanSliceFlag(t, "rule-ids", []string{"a2a-card-trust-001"})
+			setScanFlag(t, "token", "")
+			setScanFlag(t, "auth-url", "")
+			setScanFlag(t, "token-url", oauth.URL)
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "client-secret", tc.flag)
+			setScanFlag(t, "skip-tls", "true")
+			setScanFlag(t, "dry-run", "false")
+			scanCmd.SetContext(context.Background())
+
+			err := runScan(scanCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), "token endpoint returned HTTP 400") {
+				t.Fatalf("expected token request rejection, got %v", err)
+			}
+			select {
+			case got := <-received:
+				if got != tc.want {
+					t.Fatalf("client_secret = %q, want %q", got, tc.want)
+				}
+			default:
+				t.Fatal("token endpoint was not called")
 			}
 		})
 	}
