@@ -42,11 +42,12 @@ independently and test modern-only servers. Rules that depend on a legacy
 handshake or session cannot exercise that wire and mark the check not tested,
 rather than clean.
 
-`@modelcontextprotocol/server-everything`, the example server, is a separate
-matter: it is still pinned to the 1.x SDK and negotiates `2025-11-25`. Its
-version is not a signal about the ecosystem.
+`@modelcontextprotocol/server-everything` has its own release cadence and now
+ships in the [2.x reference-server releases](https://github.com/modelcontextprotocol/servers/releases).
+Its package version is not evidence of which protocol wire a deployment serves;
+probe the endpoint instead.
 
-Era detection is checked weekly against the official Python SDK
+Era detection is checked on PRs and weekly against the official Python SDK
 (`.github/workflows/mcp-era-watch.yml`, using
 `testdata/mcp_modern_era_server.py`).
 

@@ -31,6 +31,16 @@ def accepts(filter_text, report):
 
 
 class CIDocumentationTests(unittest.TestCase):
+    def test_examples_keep_actions_pinned_and_secrets_out_of_arguments(self):
+        for path in ("README.md", "docs/ci-cd.md"):
+            content = (ROOT / path).read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                for ref in re.findall(r"\buses:\s+[^\s@]+@([^\s]+)", content):
+                    self.assertRegex(ref, r"^[0-9a-f]{40}$")
+                self.assertNotRegex(content, r"--target\s+\$\{\{")
+                self.assertNotRegex(content, r"--client-secret\s+\$")
+                self.assertNotRegex(content, r"--principal\s+[^\n]*token=")
+
     def test_sarif_coverage_filters(self):
         complete = {
             "runs": [{
@@ -114,6 +124,16 @@ class CIDocumentationTests(unittest.TestCase):
             report.update(changes)
             with self.subTest(case=name):
                 self.assertFalse(accepts(severity_filter, report))
+
+        ownership_filter = documented_filter("docs/ci-cd.md", "ownership-results.json")
+        owned = copy.deepcopy(complete)
+        owned["ruleset"]["selected"] = 3
+        owned["rule_outcomes"].append({"status": "no_findings"})
+        self.assertTrue(accepts(ownership_filter, owned))
+        for status in ("skipped", "error"):
+            changed = copy.deepcopy(owned)
+            changed["rule_outcomes"][2]["status"] = status
+            self.assertFalse(accepts(ownership_filter, changed))
 
 
 if __name__ == "__main__":

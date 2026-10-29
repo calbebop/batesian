@@ -119,12 +119,16 @@ batesian scan --target https://mcp.example.com
 ### OAuth client credentials
 
 ```bash
+read -rsp "OAuth client secret: " BATESIAN_CLIENT_SECRET && echo
+export BATESIAN_CLIENT_SECRET
 batesian scan --target https://mcp.example.com \
   --token-url https://auth.example.com/oauth/token \
   --client-id my-client \
-  --client-secret "$CLIENT_SECRET" \
   --oauth-scopes mcp:read,mcp:write
 ```
+
+`BATESIAN_CLIENT_SECRET` is used for the client credentials flow. A non-empty
+`--client-secret` overrides it, but puts the secret in process arguments.
 
 When MCP rules are selected, Batesian sends the target's canonical URI as the
 OAuth `resource` in token requests. Use `--oauth-resource https://mcp.example.com/mcp`
@@ -161,13 +165,26 @@ server metadata; verify the issuer and endpoints before using it.
 
 Cross-tenant and cross-principal checks require distinct identities. Add routing headers when the target derives tenant identity from a header rather than the token:
 
-```bash
-batesian scan --target https://agent.example.com \
-  --principal name=tenant-a,token="$TOKEN_A",tenant=A,header=X-Tenant-Id:A \
-  --principal name=tenant-b,token="$TOKEN_B",tenant=B,header=X-Tenant-Id:B
+```yaml
+# batesian.yaml
+target: https://agent.example.com
+principals:
+  - name: tenant-a
+    token: "${TOKEN_A}"
+    tenant: A
+    headers:
+      X-Tenant-Id: A
+  - name: tenant-b
+    token: "${TOKEN_B}"
+    tenant: B
+    headers:
+      X-Tenant-Id: B
 ```
 
-In `batesian.yaml`, principal tokens can use `${TOKEN_A}`-style environment references. An unset or empty variable stops the scan before requests are sent.
+Set `TOKEN_A` and `TOKEN_B` in the environment, then run `batesian scan` from
+the config directory. For rules that use a single owner credential, also set
+`BATESIAN_TOKEN` to the intended owner's token. An unset or empty principal
+token variable stops the scan before requests are sent.
 
 ### Expected protection
 
@@ -229,7 +246,8 @@ A finding is marked `confirmed` when the rule proves a failed boundary, includin
 
 ## CI integration
 
-The following workflow uses current `main` coverage metadata to upload A2A findings and fail when selected rules do not complete:
+The following workflow uses v1.8.1 coverage metadata to upload A2A findings
+and fail when its card check does not complete. The target must serve an Agent Card.
 
 ```yaml
 name: Batesian
@@ -243,15 +261,22 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
       - run: go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
       - name: Scan
         env:
-          BATESIAN_TOKEN: ${{ secrets.BATESIAN_TOKEN }}
-        run: batesian scan --target https://agent.example.com --protocol a2a --output sarif > results.sarif
-      - uses: github/codeql-action/upload-sarif@v4
+          AGENT_TARGET_URL: ${{ vars.AGENT_TARGET_URL }}
+        run: |
+          batesian scan --no-config --target "$AGENT_TARGET_URL" \
+            --protocol a2a \
+            --rule-ids a2a-card-trust-001 \
+            --output sarif > results.sarif
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always()
         with:
           sarif_file: results.sarif
@@ -269,7 +294,12 @@ jobs:
           ' results.sarif
 ```
 
-Update the pinned release after review. This example uses a manual trigger so credentials are not exposed to pull-request code. Older releases may not include coverage metadata. Select only protocols and rules whose authentication, identity, and callback prerequisites the job can provide; skipped or errored rules are not evidence of a clean target. More deployment patterns are documented in [CI/CD integration](docs/ci-cd.md).
+Set the `AGENT_TARGET_URL` repository variable before running this workflow.
+Update the pinned release after review. This example uses a manual trigger;
+keep credentialed scans off pull-request code. Select only rules whose
+authentication, identity, and callback prerequisites the job can provide;
+skipped or errored rules are not evidence of a clean target. A two-principal
+example is in [CI/CD integration](docs/ci-cd.md).
 
 ## Configuration and rule packs
 

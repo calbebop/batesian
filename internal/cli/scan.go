@@ -69,7 +69,7 @@ func init() {
 	// OAuth token acquisition.
 	scanCmd.Flags().String("token-url", "", "OAuth 2.0 token endpoint URL")
 	scanCmd.Flags().String("client-id", "", "OAuth 2.0 client ID (used with --token-url or --auth-url)")
-	scanCmd.Flags().String("client-secret", "", "OAuth 2.0 client secret (client credentials flow only)")
+	scanCmd.Flags().String("client-secret", "", "OAuth 2.0 client secret (client credentials flow only; default: BATESIAN_CLIENT_SECRET)")
 	scanCmd.Flags().StringSlice("oauth-scopes", nil, "OAuth 2.0 scopes to request (comma-separated)")
 	scanCmd.Flags().String("oauth-audience", "", "OAuth 2.0 audience (Auth0/Okta-style)")
 	scanCmd.Flags().String("oauth-resource", "", "OAuth resource URI (defaults to the MCP target when MCP rules are selected)")
@@ -122,6 +122,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	oauthIssuer, _ := cmd.Flags().GetString("oauth-issuer")
 	clientID, _ := cmd.Flags().GetString("client-id")
 	clientSecret, _ := cmd.Flags().GetString("client-secret")
+	if clientSecret == "" && clientID != "" && tokenURL != "" && authURL == "" {
+		clientSecret = os.Getenv("BATESIAN_CLIENT_SECRET")
+	}
 	oauthScopes, _ := cmd.Flags().GetStringSlice("oauth-scopes")
 	oauthAudience, _ := cmd.Flags().GetString("oauth-audience")
 	oauthResource, _ := cmd.Flags().GetString("oauth-resource")
