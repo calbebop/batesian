@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **51 bundled rules:** 21 A2A and 30 MCP checks focused on protocol-specific weaknesses.
+- **52 bundled rules:** 21 A2A and 31 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,13 +87,14 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [30 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [31 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
 | OAuth and token handling | Audience and scope validation, DCR, token replay, metadata fetches, redirect confusion |
 | Agent identity and discovery | Agent Card trust, JWS validation, host injection, extension downgrade, extended-card access |
 | Task and tenant isolation | Task IDOR, cross-principal cancellation and enumeration, context fixation, delegation integrity |
+| Cache scoping | Public MCP cache hints on principal-specific discovery and listings |
 | Push notifications | Callback SSRF, control-plane binding, missing callback authentication |
 | MCP authorization surfaces | Unauthenticated tools, resources, prompts, completions, and logging controls |
 | Transport boundaries | Origin validation, header/body routing, protocol downgrade, SSE replay, session misuse |

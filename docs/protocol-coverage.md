@@ -1,8 +1,9 @@
 # Protocol and advisory coverage
 
 This page records what the live compatibility gates and endpoint rules actually
-exercise. It was checked against the published specifications and advisories on
-2026-10-28. A rule finding describes observed behavior on the scanned surface;
+exercise. The advisory matrix was reviewed on 2026-10-28; the modern protocol
+sections were updated on 2026-10-29. A rule finding describes observed behavior
+on the scanned surface;
 it does not establish that a particular package or CVE is present.
 
 ## Protocol compatibility gates
@@ -12,12 +13,20 @@ it does not establish that a particular package or CVE is present.
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Current [A2A Python SDK 1.x](https://github.com/a2aproject/a2a-python/releases) | Card discovery; JSON-RPC `SendMessage`/`GetTask`; HTTP+JSON `message:send`/`tasks/{id}`; confirmed `a2a-session-smuggle-001` on JSON-RPC | The SDK target is not a secured deployment. The rule check is on JSON-RPC only. |
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Bundled vulnerable and bound push fixtures | JSON-RPC and HTTP+JSON subscription scope controls | These fixtures implement only the routes needed by the rule. |
 | [A2A 0.3.0](https://a2a-protocol.org/v0.3.0/specification/) | Bundled JSON-RPC fixtures and Go test servers | Legacy method names, card shapes, and security rule controls in Go tests | There is no current official 0.3 SDK target in CI. |
-| [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, and session opening against a live server on PRs and weekly | This is transport and era coverage, not a security posture test. |
+| [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, session opening, and a clean two-principal cache-scope scan on PRs and weekly | The SDK server returns the same data to both test principals; the vulnerable cache-scope control is a Go fixture. |
 | [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) | Same dual-era SDK target and bundled fixtures | Legacy `initialize` and session opening, plus rule controls | No official SDK in every supported language is exercised. |
 
 The SDK dependencies intentionally float within a major version. These gates
 catch changes in the current Python implementations; the fixture and Go tests
 pin expected protocol behavior when a dependency changes.
+
+## Modern MCP state and cache checks
+
+| Surface | Endpoint test | Current decision |
+|---|---|---|
+| [Public cache scope](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching) | Compare stable results for two principals on `server/discover` and read-only list methods. | `mcp-cache-scope-001` reports different principal results with positive public TTL as an indicator. It does not test `resources/read` or client cache behavior. |
+| [Subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions) | A cross-principal notification leak needs a resource both identities can address and a safe way to trigger an update. | No generic rule yet. An acknowledgment alone cannot prove that another principal received an event, and routine scans should not mutate arbitrary resources to create one. |
+| [Multi round-trip state](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) | A state-integrity failure needs a safe `input_required` flow and an observable change in authorization or resource access after a modified `requestState`. | No generic rule yet. Accepting an altered opaque state is not itself an exploit; the specification allows unprotected state when tampering can only fail the request. |
 
 ## Advisory-to-rule matrix
 

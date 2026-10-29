@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **30 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **31 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -171,6 +171,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-logging-unauth-001` | [logging/setLevel Without Authentication](#mcp-logging-unauth-001) | Medium | confirmed / indicator | CWE-862 |
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
+| `mcp-cache-scope-001` | [Public Cache Scope Across Principals](#mcp-cache-scope-001) | Medium | indicator | CWE-524 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
@@ -494,6 +495,27 @@ matching observed access is promoted to **confirmed**. Absent task handles,
 missing approval, malformed replies, and unanswered subchecks remain **not
 tested**. `tasks/update` is skipped when no safe form elicitation is pending.
 The scan then reports that subcheck as not tested rather than clean.
+
+---
+
+### mcp-cache-scope-001
+
+**Public Cache Scope Across Principals** | Severity: Medium | indicator | CWE-524
+
+The 2026-07-28 caching model permits a result marked `cacheScope: public` to
+be reused across authorization contexts. This rule compares `server/discover`
+and advertised list methods under two configured, distinct principals. It
+reads each result twice in A-B-A-B order. A medium indicator requires both
+principals to return stable but different content, each with a positive public
+TTL that overlaps the other principal's request. It reports method, item
+counts, and TTLs without including list content or credentials.
+
+The rule does not simulate a client cache or prove that a shared cache served
+the wrong result. A clean result covers only the tested methods and first list
+pages. It does not inspect `resources/read`, exercise subscription invalidation,
+or infer user-specific content from changing results. If discovery or repeated
+reads cannot be compared, the rule reports not tested. Set `cacheScope: private`
+for caller-specific results and enforce access on each primitive separately.
 
 ---
 

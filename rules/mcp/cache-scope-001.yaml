@@ -1,0 +1,30 @@
+id: mcp-cache-scope-001
+info:
+  name: MCP Public Cache Scope Across Principals
+  author: batesian
+  severity: medium
+  description: |
+    Compares modern MCP discovery and read-only list results under two distinct
+    principals. A finding requires stable results that differ by principal while
+    both responses advertise cacheScope: public with a positive TTL. This is a
+    cache-scope mismatch, not proof that a client shared the cached result.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching
+    - https://cwe.mitre.org/data/definitions/524.html
+
+  tags:
+    - mcp
+    - caching
+    - authorization
+    - cwe-524
+
+attack:
+  protocol: mcp
+  type: mcp-cache-scope
+
+remediation: |
+  Mark caller-specific results cacheScope: private. Use public only when every
+  caller receives the same content for the same method and parameters. Apply
+  authorization to the underlying tools, prompts, and resources independently;
+  cache hints are not access controls.
