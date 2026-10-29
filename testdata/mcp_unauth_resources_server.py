@@ -4,9 +4,9 @@ Batesian MCP validation target: unauthenticated resource access (mcp-resources-u
 This server exposes MCP resources without any authentication, including one that
 returns a simulated database connection string containing credentials.
 
-Requires the MCP Python SDK v2 (`pip install "mcp>=2"`), which is what
-`pip install mcp` now gives you. v2 renamed FastMCP to MCPServer with no
-compatibility alias, so this file does not run on the 1.x line.
+Requires the MCP Python SDK v2 (`pip install "mcp>=2,<3"`). v2 renamed
+FastMCP to MCPServer with no compatibility alias, so this file does not run
+on the 1.x line.
 
 Run:
     python testdata/mcp_unauth_resources_server.py

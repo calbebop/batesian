@@ -14,7 +14,7 @@ registrant-supplied URL fetches unless started with `--allow-metadata-fetch`.
 ## Prerequisites
 
 ```sh
-pip install starlette uvicorn httpx "mcp>=2"
+pip install starlette uvicorn httpx "mcp>=2,<3"
 ```
 
 The official A2A SDK target has a separate dependency:
@@ -40,11 +40,10 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **21 A2A + 29 MCP = 50 rules**. Every rule's primary
-validation is an in-process `net/http/httptest` harness in its Go
-`*_test.go` (multiple server postures: vulnerable must fire / patched / open /
-benign must stay silent). The Python servers below provide standalone live
-validation; selected fixtures also run in CI.
+The bundled rule set is **21 A2A + 30 MCP = 51 rules**. Every rule has an
+in-process Go HTTP test server with vulnerable and control postures. The Python
+servers below provide standalone live validation for 50 rules; selected fixtures
+also run in CI. `mcp-task-access-001` currently has a Go test server only.
 
 | File | Port | Rules covered |
 |---|---|---|
@@ -60,7 +59,7 @@ validation; selected fixtures also run in CI.
 | `a2a_task_cancel_server.py` | 3109 | `a2a-task-cancel-idor-001` (two principals; needs two `--principal`s) |
 | `a2a_card_security_unenforced_server.py` | 3110 | `a2a-card-security-unenforced-001` |
 | `a2a_secured_agent.py` | 3111 | authorization control: no findings on `secured`; five ownership findings on `idor`; task enumeration on page two under `idor-paged`; anonymous task read on `unauth-read` (needs `--token tok-a` and two principals) |
-| `a2a_sdk_agent.py` | 3120 | Official Python SDK compatibility: card discovery, JSON-RPC task exchange, and `a2a-session-smuggle-001` against the current 1.x SDK |
+| `a2a_sdk_agent.py` | 3120 | Official Python SDK compatibility: card discovery, JSON-RPC and HTTP+JSON task exchanges, and `a2a-session-smuggle-001` on JSON-RPC against the current 1.x SDK |
 | `mcp_unauth_resources_server.py` | 7787 | `mcp-resources-unauth-001` |
 | `mcp_oauth_dcr_server.py` | 7788 | `mcp-oauth-dcr-001` (two postures, see below; tracks registrations at `/__clients`) |
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
@@ -93,12 +92,11 @@ validation; selected fixtures also run in CI.
 | `mcp_param_header_server.py` | 7814 | `mcp-param-header-mismatch-001` flags `vulnerable` with `--mcp-invoke-tool lookup`; silent on `patched` |
 | `a2a_push_callback_auth_server.py` | 7810 | `a2a-push-callback-auth-001` must fire on `unsigned`; stay silent on `signed`; report not tested on `nocallback` (three postures, see below) |
 
-**Coverage.** All 50 rules have a standalone Python fixture above, and each
-of those was checked by actually running it rather than by reading this table.
-The last holdout, `mcp-token-replay-001`, gained `mcp_token_replay_server.py`
-(port 7813) alongside the nightly suite that drives it. The same is true of
-the per-rule edge-case harnesses for every other rule. `mockserver.go` is a Go
-helper used by unit tests via `net/http/httptest`; it is not a standalone server.
+**Coverage.** The 50 standalone fixture mappings above have been exercised
+against live servers. `mcp-task-access-001` is validated by the Go test server
+in `internal/attack/mcp/task_access_test.go` and is not part of the standalone
+Python fixture suite. `mockserver.go` is a Go helper used by unit tests via
+`net/http/httptest`; it is not a standalone server.
 
 A registry row is a claim, and claims rot. Three things make a fixture look broken
 when it is not, so check them before concluding a rule has regressed:
@@ -127,9 +125,9 @@ checked against a real modern server instead of against the specification alone.
 It is not, however, a silent target: the SDK applies no authorization, so the
 unauth rules fire against it on both wires and report roughly ten findings. What
 this fixture proves is that the era is detected and driven correctly, not that a
-scan comes back clean. `.github/workflows/mcp-era-watch.yml` starts it weekly and
-runs the integration-tagged tests in `internal/attack/mcp/era_live_test.go`
-against it:
+scan comes back clean. `.github/workflows/mcp-era-watch.yml` starts it on PRs
+and weekly runs, then executes the integration-tagged tests in
+`internal/attack/mcp/era_live_test.go` against it:
 
 ```sh
 python testdata/mcp_modern_era_server.py &
