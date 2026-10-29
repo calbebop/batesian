@@ -1,0 +1,219 @@
+package mcp_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/calbebop/batesian/internal/attack"
+	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
+)
+
+type cacheScopeFixture struct {
+	mu    sync.Mutex
+	mode  string
+	calls map[string]int
+}
+
+func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID     json.RawMessage        `json:"id"`
+		Method string                 `json:"method"`
+		Params map[string]interface{} `json:"params"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	respond := func(result interface{}, code int) {
+		w.Header().Set("Content-Type", "application/json")
+		body := map[string]interface{}{"jsonrpc": "2.0", "id": req.ID}
+		if code != 0 {
+			body["error"] = map[string]interface{}{"code": code, "message": "rejected"}
+		} else {
+			body["result"] = result
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}
+	meta, _ := req.Params["_meta"].(map[string]interface{})
+	if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" ||
+		r.Header.Get("Mcp-Method") != req.Method ||
+		meta["io.modelcontextprotocol/protocolVersion"] != "2026-07-28" {
+		respond(nil, -32020)
+		return
+	}
+	principal := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if principal != "tok-a" && principal != "tok-b" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if f.mode == "denied" && principal == "tok-b" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	f.mu.Lock()
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	key := principal + ":" + req.Method
+	f.calls[key]++
+	call := f.calls[key]
+	f.mu.Unlock()
+
+	switch req.Method {
+	case "server/discover":
+		capabilities := map[string]interface{}{"tools": map[string]interface{}{}}
+		if f.mode == "all" {
+			capabilities["prompts"] = map[string]interface{}{}
+			capabilities["resources"] = map[string]interface{}{}
+		}
+		if f.mode == "discover" && principal == "tok-b" {
+			capabilities["prompts"] = map[string]interface{}{}
+		}
+		respond(map[string]interface{}{
+			"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
+			"capabilities": capabilities, "cacheScope": "public", "ttlMs": 60000,
+		}, 0)
+	case "tools/list":
+		name := "private-" + principal
+		if f.mode == "same" {
+			name = "shared"
+		}
+		if f.mode == "unstable" && principal == "tok-a" {
+			name += string(rune('0' + call))
+		}
+		scope, ttl := "public", 60000
+		if f.mode == "private" || f.mode == "mixed" && principal == "tok-b" {
+			scope = "private"
+		}
+		if f.mode == "zero-ttl" {
+			ttl = 0
+		}
+		if f.mode == "expired" {
+			ttl = 1
+			if principal == "tok-b" {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		tools := []map[string]string{{"name": name}}
+		if f.mode == "order" {
+			tools = []map[string]string{{"name": "first"}, {"name": "second"}}
+			if principal == "tok-b" {
+				tools[0], tools[1] = tools[1], tools[0]
+			}
+		}
+		respond(map[string]interface{}{
+			"resultType": "complete", "tools": tools,
+			"cacheScope": scope, "ttlMs": ttl,
+		}, 0)
+	case "prompts/list", "resources/list", "resources/templates/list":
+		if f.mode != "all" {
+			respond(nil, -32601)
+			return
+		}
+		field := map[string]string{
+			"prompts/list":             "prompts",
+			"resources/list":           "resources",
+			"resources/templates/list": "resourceTemplates",
+		}[req.Method]
+		item := map[string]string{"name": "private-" + principal}
+		if req.Method == "resources/list" {
+			item["uri"] = "resource://" + principal
+		}
+		if req.Method == "resources/templates/list" {
+			item["uriTemplate"] = "resource://" + principal + "/{id}"
+		}
+		respond(map[string]interface{}{
+			"resultType": "complete", field: []map[string]string{item},
+			"cacheScope": "public", "ttlMs": 60000,
+		}, 0)
+	default:
+		respond(nil, -32601)
+	}
+}
+
+func runCacheScopeFixture(t *testing.T, mode string) ([]attack.Finding, *cacheScopeFixture, error) {
+	t.Helper()
+	fixture := &cacheScopeFixture{mode: mode}
+	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+	t.Cleanup(server.Close)
+	opts := testOpts()
+	opts.Principals = []attack.Principal{
+		{Name: "tenant-a", Token: "tok-a"},
+		{Name: "tenant-b", Token: "tok-b"},
+	}
+	findings, err := mcpattack.NewCacheScopeExecutor(attack.RuleContext{
+		ID: "mcp-cache-scope-001", Name: "MCP public cache scope", Remediation: "Use private scope.",
+	}).Execute(context.Background(), server.URL, opts)
+	return findings, fixture, err
+}
+
+func TestCacheScope_DifferingPublicResults(t *testing.T) {
+	findings, fixture, err := runCacheScopeFixture(t, "public")
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	finding := findings[0]
+	if finding.Confidence != attack.RiskIndicator || finding.Severity != "medium" ||
+		!strings.Contains(finding.Evidence, "tools/list") ||
+		strings.Contains(finding.Evidence, "private-tok") || strings.Contains(finding.Evidence, "tok-a") {
+		t.Fatalf("incorrect or secret-bearing finding: %+v", finding)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if fixture.calls["tok-a:tools/list"] != 2 || fixture.calls["tok-b:tools/list"] != 2 {
+		t.Fatalf("expected repeat controls, calls=%v", fixture.calls)
+	}
+}
+
+func TestCacheScope_ProtectedControls(t *testing.T) {
+	for _, mode := range []string{"private", "mixed", "same", "order", "zero-ttl", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			findings, _, err := runCacheScopeFixture(t, mode)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCacheScope_AllAdvertisedListings(t *testing.T) {
+	findings, _, err := runCacheScopeFixture(t, "all")
+	if err != nil || len(findings) != 4 {
+		t.Fatalf("expected all four list methods, findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestCacheScope_DiscoveryAndIncompleteControls(t *testing.T) {
+	findings, _, err := runCacheScopeFixture(t, "discover")
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("discovery and list findings=%+v err=%v", findings, err)
+	}
+	for _, mode := range []string{"unstable", "denied"} {
+		t.Run(mode, func(t *testing.T) {
+			findings, _, err := runCacheScopeFixture(t, mode)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestCacheScope_RequiresDistinctPrincipals(t *testing.T) {
+	exec := mcpattack.NewCacheScopeExecutor(attack.RuleContext{ID: "mcp-cache-scope-001"})
+	for _, principals := range [][]attack.Principal{
+		nil,
+		{{Name: "a", Token: "same"}, {Name: "b", Token: "same"}},
+	} {
+		findings, err := exec.Execute(t.Context(), "http://127.0.0.1:1", attack.Options{Principals: principals})
+		if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("principals=%+v findings=%+v err=%v", principals, findings, err)
+		}
+	}
+}

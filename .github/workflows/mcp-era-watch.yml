@@ -1,7 +1,6 @@
 name: MCP era watch
 
-# Validates MCP era detection against the current official Python SDK. Failures
-# indicate protocol, SDK, or detector drift.
+# Validates MCP era detection and cache scope against the current Python SDK.
 
 on:
   pull_request:
@@ -66,6 +65,28 @@ jobs:
         run: go test -tags=integration -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live' -v ./internal/attack/mcp/
         env:
           BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7799/mcp
+
+      - name: Check cache scope against the current SDK
+        run: |
+          cat > "$RUNNER_TEMP/cache-scope.yaml" <<'YAML'
+          principals:
+            - name: tenant-a
+              token: "${CACHE_A}"
+            - name: tenant-b
+              token: "${CACHE_B}"
+          YAML
+          go run ./cmd/batesian scan --config "$RUNNER_TEMP/cache-scope.yaml" \
+            --target http://127.0.0.1:7799/mcp --protocol mcp \
+            --rule-ids mcp-cache-scope-001 --output json > "$RUNNER_TEMP/cache-scope.json"
+          jq -e '
+            .schema_version == 1 and .ruleset.selected == 1 and
+            (.rule_outcomes | length) == 1 and
+            .rule_outcomes[0].status == "no_findings" and
+            (.findings | length) == 0
+          ' "$RUNNER_TEMP/cache-scope.json"
+        env:
+          CACHE_A: cache-test-a
+          CACHE_B: cache-test-b
 
       - name: Server log
         if: failure()
