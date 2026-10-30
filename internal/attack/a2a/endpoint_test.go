@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -870,6 +871,56 @@ func TestResolveA2AEndpoint_UnrelatedTaskResponse(t *testing.T) {
 
 	if ep, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); ok {
 		t.Errorf("resolved %q from a response to another request", ep)
+	}
+}
+
+func TestResolveA2AEndpoint_DeclaredBindingBoundsWeakEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		binding string
+		want    bool
+	}{
+		{"GRPC", false},
+		{"HTTP+JSON", false},
+		{"JSONRPC", true},
+	} {
+		t.Run(tc.binding, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == cardPathPrimary {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"name": "Binding fixture", "supportedInterfaces": []map[string]string{{
+							"url": srv.URL + "/service", "protocolBinding": tc.binding, "protocolVersion": "1.0",
+						}},
+					})
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				var request struct {
+					ID json.RawMessage `json:"id"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": request.ID,
+					"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+				})
+			}))
+			defer srv.Close()
+
+			client := newClient(srv.URL)
+			_, ok := resolveA2AEndpoint(t.Context(), client, srv.URL)
+			if ok != tc.want {
+				t.Fatalf("weak JSON-RPC evidence for %s: resolved=%v", tc.binding, ok)
+			}
+			if tc.binding == "GRPC" {
+				err := notTestableGiven(t.Context(), client, srv.URL, ok)
+				if !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "no routable") {
+					t.Fatalf("gRPC-only card was not marked untested: %v", err)
+				}
+			}
+		})
 	}
 }
 

@@ -20,6 +20,24 @@ The SDK dependencies intentionally float within a major version. These gates
 catch changes in the current Python implementations; the fixture and Go tests
 pin expected protocol behavior when a dependency changes.
 
+## A2A gRPC assessment
+
+[A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/#grpc-protocol-binding)
+defines gRPC as a standard binding using protobuf over HTTP/2. The
+[official TCK](https://github.com/a2aproject/a2a-tck#transports) tests gRPC,
+JSON-RPC, and HTTP+JSON server conformance. Batesian currently sends active
+A2A probes only over JSON-RPC and HTTP+JSON. Agent Card checks can still assess
+a card that advertises only gRPC, but HTTP rule results do not cover its gRPC
+service.
+
+Defer active gRPC probes until there is a testable gRPC target and a security
+oracle with vulnerable and protected controls. Adding the binding requires
+protobuf models, TLS and HTTP/2 transport, metadata and credential handling,
+bounded streams, and separate 1.0 and 0.3 compatibility checks. The TCK can
+validate protocol behavior, but it cannot establish a security finding for a
+Batesian rule. A card with no routable JSON-RPC or HTTP+JSON binding must not
+turn a weak JSON-RPC response into a clean HTTP rule verdict.
+
 ## Modern MCP state and cache checks
 
 | Surface | Endpoint test | Current decision |
