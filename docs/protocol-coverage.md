@@ -3,8 +3,8 @@
 This page records what the live compatibility gates and endpoint rules actually
 exercise. The advisory matrix was reviewed on 2026-10-28; the modern protocol
 sections were updated on 2026-10-29. A rule finding describes observed behavior
-on the scanned surface;
-it does not establish that a particular package or CVE is present.
+on the scanned surface; it does not establish that a particular package or CVE
+is present.
 
 ## Protocol compatibility gates
 
@@ -27,6 +27,20 @@ pin expected protocol behavior when a dependency changes.
 | [Public cache scope](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching) | Compare stable results for two principals on `server/discover` and read-only list methods. | `mcp-cache-scope-001` reports different principal results with positive public TTL as an indicator. It does not test `resources/read` or client cache behavior. |
 | [Subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions) | A cross-principal notification leak needs a resource both identities can address and a safe way to trigger an update. | No generic rule yet. An acknowledgment alone cannot prove that another principal received an event, and routine scans should not mutate arbitrary resources to create one. |
 | [Multi round-trip state](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) | A state-integrity failure needs a safe `input_required` flow and an observable change in authorization or resource access after a modified `requestState`. | No generic rule yet. Accepting an altered opaque state is not itself an exploit; the specification allows unprotected state when tampering can only fail the request. |
+
+## MCP compatibility notes
+
+The modern request builder mirrors `Mcp-Method` and named subjects into
+`Mcp-Name`, including task IDs. Anonymous tool and prompt list rules probe a
+modern server even when discovery omits the matching capability. Tasks and
+annotated-header probes follow up to ten `tools/list` pages and mark broken
+pagination not tested.
+
+OAuth authorization-server metadata is accepted only when its `issuer` matches
+the issuer used for the well-known URL. The DCR redirect probe includes an
+S256 PKCE challenge but does not exchange an authorization code. Legacy sessions
+opened through shared wire discovery are closed with DELETE when the server
+issues a session ID; servers may decline cleanup with HTTP 405.
 
 ## Advisory-to-rule matrix
 

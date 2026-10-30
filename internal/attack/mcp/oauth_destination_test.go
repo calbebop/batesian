@@ -19,7 +19,14 @@ func oauthMetadataTarget(t *testing.T, metadata map[string]interface{}, fallback
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(metadata)
+			document := make(map[string]interface{}, len(metadata)+1)
+			for key, value := range metadata {
+				document[key] = value
+			}
+			if _, ok := document["issuer"]; !ok {
+				document["issuer"] = "http://" + r.Host
+			}
+			_ = json.NewEncoder(w).Encode(document)
 			return
 		}
 		fallback.ServeHTTP(w, r)

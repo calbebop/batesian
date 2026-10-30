@@ -37,8 +37,8 @@ func (e *ToolsUnauthExecutor) Execute(ctx context.Context, target string, opts a
 
 // determined is false when the wire returned no usable verdict.
 func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
-	// No advertised tools capability means there is no tool surface to check.
-	if !session.ServerSupports("tools") && !session.directProof {
+	// Modern lists are checked even when discovery omits the capability.
+	if session.Era != EraModern && !session.ServerSupports("tools") && !session.directProof {
 		return nil, true
 	}
 
@@ -53,6 +53,9 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 	if errObj, ok := listBody["error"].(map[string]interface{}); ok {
 		code := rpcErrorCode(errObj["code"])
 		message, _ := errObj["message"].(string)
+		if session.Era == EraModern && !session.ServerSupports("tools") && code == mcpMethodNotFound {
+			return nil, true
+		}
 		return nil, authFlavoredError(code, message)
 	}
 	if _, hasErr := listBody["error"]; hasErr {

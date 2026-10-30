@@ -24,6 +24,7 @@ func (e *ParamHeaderMismatchExecutor) Execute(ctx context.Context, target string
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewHTTPClient(opts, vars)
 	sessions, err := openSessions(ctx, client, vars.BaseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if err != nil {
 		return nil, err
 	}
@@ -35,10 +36,6 @@ func (e *ParamHeaderMismatchExecutor) Execute(ctx context.Context, target string
 			continue
 		}
 		modernSeen = true
-		if !session.ServerSupports("tools") {
-			reason = "the modern wire does not advertise tools"
-			continue
-		}
 		findings, why := e.probe(ctx, client, session, opts.MCPInvokeTools, vars.RandID)
 		if why == "" {
 			return labelEra(session, findings), nil

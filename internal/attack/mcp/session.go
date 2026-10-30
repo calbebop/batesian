@@ -233,7 +233,9 @@ func negotiatedVersion(initBody []byte) string {
 func OpenSessionForTest(baseURL string, opts attack.Options) ([]string, error) {
 	vars := attack.NewVars(baseURL, opts.OOBListenerURL)
 	client := attack.NewUnauthHTTPClient(opts, vars)
-	sessions, err := openSessions(context.Background(), client, baseURL)
+	ctx := context.Background()
+	sessions, err := openSessions(ctx, client, baseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if err != nil {
 		return nil, err
 	}

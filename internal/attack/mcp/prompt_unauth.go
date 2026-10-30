@@ -43,12 +43,8 @@ func (e *PromptUnauthExecutor) Execute(ctx context.Context, target string, opts 
 // probeSession runs the rule against one already-opened wire. determined reports
 // whether the wire established anything; see classifyProbe.
 func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession) (findings []attack.Finding, determined bool) {
-	// Skip servers that do not advertise the prompts capability - probing them
-	// would produce meaningless noise. This reads the server capabilities from
-	// the handshake captured by initializeMCP (no redundant second initialize),
-	// and parses the structured capabilities object rather than substring-matching
-	// the whole body (which could false-match "prompts" in serverInfo/instructions).
-	if !session.ServerSupports("prompts") {
+	// Legacy servers without the prompts capability have no prompt surface.
+	if session.Era != EraModern && !session.ServerSupports("prompts") {
 		// Determined: the server says it has none, so none can be open.
 		return nil, true
 	}
@@ -57,6 +53,11 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 	listResp, err := session.post(ctx, client, 3, "prompts/list", nil)
 	result, denied, ok := promptListResult(listResp, err, 3)
 	if !ok {
+		if session.Era == EraModern && !session.ServerSupports("prompts") && listResp != nil {
+			if code, valid := jsonRPCErrorCode(listResp.Body); valid && code == mcpMethodNotFound {
+				return nil, true
+			}
+		}
 		return nil, denied
 	}
 	promptsRaw, ok := result["prompts"].([]interface{})

@@ -325,12 +325,14 @@ Sends `prompts/list` and `prompts/get` without credentials. Prompt templates can
 encode system-level instructions and internal context that were not intended to be
 public. The prompts capability is read from the `initialize` or
 `server/discover` result for the wire being tested, not from a substring match.
+On the modern wire, the rule also tries `prompts/list` when the capability is
+omitted, so a reachable but unadvertised list is not reported as clean.
 The rule tries up to ten listed prompts, stopping at the first readable
 template. A list-only observation is **info**; retrieving template content as
 well is **medium**. Both are indicators until the intended access policy is
 known. An exact `expected_denials` entry for `mcp.prompts.list` or
 `mcp.prompts.get` can confirm the matching observation. A server that requires
-auth, or does not advertise the prompts capability, produces no finding.
+auth, or does not implement `prompts/list`, produces no finding.
 Pagination follows at most ten pages. A malformed cursor, non-authorization
 JSON-RPC error or interrupted read leaves the verdict incomplete; observed
 content remains in the findings.
@@ -346,8 +348,9 @@ The rule reports tool names and metadata returned by anonymous `tools/list` as
 `tools/call`, so invocation authorization remains untested. Normally the tools
 capability is confirmed from `initialize` or `server/discover`; when anonymous
 modern discovery is denied, a modern-shaped direct list response can establish
-the wire instead. An unknown name is not guaranteed harmless on a server under
-test. A protected list produces no finding.
+the wire instead. A modern server with no advertised tools is also checked by
+`tools/list`; a missing method produces no finding. An unknown name is not
+guaranteed harmless on a server under test. A protected list produces no finding.
 
 ---
 
@@ -677,7 +680,8 @@ responses are not graded as clean.
 Both calls require an exact `--mcp-invoke-tool` approval, a `readOnlyHint: true`
 annotation, and a usable annotated argument. Review the tool before approval;
 server-supplied annotations are not a safety guarantee. Missing prerequisites
-are reported as not tested.
+are reported as not tested. Tool discovery follows up to ten pages; an
+unfinished listing is not graded as clean.
 
 ---
 
@@ -1154,5 +1158,6 @@ requests.
 The call requires an exact `--mcp-invoke-tool` approval and a
 `readOnlyHint: true` annotation. The annotation is untrusted. If the modern
 extension, an approved read-only tool, or task handles are unavailable, the
-rule reports not tested. Task IDs must be hard to guess, and servers must
+rule reports not tested. Tool discovery follows up to ten pages and rejects
+repeated cursors. Task IDs must be hard to guess, and servers must
 authorize each task-related request independently.

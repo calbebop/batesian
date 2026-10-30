@@ -77,6 +77,7 @@ func (e *LogOptInExecutor) Execute(ctx context.Context, target string, opts atta
 	raw := rawSSEClient(opts)
 
 	sessions, err := openSessions(ctx, client, vars.BaseURL)
+	defer closeLegacySessions(ctx, client, sessions)
 	if err != nil {
 		return nil, err
 	}

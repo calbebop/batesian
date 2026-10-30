@@ -52,6 +52,7 @@ func (e *ScopeConfusionExecutor) Execute(ctx context.Context, target string, opt
 	}
 
 	sessions, sessErr := openSessionsAs(ctx, client, vars.BaseURL, discovery)
+	defer closeLegacySessionsWith(ctx, client, sessions, func(h map[string]string) { attachPrincipal(h, discovery) })
 	if sessErr != nil && len(sessions) == 0 {
 		return nil, sessErr
 	}
@@ -308,6 +309,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 				princB.name, sessA.Endpoint, err), false
 		}
 		sessB.Era = EraLegacy
+		defer closeLegacySessionsWith(ctx, client, []mcpSession{sessB}, func(h map[string]string) { attachPrincipal(h, princB) })
 	}
 
 	// Confirm the limited credential works before grading its refusals.

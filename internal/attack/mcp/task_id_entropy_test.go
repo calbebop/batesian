@@ -48,6 +48,9 @@ type entropyServer struct {
 	legacyResult         bool
 	legacyOnly           bool
 	noExtension          bool
+	noToolsCapability    bool
+	toolPage             bool
+	repeatCursor         bool
 	headerParam          bool
 	inputParam           bool
 	headerMismatchStatus int
@@ -118,6 +121,9 @@ func (s *entropyServer) handler() http.HandlerFunc {
 				versions = []string{"2025-11-25"}
 			}
 			capabilities := map[string]interface{}{"tools": map[string]interface{}{}}
+			if s.noToolsCapability {
+				delete(capabilities, "tools")
+			}
 			if !s.noExtension && !s.legacyOnly {
 				capabilities["extensions"] = map[string]interface{}{"io.modelcontextprotocol/tasks": map[string]interface{}{}}
 			}
@@ -152,17 +158,24 @@ func (s *entropyServer) handler() http.HandlerFunc {
 			if s.inputParam {
 				properties["query"] = map[string]interface{}{"type": "string"}
 			}
+			result := map[string]interface{}{"resultType": "complete", "tools": []map[string]interface{}{{
+				"name":        "wait_a_moment",
+				"annotations": annotations,
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": properties,
+					"required":   []interface{}{},
+				},
+			}}}
+			if s.toolPage {
+				cursor, _ := req.Params["cursor"].(string)
+				if cursor == "" || s.repeatCursor {
+					result["tools"] = []interface{}{}
+					result["nextCursor"] = "next"
+				}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": req.ID,
-				"result": map[string]interface{}{"resultType": "complete", "tools": []map[string]interface{}{{
-					"name":        "wait_a_moment",
-					"annotations": annotations,
-					"inputSchema": map[string]interface{}{
-						"type":       "object",
-						"properties": properties,
-						"required":   []interface{}{},
-					},
-				}}},
+				"jsonrpc": "2.0", "id": req.ID, "result": result,
 			})
 		case "tools/call":
 			if s.calls != nil {
@@ -283,6 +296,39 @@ func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	if !strings.Contains(seq.Evidence, "constant stride: 7") ||
 		strings.Contains(seq.Description+seq.Evidence, "100008") {
 		t.Errorf("evidence should retain the stride without exposing handles, got: %+v", seq)
+	}
+}
+
+func TestEntropy_PaginatedToolDiscovered(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{style: styleSequential, toolPage: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) == 0 || calls.Load() != 5 {
+		t.Fatalf("second-page tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestEntropy_UnadvertisedToolDiscovered(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{style: styleSequential, noToolsCapability: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if err != nil || len(findings) == 0 || calls.Load() != 5 {
+		t.Fatalf("unadvertised task tool was not assessed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestEntropy_RepeatedToolCursorIsIncomplete(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer((&entropyServer{toolPage: true, repeatCursor: true, calls: &calls}).handler())
+	defer ts.Close()
+
+	findings, err := runEntropy(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 0 {
+		t.Fatalf("repeated cursor must not produce a verdict: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }
 
