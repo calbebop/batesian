@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **31 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **32 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -15,9 +15,9 @@ Each finding carries a **confidence**:
 - **indicator** - access or another risk-relevant posture was observed, but the
   response alone does not establish a policy violation.
 
-An exact `expected_denials` entry can confirm observed anonymous prompt or
-completion access when the operator declares that operation forbidden. It does
-not promote errors or unverified access.
+An exact `expected_denials` entry can confirm observed access when the operator
+declares that operation forbidden. It does not promote errors or unverified
+access.
 
 Acceptance is judged at the **protocol layer** throughout: a probe counts as
 accepted only on HTTP 200 carrying a JSON-RPC `result` envelope. A 200 with a
@@ -172,6 +172,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-cache-scope-001` | [Public Cache Scope Across Principals](#mcp-cache-scope-001) | Medium | indicator | CWE-524 |
+| `mcp-mrtr-state-001` | [Cross-Principal Request State Replay](#mcp-mrtr-state-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
@@ -521,6 +522,28 @@ invalidation or infer user-specific content from changing results. If discovery
 or repeated reads cannot be compared, the rule reports not tested. Set
 `cacheScope: private` for caller-specific results and enforce access on each
 primitive separately.
+
+---
+
+### mcp-mrtr-state-001
+
+**Cross-Principal Request State Replay** | Severity: High | indicator / policy-confirmed | CWE-639
+
+This rule tests modern `resources/read` flows with two configured principals.
+It reads at most five resources listed to the owner. A candidate must return
+`input_required` with a bounded `requestState` and no `inputRequests`, so the
+scanner can retry without filling a form or invoking another operation. The
+second principal must be denied the same read without state. The rule then
+tries the owner's state as that principal and compares any returned content
+with a fresh owner retry. Resource URIs, state, and content stay out of findings.
+
+Matching content is an **indicator** because a deployment may intentionally
+make state transferable. Set an exact `expected_denials` entry for
+`mcp.resources.read` and the caller/owner pair to confirm an unauthorized
+handoff. A denied replay followed by a successful owner retry is a protected
+control. Missing state, input requests, unlisted resources, malformed results,
+and unmatched content remain **not tested**. The rule does not mutate state,
+answer elicitation, or test arbitrary state tampering and expiry.
 
 ---
 

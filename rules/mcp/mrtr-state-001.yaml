@@ -1,0 +1,29 @@
+id: mcp-mrtr-state-001
+info:
+  name: MCP Cross-Principal Request State Replay
+  author: batesian
+  severity: high
+  description: |
+    Tests whether requestState from one principal lets another read the same
+    resource after a denied baseline. Only state-only resources/read flows are
+    attempted. Matching owner content is an indicator unless an expected
+    denial declares the boundary.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - mcp
+    - authorization
+    - mrtr
+    - cwe-639
+
+attack:
+  protocol: mcp
+  type: mcp-mrtr-state
+
+remediation: |
+  Treat requestState as attacker-controlled. Protect its integrity when it
+  influences access, and bind it to the principal and originating request.
+  Use a short expiry and reject state presented outside that context.
