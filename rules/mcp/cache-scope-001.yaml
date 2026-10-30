@@ -4,10 +4,11 @@ info:
   author: batesian
   severity: medium
   description: |
-    Compares modern MCP discovery and read-only list results under two distinct
-    principals. A finding requires stable results that differ by principal while
-    both responses advertise cacheScope: public with a positive TTL. This is a
-    cache-scope mismatch, not proof that a client shared the cached result.
+    Compares modern MCP discovery, read-only lists, and up to five shared
+    resource reads under two distinct principals. A finding requires stable
+    results that differ by principal while both responses advertise
+    cacheScope: public with a positive TTL. This is a cache-scope mismatch,
+    not proof that a client shared the cached result.
 
   references:
     - https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching

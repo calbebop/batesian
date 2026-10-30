@@ -42,7 +42,7 @@ turn a weak JSON-RPC response into a clean HTTP rule verdict.
 
 | Surface | Endpoint test | Current decision |
 |---|---|---|
-| [Public cache scope](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching) | Compare stable results for two principals on `server/discover` and read-only list methods. | `mcp-cache-scope-001` reports different principal results with positive public TTL as an indicator. It does not test `resources/read` or client cache behavior. |
+| [Public cache scope](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching) | Compare stable results for two principals on `server/discover`, read-only lists, and up to five resource URIs listed to both. | `mcp-cache-scope-001` reports different principal results with positive public TTL as an indicator. It does not test client cache behavior or later list pages. |
 | [Subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions) | A cross-principal notification leak needs a resource both identities can address and a safe way to trigger an update. | No generic rule yet. An acknowledgment alone cannot prove that another principal received an event, and routine scans should not mutate arbitrary resources to create one. |
 | [Multi round-trip state](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) | A state-integrity failure needs a safe `input_required` flow and an observable change in authorization or resource access after a modified `requestState`. | No generic rule yet. Accepting an altered opaque state is not itself an exploit; the specification allows unprotected state when tampering can only fail the request. |
 
