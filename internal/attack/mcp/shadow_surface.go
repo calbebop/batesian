@@ -227,7 +227,8 @@ func shadowListItems(resp *attack.Response, err error, id int, method string) (i
 
 func shadowProbeIncomplete(resp *attack.Response, err error) bool {
 	if err != nil {
-		return !errors.Is(err, syscall.ECONNREFUSED)
+		// 10061 is Winsock's WSAECONNREFUSED.
+		return !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.Errno(10061))
 	}
 	if resp == nil {
 		return true

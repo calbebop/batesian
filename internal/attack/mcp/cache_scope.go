@@ -39,14 +39,19 @@ type cacheSurface struct {
 	method     string
 	field      string
 	capability string
+	params     map[string]interface{}
+	ordinal    int
+	total      int
 }
 
 var cacheListSurfaces = []cacheSurface{
-	{"tools/list", "tools", "tools"},
-	{"prompts/list", "prompts", "prompts"},
-	{"resources/list", "resources", "resources"},
-	{"resources/templates/list", "resourceTemplates", "resources"},
+	{method: "tools/list", field: "tools", capability: "tools"},
+	{method: "prompts/list", field: "prompts", capability: "prompts"},
+	{method: "resources/list", field: "resources", capability: "resources"},
+	{method: "resources/templates/list", field: "resourceTemplates", capability: "resources"},
 }
+
+const maxCacheResourceReads = 5
 
 func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	a, b, err := cacheScopePrincipals(opts)
@@ -76,7 +81,9 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 	var findings []attack.Finding
 	var incomplete []error
 	checks := append([]cacheSurface{{method: "server/discover"}}, cacheListSurfaces...)
-	for _, surface := range checks {
+	for i := 0; i < len(checks); i++ {
+		surface := checks[i]
+		requestID := 100 + 4*i
 		if surface.capability != "" && (!cacheSupports(firstA.raw, surface.capability) ||
 			!cacheSupports(firstB.raw, surface.capability)) {
 			continue
@@ -84,16 +91,16 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 		a1, b1 := firstA, firstB
 		if surface.method != "server/discover" {
 			var aErr, bErr error
-			a1, aErr = cacheScopeFetch(ctx, client, session, a, 10, surface)
-			b1, bErr = cacheScopeFetch(ctx, client, session, b, 11, surface)
+			a1, aErr = cacheScopeFetch(ctx, client, session, a, requestID, surface)
+			b1, bErr = cacheScopeFetch(ctx, client, session, b, requestID+1, surface)
 			if aErr != nil || bErr != nil {
 				incomplete = append(incomplete, fmt.Errorf("%w: %s did not return comparable results for both principals",
 					attack.ErrInconclusive, surface.method))
 				continue
 			}
 		}
-		a2, aErr := cacheScopeFetch(ctx, client, session, a, 12, surface)
-		b2, bErr := cacheScopeFetch(ctx, client, session, b, 13, surface)
+		a2, aErr := cacheScopeFetch(ctx, client, session, a, requestID+2, surface)
+		b2, bErr := cacheScopeFetch(ctx, client, session, b, requestID+3, surface)
 		if aErr != nil || bErr != nil {
 			incomplete = append(incomplete, fmt.Errorf("%w: %s could not be repeated for both principals",
 				attack.ErrInconclusive, surface.method))
@@ -104,10 +111,23 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 				attack.ErrInconclusive, surface.method))
 			continue
 		}
+		if surface.method == "resources/list" {
+			uris := cacheSharedResourceURIs(a1.raw, b1.raw)
+			for j, uri := range uris {
+				checks = append(checks, cacheSurface{
+					method: "resources/read", field: "contents", capability: "resources",
+					params: map[string]interface{}{"uri": uri}, ordinal: j + 1, total: len(uris),
+				})
+			}
+		}
 		if bytes.Equal(a1.payload, b1.payload) || !cachePublic(a1, a2) || !cachePublic(b1, b2) ||
 			a1.ttlMs <= b1.received.Sub(a1.received).Milliseconds() ||
 			b1.ttlMs <= a2.received.Sub(b1.received).Milliseconds() {
 			continue
+		}
+		subject := ""
+		if surface.ordinal != 0 {
+			subject = fmt.Sprintf("\nshared resource: %d of %d (URI omitted)", surface.ordinal, surface.total)
 		}
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
@@ -117,8 +137,8 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 			Title:      fmt.Sprintf("MCP %s advertises different principal results as publicly cacheable", surface.method),
 			Description: fmt.Sprintf("%s returned different stable results to %s and %s for the same request, while both responses declared a positive public cache lifetime. A shared client or gateway may serve one principal's result to the other. This proves a cache-scope mismatch, but does not prove a client actually shared the result.",
 				surface.method, a.name, b.name),
-			Evidence: fmt.Sprintf("method: %s\nprincipal %s: %d item(s), public TTL %d ms\nprincipal %s: %d item(s), public TTL %d ms\nA-B-A-B results were stable within each principal and different across principals; response content omitted",
-				surface.method, a.name, a1.count, a1.ttlMs, b.name, b1.count, b1.ttlMs),
+			Evidence: fmt.Sprintf("method: %s%s\nprincipal %s: %d item(s), public TTL %d ms\nprincipal %s: %d item(s), public TTL %d ms\nA-B-A-B results were stable within each principal and different across principals; response content omitted",
+				surface.method, subject, a.name, a1.count, a1.ttlMs, b.name, b1.count, b1.ttlMs),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
 		})
@@ -148,7 +168,7 @@ func cacheScopePrincipals(opts attack.Options) (taskPrincipal, taskPrincipal, er
 
 func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcpSession, principal taskPrincipal,
 	id int, surface cacheSurface) (cacheSnapshot, error) {
-	headers, body := session.request(id, surface.method, nil)
+	headers, body := session.request(id, surface.method, surface.params)
 	identity := map[string]string{}
 	attachPrincipal(identity, principal)
 	for key, value := range headers {
@@ -194,12 +214,46 @@ func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcp
 			}
 			canonical = append(canonical, string(encoded))
 		}
-		sort.Strings(canonical)
+		if surface.method != "resources/read" {
+			sort.Strings(canonical)
+		}
 		payload = map[string]interface{}{"items": canonical, "nextCursor": result["nextCursor"]}
 	}
 	var marshalErr error
 	snapshot.payload, marshalErr = json.Marshal(payload)
 	return snapshot, marshalErr
+}
+
+func cacheSharedResourceURIs(a, b []byte) []string {
+	listed := func(raw []byte) map[string]bool {
+		out := map[string]bool{}
+		envelope, ok := parseResponseBody(raw)
+		if !ok {
+			return out
+		}
+		result, _ := envelope["result"].(map[string]interface{})
+		resources, _ := result["resources"].([]interface{})
+		for _, resource := range resources {
+			item, _ := resource.(map[string]interface{})
+			uri, _ := item["uri"].(string)
+			if uri != "" {
+				out[uri] = true
+			}
+		}
+		return out
+	}
+	aURIs, bURIs := listed(a), listed(b)
+	shared := make([]string, 0)
+	for uri := range aURIs {
+		if bURIs[uri] {
+			shared = append(shared, uri)
+		}
+	}
+	sort.Strings(shared)
+	if len(shared) > maxCacheResourceReads {
+		shared = shared[:maxCacheResourceReads]
+	}
+	return shared
 }
 
 func cacheSupports(raw []byte, capability string) bool {
