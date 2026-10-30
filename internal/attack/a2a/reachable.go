@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -51,6 +52,10 @@ func cardServed(ctx context.Context, client *attack.HTTPClient, baseURL string) 
 func notTestableGiven(ctx context.Context, client *attack.HTTPClient, baseURL string, endpointOK bool) error {
 	if endpointOK {
 		return nil
+	}
+	_, _, noHTTPBinding := fetchDiscoveryCardWithBindings(ctx, client, baseURL)
+	if noHTTPBinding {
+		return fmt.Errorf("%w: agent card advertises no routable JSON-RPC or HTTP+JSON interface", attack.ErrInconclusive)
 	}
 	if cardServed(ctx, client, baseURL) {
 		return nil

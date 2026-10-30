@@ -111,7 +111,8 @@ const maxCardJSONRPCProbes = 16
 // resolveA2AEndpoint returns a reachable JSON-RPC URL on the target origin.
 // Advertised interfaces take precedence over conventional paths.
 func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL string) (endpoint string, ok bool) {
-	if card, found := fetchDiscoveryCard(ctx, client, baseURL); found {
+	card, found, noHTTPBinding := fetchDiscoveryCardWithBindings(ctx, client, baseURL)
+	if found {
 		seen := map[string]bool{}
 		for _, iface := range jsonRPCInterfaces(card) {
 			pinned := pinToTargetOrigin(iface.URL, baseURL)
@@ -133,6 +134,7 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 			}
 		}
 	}
+	nonJSONRPCOnly := noHTTPBinding || (found && len(jsonRPCInterfaces(card)) == 0)
 	// Strong evidence is accepted outright. Weak evidence is remembered and
 	// corroborated afterwards, so a single ambiguous candidate cannot decide it.
 	weak := ""
@@ -147,7 +149,7 @@ func resolveA2AEndpoint(ctx context.Context, client *attack.HTTPClient, baseURL 
 			}
 		}
 	}
-	if weak != "" && !looksLikeMCPServer(ctx, client, baseURL, weak) {
+	if weak != "" && !nonJSONRPCOnly && !looksLikeMCPServer(ctx, client, baseURL, weak) {
 		return weak, true
 	}
 	return endpointpkg.AppendPath(baseURL, "/"), false
@@ -193,6 +195,11 @@ func servesMCPResourceMetadata(ctx context.Context, client *attack.HTTPClient, b
 
 // fetchDiscoveryCard retrieves and parses the public agent card.
 func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL string) (a2aDiscoveryCard, bool) {
+	card, found, _ := fetchDiscoveryCardWithBindings(ctx, client, baseURL)
+	return card, found
+}
+
+func fetchDiscoveryCardWithBindings(ctx context.Context, client *attack.HTTPClient, baseURL string) (a2aDiscoveryCard, bool, bool) {
 	attempts := []struct {
 		path    string
 		headers map[string]string
@@ -201,6 +208,7 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 		{cardPathPrimary, nil},
 		{cardPathLegacy, nil},
 	}
+	noHTTPBinding := false
 	for _, attempt := range attempts {
 		cardURL := endpointpkg.AppendPath(baseURL, attempt.path)
 		resp, err := client.GET(ctx, cardURL, attempt.headers)
@@ -212,10 +220,14 @@ func fetchDiscoveryCard(ctx context.Context, client *attack.HTTPClient, baseURL 
 			continue
 		}
 		if hasRoutableHTTPInterface(card) {
-			return card, true
+			return card, true, false
+		}
+		if len(card.SupportedInterfaces) > 0 || len(card.AdditionalInterfaces) > 0 ||
+			card.PreferredTransport != "" {
+			noHTTPBinding = true
 		}
 	}
-	return a2aDiscoveryCard{}, false
+	return a2aDiscoveryCard{}, false, noHTTPBinding
 }
 
 func hasRoutableHTTPInterface(card a2aDiscoveryCard) bool {

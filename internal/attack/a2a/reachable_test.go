@@ -73,6 +73,29 @@ func cardOnlyServer() *httptest.Server {
 	}))
 }
 
+func grpcOnlyCardServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/.well-known/agent-card.json" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"gRPC Agent","supportedInterfaces":[{"url":"127.0.0.1:50051","protocolBinding":"GRPC","protocolVersion":"1.0"}]}`))
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": request.ID,
+			"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
+		})
+	}))
+}
+
 func executors() map[string]attack.Executor {
 	rc := testRuleCtx()
 	return map[string]attack.Executor{
@@ -121,6 +144,20 @@ func TestRules_CardlessAgentStaysTestable(t *testing.T) {
 	_, err := executors()["extension-downgrade"].Execute(context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Errorf("extension rule needs an Agent Card, got err=%v", err)
+	}
+}
+
+func TestRules_GRPCOnlyCardDoesNotMakeHTTPProbesClean(t *testing.T) {
+	server := grpcOnlyCardServer()
+	defer server.Close()
+
+	for _, name := range []string{"extcard", "session-smuggle", "push-ssrf"} {
+		t.Run(name, func(t *testing.T) {
+			findings, err := executors()[name].Execute(t.Context(), server.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("gRPC-only card made HTTP probe look clean: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 
