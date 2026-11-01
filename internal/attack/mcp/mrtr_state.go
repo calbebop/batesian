@@ -14,6 +14,7 @@ import (
 )
 
 const maxMRTRResourceReads = 5
+const maxMRTRResourceListPages = 3
 const maxMRTRStateBytes = 4096
 
 // MRTRStateExecutor checks whether resource request state crosses principals.
@@ -61,13 +62,16 @@ func (e *MRTRStateExecutor) Execute(ctx context.Context, target string, opts att
 			attack.ErrInconclusive, a.name, vars.BaseURL)
 	}
 	listed := mrtrPost(ctx, client, session, a, 2, "resources/list", nil)
-	uris, ok := mrtrListedURIs(listed.result)
-	if !ok || len(uris) == 0 {
+	uris, listErr := mrtrResourceURIs(ctx, client, session, a, listed.result)
+	if len(uris) == 0 {
 		return nil, fmt.Errorf("%w: principal %s had no comparable listed resources on the modern wire",
 			attack.ErrInconclusive, a.name)
 	}
 
 	var incomplete []error
+	if listErr != nil {
+		incomplete = append(incomplete, listErr)
+	}
 	tested := false
 	for i, uri := range uris {
 		id := 100 + 6*i
@@ -211,10 +215,61 @@ func mrtrListedURIs(result map[string]interface{}) ([]string, bool) {
 		uris = append(uris, uri)
 	}
 	sort.Strings(uris)
-	if len(uris) > maxMRTRResourceReads {
-		uris = uris[:maxMRTRResourceReads]
-	}
 	return uris, true
+}
+
+func mrtrResourceURIs(ctx context.Context, client *attack.HTTPClient, session mcpSession,
+	owner taskPrincipal, first map[string]interface{}) ([]string, error) {
+	var pages [][]string
+	seenCursors := map[string]bool{}
+	result := first
+	for page := range maxMRTRResourceListPages {
+		uris, ok := mrtrListedURIs(result)
+		if !ok {
+			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource list page %d was malformed or unavailable",
+				attack.ErrInconclusive, page+1)
+		}
+		pages = append(pages, uris)
+		cursor, more, valid := resourcesListCursor(result)
+		if !valid {
+			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource list page %d returned an invalid cursor",
+				attack.ErrInconclusive, page+1)
+		}
+		if !more {
+			return mrtrSelectURIs(pages), nil
+		}
+		if seenCursors[cursor] || page+1 == maxMRTRResourceListPages {
+			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource listing stopped before the final page",
+				attack.ErrInconclusive)
+		}
+		seenCursors[cursor] = true
+		result = mrtrPost(ctx, client, session, owner, 3+page, "resources/list",
+			map[string]interface{}{"cursor": cursor}).result
+	}
+	return mrtrSelectURIs(pages), nil
+}
+
+func mrtrSelectURIs(pages [][]string) []string {
+	selected := make([]string, 0, maxMRTRResourceReads)
+	seen := map[string]bool{}
+	maxLength := 0
+	for _, page := range pages {
+		if len(page) > maxLength {
+			maxLength = len(page)
+		}
+	}
+	for index := 0; index < maxLength && len(selected) < maxMRTRResourceReads; index++ {
+		for _, page := range pages {
+			if index < len(page) && !seen[page[index]] {
+				selected = append(selected, page[index])
+				seen[page[index]] = true
+				if len(selected) == maxMRTRResourceReads {
+					break
+				}
+			}
+		}
+	}
+	return selected
 }
 
 func mrtrInputState(result map[string]interface{}) (string, bool) {

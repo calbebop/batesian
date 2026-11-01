@@ -19,6 +19,7 @@ type mrtrFixture struct {
 	mode  string
 	mu    sync.Mutex
 	reads int
+	lists int
 }
 
 func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +67,35 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 		respond(map[string]interface{}{"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
 			"capabilities": capabilities}, 0)
 	case "resources/list":
+		f.mu.Lock()
+		f.lists++
+		listNumber := f.lists
+		f.mu.Unlock()
+		if strings.HasPrefix(f.mode, "paged-") {
+			cursor, _ := req.Params["cursor"].(string)
+			result := map[string]interface{}{"resultType": "complete", "resources": []map[string]string{}}
+			switch f.mode {
+			case "paged-vulnerable":
+				if cursor == "" {
+					resources := make([]map[string]string, 7)
+					for i := range resources {
+						resources[i] = map[string]string{"uri": "resource://public/" + strconv.Itoa(i), "name": "public"}
+					}
+					result["resources"] = resources
+					result["nextCursor"] = "next"
+				} else if cursor == "next" {
+					result["resources"] = []map[string]string{{"uri": "resource://owner?token=private", "name": "owner"}}
+				}
+			case "paged-loop":
+				result["nextCursor"] = "next"
+			case "paged-limit":
+				result["nextCursor"] = strconv.Itoa(listNumber)
+			case "paged-invalid":
+				result["nextCursor"] = 7
+			}
+			respond(result, 0)
+			return
+		}
 		resources := []map[string]string{{"uri": "resource://owner?token=private", "name": "owner"}}
 		if f.mode == "many" {
 			resources = nil
@@ -195,6 +225,41 @@ func TestMRTRState_JSONRPCAuthDenial(t *testing.T) {
 	findings, _, err := runMRTRFixture(t, "rpc-denied")
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestMRTRState_PaginatedOwnerResource(t *testing.T) {
+	findings, fixture, err := runMRTRFixture(t, "paged-vulnerable")
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if fixture.lists != 2 || fixture.reads > 10 {
+		t.Fatalf("list calls=%d resource reads=%d", fixture.lists, fixture.reads)
+	}
+}
+
+func TestMRTRState_BoundsResourcePages(t *testing.T) {
+	for _, tc := range []struct {
+		mode  string
+		lists int
+	}{
+		{"paged-loop", 2},
+		{"paged-limit", 3},
+		{"paged-invalid", 1},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, fixture, err := runMRTRFixture(t, tc.mode)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if fixture.lists != tc.lists || fixture.reads != 0 {
+				t.Fatalf("list calls=%d resource reads=%d", fixture.lists, fixture.reads)
+			}
+		})
 	}
 }
 

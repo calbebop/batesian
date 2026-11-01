@@ -530,7 +530,8 @@ primitive separately.
 **Cross-Principal Request State Replay** | Severity: High | indicator / policy-confirmed | CWE-639
 
 This rule tests modern `resources/read` flows with two configured principals.
-It reads at most five resources listed to the owner. A candidate must return
+It checks up to three owner list pages and reads at most five resources,
+sampling across pages. A candidate must return
 `input_required` with a bounded `requestState` and no `inputRequests`, so the
 scanner can retry without filling a form or invoking another operation. The
 second principal must be denied the same read without state. The rule then
