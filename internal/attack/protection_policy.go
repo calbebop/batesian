@@ -12,6 +12,7 @@ const (
 	MCPTasksGet           = "mcp.tasks.get"
 	MCPTasksUpdate        = "mcp.tasks.update"
 	MCPTasksCancel        = "mcp.tasks.cancel"
+	MCPResourcesRead      = "mcp.resources.read"
 	A2ATasksGet           = "a2a.tasks.get"
 	A2ATasksList          = "a2a.tasks.list"
 	A2ATasksCancel        = "a2a.tasks.cancel"

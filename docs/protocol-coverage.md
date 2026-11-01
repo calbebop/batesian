@@ -2,7 +2,7 @@
 
 This page records what the live compatibility gates and endpoint rules actually
 exercise. The advisory matrix was reviewed on 2026-10-28; the modern protocol
-sections were updated on 2026-10-29. A rule finding describes observed behavior
+sections were updated on 2026-10-30. A rule finding describes observed behavior
 on the scanned surface; it does not establish that a particular package or CVE
 is present.
 
@@ -43,8 +43,8 @@ turn a weak JSON-RPC response into a clean HTTP rule verdict.
 | Surface | Endpoint test | Current decision |
 |---|---|---|
 | [Public cache scope](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching) | Compare stable results for two principals on `server/discover`, read-only lists, and up to five resource URIs listed to both. | `mcp-cache-scope-001` reports different principal results with positive public TTL as an indicator. It does not test client cache behavior or later list pages. |
-| [Subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions) | A cross-principal notification leak needs a resource both identities can address and a safe way to trigger an update. | No generic rule yet. An acknowledgment alone cannot prove that another principal received an event, and routine scans should not mutate arbitrary resources to create one. |
-| [Multi round-trip state](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) | A state-integrity failure needs a safe `input_required` flow and an observable change in authorization or resource access after a modified `requestState`. | No generic rule yet. Accepting an altered opaque state is not itself an exploit; the specification allows unprotected state when tampering can only fail the request. |
+| [Subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions) | A cross-principal notification leak needs a denied read baseline, a resource both identities can address, and an approved way to trigger an update. | No generic rule. An acknowledgment does not prove that another principal received an event. A controlled fixture or operator-provided disposable update trigger is needed before the scanner can compare delivered events with a protected control. |
+| [Multi round-trip state](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) | Compare a denied `resources/read` baseline with a retry using another principal's state, then verify content against an owner retry. | `mcp-mrtr-state-001` tests bounded state-only flows. It does not answer input requests or test arbitrary state tampering and expiry. A handoff is an indicator unless the operator declares an expected denial. |
 
 ## MCP compatibility notes
 
