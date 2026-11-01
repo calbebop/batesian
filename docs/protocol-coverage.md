@@ -61,6 +61,11 @@ S256 PKCE challenge but does not exchange an authorization code. Legacy sessions
 opened through shared wire discovery are closed with DELETE when the server
 issues a session ID; servers may decline cleanup with HTTP 405.
 
+Legacy `resources/read` may use `-32002` for a missing resource. The 2026-07-28
+revision uses `-32602`. Some SDKs also use `-32001` for a missing session.
+Batesian requires an explicit authorization message before treating either code
+as a denial.
+
 ## Advisory-to-rule matrix
 
 The table separates an **endpoint behavior** that a bounded HTTP scan may see

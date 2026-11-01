@@ -423,6 +423,7 @@ func TestPromptUnauth_ListErrorsAndCursors(t *testing.T) {
 		incomplete bool
 	}{
 		{"auth error", 0, false},
+		{"session error", 0, true},
 		{"method error", 0, true},
 		{"validation error", 0, true},
 		{"first invalid cursor", 2, true},
@@ -456,9 +457,16 @@ func TestPromptUnauth_ListErrorsAndCursors(t *testing.T) {
 					return
 				case "prompts/list":
 					page := pages.Add(1)
-					if page == 1 && (tc.mode == "auth error" || tc.mode == "method error" || tc.mode == "validation error") {
-						code := map[string]int{"auth error": -32001, "method error": -32601, "validation error": -32602}[tc.mode]
-						reply["error"] = map[string]interface{}{"code": code, "message": "request rejected"}
+					if page == 1 && (tc.mode == "auth error" || tc.mode == "session error" || tc.mode == "method error" || tc.mode == "validation error") {
+						code := map[string]int{"auth error": -32001, "session error": -32001, "method error": -32601, "validation error": -32602}[tc.mode]
+						message := "request rejected"
+						switch tc.mode {
+						case "auth error":
+							message = "Unauthorized"
+						case "session error":
+							message = "Session not found"
+						}
+						reply["error"] = map[string]interface{}{"code": code, "message": message}
 					} else if page > 1 && tc.mode == "later RPC error" {
 						reply["error"] = map[string]interface{}{"code": -32603, "message": "server error"}
 					} else {

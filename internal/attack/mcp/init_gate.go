@@ -62,7 +62,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 			"the anonymous initialize control at %s did not answer, so acceptance of a forged token at initialize could not be attributed", ep)}
 	}
 
-	verdict := classifyAccess(resp, nil, 1)
+	verdict := classifyAuthAccess(resp, nil, 1)
 	if verdict != accessGranted {
 		switch verdict {
 		case accessRefused:
@@ -101,7 +101,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 	}
 
 	listResp, err := session.post(ctx, anon, 9, method, map[string]interface{}{})
-	switch classifyAccess(listResp, err, 9) {
+	switch classifyAuthAccess(listResp, err, 9) {
 	case accessRefused:
 		return gateProbe{gate: gateAfterInit, method: method, session: session}
 	case accessGranted:
@@ -128,7 +128,7 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 	if err != nil {
 		return nil, accessUndetermined, fmt.Sprintf("forged initialize at %s did not answer", ep)
 	}
-	initVerdict := classifyAccess(initResp, nil, 1)
+	initVerdict := classifyAuthAccess(initResp, nil, 1)
 	if initVerdict != accessGranted {
 		if initVerdict == accessUndetermined {
 			return initResp, initVerdict, fmt.Sprintf("forged initialize at %s returned neither a result nor a refusal", ep)
@@ -155,7 +155,7 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 	resp, err := session.postShaping(ctx, anon, 10, method, map[string]interface{}{}, func(h map[string]string) {
 		h["Authorization"] = "Bearer " + token
 	})
-	verdict := classifyAccess(resp, err, 10)
+	verdict := classifyAuthAccess(resp, err, 10)
 	if verdict == accessUndetermined {
 		return resp, verdict, fmt.Sprintf("forged %s at %s returned neither a result nor a refusal", method, ep)
 	}

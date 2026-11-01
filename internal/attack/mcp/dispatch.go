@@ -112,26 +112,9 @@ func validRPCError(body map[string]interface{}) bool {
 	return ok
 }
 
-// authFlavoredError reports whether a JSON-RPC error signals an authentication
-// or authorization rejection rather than a request-processing or validation
-// error. MCP auth rejections are normally delivered as HTTP 401/403; this guards
-// the uncommon case of a server that signals auth failure through a 200 response
-// carrying a JSON-RPC error.
-//
-// The match is deliberately precise. This predicate is used to suppress an
-// unauth-reachability finding, and for a scanner a false negative (missing a
-// method reachable without auth) is worse than a false positive, so only
-// unambiguous auth signals count. Bare substrings that occur in unrelated error
-// messages are avoided: in particular "token" alone is not matched, since a
-// validation message such as "unexpected token" would otherwise hide a real
-// finding.
-func authFlavoredError(code int, msg string) bool {
-	switch code {
-	case -32001, -32002: // unauthenticated / forbidden (project convention)
-		return true
-	}
-	// The keyword list lives in internal/attack so the A2A rules share it; three
-	// divergent copies is how a secured agent came to be accused of a bypass.
+// authFlavoredError requires an explicit refusal. SDKs also use -32001 for
+// missing sessions and -32002 for missing resources.
+func authFlavoredError(_ int, msg string) bool {
 	return attack.AuthFlavoredMessage(msg)
 }
 
@@ -140,8 +123,7 @@ func authFlavoredError(code int, msg string) bool {
 type dispatchSignal int
 
 const (
-	// dispatchNone means the handler was not reached: the method is unsupported
-	// (-32601) or auth was enforced via a JSON-RPC error.
+	// dispatchNone means the response does not prove the handler was reached.
 	dispatchNone dispatchSignal = iota
 	// dispatchResult means the response carried a JSON-RPC result envelope.
 	dispatchResult
@@ -161,6 +143,9 @@ func classifyDispatch(body map[string]interface{}) (dispatchSignal, int) {
 		}
 		if authFlavoredError(code, msg) {
 			return dispatchNone, 0 // auth enforced via a JSON-RPC error
+		}
+		if code == -32001 || (code == -32002 && msg == "") {
+			return dispatchNone, 0 // ambiguous SDK code without dispatch evidence
 		}
 		return dispatchError, code
 	}
