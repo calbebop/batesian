@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **32 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **33 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -173,6 +173,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-cache-scope-001` | [Public Cache Scope Across Principals](#mcp-cache-scope-001) | Medium | indicator | CWE-524 |
 | `mcp-mrtr-state-001` | [Cross-Principal Request State Replay](#mcp-mrtr-state-001) | High | indicator / policy-confirmed | CWE-639 |
+| `mcp-response-crossover-001` | [Cross-Client Response Crossover](#mcp-response-crossover-001) | High | confirmed | CWE-362 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
@@ -548,6 +549,29 @@ handoff. A denied replay followed by a successful owner retry is a protected
 control. Missing state, input requests, unlisted resources, malformed results,
 and unmatched content remain **not tested**. The rule does not mutate state,
 answer elicitation, or test arbitrary state tampering and expiry.
+
+---
+
+### mcp-response-crossover-001
+
+**Cross-Client Response Crossover** | Severity: High | confirmed | CWE-362
+
+This rule uses two isolated HTTP clients with distinct principals. It finds
+readable resources for each, requires stable and different content, and checks
+that the second principal is denied a direct read of the first principal's
+resource. It then sends up to three pairs of concurrent `resources/read`
+requests with the same JSON-RPC ID. A confirmed finding requires the second
+client to receive the first client's resource content while requesting its own
+resource, followed by stable reads and the same denial after the race. Resource
+URIs, content, and credentials stay out of the finding.
+
+The rule tests up to three list pages and three resource pairs. It does not
+mutate resources or depend on a particular SDK version. A clean result means
+only that the bounded requests did not reproduce a crossover. Missing lists,
+an absent denial, unstable content, or incomplete concurrent replies are **not
+tested**. This behavior can arise from sharing a stateless server or transport
+instance across clients. Isolate each instance by request or session and update
+affected SDK versions.
 
 ---
 

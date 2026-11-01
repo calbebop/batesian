@@ -1,0 +1,32 @@
+id: mcp-response-crossover-001
+info:
+  name: MCP Cross-Client Response Crossover
+  author: batesian
+  severity: high
+  description: |
+    Sends bounded concurrent resource reads from two isolated clients with
+    colliding JSON-RPC IDs. A finding requires a denied cross-principal read,
+    stable distinct resource content, and the caller receiving the owner's
+    content while requesting its own resource. A clean result covers only the
+    observed attempts and cannot rule out a timing-dependent race.
+
+  references:
+    - https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-jm63-cq47-j5jp
+    - https://cwe.mitre.org/data/definitions/362.html
+
+  tags:
+    - mcp
+    - authorization
+    - concurrency
+    - cwe-362
+
+attack:
+  protocol: mcp
+  type: mcp-response-crossover
+
+remediation: |
+  Bind each HTTP response and notification to its originating client request
+  and authorization context. Do not share a stateless MCP server or transport
+  instance across clients. If using affected @modelcontextprotocol/server
+  versions, upgrade to 2.3.0 or later and create a server and transport per
+  request or session.

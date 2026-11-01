@@ -40,11 +40,12 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **21 A2A + 32 MCP = 53 rules**. Every rule has an
+The bundled rule set is **21 A2A + 33 MCP = 54 rules**. Every rule has an
 in-process Go HTTP test server with vulnerable and control postures. The Python
 servers below provide standalone live validation for 50 rules; selected fixtures
-also run in CI. `mcp-task-access-001`, `mcp-cache-scope-001`, and
-`mcp-mrtr-state-001` have Go vulnerable fixtures only.
+also run in CI. `mcp-task-access-001`, `mcp-cache-scope-001`,
+`mcp-mrtr-state-001`, and `mcp-response-crossover-001` have Go vulnerable
+fixtures only.
 
 | File | Port | Rules covered |
 |---|---|---|
