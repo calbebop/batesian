@@ -33,6 +33,9 @@ type cacheSnapshot struct {
 	ttlMs    int64
 	count    int
 	received time.Time
+	cursor   string
+	more     bool
+	valid    bool
 }
 
 type cacheSurface struct {
@@ -42,16 +45,17 @@ type cacheSurface struct {
 	params     map[string]interface{}
 	ordinal    int
 	total      int
+	page       int
 }
 
 var cacheListSurfaces = []cacheSurface{
-	{method: "tools/list", field: "tools", capability: "tools"},
-	{method: "prompts/list", field: "prompts", capability: "prompts"},
-	{method: "resources/list", field: "resources", capability: "resources"},
-	{method: "resources/templates/list", field: "resourceTemplates", capability: "resources"},
+	{method: "tools/list", field: "tools", capability: "tools", page: 1},
+	{method: "prompts/list", field: "prompts", capability: "prompts", page: 1},
+	{method: "resources/list", field: "resources", capability: "resources", page: 1},
+	{method: "resources/templates/list", field: "resourceTemplates", capability: "resources", page: 1},
 }
 
-const maxCacheResourceReads = 5
+const maxCacheListPages = 3
 
 func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	a, b, err := cacheScopePrincipals(opts)
@@ -80,6 +84,7 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 
 	var findings []attack.Finding
 	var incomplete []error
+	seenListCursors := map[string]map[string]bool{}
 	checks := append([]cacheSurface{{method: "server/discover"}}, cacheListSurfaces...)
 	for i := 0; i < len(checks); i++ {
 		surface := checks[i]
@@ -111,8 +116,36 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 				attack.ErrInconclusive, surface.method))
 			continue
 		}
-		if surface.method == "resources/list" {
-			uris := cacheSharedResourceURIs(a1.raw, b1.raw)
+		if surface.page > 0 {
+			if !a1.valid || !b1.valid {
+				incomplete = append(incomplete, fmt.Errorf("%w: %s returned an invalid list cursor",
+					attack.ErrInconclusive, surface.method))
+			} else if a1.more && b1.more && a1.cursor == b1.cursor {
+				if seenListCursors[surface.method] == nil {
+					seenListCursors[surface.method] = map[string]bool{}
+				}
+				if seenListCursors[surface.method][a1.cursor] {
+					incomplete = append(incomplete, fmt.Errorf("%w: %s repeated a list cursor",
+						attack.ErrInconclusive, surface.method))
+				} else if surface.page < maxCacheListPages {
+					seenListCursors[surface.method][a1.cursor] = true
+					checks = append(checks, cacheSurface{
+						method: surface.method, field: surface.field, capability: surface.capability,
+						params: map[string]interface{}{"cursor": a1.cursor}, page: surface.page + 1,
+					})
+				}
+			}
+		}
+		if surface.method == "resources/list" && surface.page == 1 {
+			aPages, aPageErr := cacheResourcePages(ctx, client, session, a, a1, 300)
+			bPages, bPageErr := cacheResourcePages(ctx, client, session, b, b1, 310)
+			if aPageErr != nil {
+				incomplete = append(incomplete, aPageErr)
+			}
+			if bPageErr != nil {
+				incomplete = append(incomplete, bPageErr)
+			}
+			uris := cacheSharedResourceURIs(aPages, bPages)
 			for j, uri := range uris {
 				checks = append(checks, cacheSurface{
 					method: "resources/read", field: "contents", capability: "resources",
@@ -128,6 +161,8 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 		subject := ""
 		if surface.ordinal != 0 {
 			subject = fmt.Sprintf("\nshared resource: %d of %d (URI omitted)", surface.ordinal, surface.total)
+		} else if surface.page > 1 {
+			subject = fmt.Sprintf("\nlist page: %d (cursor omitted)", surface.page)
 		}
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
@@ -184,6 +219,9 @@ func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcp
 		return cacheSnapshot{}, fmt.Errorf("%w: %s returned no complete result", attack.ErrInconclusive, surface.method)
 	}
 	snapshot := cacheSnapshot{raw: resp.Body, received: time.Now()}
+	if surface.page > 0 {
+		snapshot.cursor, snapshot.more, snapshot.valid = resourcesListCursor(result)
+	}
 	snapshot.scope, _ = result["cacheScope"].(string)
 	if ttl, ok := result["ttlMs"].(json.Number); ok {
 		if value, parseErr := strconv.ParseInt(ttl.String(), 10, 64); parseErr == nil && value > 0 {
@@ -224,36 +262,64 @@ func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcp
 	return snapshot, marshalErr
 }
 
-func cacheSharedResourceURIs(a, b []byte) []string {
-	listed := func(raw []byte) map[string]bool {
-		out := map[string]bool{}
+func cacheResourcePages(ctx context.Context, client *attack.HTTPClient, session mcpSession,
+	principal taskPrincipal, first cacheSnapshot, id int) ([][]string, error) {
+	var pages [][]string
+	seenCursors := map[string]bool{}
+	raw := first.raw
+	for page := range maxCacheListPages {
 		envelope, ok := parseResponseBody(raw)
 		if !ok {
-			return out
+			return pages, fmt.Errorf("%w: resource list page %d was malformed",
+				attack.ErrInconclusive, page+1)
 		}
 		result, _ := envelope["result"].(map[string]interface{})
-		resources, _ := result["resources"].([]interface{})
-		for _, resource := range resources {
-			item, _ := resource.(map[string]interface{})
-			uri, _ := item["uri"].(string)
-			if uri != "" {
-				out[uri] = true
+		uris, ok := listedResourceURIs(result)
+		if !ok {
+			return pages, fmt.Errorf("%w: resource list page %d had invalid entries",
+				attack.ErrInconclusive, page+1)
+		}
+		pages = append(pages, uris)
+		cursor, more, valid := resourcesListCursor(result)
+		if !valid {
+			return pages, fmt.Errorf("%w: resource list page %d had an invalid cursor",
+				attack.ErrInconclusive, page+1)
+		}
+		if !more {
+			return pages, nil
+		}
+		if seenCursors[cursor] || page+1 == maxCacheListPages {
+			return pages, fmt.Errorf("%w: resource listing stopped before the final page",
+				attack.ErrInconclusive)
+		}
+		seenCursors[cursor] = true
+		next, err := cacheScopeFetch(ctx, client, session, principal, id+page,
+			cacheSurface{method: "resources/list", field: "resources", params: map[string]interface{}{"cursor": cursor}})
+		if err != nil {
+			return pages, fmt.Errorf("%w: resource list page %d was unavailable",
+				attack.ErrInconclusive, page+2)
+		}
+		raw = next.raw
+	}
+	return pages, nil
+}
+
+func cacheSharedResourceURIs(aPages, bPages [][]string) []string {
+	bURIs := map[string]bool{}
+	for _, page := range bPages {
+		for _, uri := range page {
+			bURIs[uri] = true
+		}
+	}
+	sharedPages := make([][]string, len(aPages))
+	for i, page := range aPages {
+		for _, uri := range page {
+			if bURIs[uri] {
+				sharedPages[i] = append(sharedPages[i], uri)
 			}
 		}
-		return out
 	}
-	aURIs, bURIs := listed(a), listed(b)
-	shared := make([]string, 0)
-	for uri := range aURIs {
-		if bURIs[uri] {
-			shared = append(shared, uri)
-		}
-	}
-	sort.Strings(shared)
-	if len(shared) > maxCacheResourceReads {
-		shared = shared[:maxCacheResourceReads]
-	}
-	return shared
+	return sampleResourceURIs(sharedPages)
 }
 
 func cacheSupports(raw []byte, capability string) bool {
