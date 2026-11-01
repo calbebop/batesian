@@ -1017,7 +1017,9 @@ zero bytes read. An echo of the caller's input with its dot-dot segments intact
 is not resolution evidence and is ignored, so a chatty read-only tool is not
 accused of traversal for repeating what it was sent. Without a resolved
 baseline lookup, the rule stops before sending traversal payloads and reports
-the probe inconclusive.
+the probe inconclusive. A rejected payload does not prevent later encodings
+from being tested. If any payload is rejected and none proves an escape, the
+result is not tested rather than clean.
 
 Candidates are approved, annotated tools exposing a string parameter named like a
 filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
