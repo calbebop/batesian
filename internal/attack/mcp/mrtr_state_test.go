@@ -89,13 +89,14 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if principal == "tok-b" && state == "" {
-			if f.mode == "shared" {
+			switch f.mode {
+			case "shared":
 				respond(mrtrComplete(uri, "owner-secret"), 0)
-			} else if f.mode == "rpc-denied" {
+			case "rpc-denied":
 				respond(nil, -32001)
-			} else if f.mode == "invalid-baseline" {
+			case "invalid-baseline":
 				respond(nil, -32602)
-			} else {
+			default:
 				w.WriteHeader(http.StatusForbidden)
 			}
 			return
