@@ -36,7 +36,16 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		body := map[string]interface{}{"jsonrpc": "2.0", "id": req.ID}
 		if code != 0 {
-			body["error"] = map[string]interface{}{"code": code, "message": "denied"}
+			message := "denied"
+			switch f.mode {
+			case "not-found-baseline":
+				if code == -32002 {
+					message = "Resource not found"
+				}
+			case "rpc-denied":
+				message = "Permission denied"
+			}
+			body["error"] = map[string]interface{}{"code": code, "message": message}
 		} else {
 			body["result"] = result
 		}
@@ -127,6 +136,8 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 				respond(nil, -32001)
 			case "invalid-baseline":
 				respond(nil, -32602)
+			case "not-found-baseline":
+				respond(nil, -32002)
 			default:
 				w.WriteHeader(http.StatusForbidden)
 			}
@@ -226,6 +237,18 @@ func TestMRTRState_JSONRPCAuthDenial(t *testing.T) {
 	findings, _, err := runMRTRFixture(t, "rpc-denied")
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestMRTRState_ResourceNotFoundIsNotDenial(t *testing.T) {
+	findings, fixture, err := runMRTRFixture(t, "not-found-baseline")
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("resource miss cannot establish a denied baseline: findings=%+v err=%v", findings, err)
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if fixture.reads != 2 {
+		t.Fatalf("unexpected request-state retry after resource miss: reads=%d", fixture.reads)
 	}
 }
 

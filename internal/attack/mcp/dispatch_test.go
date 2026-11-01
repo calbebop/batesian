@@ -60,11 +60,24 @@ func TestClassifyDispatch_JSONNumberCodes(t *testing.T) {
 	}
 }
 
-func TestClassifyDispatch_AuthCodes(t *testing.T) {
-	for _, code := range []int{-32001, -32002} {
-		sig, _ := classifyDispatch(errBody(code, ""))
+func TestClassifyDispatch_AmbiguousSessionCode(t *testing.T) {
+	for _, msg := range []string{"", "Session not found", "Permission denied"} {
+		sig, _ := classifyDispatch(errBody(-32001, msg))
 		if sig != dispatchNone {
-			t.Errorf("auth code %d: got %d, want none", code, sig)
+			t.Errorf("session code %q: got %d, want none", msg, sig)
+		}
+	}
+}
+
+func TestClassifyDispatch_LegacyResourceNotFound(t *testing.T) {
+	sig, code := classifyDispatch(errBody(-32002, "Resource not found"))
+	if sig != dispatchError || code != -32002 {
+		t.Errorf("resource error: got %d/%d, want error/-32002", sig, code)
+	}
+	for _, msg := range []string{"", "Permission denied"} {
+		sig, _ := classifyDispatch(errBody(-32002, msg))
+		if sig != dispatchNone {
+			t.Errorf("resource code %q: got %d, want none", msg, sig)
 		}
 	}
 }
@@ -100,10 +113,12 @@ func TestClassifyDispatch_NoResultNoError(t *testing.T) {
 }
 
 func TestAuthFlavoredError_Code(t *testing.T) {
-	if !authFlavoredError(-32001, "") || !authFlavoredError(-32002, "") {
-		t.Error("expected -32001/-32002 to be auth-flavored")
+	if !authFlavoredError(-32001, "Unauthorized") || !authFlavoredError(-32002, "Permission denied") {
+		t.Error("expected explicit auth refusals to be recognized")
 	}
-	if authFlavoredError(-32602, "Unknown tool") {
-		t.Error("-32602 must not be auth-flavored")
+	if authFlavoredError(-32001, "Session not found") || authFlavoredError(-32001, "") ||
+		authFlavoredError(-32002, "Resource not found") || authFlavoredError(-32002, "") ||
+		authFlavoredError(-32602, "Unknown tool") {
+		t.Error("resource and validation errors must not be treated as auth refusals")
 	}
 }
