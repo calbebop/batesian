@@ -83,7 +83,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 
 		// Step 2: the session must actually work when presented with the credential,
 		// or there is nothing to strip.
-		if v := e.toolsList(ctx, client, ep, session, authed); v != accessGranted {
+		if v := e.toolsList(ctx, client, ep, session, authed, listAuthOnly); v != accessGranted {
 			if v == accessUndetermined {
 				observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
 					"the credentialled call presenting the server's own session id at %s returned "+
@@ -120,14 +120,14 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// servers this rule exists to find. What answers the question is whether the
 		// session the anonymous caller was given can then call tools/list.
 		var anonSession mcpSession
-		if s, anonOK, _ := e.initialize(ctx, client, ep, nil); anonOK {
+		if s, anonOK, anonResp := e.initialize(ctx, client, ep, nil); anonOK {
 			anonSession = s
 			if anonSession.SessionID == "" {
 				missingAnonSession = fmt.Sprintf("the anonymous handshake at %s issued no session id, "+
 					"so the authentication control could not be compared", ep)
 				return nil, false
 			}
-			switch e.toolsList(ctx, client, ep, anonSession, nil) {
+			switch e.toolsList(ctx, client, ep, anonSession, nil, listAuthOnly) {
 			case accessGranted:
 				// Anonymous list access does not prove session-based authentication.
 				return nil, true
@@ -143,6 +143,10 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			// control below: both ids were minted by this server, and the only
 			// difference between them is the credential presented when they were
 			// opened.
+		} else if classifyAuthAccess(anonResp, nil, 1) != accessRefused {
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the anonymous initialize control at %s returned neither a result nor an authorization refusal, so whether this server enforces authorization could not be established", ep)})
+			return nil, false
 		}
 
 		// Step 4: control. No session, no credential. A server that answers this is
@@ -150,7 +154,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// the session id.
 		noSession := session
 		noSession.SessionID = ""
-		switch e.toolsList(ctx, client, ep, noSession, nil) {
+		switch e.toolsList(ctx, client, ep, noSession, nil, listAnyError) {
 		case accessGranted:
 			return nil, true
 		case accessUndetermined:
@@ -167,7 +171,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		bogus := "batesian-never-issued-" + vars.RandID
 		bogusSession := session
 		bogusSession.SessionID = bogus
-		switch e.toolsList(ctx, client, ep, bogusSession, nil) {
+		switch e.toolsList(ctx, client, ep, bogusSession, nil, listAnyError) {
 		case accessGranted:
 			return nil, true
 		case accessUndetermined:
@@ -178,7 +182,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		}
 
 		// Step 6: the real session id, no credential.
-		switch e.toolsList(ctx, client, ep, session, nil) {
+		switch e.toolsList(ctx, client, ep, session, nil, listAuthOnly) {
 		case accessRefused:
 			return nil, true // the session carries no authority: secure
 		case accessUndetermined:
@@ -238,14 +242,17 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 	}, true, resp
 }
 
-// toolsList reports whether tools/list was answered with a result under the given
-// session id and headers. An empty session omits the header entirely.
-//
-// It requires a result envelope, not merely a 2xx: a server refusing the call with
-// a JSON-RPC error at HTTP 200 has refused it, and reading that as success is the
-// mistake that produced fabricated findings elsewhere in this package.
+type listVerdictMode int
+
+const (
+	listAnyError listVerdictMode = iota
+	listAuthOnly
+)
+
+// toolsList checks a result, an explicit auth refusal, or any error for the
+// no-session and never-issued-session controls.
 func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *attack.HTTPClient,
-	endpoint string, session mcpSession, headers map[string]string) accessVerdict {
+	endpoint string, session mcpSession, headers map[string]string, mode listVerdictMode) accessVerdict {
 	h := session.header()
 	if h == nil {
 		h = map[string]string{}
@@ -259,18 +266,13 @@ func (e *SessionAsCredentialExecutor) toolsList(ctx context.Context, client *att
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	})
-	// classifyAccess, not err != nil -> false. Steps 4 and 5 are SUPPRESSION controls,
-	// so "refused" is the direction that lets the finding through: a transport failure
-	// or a 429 on either of them used to read as "this server does gate the surface",
-	// and the rule then attributed a step-6 success to the session id.
+	if mode == listAuthOnly {
+		return classifyAuthAccess(resp, err, 2)
+	}
+	// The no-session and never-issued-session controls only need to show that
+	// the request was rejected. A transport failure cannot establish that.
 	verdict := classifyAccess(resp, err, 2)
-	// One session-specific amendment. HTTP 404 is the shape the transport prescribes
-	// for a missing or unknown session id, and it commonly carries no JSON-RPC body, so
-	// classifyAccess grades it undetermined. Here it is a real refusal: every call this
-	// helper makes goes to an endpoint that has already completed a handshake, so a 404
-	// is this server declining this request rather than a path that does not exist.
-	// Without this a compliant server reports not tested at the controls instead of
-	// being assessed.
+	// A bodyless 404 rejects a missing or never-issued session at this endpoint.
 	if verdict == accessUndetermined && resp != nil && resp.StatusCode == http.StatusNotFound {
 		return accessRefused
 	}
