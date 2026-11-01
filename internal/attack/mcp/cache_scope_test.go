@@ -86,6 +86,24 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 			"capabilities": capabilities, "cacheScope": "public", "ttlMs": 60000,
 		}, 0)
 	case "tools/list":
+		if strings.HasPrefix(f.mode, "tools-paged") {
+			cursor, _ := req.Params["cursor"].(string)
+			name := "shared"
+			scope := "public"
+			result := map[string]interface{}{"resultType": "complete", "ttlMs": 60000}
+			if cursor == "" {
+				result["nextCursor"] = "next"
+			} else {
+				name = "private-" + principal
+				if f.mode == "tools-paged-private" {
+					scope = "private"
+				}
+			}
+			result["tools"] = []map[string]string{{"name": name}}
+			result["cacheScope"] = scope
+			respond(result, 0)
+			return
+		}
 		name := "private-" + principal
 		if f.mode == "same" || strings.HasPrefix(f.mode, "resource-") {
 			name = "shared"
@@ -120,6 +138,49 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 	case "prompts/list", "resources/list", "resources/templates/list":
 		if f.mode != "all" && !strings.HasPrefix(f.mode, "resource-") {
 			respond(nil, -32601)
+			return
+		}
+		if req.Method == "resources/list" && strings.HasPrefix(f.mode, "resource-paged") {
+			cursor, _ := req.Params["cursor"].(string)
+			result := map[string]interface{}{
+				"resultType": "complete", "resources": []map[string]string{},
+				"cacheScope": "public", "ttlMs": 60000,
+			}
+			if cursor == "" {
+				resources := make([]map[string]string, 7)
+				for i := range resources {
+					resources[i] = map[string]string{"uri": "resource://shared/public/" + strconv.Itoa(i)}
+				}
+				result["resources"] = resources
+				switch f.mode {
+				case "resource-paged-invalid":
+					result["nextCursor"] = 7
+				case "resource-paged-different-cursors":
+					result["nextCursor"] = "next-" + principal
+				default:
+					result["nextCursor"] = "next"
+				}
+			} else {
+				if f.mode == "resource-paged-denied" && principal == "tok-b" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				switch f.mode {
+				case "resource-paged-loop":
+					result["nextCursor"] = "next"
+				case "resource-paged-limit":
+					page, _ := strconv.Atoi(cursor)
+					result["nextCursor"] = strconv.Itoa(page + 1)
+				case "resource-paged-list-mismatch", "resource-paged-list-private":
+					result["resources"] = []map[string]string{{"uri": "resource://private-" + principal}}
+					if f.mode == "resource-paged-list-private" {
+						result["cacheScope"] = "private"
+					}
+				default:
+					result["resources"] = []map[string]string{{"uri": "resource://shared?token=private"}}
+				}
+			}
+			respond(result, 0)
 			return
 		}
 		field := map[string]string{
@@ -157,6 +218,13 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 		}, 0)
 	case "resources/read":
 		uri, _ := req.Params["uri"].(string)
+		if strings.HasPrefix(f.mode, "resource-paged") && strings.HasPrefix(uri, "resource://shared/public/") {
+			respond(map[string]interface{}{
+				"resultType": "complete", "contents": []map[string]string{{"uri": uri, "text": "shared"}},
+				"cacheScope": "public", "ttlMs": 60000,
+			}, 0)
+			return
+		}
 		if !strings.HasPrefix(f.mode, "resource-") ||
 			(f.mode != "resource-many" && uri != "resource://shared?token=private") ||
 			(f.mode == "resource-many" && !strings.HasPrefix(uri, "resource://shared/")) {
@@ -179,7 +247,7 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 			content += string(rune('0' + call))
 		}
 		scope := "public"
-		if f.mode == "resource-private" {
+		if f.mode == "resource-private" || f.mode == "resource-paged-protected" {
 			scope = "private"
 		}
 		respond(map[string]interface{}{
@@ -316,5 +384,115 @@ func TestCacheScope_ResourceReadBound(t *testing.T) {
 	defer fixture.mu.Unlock()
 	if fixture.calls["tok-a:resources/read"] != 10 || fixture.calls["tok-b:resources/read"] != 10 {
 		t.Fatalf("expected five repeated reads per principal, calls=%v", fixture.calls)
+	}
+}
+
+func TestCacheScope_PaginatedSharedResource(t *testing.T) {
+	for _, tc := range []struct {
+		mode  string
+		want  int
+		lists int
+	}{
+		{"resource-paged", 1, 5},
+		{"resource-paged-different-cursors", 2, 3},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, fixture, err := runCacheScopeFixture(t, tc.mode)
+			if err != nil || len(findings) != tc.want {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			readFound := false
+			for _, finding := range findings {
+				readFound = readFound || strings.Contains(finding.Evidence, "resources/read")
+				if strings.Contains(finding.Evidence, "resource://") || strings.Contains(finding.Evidence, "secret-") {
+					t.Fatalf("resource content leaked in evidence: %+v", finding)
+				}
+			}
+			if !readFound {
+				t.Fatalf("later-page resource read was not checked: %+v", findings)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			for _, principal := range []string{"tok-a", "tok-b"} {
+				if fixture.calls[principal+":resources/list"] != tc.lists || fixture.calls[principal+":resources/read"] != 10 {
+					t.Fatalf("unexpected page or read count: %v", fixture.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestCacheScope_PaginatedListScope(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{
+		{"resource-paged-list-mismatch", 1},
+		{"resource-paged-list-private", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, _, err := runCacheScopeFixture(t, tc.mode)
+			if err != nil || len(findings) != tc.want {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if tc.want > 0 && (!strings.Contains(findings[0].Evidence, "list page: 2") ||
+				strings.Contains(findings[0].Evidence, "resource://") || strings.Contains(findings[0].Evidence, "next")) {
+				t.Fatalf("later list page finding omitted page or leaked a cursor: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestCacheScope_PaginatedToolListScope(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{
+		{"tools-paged", 1},
+		{"tools-paged-private", 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, fixture, err := runCacheScopeFixture(t, tc.mode)
+			if err != nil || len(findings) != tc.want {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if tc.want > 0 && (!strings.Contains(findings[0].Evidence, "list page: 2") ||
+				strings.Contains(findings[0].Evidence, "private-tok")) {
+				t.Fatalf("later tool page finding omitted page or leaked content: %+v", findings[0])
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if fixture.calls["tok-a:tools/list"] != 4 || fixture.calls["tok-b:tools/list"] != 4 {
+				t.Fatalf("expected repeated reads of both pages: %v", fixture.calls)
+			}
+		})
+	}
+}
+
+func TestCacheScope_PaginatedProtectedAndIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		incomplete bool
+		listCalls  int
+	}{
+		{"resource-paged-protected", false, 5},
+		{"resource-paged-invalid", true, 2},
+		{"resource-paged-loop", true, 5},
+		{"resource-paged-limit", true, 8},
+		{"resource-paged-denied", true, 4},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, fixture, err := runCacheScopeFixture(t, tc.mode)
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.incomplete {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if fixture.calls["tok-a:resources/list"] != tc.listCalls ||
+				fixture.calls["tok-b:resources/list"] != tc.listCalls ||
+				fixture.calls["tok-a:resources/read"] > 10 || fixture.calls["tok-b:resources/read"] > 10 {
+				t.Fatalf("unexpected page or read count: %v", fixture.calls)
+			}
+		})
 	}
 }

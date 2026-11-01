@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-const maxMRTRResourceReads = 5
 const maxMRTRResourceListPages = 3
 const maxMRTRStateBytes = 4096
 
@@ -190,86 +188,35 @@ func mrtrPost(ctx context.Context, client *attack.HTTPClient, session mcpSession
 	return mrtrReply{result: result, raw: resp.Body}
 }
 
-func mrtrListedURIs(result map[string]interface{}) ([]string, bool) {
-	if result == nil || result["resultType"] != "complete" {
-		return nil, false
-	}
-	items, ok := result["resources"].([]interface{})
-	if !ok {
-		return nil, false
-	}
-	seen := map[string]bool{}
-	for _, raw := range items {
-		item, ok := raw.(map[string]interface{})
-		if !ok {
-			return nil, false
-		}
-		uri, ok := item["uri"].(string)
-		if !ok || uri == "" {
-			return nil, false
-		}
-		seen[uri] = true
-	}
-	uris := make([]string, 0, len(seen))
-	for uri := range seen {
-		uris = append(uris, uri)
-	}
-	sort.Strings(uris)
-	return uris, true
-}
-
 func mrtrResourceURIs(ctx context.Context, client *attack.HTTPClient, session mcpSession,
 	owner taskPrincipal, first map[string]interface{}) ([]string, error) {
 	var pages [][]string
 	seenCursors := map[string]bool{}
 	result := first
 	for page := range maxMRTRResourceListPages {
-		uris, ok := mrtrListedURIs(result)
+		uris, ok := listedResourceURIs(result)
 		if !ok {
-			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource list page %d was malformed or unavailable",
+			return sampleResourceURIs(pages), fmt.Errorf("%w: resource list page %d was malformed or unavailable",
 				attack.ErrInconclusive, page+1)
 		}
 		pages = append(pages, uris)
 		cursor, more, valid := resourcesListCursor(result)
 		if !valid {
-			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource list page %d returned an invalid cursor",
+			return sampleResourceURIs(pages), fmt.Errorf("%w: resource list page %d returned an invalid cursor",
 				attack.ErrInconclusive, page+1)
 		}
 		if !more {
-			return mrtrSelectURIs(pages), nil
+			return sampleResourceURIs(pages), nil
 		}
 		if seenCursors[cursor] || page+1 == maxMRTRResourceListPages {
-			return mrtrSelectURIs(pages), fmt.Errorf("%w: resource listing stopped before the final page",
+			return sampleResourceURIs(pages), fmt.Errorf("%w: resource listing stopped before the final page",
 				attack.ErrInconclusive)
 		}
 		seenCursors[cursor] = true
 		result = mrtrPost(ctx, client, session, owner, 3+page, "resources/list",
 			map[string]interface{}{"cursor": cursor}).result
 	}
-	return mrtrSelectURIs(pages), nil
-}
-
-func mrtrSelectURIs(pages [][]string) []string {
-	selected := make([]string, 0, maxMRTRResourceReads)
-	seen := map[string]bool{}
-	maxLength := 0
-	for _, page := range pages {
-		if len(page) > maxLength {
-			maxLength = len(page)
-		}
-	}
-	for index := 0; index < maxLength && len(selected) < maxMRTRResourceReads; index++ {
-		for _, page := range pages {
-			if index < len(page) && !seen[page[index]] {
-				selected = append(selected, page[index])
-				seen[page[index]] = true
-				if len(selected) == maxMRTRResourceReads {
-					break
-				}
-			}
-		}
-	}
-	return selected
+	return sampleResourceURIs(pages), nil
 }
 
 func mrtrInputState(result map[string]interface{}) (string, bool) {

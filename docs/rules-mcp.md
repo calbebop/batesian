@@ -509,15 +509,18 @@ The scan then reports that subcheck as not tested rather than clean.
 The 2026-07-28 caching model permits a result marked `cacheScope: public` to
 be reused across authorization contexts. This rule compares `server/discover`
 and advertised list methods under two configured, distinct principals. For
-resources listed to both principals, it also reads up to five shared URIs.
+resources listed to both principals, it also walks up to three list pages per
+principal and reads up to five shared URIs sampled across those pages.
 It reads each result twice in A-B-A-B order. A medium indicator requires both
 principals to return stable but different content, each with a positive public
 TTL that overlaps the other principal's request. It reports method, item
 counts, and TTLs without including list content, resource URIs, or credentials.
 
 The rule does not simulate a client cache or prove that a shared cache served
-the wrong result. A clean result covers only the tested methods, first list
-pages, and shared resource reads attempted. It does not exercise subscription
+the wrong result. It compares up to three list pages when both principals
+receive the same cursor; different cursors cannot be compared as the same
+cache key. A clean result covers only the tested pages and shared resource
+reads attempted across the bounded page walk. It does not exercise subscription
 invalidation or infer user-specific content from changing results. If discovery
 or repeated reads cannot be compared, the rule reports not tested. Set
 `cacheScope: private` for caller-specific results and enforce access on each
