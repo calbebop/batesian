@@ -32,6 +32,8 @@ info:
     proves the escape, with zero bytes read. An echo of the caller's input with
     its dot-dot segments intact is not resolution evidence and is ignored, so a
     chatty tool is not accused of traversal for repeating what it was sent.
+    Rejected payloads do not stop later encodings or approved tools. Rejected
+    variants remain not tested unless another variant proves an escape.
 
     Candidates are approved, read-only annotated tools exposing a string parameter named
     like a filesystem path ("path", "file_path", "filename", "directory", ...).

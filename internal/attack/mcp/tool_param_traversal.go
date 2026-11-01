@@ -35,17 +35,17 @@ func (e *ToolParamTraversalExecutor) Execute(ctx context.Context, target string,
 	client := attack.NewHTTPClient(opts, vars)
 
 	pending := map[string]bool{}
-	var stopReason string
+	var stopReasons []string
 	findings, err := runOnEachWire(ctx, client, vars.BaseURL, func(session mcpSession) ([]attack.Finding, bool) {
 		fs, determined, reason := e.probeSession(ctx, client, session, vars.RandID, opts.MCPInvokeTools, pending)
 		if reason != "" {
-			stopReason = reason
+			stopReasons = append(stopReasons, reason)
 		}
 		return fs, determined
 	})
-	if stopReason != "" {
-		return findings, fmt.Errorf("%w: tools/call for %s; the path probe was not assessed",
-			attack.ErrInconclusive, stopReason)
+	if len(stopReasons) > 0 {
+		return findings, fmt.Errorf("%w: path probes incomplete for %s",
+			attack.ErrInconclusive, strings.Join(stopReasons, "; "))
 	}
 	if len(pending) > 0 {
 		names := make([]string, 0, len(pending))
@@ -97,19 +97,27 @@ func (e *ToolParamTraversalExecutor) probeSession(ctx context.Context, client *a
 	}
 
 	var findings []attack.Finding
+	var incomplete []string
 	driven := 0
 	for _, cand := range approvedCandidates {
 		if driven >= traversalCaps {
 			break
 		}
 		driven++
-		f, reason := e.probeTool(ctx, client, session, randID, cand)
+		f, reason, hadRejectedPayload := e.probeTool(ctx, client, session, randID, cand)
 		if reason != "" {
+			if hadRejectedPayload {
+				incomplete = append(incomplete, fmt.Sprintf("%q: %s", cand.tool, reason))
+				continue
+			}
 			return findings, false, fmt.Sprintf("%q: %s", cand.tool, reason)
 		}
 		if f != nil {
 			findings = append(findings, *f)
 		}
+	}
+	if len(incomplete) > 0 {
+		return findings, false, strings.Join(incomplete, "; ")
 	}
 	return findings, true, ""
 }
@@ -225,7 +233,7 @@ func inertArgs(props map[string]interface{}, skip string, required map[string]bo
 }
 
 // callTool returns text only from a completed, matching tool response.
-func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, string) {
+func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, string, bool) {
 	args := map[string]interface{}{cand.param: value}
 	for k, v := range cand.others {
 		args[k] = v
@@ -235,13 +243,14 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		"arguments": args,
 	}, cand.schema, nil)
 	if err != nil || resp == nil {
-		return "", "transport failure"
+		return "", "transport failure", false
 	}
 	if isMCPHeaderMismatch(resp) {
-		return "", "HeaderMismatch"
+		return "", "HeaderMismatch", false
 	}
 	if !resp.IsSuccess() {
-		return "", fmt.Sprintf("HTTP %d", resp.StatusCode)
+		rejected := resp.StatusCode == 400 || resp.StatusCode == 403 || resp.StatusCode == 404 || resp.StatusCode == 422
+		return "", fmt.Sprintf("HTTP %d", resp.StatusCode), rejected
 	}
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
@@ -262,19 +271,19 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
 		json.Unmarshal(body.ID, &responseID) != nil || responseID != id ||
 		(body.Result == nil) == (body.Error == nil) {
-		return "", "malformed or uncorrelated JSON-RPC response"
+		return "", "malformed or uncorrelated JSON-RPC response", false
 	}
 	if body.Error != nil {
 		if body.Error.Code == nil || body.Error.Message == "" {
-			return "", "malformed JSON-RPC error"
+			return "", "malformed JSON-RPC error", false
 		}
-		return body.Error.Message, ""
+		return body.Error.Message, "", false
 	}
 	if session.Era == EraModern && body.Result.ResultType != "complete" {
-		return "", "incomplete tool result"
+		return "", "incomplete tool result", false
 	}
 	if body.Result.Content == nil {
-		return "", "tool result has no text content"
+		return "", "tool result has no text content", false
 	}
 	var sb strings.Builder
 	for _, c := range *body.Result.Content {
@@ -284,9 +293,9 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		}
 	}
 	if sb.Len() == 0 {
-		return "", "tool result has no text content"
+		return "", "tool result has no text content", false
 	}
-	return sb.String(), ""
+	return sb.String(), "", false
 }
 
 // traversalPayload is one attack-shaped argument for the path parameter.
@@ -324,25 +333,30 @@ func traversalPayloads(canary string) []traversalPayload {
 }
 
 // probeTool compares the baseline with path payloads.
-func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, string) {
+func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, string, bool) {
 	canary := "batesian-" + randID
 
-	baselineText, reason := e.callTool(ctx, client, session, 10, cand, canary)
+	baselineText, reason, _ := e.callTool(ctx, client, session, 10, cand, canary)
 	if reason != "" {
-		return nil, "baseline returned " + reason
+		return nil, "baseline returned " + reason, false
 	}
 	baselinePath := leakedPath(baselineText, canary)
 	if !resolvedAbsolute(baselinePath) {
-		return nil, "baseline did not disclose a resolved absolute path"
+		return nil, "baseline did not disclose a resolved absolute path", false
 	}
 
 	nextID := 11
+	var rejected []string
 	for _, probe := range traversalPayloads(canary) {
-		text, reason := e.callTool(ctx, client, session, nextID, cand, probe.value)
-		if reason != "" {
-			return nil, probe.label + " returned " + reason
-		}
+		text, reason, requestRejected := e.callTool(ctx, client, session, nextID, cand, probe.value)
 		nextID++
+		if requestRejected {
+			rejected = append(rejected, probe.label+" ("+reason+")")
+			continue
+		}
+		if reason != "" {
+			return nil, probe.label + " returned " + reason, false
+		}
 
 		path := leakedPath(text, canary)
 		if !resolvedAbsolute(path) {
@@ -353,10 +367,13 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 			continue
 		}
 		if escapedOutsideBaseline(path, baselinePath) {
-			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), ""
+			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), "", false
 		}
 	}
-	return nil, ""
+	if len(rejected) > 0 {
+		return nil, "path payloads had no comparable resolution: " + strings.Join(rejected, ", "), true
+	}
+	return nil, "", false
 }
 
 // resolvedAbsolute reports whether p is an absolute path with its traversal

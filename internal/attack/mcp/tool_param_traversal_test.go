@@ -29,11 +29,12 @@ func traversalRC() attack.RuleContext {
 // traversalServer answers the MCP handshake and serves one tool set. The
 // readTool behaviour decides what a tools/call for it reports back.
 type traversalServer struct {
-	caps  map[string]interface{}
-	tools []map[string]interface{}
-	list  func(http.ResponseWriter, json.Number, map[string]interface{})
-	call  func(name string, args map[string]interface{}) (resultText string, isError bool, errMessage string)
-	reply func(http.ResponseWriter, json.Number, map[string]interface{})
+	caps   map[string]interface{}
+	tools  []map[string]interface{}
+	list   func(http.ResponseWriter, json.Number, map[string]interface{})
+	call   func(name string, args map[string]interface{}) (resultText string, isError bool, errMessage string)
+	reject func(name string, args map[string]interface{}) bool
+	reply  func(http.ResponseWriter, json.Number, map[string]interface{})
 }
 
 func (s *traversalServer) handler() http.HandlerFunc {
@@ -70,6 +71,10 @@ func (s *traversalServer) handler() http.HandlerFunc {
 			params := body.Params
 			name, _ := params["name"].(string)
 			args, _ := params["arguments"].(map[string]interface{})
+			if s.reject != nil && s.reject(name, args) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			if s.reply != nil {
 				s.reply(w, body.ID, args)
 				return
@@ -434,6 +439,90 @@ func TestTraversal_JSONRPCErrorCanDiscloseResolvedPath(t *testing.T) {
 	findings, err := runTraversal(t, ts)
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("resolved path in JSON-RPC error was missed: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTraversal_RejectedPayloadDoesNotHideLaterEncoding(t *testing.T) {
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+		reply: func(w http.ResponseWriter, id json.Number, args map[string]interface{}) {
+			calls.Add(1)
+			path, _ := args["path"].(string)
+			if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `..\`) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if strings.Contains(path, "%2e") {
+				path, _ = url.QueryUnescape(path)
+			}
+			text := strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"content": []interface{}{map[string]interface{}{"type": "text", "text": text}}},
+			})
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "URL-encoded") || calls.Load() != 4 {
+		t.Fatalf("encoded escape after path rejection was missed: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestTraversal_RejectedPayloadsStayInconclusive(t *testing.T) {
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+		reply: func(w http.ResponseWriter, id json.Number, args map[string]interface{}) {
+			calls.Add(1)
+			path, _ := args["path"].(string)
+			if strings.Contains(path, "..") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "C:") || strings.Contains(path, "%") {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			text := strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]interface{}{"content": []interface{}{map[string]interface{}{"type": "text", "text": text}}},
+			})
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || calls.Load() != 7 {
+		t.Fatalf("rejected payloads need an incomplete verdict after all variants: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
+	}
+}
+
+func TestTraversal_RejectedToolDoesNotHideNextTool(t *testing.T) {
+	var calls atomic.Int32
+	srv := &traversalServer{
+		caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+		tools: []map[string]interface{}{readOnlySchemaTool("echo_note_path"), readOnlySchemaTool("read_note")},
+		reject: func(name string, args map[string]interface{}) bool {
+			calls.Add(1)
+			path, _ := args["path"].(string)
+			return name == "echo_note_path" && (strings.Contains(path, "..") || strings.HasPrefix(path, "/") || strings.Contains(path, "%"))
+		},
+		call: func(name string, args map[string]interface{}) (string, bool, string) {
+			path, _ := args["path"].(string)
+			return strings.ReplaceAll(leakTemplate, "<PATH>", joinLikeNaive(path)), true, ""
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	findings, err := runTraversal(t, ts)
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "tool: read_note") ||
+		!errors.Is(err, attack.ErrInconclusive) || calls.Load() != 9 {
+		t.Fatalf("later approved tool was skipped: findings=%+v calls=%d err=%v", findings, calls.Load(), err)
 	}
 }
 
