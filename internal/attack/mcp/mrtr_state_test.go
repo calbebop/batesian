@@ -76,14 +76,15 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 			result := map[string]interface{}{"resultType": "complete", "resources": []map[string]string{}}
 			switch f.mode {
 			case "paged-vulnerable":
-				if cursor == "" {
+				switch cursor {
+				case "":
 					resources := make([]map[string]string, 7)
 					for i := range resources {
 						resources[i] = map[string]string{"uri": "resource://public/" + strconv.Itoa(i), "name": "public"}
 					}
 					result["resources"] = resources
 					result["nextCursor"] = "next"
-				} else if cursor == "next" {
+				case "next":
 					result["resources"] = []map[string]string{{"uri": "resource://owner?token=private", "name": "owner"}}
 				}
 			case "paged-loop":
