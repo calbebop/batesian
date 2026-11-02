@@ -1051,6 +1051,10 @@ the probe inconclusive. A rejected payload does not prevent later encodings
 from being tested. If any payload is rejected and none proves an escape, the
 result is not tested rather than clean.
 
+POSIX root paths remain contained under `/`; Windows case and slash differences
+are normalized before comparison. Quoted path components in server errors are
+preserved. Incompatible path styles are not tested.
+
 Candidates are approved, annotated tools exposing a string parameter named like a
 filesystem path (`path`, `file_path`, `filename`, `directory`, ...). A server
 whose safe tools take no such parameter reports clean: the rule does not

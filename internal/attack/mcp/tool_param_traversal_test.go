@@ -161,6 +161,50 @@ func readOnlySchemaTool(name string) map[string]interface{} {
 	}
 }
 
+func TestTraversal_PathComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		baseline     string
+		probe        string
+		wantFinding  bool
+		inconclusive bool
+	}{
+		{"POSIX root", "/", "/tmp/", false, false},
+		{"quote-bearing sibling", "/srv/notes'/", "/srv/notes/", true, false},
+		{"quote-bearing contained path", "/srv/notes'/", "/srv/notes'/nested/", false, false},
+		{"Windows case and separators", `C:\Sandbox\`, "c:/sandbox/subdir/", false, false},
+		{"Windows other drive", `C:\Sandbox\`, `D:\outside\`, true, false},
+		{"incompatible path styles", "/srv/notes/", `C:\outside\`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &traversalServer{
+				caps:  map[string]interface{}{"tools": map[string]interface{}{}},
+				tools: []map[string]interface{}{readOnlySchemaTool("read_note")},
+				call: func(_ string, args map[string]interface{}) (string, bool, string) {
+					input, _ := args["path"].(string)
+					markerIndex := strings.LastIndex(input, "batesian-")
+					if markerIndex < 0 {
+						return "", false, "missing test marker"
+					}
+					marker := input[markerIndex:]
+					prefix := tc.probe
+					if input == marker {
+						prefix = tc.baseline
+					}
+					return strings.ReplaceAll(leakTemplate, "<PATH>", prefix+marker), true, ""
+				},
+			}
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+			findings, err := runTraversal(t, ts)
+			if got := len(findings) == 1; got != tc.wantFinding ||
+				errors.Is(err, attack.ErrInconclusive) != tc.inconclusive {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 // TestTraversal_VulnerableFires: a naive join that resolves outside the root
 // and leaks where it looked. MUST fire confirmed/high from the resolution
 // evidence alone - no file content was ever returned.
