@@ -901,6 +901,7 @@ credential to compare against. Without one it reports **inconclusive**, not clea
    servers leave `initialize` ungated and authorize what follows. If the anonymous
    handshake is accepted but issues no session, the rule stops, since a refusal
    below could then be about the missing session rather than the missing credential.
+   A generic JSON-RPC error does not establish an authorization gate.
 4. Control: `tools/list` with **no session and no credential**. A server that
    answers it is open on this surface, so a later success cannot be attributed to
    the session id.
@@ -908,6 +909,9 @@ credential to compare against. Without one it reports **inconclusive**, not clea
    credential. A server that accepts this treats the presence of the header as
    authorization, so the issued id is not what decided it.
 6. `tools/list` presenting the **real** session id and no credential.
+
+If the real session expires during the comparison, the result is inconclusive
+rather than clean.
 
 A **confirmed** finding is raised only when step 6 is answered. Steps 5 and 6 are
 the same request differing in one detail, so the session id is provably the
