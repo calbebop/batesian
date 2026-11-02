@@ -306,6 +306,50 @@ principals:
 	}
 }
 
+func TestLoad_MCPSubscriptionProbe(t *testing.T) {
+	const valid = `target: https://mcp.example.com
+principals:
+  - name: owner
+    token: owner-token
+  - name: caller
+    token: caller-token
+mcp_subscription_probe:
+  owner: owner
+  caller: caller
+  resource_uri: resource://test/disposable
+  trigger_tool: update_resource
+  trigger_arguments:
+    value: changed
+`
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.MCPSubscriptionProbe == nil ||
+		cfg.MCPSubscriptionProbe.TriggerArguments["value"] != "changed" {
+		t.Fatalf("probe=%+v err=%v", cfg.MCPSubscriptionProbe, err)
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1)},
+		{"unknown caller", strings.Replace(valid, "  caller: caller\n", "  caller: other\n", 1)},
+		{"relative URI", strings.Replace(valid, "resource://test/disposable", "disposable", 1)},
+		{"missing arguments", strings.Replace(valid, "  trigger_arguments:\n    value: changed\n", "", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "mcp_subscription_probe") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_PrincipalMissingName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")

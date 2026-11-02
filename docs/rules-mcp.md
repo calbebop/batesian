@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **33 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **34 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -172,6 +172,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-cache-scope-001` | [Public Cache Scope Across Principals](#mcp-cache-scope-001) | Medium | indicator | CWE-524 |
+| `mcp-subscription-scope-001` | [Cross-Principal Resource Update](#mcp-subscription-scope-001) | Medium | indicator | CWE-863 |
 | `mcp-mrtr-state-001` | [Cross-Principal Request State Replay](#mcp-mrtr-state-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-response-crossover-001` | [Cross-Client Response Crossover](#mcp-response-crossover-001) | High | confirmed | CWE-362 |
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
@@ -528,6 +529,29 @@ invalidation or infer user-specific content from changing results. If discovery
 or repeated reads cannot be compared, the rule reports not tested. Set
 `cacheScope: private` for caller-specific results, keep the same scope across
 list pages, and enforce access on each primitive separately.
+
+---
+
+### mcp-subscription-scope-001
+
+**Cross-Principal Resource Update** | Severity: Medium | indicator | CWE-863
+
+This modern MCP check is opt-in. Set `mcp_subscription_probe` in a config file
+with the target, two named principals, a disposable `resource_uri`, an exact
+`trigger_tool`, and its `trigger_arguments`. Batesian calls the tool once as the
+owner. It does not undo the update. The configured target cannot be overridden
+with `--target`.
+
+The owner must read the resource while the caller receives an explicit read
+denial. The rule opens both `subscriptions/listen` streams, checks their
+acknowledgments and subscription IDs, calls the tool, and requires changed owner
+content and an owner update event. A finding requires the caller to receive an
+update for the same URI while its read denial persists. The URI, content, and
+arguments stay out of the finding. A caller subscription refusal is **not
+tested** without a positive caller authentication control; missing or
+uncorrelated events are also **not tested** after a bounded wait. Delivered
+updates remain **indicators** because a deployment may grant
+subscription access separately from resource reads.
 
 ---
 

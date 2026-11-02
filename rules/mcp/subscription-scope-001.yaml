@@ -1,0 +1,31 @@
+id: mcp-subscription-scope-001
+info:
+  name: MCP Cross-Principal Resource Update
+  author: batesian
+  severity: medium
+  description: |
+    Uses an operator-configured disposable resource and one exact update tool
+    call. A finding requires an owner read, an explicit caller read denial,
+    changed owner content, and correlated update notifications on both
+    subscription streams. A delivered update is an indicator because a server
+    may intentionally grant subscription access without resource-read access.
+
+  references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/resources
+    - https://cwe.mitre.org/data/definitions/863.html
+
+  tags:
+    - mcp
+    - authorization
+    - subscription
+    - cwe-863
+
+attack:
+  protocol: mcp
+  type: mcp-subscription-scope
+
+remediation: |
+  Authorize resource subscriptions and each delivered update for the requesting
+  principal. If a principal may receive updates without read access, document
+  that policy and avoid including sensitive resource identifiers in notifications.

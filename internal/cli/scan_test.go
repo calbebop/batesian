@@ -221,6 +221,85 @@ func TestScanExpectedDenialsRejectDifferentTarget(t *testing.T) {
 	}
 }
 
+func TestScanSubscriptionProbeRejectsDifferentTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := `target: https://mcp.example.com
+principals:
+  - name: owner
+    token: owner-token
+  - name: caller
+    token: caller-token
+mcp_subscription_probe:
+  owner: owner
+  caller: caller
+  resource_uri: resource://test/disposable
+  trigger_tool: update_resource
+  trigger_arguments: {}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", "https://other.example.com")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(),
+		"mcp_subscription_probe cannot be used with a different --target") {
+		t.Fatalf("error = %v, want subscription probe target mismatch", err)
+	}
+}
+
+func TestScanSubscriptionProbeDryRunDoesNotCallTool(t *testing.T) {
+	previousContext := scanCmd.Context()
+	scanCmd.SetContext(context.Background())
+	t.Cleanup(func() { scanCmd.SetContext(previousContext) })
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer target.Close()
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := fmt.Sprintf(`target: %s
+principals:
+  - name: owner
+    token: owner-token
+  - name: caller
+    token: caller-token
+mcp_subscription_probe:
+  owner: owner
+  caller: caller
+  resource_uri: resource://test/disposable?key=private-marker
+  trigger_tool: update_resource
+  trigger_arguments:
+    value: trigger-secret-marker
+`, target.URL)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "protocol", "mcp")
+	setScanFlag(t, "dry-run", "true")
+	setScanSliceFlag(t, "rule-ids", []string{"mcp-subscription-scope-001"})
+	output, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("dry run sent %d requests", requests.Load())
+	}
+	for _, secret := range []string{"private-marker", "trigger-secret-marker", "owner-token", "caller-token"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("dry run output contains %q", secret)
+		}
+	}
+}
+
 func TestEffectiveTimeout(t *testing.T) {
 	tests := []struct {
 		name        string

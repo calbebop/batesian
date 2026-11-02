@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **54 bundled rules:** 21 A2A and 33 MCP checks focused on protocol-specific weaknesses.
+- **55 bundled rules:** 21 A2A and 34 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,7 +87,7 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [33 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [34 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
@@ -238,6 +238,7 @@ See the [binding assessment](docs/protocol-coverage.md#a2a-grpc-assessment).
 - Stateful rules may create A2A and MCP tasks, A2A push configurations, and OAuth clients. Scan reports list accepted and unverified objects with cleanup status even when no finding is produced. The push SSRF, callback-auth, and binding rules attempt to delete configurations after readback confirms the registered callback. External OOB probes retain registrations for manual verification. Other push configs may remain. Task cancellation is not deletion. Review leftover objects after a scan.
 - The scope-confusion rule invokes a mutating tool only when its exact name is approved with `--mcp-scope-tool`. This also asserts that the limited principal should be denied access to that tool.
 - Traversal and task rules require `--mcp-invoke-tool NAME` before calling a real MCP tool. Review the tool yourself; server-supplied read-only annotations are only hints.
+- The [MCP subscription check](docs/rules-mcp.md#mcp-subscription-scope-001) runs only with a target-bound `mcp_subscription_probe` in the config. It calls the specified update tool once, so use a disposable resource and arguments.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 
 ## Results and exit behavior

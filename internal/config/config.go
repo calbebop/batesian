@@ -4,9 +4,11 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +62,9 @@ type Config struct {
 	// MCPInvokeTools are exact names the traversal and task rules may call.
 	MCPInvokeTools []string `yaml:"mcp_invoke_tools"`
 
+	// MCPSubscriptionProbe permits one explicit update of a disposable resource.
+	MCPSubscriptionProbe *MCPSubscriptionProbeConfig `yaml:"mcp_subscription_probe"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -111,6 +116,15 @@ type PrincipalConfig struct {
 	Tenant string `yaml:"tenant"`
 	// Headers are extra request headers used for tenant routing/scoping.
 	Headers map[string]string `yaml:"headers"`
+}
+
+// MCPSubscriptionProbeConfig supplies an owner-only update and its resource.
+type MCPSubscriptionProbeConfig struct {
+	Owner            string                 `yaml:"owner"`
+	Caller           string                 `yaml:"caller"`
+	ResourceURI      string                 `yaml:"resource_uri"`
+	TriggerTool      string                 `yaml:"trigger_tool"`
+	TriggerArguments map[string]interface{} `yaml:"trigger_arguments"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -208,6 +222,27 @@ func (c *Config) validate(path string) error {
 			return fmt.Errorf("config %s: duplicate principal name %q", path, p.Name)
 		}
 		seen[p.Name] = true
+	}
+	if probe := c.MCPSubscriptionProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: mcp_subscription_probe requires a target in the same config file", path)
+		}
+		if probe.Owner == probe.Caller || !seen[probe.Owner] || !seen[probe.Caller] {
+			return fmt.Errorf("config %s: mcp_subscription_probe requires distinct configured owner and caller principals", path)
+		}
+		uri, err := url.Parse(probe.ResourceURI)
+		if probe.ResourceURI == "" || strings.TrimSpace(probe.ResourceURI) != probe.ResourceURI ||
+			err != nil || uri.Scheme == "" {
+			return fmt.Errorf("config %s: mcp_subscription_probe requires an absolute resource_uri", path)
+		}
+		if probe.TriggerTool == "" || strings.TrimSpace(probe.TriggerTool) != probe.TriggerTool ||
+			probe.TriggerArguments == nil {
+			return fmt.Errorf("config %s: mcp_subscription_probe requires trigger_tool and trigger_arguments", path)
+		}
+		args, err := json.Marshal(probe.TriggerArguments)
+		if err != nil || len(args) > 16<<10 {
+			return fmt.Errorf("config %s: mcp_subscription_probe trigger_arguments must be JSON-compatible and at most 16 KiB", path)
+		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}
 	if len(c.ExpectedDenials) > 0 && strings.TrimSpace(c.Target) == "" {
@@ -333,6 +368,16 @@ func Example() string {
 # approval; readOnlyHint is supplied by the server and is not a safety guarantee.
 # mcp_invoke_tools:
 #   - read_file
+
+# Opt-in subscription check against a disposable resource. The owner invokes
+# trigger_tool once with these exact arguments. Set target above to lock scope.
+# mcp_subscription_probe:
+#   owner: tenant-a
+#   caller: tenant-b
+#   resource_uri: resource://test/disposable
+#   trigger_tool: update_test_resource
+#   trigger_arguments:
+#     value: changed-by-batesian
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:
