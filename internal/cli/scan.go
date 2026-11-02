@@ -145,6 +145,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if len(cfg.ExpectedDenials) > 0 && target != cfg.Target {
 		return errors.New("expected_denials cannot be used with a different --target")
 	}
+	if cfg.MCPSubscriptionProbe != nil && target != cfg.Target {
+		return errors.New("mcp_subscription_probe cannot be used with a different --target")
+	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
@@ -251,6 +254,13 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if err != nil {
 		return err
 	}
+	var subscriptionProbe *attackpkg.MCPSubscriptionProbe
+	if p := cfg.MCPSubscriptionProbe; p != nil {
+		subscriptionProbe = &attackpkg.MCPSubscriptionProbe{
+			Owner: p.Owner, Caller: p.Caller, ResourceURI: p.ResourceURI,
+			TriggerTool: p.TriggerTool, TriggerArguments: p.TriggerArguments,
+		}
+	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
 	if err != nil {
@@ -324,18 +334,19 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 
 	opts := attackpkg.Options{
-		OOBListenerURL:  oobURL,
-		Token:           token,
-		TimeoutSeconds:  timeoutSecs,
-		SkipTLS:         skipTLS,
-		Proxy:           proxy,
-		OAuthOrigins:    oauthOrigins,
-		MCPScopeTools:   mcpScopeTools,
-		MCPInvokeTools:  mcpInvokeTools,
-		Verbose:         verbose,
-		AudienceClaim:   audienceClaim,
-		Principals:      principals,
-		ExpectedDenials: expectedDenials,
+		OOBListenerURL:       oobURL,
+		Token:                token,
+		TimeoutSeconds:       timeoutSecs,
+		SkipTLS:              skipTLS,
+		Proxy:                proxy,
+		OAuthOrigins:         oauthOrigins,
+		MCPScopeTools:        mcpScopeTools,
+		MCPInvokeTools:       mcpInvokeTools,
+		MCPSubscriptionProbe: subscriptionProbe,
+		Verbose:              verbose,
+		AudienceClaim:        audienceClaim,
+		Principals:           principals,
+		ExpectedDenials:      expectedDenials,
 	}
 
 	var recorder *attackpkg.Recorder

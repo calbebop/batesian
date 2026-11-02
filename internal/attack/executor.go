@@ -65,6 +65,9 @@ type Options struct {
 	// MCPInvokeTools are exact names the traversal and task rules may call.
 	MCPInvokeTools []string
 
+	// MCPSubscriptionProbe permits one configured update of a disposable resource.
+	MCPSubscriptionProbe *MCPSubscriptionProbe
+
 	// Verbose enables debug logging.
 	Verbose bool
 
@@ -99,6 +102,15 @@ type Options struct {
 
 	// TargetState records objects created on the target during a rule run.
 	TargetState *TargetState
+}
+
+// MCPSubscriptionProbe supplies the resource and update call for an opt-in check.
+type MCPSubscriptionProbe struct {
+	Owner            string
+	Caller           string
+	ResourceURI      string
+	TriggerTool      string
+	TriggerArguments map[string]interface{}
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant
