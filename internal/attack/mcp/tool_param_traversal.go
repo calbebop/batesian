@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -346,12 +347,12 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 	}
 
 	nextID := 11
-	var rejected []string
+	var unresolved []string
 	for _, probe := range traversalPayloads(canary) {
 		text, reason, requestRejected := e.callTool(ctx, client, session, nextID, cand, probe.value)
 		nextID++
 		if requestRejected {
-			rejected = append(rejected, probe.label+" ("+reason+")")
+			unresolved = append(unresolved, probe.label+" ("+reason+")")
 			continue
 		}
 		if reason != "" {
@@ -366,12 +367,17 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 			// be accused of traversal for repeating what it was sent.
 			continue
 		}
-		if escapedOutsideBaseline(path, baselinePath) {
+		escaped, comparable := escapedOutsideBaseline(path, baselinePath)
+		if !comparable {
+			unresolved = append(unresolved, probe.label+" (incompatible path style)")
+			continue
+		}
+		if escaped {
 			return e.finding(session.Endpoint, cand, probe.label, baselinePath, path), "", false
 		}
 	}
-	if len(rejected) > 0 {
-		return nil, "path payloads had no comparable resolution: " + strings.Join(rejected, ", "), true
+	if len(unresolved) > 0 {
+		return nil, "path payloads had no comparable resolution: " + strings.Join(unresolved, ", "), true
 	}
 	return nil, "", false
 }
@@ -403,16 +409,21 @@ func leakedPath(text, canary string) string {
 		}
 		trimmed := strings.TrimSpace(line)
 		trimmed = strings.TrimPrefix(trimmed, "- ")
-		// Strip common error prefixes down toward the path itself.
-		for _, marker := range []string{
+		for _, prefix := range []string{
 			"ENOENT: no such file or directory, open '",
 			"no such file or directory: ",
 			"errno=2",
-			"'",
 		} {
-			trimmed = strings.ReplaceAll(trimmed, marker, "")
+			if i := strings.Index(trimmed, prefix); i >= 0 {
+				trimmed = strings.TrimLeft(trimmed[i+len(prefix):], " \t")
+				if strings.HasSuffix(prefix, "'") {
+					trimmed = strings.TrimSuffix(trimmed, "'")
+				} else if len(trimmed) >= 2 && trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'' {
+					trimmed = trimmed[1 : len(trimmed)-1]
+				}
+				break
+			}
 		}
-		trimmed = strings.TrimSpace(trimmed)
 		if trimmed == "" {
 			continue
 		}
@@ -435,30 +446,31 @@ func looksLikePath(s string) bool {
 	return strings.Contains(s, "../") || strings.Contains(s, "..\\")
 }
 
-// escapedOutsideBaseline checks whether the lookup left the baseline's tree.
-func escapedOutsideBaseline(traversalPath, baselinePath string) bool {
+// escapedOutsideBaseline checks whether comparable lookups left the baseline's tree.
+func escapedOutsideBaseline(traversalPath, baselinePath string) (bool, bool) {
 	if baselinePath == "" {
-		return false
+		return false, false
 	}
-	baseDir := parentDir(baselinePath)
-	travDir := parentDir(traversalPath)
+	baseDir, baseStyle := parentDir(baselinePath)
+	travDir, travStyle := parentDir(traversalPath)
+	if baseStyle != travStyle {
+		return false, false
+	}
 	if travDir == baseDir {
-		return false // landed in the same directory: joined and contained
+		return false, true
 	}
-	// Still contained when the traversal directory sits beneath the baseline's
-	// directory tree (the sandbox swallowed some or all of the climb).
-	if strings.HasPrefix(travDir, baseDir+"/") || strings.HasPrefix(travDir, baseDir+"\\") {
-		return false
+	if baseDir == "/" || strings.HasPrefix(travDir, baseDir+"/") {
+		return false, true
 	}
-	return true
+	return true, true
 }
 
-// parentDir returns the directory portion of a path in either slash style.
-func parentDir(p string) string {
-	if i := strings.LastIndexAny(p, "/\\"); i > 0 {
-		return p[:i]
+// parentDir normalizes Windows case and separators for containment comparisons.
+func parentDir(p string) (string, string) {
+	if strings.HasPrefix(p, "/") {
+		return path.Dir(path.Clean(p)), "posix"
 	}
-	return p
+	return path.Dir(strings.ToLower(path.Clean(strings.ReplaceAll(p, "\\", "/")))), "windows"
 }
 
 func (e *ToolParamTraversalExecutor) finding(endpoint string, cand traversalCandidate, how, baselinePath, traversalPath string) *attack.Finding {
