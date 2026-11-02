@@ -81,10 +81,14 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 		if f.mode == "discover" && principal == "tok-b" {
 			capabilities["prompts"] = map[string]interface{}{}
 		}
-		respond(map[string]interface{}{
+		result := map[string]interface{}{
 			"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
 			"capabilities": capabilities, "cacheScope": "public", "ttlMs": 60000,
-		}, 0)
+		}
+		if f.mode == "discover-meta" {
+			result["_meta"] = map[string]string{"fixture.example/principal": principal}
+		}
+		respond(result, 0)
 	case "tools/list":
 		if strings.HasPrefix(f.mode, "tools-paged") {
 			cursor, _ := req.Params["cursor"].(string)
@@ -93,9 +97,16 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 			result := map[string]interface{}{"resultType": "complete", "ttlMs": 60000}
 			if cursor == "" {
 				result["nextCursor"] = "next"
+				if f.mode == "tools-paged-public" {
+					scope = "private"
+				}
 			} else {
 				name = "private-" + principal
 				if f.mode == "tools-paged-private" {
+					scope = "private"
+				} else if f.mode == "tools-paged-one-scope" && principal == "tok-a" {
+					scope = "private"
+				} else if f.mode == "tools-paged-flaky-scope" && call%2 == 0 {
 					scope = "private"
 				}
 			}
@@ -105,7 +116,8 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := "private-" + principal
-		if f.mode == "same" || strings.HasPrefix(f.mode, "resource-") {
+		if f.mode == "same" || f.mode == "list-meta" || f.mode == "discover-meta" ||
+			strings.HasPrefix(f.mode, "resource-") {
 			name = "shared"
 		}
 		if f.mode == "unstable" && principal == "tok-a" {
@@ -131,10 +143,14 @@ func (f *cacheScopeFixture) serve(w http.ResponseWriter, r *http.Request) {
 				tools[0], tools[1] = tools[1], tools[0]
 			}
 		}
-		respond(map[string]interface{}{
+		result := map[string]interface{}{
 			"resultType": "complete", "tools": tools,
 			"cacheScope": scope, "ttlMs": ttl,
-		}, 0)
+		}
+		if f.mode == "list-meta" {
+			result["_meta"] = map[string]string{"fixture.example/principal": principal}
+		}
+		respond(result, 0)
 	case "prompts/list", "resources/list", "resources/templates/list":
 		if f.mode != "all" && !strings.HasPrefix(f.mode, "resource-") {
 			respond(nil, -32601)
@@ -294,6 +310,21 @@ func TestCacheScope_DifferingPublicResults(t *testing.T) {
 	}
 }
 
+func TestCacheScope_PublicResultMetadata(t *testing.T) {
+	for _, mode := range []string{"discover-meta", "list-meta"} {
+		t.Run(mode, func(t *testing.T) {
+			findings, _, err := runCacheScopeFixture(t, mode)
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if strings.Contains(findings[0].Evidence, "tok-a") ||
+				strings.Contains(findings[0].Evidence, "tok-b") {
+				t.Fatalf("metadata leaked in evidence: %+v", findings[0])
+			}
+		})
+	}
+}
+
 func TestCacheScope_ProtectedControls(t *testing.T) {
 	for _, mode := range []string{"private", "mixed", "same", "order", "zero-ttl", "expired"} {
 		t.Run(mode, func(t *testing.T) {
@@ -428,15 +459,16 @@ func TestCacheScope_PaginatedListScope(t *testing.T) {
 		want int
 	}{
 		{"resource-paged-list-mismatch", 1},
-		{"resource-paged-list-private", 0},
+		{"resource-paged-list-private", 1},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			findings, _, err := runCacheScopeFixture(t, tc.mode)
 			if err != nil || len(findings) != tc.want {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
-			if tc.want > 0 && (!strings.Contains(findings[0].Evidence, "list page: 2") ||
-				strings.Contains(findings[0].Evidence, "resource://") || strings.Contains(findings[0].Evidence, "next")) {
+			evidence := findings[0].Evidence
+			pageSeen := strings.Contains(evidence, "page: 2") || strings.Contains(evidence, "page 2")
+			if !pageSeen || strings.Contains(evidence, "resource://") || strings.Contains(evidence, "next") {
 				t.Fatalf("later list page finding omitted page or leaked a cursor: %+v", findings[0])
 			}
 		})
@@ -449,15 +481,18 @@ func TestCacheScope_PaginatedToolListScope(t *testing.T) {
 		want int
 	}{
 		{"tools-paged", 1},
-		{"tools-paged-private", 0},
+		{"tools-paged-private", 1},
+		{"tools-paged-one-scope", 1},
+		{"tools-paged-public", 2},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			findings, fixture, err := runCacheScopeFixture(t, tc.mode)
 			if err != nil || len(findings) != tc.want {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
-			if tc.want > 0 && (!strings.Contains(findings[0].Evidence, "list page: 2") ||
-				strings.Contains(findings[0].Evidence, "private-tok")) {
+			evidence := findings[0].Evidence
+			pageSeen := strings.Contains(evidence, "page: 2") || strings.Contains(evidence, "page 2")
+			if !pageSeen || strings.Contains(evidence, "private-tok") {
 				t.Fatalf("later tool page finding omitted page or leaked content: %+v", findings[0])
 			}
 			fixture.mu.Lock()
@@ -466,6 +501,13 @@ func TestCacheScope_PaginatedToolListScope(t *testing.T) {
 				t.Fatalf("expected repeated reads of both pages: %v", fixture.calls)
 			}
 		})
+	}
+}
+
+func TestCacheScope_UnstablePageScope(t *testing.T) {
+	findings, _, err := runCacheScopeFixture(t, "tools-paged-flaky-scope")
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 }
 
