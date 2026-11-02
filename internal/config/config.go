@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -64,6 +65,9 @@ type Config struct {
 
 	// MCPSubscriptionProbe permits one explicit update of a disposable resource.
 	MCPSubscriptionProbe *MCPSubscriptionProbeConfig `yaml:"mcp_subscription_probe"`
+
+	// MCPFilesystemSuffixProbe tests a disposable filesystem boundary.
+	MCPFilesystemSuffixProbe *MCPFilesystemSuffixProbeConfig `yaml:"mcp_filesystem_suffix_probe"`
 
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
@@ -125,6 +129,11 @@ type MCPSubscriptionProbeConfig struct {
 	ResourceURI      string                 `yaml:"resource_uri"`
 	TriggerTool      string                 `yaml:"trigger_tool"`
 	TriggerArguments map[string]interface{} `yaml:"trigger_arguments"`
+}
+
+// MCPFilesystemSuffixProbeConfig names an allowed directory on the target.
+type MCPFilesystemSuffixProbeConfig struct {
+	AllowedDirectory string `yaml:"allowed_directory"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -242,6 +251,16 @@ func (c *Config) validate(path string) error {
 		args, err := json.Marshal(probe.TriggerArguments)
 		if err != nil || len(args) > 16<<10 {
 			return fmt.Errorf("config %s: mcp_subscription_probe trigger_arguments must be JSON-compatible and at most 16 KiB", path)
+		}
+	}
+	if probe := c.MCPFilesystemSuffixProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: mcp_filesystem_suffix_probe requires a target in the same config file", path)
+		}
+		root := probe.AllowedDirectory
+		if !strings.HasPrefix(root, "/") || root == "/" || pathpkg.Clean(root) != root ||
+			strings.TrimSpace(root) != root || strings.ContainsAny(root, "'\"\\\r\n\t") {
+			return fmt.Errorf("config %s: mcp_filesystem_suffix_probe requires a canonical, non-root POSIX allowed_directory without quotes", path)
 		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}
@@ -378,6 +397,11 @@ func Example() string {
 #   trigger_tool: update_test_resource
 #   trigger_arguments:
 #     value: changed-by-batesian
+
+# Opt-in filesystem boundary probe. Use a disposable POSIX directory and
+# approve get_file_info with mcp_invoke_tools above. No file contents are read.
+# mcp_filesystem_suffix_probe:
+#   allowed_directory: /srv/batesian-disposable
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

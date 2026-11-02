@@ -350,6 +350,37 @@ mcp_subscription_probe:
 	}
 }
 
+func TestLoad_MCPFilesystemSuffixProbe(t *testing.T) {
+	const valid = "target: https://mcp.example.com\nmcp_filesystem_suffix_probe:\n  allowed_directory: /srv/disposable\n"
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", valid, true},
+		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1), false},
+		{"root", strings.Replace(valid, "/srv/disposable", "/", 1), false},
+		{"relative", strings.Replace(valid, "/srv/disposable", "srv/disposable", 1), false},
+		{"noncanonical", strings.Replace(valid, "/srv/disposable", "/srv/../disposable", 1), false},
+		{"quote", strings.Replace(valid, "/srv/disposable", "/srv/disposable'", 1), false},
+		{"trailing space", strings.Replace(valid, "/srv/disposable", "'/srv/disposable '", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(configPath, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(configPath)
+			if tc.valid {
+				if err != nil || cfg.MCPFilesystemSuffixProbe.AllowedDirectory != "/srv/disposable" {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "mcp_filesystem_suffix_probe") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_PrincipalMissingName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")

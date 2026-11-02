@@ -233,8 +233,8 @@ func inertArgs(props map[string]interface{}, skip string, required map[string]bo
 	return args
 }
 
-// callTool returns text only from a completed, matching tool response.
-func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, string, bool) {
+// callPathTool returns text only from a completed, matching tool response.
+func callPathTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, cand traversalCandidate, value string) (string, string, bool, bool) {
 	args := map[string]interface{}{cand.param: value}
 	for k, v := range cand.others {
 		args[k] = v
@@ -244,20 +244,21 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		"arguments": args,
 	}, cand.schema, nil)
 	if err != nil || resp == nil {
-		return "", "transport failure", false
+		return "", "transport failure", false, false
 	}
 	if isMCPHeaderMismatch(resp) {
-		return "", "HeaderMismatch", false
+		return "", "HeaderMismatch", false, false
 	}
 	if !resp.IsSuccess() {
 		rejected := resp.StatusCode == 400 || resp.StatusCode == 403 || resp.StatusCode == 404 || resp.StatusCode == 422
-		return "", fmt.Sprintf("HTTP %d", resp.StatusCode), rejected
+		return "", fmt.Sprintf("HTTP %d", resp.StatusCode), rejected, false
 	}
 	var body struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Result  *struct {
 			ResultType string `json:"resultType"`
+			IsError    *bool  `json:"isError"`
 			Content    *[]struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -272,19 +273,19 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 	if json.Unmarshal(resp.Body, &body) != nil || body.JSONRPC != "2.0" ||
 		json.Unmarshal(body.ID, &responseID) != nil || responseID != id ||
 		(body.Result == nil) == (body.Error == nil) {
-		return "", "malformed or uncorrelated JSON-RPC response", false
+		return "", "malformed or uncorrelated JSON-RPC response", false, false
 	}
 	if body.Error != nil {
 		if body.Error.Code == nil || body.Error.Message == "" {
-			return "", "malformed JSON-RPC error", false
+			return "", "malformed JSON-RPC error", false, false
 		}
-		return body.Error.Message, "", false
+		return body.Error.Message, "", false, true
 	}
 	if session.Era == EraModern && body.Result.ResultType != "complete" {
-		return "", "incomplete tool result", false
+		return "", "incomplete tool result", false, false
 	}
 	if body.Result.Content == nil {
-		return "", "tool result has no text content", false
+		return "", "tool result has no text content", false, false
 	}
 	var sb strings.Builder
 	for _, c := range *body.Result.Content {
@@ -294,9 +295,9 @@ func (e *ToolParamTraversalExecutor) callTool(ctx context.Context, client *attac
 		}
 	}
 	if sb.Len() == 0 {
-		return "", "tool result has no text content", false
+		return "", "tool result has no text content", false, false
 	}
-	return sb.String(), "", false
+	return sb.String(), "", false, body.Result.IsError != nil && *body.Result.IsError
 }
 
 // traversalPayload is one attack-shaped argument for the path parameter.
@@ -337,7 +338,7 @@ func traversalPayloads(canary string) []traversalPayload {
 func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *attack.HTTPClient, session mcpSession, randID string, cand traversalCandidate) (*attack.Finding, string, bool) {
 	canary := "batesian-" + randID
 
-	baselineText, reason, _ := e.callTool(ctx, client, session, 10, cand, canary)
+	baselineText, reason, _, _ := callPathTool(ctx, client, session, 10, cand, canary)
 	if reason != "" {
 		return nil, "baseline returned " + reason, false
 	}
@@ -349,7 +350,7 @@ func (e *ToolParamTraversalExecutor) probeTool(ctx context.Context, client *atta
 	nextID := 11
 	var unresolved []string
 	for _, probe := range traversalPayloads(canary) {
-		text, reason, requestRejected := e.callTool(ctx, client, session, nextID, cand, probe.value)
+		text, reason, requestRejected, _ := callPathTool(ctx, client, session, nextID, cand, probe.value)
 		nextID++
 		if requestRejected {
 			unresolved = append(unresolved, probe.label+" ("+reason+")")

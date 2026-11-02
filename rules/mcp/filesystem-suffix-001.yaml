@@ -1,0 +1,33 @@
+id: mcp-filesystem-suffix-001
+info:
+  name: MCP Filesystem Trailing-Character Boundary
+  author: batesian
+  severity: medium
+  description: |
+    Uses a configured disposable POSIX directory and an approved, read-only
+    get_file_info tool. An inside missing path must resolve, while a normal
+    outside path must be denied. A trailing quote or space on the allowed
+    directory is then tested as a sibling path. A missing-path response for
+    that sibling is an indicator of a validation/check-use mismatch. The
+    probe requests metadata only and does not create or read file contents.
+
+  references:
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    - https://cwe.mitre.org/data/definitions/436.html
+
+  tags:
+    - mcp
+    - path-traversal
+    - authorization
+    - cwe-436
+
+attack:
+  protocol: mcp
+  type: mcp-filesystem-suffix
+
+remediation: |
+  Use the same canonical path for containment checks and filesystem operations.
+  Reject paths that normalize to an allowed directory but resolve to a sibling.
+  Upgrade affected @modelcontextprotocol/server-filesystem deployments to 2.0.1
+  or later and verify the configured allowed-directory boundary.

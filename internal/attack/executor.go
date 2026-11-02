@@ -68,6 +68,9 @@ type Options struct {
 	// MCPSubscriptionProbe permits one configured update of a disposable resource.
 	MCPSubscriptionProbe *MCPSubscriptionProbe
 
+	// MCPFilesystemSuffixProbe scopes the opt-in filesystem boundary check.
+	MCPFilesystemSuffixProbe *MCPFilesystemSuffixProbe
+
 	// Verbose enables debug logging.
 	Verbose bool
 
@@ -111,6 +114,11 @@ type MCPSubscriptionProbe struct {
 	ResourceURI      string
 	TriggerTool      string
 	TriggerArguments map[string]interface{}
+}
+
+// MCPFilesystemSuffixProbe names the operator's disposable allowed directory.
+type MCPFilesystemSuffixProbe struct {
+	AllowedDirectory string
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant

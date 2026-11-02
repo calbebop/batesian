@@ -148,6 +148,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.MCPSubscriptionProbe != nil && target != cfg.Target {
 		return errors.New("mcp_subscription_probe cannot be used with a different --target")
 	}
+	if cfg.MCPFilesystemSuffixProbe != nil && target != cfg.Target {
+		return errors.New("mcp_filesystem_suffix_probe cannot be used with a different --target")
+	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
@@ -261,6 +264,10 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 			TriggerTool: p.TriggerTool, TriggerArguments: p.TriggerArguments,
 		}
 	}
+	var filesystemSuffixProbe *attackpkg.MCPFilesystemSuffixProbe
+	if p := cfg.MCPFilesystemSuffixProbe; p != nil {
+		filesystemSuffixProbe = &attackpkg.MCPFilesystemSuffixProbe{AllowedDirectory: p.AllowedDirectory}
+	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
 	if err != nil {
@@ -334,19 +341,20 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 
 	opts := attackpkg.Options{
-		OOBListenerURL:       oobURL,
-		Token:                token,
-		TimeoutSeconds:       timeoutSecs,
-		SkipTLS:              skipTLS,
-		Proxy:                proxy,
-		OAuthOrigins:         oauthOrigins,
-		MCPScopeTools:        mcpScopeTools,
-		MCPInvokeTools:       mcpInvokeTools,
-		MCPSubscriptionProbe: subscriptionProbe,
-		Verbose:              verbose,
-		AudienceClaim:        audienceClaim,
-		Principals:           principals,
-		ExpectedDenials:      expectedDenials,
+		OOBListenerURL:           oobURL,
+		Token:                    token,
+		TimeoutSeconds:           timeoutSecs,
+		SkipTLS:                  skipTLS,
+		Proxy:                    proxy,
+		OAuthOrigins:             oauthOrigins,
+		MCPScopeTools:            mcpScopeTools,
+		MCPInvokeTools:           mcpInvokeTools,
+		MCPSubscriptionProbe:     subscriptionProbe,
+		MCPFilesystemSuffixProbe: filesystemSuffixProbe,
+		Verbose:                  verbose,
+		AudienceClaim:            audienceClaim,
+		Principals:               principals,
+		ExpectedDenials:          expectedDenials,
 	}
 
 	var recorder *attackpkg.Recorder
