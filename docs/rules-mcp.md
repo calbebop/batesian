@@ -512,10 +512,12 @@ be reused across authorization contexts. This rule compares `server/discover`
 and advertised list methods under two configured, distinct principals. For
 resources listed to both principals, it also walks up to three list pages per
 principal and reads up to five shared URIs sampled across those pages.
-It reads each result twice in A-B-A-B order. A medium indicator requires both
-principals to return stable but different content, each with a positive public
-TTL that overlaps the other principal's request. It reports method, item
-counts, and TTLs without including list content, resource URIs, or credentials.
+It reads each result twice in A-B-A-B order. One medium indicator requires both
+principals to return stable but different results, including result metadata,
+each with a positive public TTL that overlaps the other principal's request.
+Another reports a stable change in `cacheScope` between comparable pages of the
+same list, which the specification prohibits. Evidence omits result content,
+resource URIs, cursors, and credentials.
 
 The rule does not simulate a client cache or prove that a shared cache served
 the wrong result. It compares up to three list pages when both principals
@@ -524,8 +526,8 @@ cache key. A clean result covers only the tested pages and shared resource
 reads attempted across the bounded page walk. It does not exercise subscription
 invalidation or infer user-specific content from changing results. If discovery
 or repeated reads cannot be compared, the rule reports not tested. Set
-`cacheScope: private` for caller-specific results and enforce access on each
-primitive separately.
+`cacheScope: private` for caller-specific results, keep the same scope across
+list pages, and enforce access on each primitive separately.
 
 ---
 

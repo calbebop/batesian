@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -85,6 +86,7 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 	var findings []attack.Finding
 	var incomplete []error
 	seenListCursors := map[string]map[string]bool{}
+	firstListScopes := map[string][2]string{}
 	checks := append([]cacheSurface{{method: "server/discover"}}, cacheListSurfaces...)
 	for i := 0; i < len(checks); i++ {
 		surface := checks[i]
@@ -111,12 +113,38 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 				attack.ErrInconclusive, surface.method))
 			continue
 		}
-		if !bytes.Equal(a1.payload, a2.payload) || !bytes.Equal(b1.payload, b2.payload) {
+		if !bytes.Equal(a1.payload, a2.payload) || !bytes.Equal(b1.payload, b2.payload) ||
+			a1.scope != a2.scope || b1.scope != b2.scope {
 			incomplete = append(incomplete, fmt.Errorf("%w: %s changed within one principal's repeated reads",
 				attack.ErrInconclusive, surface.method))
 			continue
 		}
 		if surface.page > 0 {
+			if surface.page == 1 {
+				firstListScopes[surface.method] = [2]string{a1.scope, b1.scope}
+			} else {
+				initial := firstListScopes[surface.method]
+				var changes []string
+				for _, comparison := range []struct {
+					name, first, current string
+				}{{a.name, initial[0], a1.scope}, {b.name, initial[1], b1.scope}} {
+					if validCacheScope(comparison.first) && validCacheScope(comparison.current) &&
+						comparison.first != comparison.current {
+						changes = append(changes, fmt.Sprintf("%s: page 1 %s, page %d %s",
+							comparison.name, comparison.first, surface.page, comparison.current))
+					}
+				}
+				if len(changes) > 0 {
+					findings = append(findings, attack.Finding{
+						RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "medium",
+						Confidence:  attack.RiskIndicator,
+						Title:       fmt.Sprintf("MCP %s changes cache scope between list pages", surface.method),
+						Description: fmt.Sprintf("%s returned stable list pages with different cache scopes in the same pagination flow. MCP requires one cache scope across all pages of a list. A public page may be shared across authorization contexts; this check does not establish that a cache shared it.", surface.method),
+						Evidence:    fmt.Sprintf("method: %s\n%s\nlist content and cursors omitted", surface.method, strings.Join(changes, "\n")),
+						Remediation: e.rule.Remediation, TargetURL: session.Endpoint,
+					})
+				}
+			}
 			if !a1.valid || !b1.valid {
 				incomplete = append(incomplete, fmt.Errorf("%w: %s returned an invalid list cursor",
 					attack.ErrInconclusive, surface.method))
@@ -164,6 +192,12 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 		} else if surface.page > 1 {
 			subject = fmt.Sprintf("\nlist page: %d (cursor omitted)", surface.page)
 		}
+		principalEvidence := fmt.Sprintf("principal %s: %d item(s), public TTL %d ms\nprincipal %s: %d item(s), public TTL %d ms",
+			a.name, a1.count, a1.ttlMs, b.name, b1.count, b1.ttlMs)
+		if surface.method == "server/discover" {
+			principalEvidence = fmt.Sprintf("principal %s: public TTL %d ms\nprincipal %s: public TTL %d ms",
+				a.name, a1.ttlMs, b.name, b1.ttlMs)
+		}
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -172,8 +206,8 @@ func (e *CacheScopeExecutor) Execute(ctx context.Context, target string, opts at
 			Title:      fmt.Sprintf("MCP %s advertises different principal results as publicly cacheable", surface.method),
 			Description: fmt.Sprintf("%s returned different stable results to %s and %s for the same request, while both responses declared a positive public cache lifetime. A shared client or gateway may serve one principal's result to the other. This proves a cache-scope mismatch, but does not prove a client actually shared the result.",
 				surface.method, a.name, b.name),
-			Evidence: fmt.Sprintf("method: %s%s\nprincipal %s: %d item(s), public TTL %d ms\nprincipal %s: %d item(s), public TTL %d ms\nA-B-A-B results were stable within each principal and different across principals; response content omitted",
-				surface.method, subject, a.name, a1.count, a1.ttlMs, b.name, b1.count, b1.ttlMs),
+			Evidence: fmt.Sprintf("method: %s%s\n%s\nA-B-A-B results were stable within each principal and different across principals; response content omitted",
+				surface.method, subject, principalEvidence),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
 		})
@@ -228,16 +262,13 @@ func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcp
 			snapshot.ttlMs = value
 		}
 	}
-	var payload interface{}
-	if surface.field == "" {
-		copyResult := make(map[string]interface{}, len(result))
-		for key, value := range result {
-			if key != "ttlMs" && key != "cacheScope" && key != "_meta" {
-				copyResult[key] = value
-			}
+	copyResult := make(map[string]interface{}, len(result))
+	for key, value := range result {
+		if key != "ttlMs" && key != "cacheScope" {
+			copyResult[key] = value
 		}
-		payload = copyResult
-	} else {
+	}
+	if surface.field != "" {
 		items, ok := result[surface.field].([]interface{})
 		if !ok {
 			return cacheSnapshot{}, fmt.Errorf("%w: %s returned no %s array",
@@ -255,11 +286,15 @@ func cacheScopeFetch(ctx context.Context, client *attack.HTTPClient, session mcp
 		if surface.method != "resources/read" {
 			sort.Strings(canonical)
 		}
-		payload = map[string]interface{}{"items": canonical, "nextCursor": result["nextCursor"]}
+		copyResult[surface.field] = canonical
 	}
 	var marshalErr error
-	snapshot.payload, marshalErr = json.Marshal(payload)
+	snapshot.payload, marshalErr = json.Marshal(copyResult)
 	return snapshot, marshalErr
+}
+
+func validCacheScope(scope string) bool {
+	return scope == "public" || scope == "private"
 }
 
 func cacheResourcePages(ctx context.Context, client *attack.HTTPClient, session mcpSession,

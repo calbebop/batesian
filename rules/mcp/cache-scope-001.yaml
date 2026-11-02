@@ -5,10 +5,11 @@ info:
   severity: medium
   description: |
     Compares modern MCP discovery, read-only lists, and up to five shared
-    resource reads under two distinct principals. A finding requires stable
-    results that differ by principal while both responses advertise
-    cacheScope: public with a positive TTL. This is a cache-scope mismatch,
-    not proof that a client shared the cached result.
+    resource reads under two distinct principals. It reports stable results,
+    including result metadata, that differ by principal while both responses
+    advertise cacheScope: public with a positive TTL. It also checks that
+    comparable pages of a list keep the same cache scope. Findings do not
+    prove that a client shared a cached result.
 
   references:
     - https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching
@@ -26,6 +27,7 @@ attack:
 
 remediation: |
   Mark caller-specific results cacheScope: private. Use public only when every
-  caller receives the same content for the same method and parameters. Apply
+  caller receives the same content for the same method and parameters. Keep
+  the same cache scope across all pages of a list. Apply
   authorization to the underlying tools, prompts, and resources independently;
   cache hints are not access controls.
