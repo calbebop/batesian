@@ -69,6 +69,9 @@ type Config struct {
 	// MCPFilesystemSuffixProbe tests a disposable filesystem boundary.
 	MCPFilesystemSuffixProbe *MCPFilesystemSuffixProbeConfig `yaml:"mcp_filesystem_suffix_probe"`
 
+	// MCPFilesystemSymlinkProbe tests an operator-prepared symlink fixture.
+	MCPFilesystemSymlinkProbe *MCPFilesystemSymlinkProbeConfig `yaml:"mcp_filesystem_symlink_probe"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -134,6 +137,13 @@ type MCPSubscriptionProbeConfig struct {
 // MCPFilesystemSuffixProbeConfig names an allowed directory on the target.
 type MCPFilesystemSuffixProbeConfig struct {
 	AllowedDirectory string `yaml:"allowed_directory"`
+}
+
+type MCPFilesystemSymlinkProbeConfig struct {
+	AllowedDirectory string `yaml:"allowed_directory"`
+	LinkName         string `yaml:"link_name"`
+	OutsidePath      string `yaml:"outside_path"`
+	OutsideSizeBytes int64  `yaml:"outside_size_bytes"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -261,6 +271,27 @@ func (c *Config) validate(path string) error {
 		if !strings.HasPrefix(root, "/") || root == "/" || pathpkg.Clean(root) != root ||
 			strings.TrimSpace(root) != root || strings.ContainsAny(root, "'\"\\\r\n\t") {
 			return fmt.Errorf("config %s: mcp_filesystem_suffix_probe requires a canonical, non-root POSIX allowed_directory without quotes", path)
+		}
+	}
+	if probe := c.MCPFilesystemSymlinkProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: mcp_filesystem_symlink_probe requires a target in the same config file", path)
+		}
+		root, outside := probe.AllowedDirectory, probe.OutsidePath
+		validPath := func(p string) bool {
+			return strings.HasPrefix(p, "/") && p != "/" && pathpkg.Clean(p) == p &&
+				strings.TrimSpace(p) == p && !strings.ContainsAny(p, "'\"\\\r\n\t")
+		}
+		if !validPath(root) || !validPath(outside) || outside == root || strings.HasPrefix(outside, root+"/") {
+			return fmt.Errorf("config %s: mcp_filesystem_symlink_probe requires canonical POSIX paths with outside_path outside allowed_directory", path)
+		}
+		name := probe.LinkName
+		if name == "" || name == "." || name == ".." || len(name) > 128 ||
+			strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != "" {
+			return fmt.Errorf("config %s: mcp_filesystem_symlink_probe requires a simple link_name", path)
+		}
+		if probe.OutsideSizeBytes < 1024 || probe.OutsideSizeBytes > 65536 || probe.OutsideSizeBytes%512 != 0 {
+			return fmt.Errorf("config %s: mcp_filesystem_symlink_probe outside_size_bytes must be 1024..65536 and a multiple of 512", path)
 		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}
@@ -402,6 +433,14 @@ func Example() string {
 # approve get_file_info with mcp_invoke_tools above. No file contents are read.
 # mcp_filesystem_suffix_probe:
 #   allowed_directory: /srv/batesian-disposable
+
+# Opt-in symlink metadata check. Prepare the link and outside file yourself.
+# Approve get_file_info and list_directory_with_sizes with mcp_invoke_tools.
+# mcp_filesystem_symlink_probe:
+#   allowed_directory: /srv/batesian-disposable
+#   link_name: outside-link
+#   outside_path: /srv/batesian-outside/fixture.bin
+#   outside_size_bytes: 1536
 
 # Run only these specific rule IDs (comma-separated in CLI, list here).
 # rule_ids:

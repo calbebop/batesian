@@ -71,6 +71,9 @@ type Options struct {
 	// MCPFilesystemSuffixProbe scopes the opt-in filesystem boundary check.
 	MCPFilesystemSuffixProbe *MCPFilesystemSuffixProbe
 
+	// MCPFilesystemSymlinkProbe scopes a disposable metadata check.
+	MCPFilesystemSymlinkProbe *MCPFilesystemSymlinkProbe
+
 	// Verbose enables debug logging.
 	Verbose bool
 
@@ -119,6 +122,13 @@ type MCPSubscriptionProbe struct {
 // MCPFilesystemSuffixProbe names the operator's disposable allowed directory.
 type MCPFilesystemSuffixProbe struct {
 	AllowedDirectory string
+}
+
+type MCPFilesystemSymlinkProbe struct {
+	AllowedDirectory string
+	LinkName         string
+	OutsidePath      string
+	OutsideSizeBytes int64
 }
 
 // Principal is an authenticated identity a chained rule can act as. Multi-tenant

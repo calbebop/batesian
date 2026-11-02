@@ -151,6 +151,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.MCPFilesystemSuffixProbe != nil && target != cfg.Target {
 		return errors.New("mcp_filesystem_suffix_probe cannot be used with a different --target")
 	}
+	if cfg.MCPFilesystemSymlinkProbe != nil && target != cfg.Target {
+		return errors.New("mcp_filesystem_symlink_probe cannot be used with a different --target")
+	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
@@ -268,6 +271,13 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if p := cfg.MCPFilesystemSuffixProbe; p != nil {
 		filesystemSuffixProbe = &attackpkg.MCPFilesystemSuffixProbe{AllowedDirectory: p.AllowedDirectory}
 	}
+	var filesystemSymlinkProbe *attackpkg.MCPFilesystemSymlinkProbe
+	if p := cfg.MCPFilesystemSymlinkProbe; p != nil {
+		filesystemSymlinkProbe = &attackpkg.MCPFilesystemSymlinkProbe{
+			AllowedDirectory: p.AllowedDirectory, LinkName: p.LinkName,
+			OutsidePath: p.OutsidePath, OutsideSizeBytes: p.OutsideSizeBytes,
+		}
+	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
 	if err != nil {
@@ -341,20 +351,21 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 
 	opts := attackpkg.Options{
-		OOBListenerURL:           oobURL,
-		Token:                    token,
-		TimeoutSeconds:           timeoutSecs,
-		SkipTLS:                  skipTLS,
-		Proxy:                    proxy,
-		OAuthOrigins:             oauthOrigins,
-		MCPScopeTools:            mcpScopeTools,
-		MCPInvokeTools:           mcpInvokeTools,
-		MCPSubscriptionProbe:     subscriptionProbe,
-		MCPFilesystemSuffixProbe: filesystemSuffixProbe,
-		Verbose:                  verbose,
-		AudienceClaim:            audienceClaim,
-		Principals:               principals,
-		ExpectedDenials:          expectedDenials,
+		OOBListenerURL:            oobURL,
+		Token:                     token,
+		TimeoutSeconds:            timeoutSecs,
+		SkipTLS:                   skipTLS,
+		Proxy:                     proxy,
+		OAuthOrigins:              oauthOrigins,
+		MCPScopeTools:             mcpScopeTools,
+		MCPInvokeTools:            mcpInvokeTools,
+		MCPSubscriptionProbe:      subscriptionProbe,
+		MCPFilesystemSuffixProbe:  filesystemSuffixProbe,
+		MCPFilesystemSymlinkProbe: filesystemSymlinkProbe,
+		Verbose:                   verbose,
+		AudienceClaim:             audienceClaim,
+		Principals:                principals,
+		ExpectedDenials:           expectedDenials,
 	}
 
 	var recorder *attackpkg.Recorder

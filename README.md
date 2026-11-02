@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **56 bundled rules:** 21 A2A and 35 MCP checks focused on protocol-specific weaknesses.
+- **57 bundled rules:** 21 A2A and 36 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,7 +87,7 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [35 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [36 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
@@ -239,6 +239,7 @@ See the [binding assessment](docs/protocol-coverage.md#a2a-grpc-assessment).
 - The scope-confusion rule invokes a mutating tool only when its exact name is approved with `--mcp-scope-tool`. This also asserts that the limited principal should be denied access to that tool.
 - Traversal and task rules require `--mcp-invoke-tool NAME` before calling a real MCP tool. Review the tool yourself; server-supplied read-only annotations are only hints.
 - The [filesystem suffix check](docs/rules-mcp.md#mcp-filesystem-suffix-001) requires a target-bound `mcp_filesystem_suffix_probe` with a disposable allowed directory and explicit approval of `get_file_info`. It requests metadata for missing paths only.
+- The [filesystem symlink check](docs/rules-mcp.md#mcp-filesystem-symlink-001) requires a target-bound `mcp_filesystem_symlink_probe` with an operator-prepared link and outside file. It calls only approved metadata tools and never reads file contents.
 - The [MCP subscription check](docs/rules-mcp.md#mcp-subscription-scope-001) runs only with a target-bound `mcp_subscription_probe` in the config. It calls the specified update tool once, so use a disposable resource and arguments.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 
