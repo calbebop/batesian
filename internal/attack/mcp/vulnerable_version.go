@@ -26,14 +26,17 @@ func NewVulnerableVersionExecutor(r attack.RuleContext) *VulnerableVersionExecut
 
 // vvAdvisory maps a component identity to a published vulnerability.
 type vvAdvisory struct {
-	// key matches case-insensitively as a substring of serverInfo.name.
-	key string
-	// affected is "<X.Y.Z", "<=X.Y.Z" or "=X.Y.Z".
+	// key matches serverInfo.name as a substring unless exact is set.
+	key   string
+	exact bool
+	// affected joins version bounds with spaces.
 	affected string
 	// severity for this finding (never above the rule YAML declares).
 	severity string
 	title    string
 	refs     string
+	fixed    string
+	pkg      string
 }
 
 // vvTable entries carry their own citations; keep them in step with upstream
@@ -73,6 +76,36 @@ var vvTable = []vvAdvisory{
 		key: "mcpjam", affected: "<=1.4.2", severity: "high",
 		title: "MCPJam inspector exposed control endpoint RCE",
 		refs:  "CVE-2026-23744",
+	},
+	{
+		key: "secure-filesystem-server", exact: true,
+		affected: ">=1.0.0 <2.0.1", severity: "medium",
+		title: "reference filesystem server path validation mismatch",
+		refs:  "GHSA-7rgq-gccq-qphx", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key: "secure-filesystem-server", exact: true,
+		affected: ">=1.0.0 <2.0.1", severity: "low",
+		title: "reference filesystem server symlink metadata disclosure",
+		refs:  "GHSA-hhwq-wxfx-cj7g", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key: "mcp-fetch", exact: true,
+		affected: ">=2026.10.10 <=2026.10.19", severity: "medium",
+		title: "reference fetch server IDNA private-address guard bypass",
+		refs:  "GHSA-v38p-wf49-hx2j", fixed: "2026.10.24", pkg: "mcp-server-fetch",
+	},
+	{
+		key: "mcp-fetch", exact: true,
+		affected: ">=2026.10.10 <=2026.10.19", severity: "low",
+		title: "reference fetch server robots.txt redirect bypass",
+		refs:  "GHSA-3jqg-r5pp-rmp2", fixed: "2026.10.24", pkg: "mcp-server-fetch",
+	},
+	{
+		key: "mcp-fetch", exact: true,
+		affected: ">=2026.10.10 <=2026.10.19", severity: "low",
+		title: "reference fetch server NAT64 private-address guard bypass",
+		refs:  "GHSA-66qx-2266-pmj6", fixed: "2026.10.24", pkg: "mcp-server-fetch",
 	},
 }
 
@@ -135,23 +168,17 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 
 	var findings []attack.Finding
 	for _, adv := range vvTable {
-		if !strings.Contains(lower, adv.key) {
+		if adv.exact && lower != adv.key || !adv.exact && !strings.Contains(lower, adv.key) {
 			continue
 		}
-		op, bound, ok := vvParseRange(adv.affected)
-		if !ok || parsed == nil {
+		if parsed == nil {
 			findings = append(findings, e.unverifiableFinding(endpoint, name, version, adv))
 			continue
 		}
-		cmp := vvCompare(parsed, bound)
-		inRange := false
-		switch op {
-		case "<":
-			inRange = cmp < 0
-		case "<=":
-			inRange = cmp <= 0
-		case "=":
-			inRange = cmp == 0
+		inRange, valid := vvMatchesAffected(parsed, adv.affected)
+		if !valid {
+			findings = append(findings, e.unverifiableFinding(endpoint, name, version, adv))
+			continue
 		}
 		if !inRange {
 			continue
@@ -162,6 +189,11 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 }
 
 func (e *VulnerableVersionExecutor) finding(endpoint, name, version string, adv vvAdvisory) attack.Finding {
+	remediation := e.rule.Remediation
+	if adv.fixed != "" {
+		remediation = fmt.Sprintf("Upgrade %s to %s or later. Verify the installed package and review %s; serverInfo is self-reported.",
+			adv.pkg, adv.fixed, adv.refs)
+	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -169,14 +201,14 @@ func (e *VulnerableVersionExecutor) finding(endpoint, name, version string, adv 
 		Confidence: attack.RiskIndicator,
 		Title:      fmt.Sprintf("MCP server identifies as %q %s (%s)", name, version, adv.title),
 		Description: fmt.Sprintf(
-			"The handshake at %s identifies this server as %q running version %s, which falls inside "+
+			"MCP server metadata at %s identifies this server as %q running version %s, which falls inside "+
 				"the affected range %s for %s (%s). The version is self-reported and spoofable, and the "+
 				"match does not prove the vulnerable code path is reachable from this surface - verify "+
 				"against the advisory before acting.",
 			endpoint, name, version, adv.affected, adv.key, adv.refs),
 		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: %s\nserverInfo.version: %s\nmatched: %s %s\nadvisories: %s",
 			endpoint, name, version, adv.key, adv.affected, adv.refs),
-		Remediation: e.rule.Remediation,
+		Remediation: remediation,
 		TargetURL:   endpoint,
 	}
 }
@@ -192,21 +224,24 @@ func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, version 
 		Confidence: attack.RiskIndicator,
 		Title:      fmt.Sprintf("MCP server identifies as %q but its version is unverifiable", name),
 		Description: fmt.Sprintf(
-			"The handshake at %s identifies this server as %q reporting version %q, which is not a "+
+			"MCP server metadata at %s identifies this server as %q reporting version %q, which is not a "+
 				"parseable version for range comparison against %s (%s). Whether this deployment is "+
 				"affected could not be determined from what the server publishes.",
 			endpoint, name, version, adv.key, adv.refs),
 		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: %s\nserverInfo.version: %s\nrelated advisories: %s",
 			endpoint, name, version, adv.refs),
-		Remediation: e.rule.Remediation,
+		Remediation: fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", adv.refs),
 		TargetURL:   endpoint,
 	}
 }
 
-// vvParseVersion extracts the leading dotted-numeric core of a version
-// string: "v0.14.1-beta2" -> [0,14,1], "2025.12.18" -> [2025,12,18]. nil when
-// no numeric core exists.
-func vvParseVersion(s string) []int {
+type vvVersion struct {
+	parts      []int
+	prerelease bool
+}
+
+// vvParseVersion accepts dotted versions with optional semver suffixes.
+func vvParseVersion(s string) *vvVersion {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.TrimPrefix(s, "v")
 	end := 0
@@ -222,6 +257,14 @@ func vvParseVersion(s string) []int {
 	if core == "" || strings.HasPrefix(core, ".") || strings.HasSuffix(core, ".") || strings.Contains(core, "..") {
 		return nil
 	}
+	suffix := s[end:]
+	pre, build, hasBuild := strings.Cut(suffix, "+")
+	if hasBuild && !vvValidIdentifiers(build) {
+		return nil
+	}
+	if pre != "" && (!strings.HasPrefix(pre, "-") || !vvValidIdentifiers(pre[1:])) {
+		return nil
+	}
 	parts := strings.Split(core, ".")
 	out := make([]int, 0, len(parts))
 	for _, p := range parts {
@@ -231,11 +274,52 @@ func vvParseVersion(s string) []int {
 		}
 		out = append(out, n)
 	}
-	return out
+	return &vvVersion{parts: out, prerelease: pre != ""}
 }
 
-// vvParseRange splits an operator like "<" into op and bound segments.
-func vvParseRange(r string) (op string, bound []int, ok bool) {
+func vvValidIdentifiers(s string) bool {
+	if s == "" || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") || strings.Contains(s, "..") {
+		return false
+	}
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func vvMatchesAffected(version *vvVersion, affected string) (bool, bool) {
+	bounds := strings.Fields(affected)
+	if len(bounds) == 0 {
+		return false, false
+	}
+	within := true
+	for _, spec := range bounds {
+		op, bound, ok := vvParseRange(spec)
+		if !ok {
+			return false, false
+		}
+		cmp := vvCompare(version, bound)
+		switch op {
+		case "<":
+			within = within && cmp < 0
+		case "<=":
+			within = within && cmp <= 0
+		case ">":
+			within = within && cmp > 0
+		case ">=":
+			within = within && cmp >= 0
+		case "=":
+			within = within && cmp == 0
+		}
+	}
+	return within, true
+}
+
+// vvParseRange splits an operator from its stable version bound.
+func vvParseRange(r string) (op string, bound *vvVersion, ok bool) {
 	switch {
 	case strings.HasPrefix(r, "<="):
 		op = "<="
@@ -251,23 +335,23 @@ func vvParseRange(r string) (op string, bound []int, ok bool) {
 		return "", nil, false
 	}
 	bound = vvParseVersion(r[len(op):])
-	return op, bound, bound != nil
+	return op, bound, bound != nil && !bound.prerelease
 }
 
 // vvCompare compares two dotted-numeric versions segment by segment; missing
 // segments read as zero, so 1.0 == 1.0.0.
-func vvCompare(a, b []int) int {
-	n := len(a)
-	if len(b) > n {
-		n = len(b)
+func vvCompare(a, b *vvVersion) int {
+	n := len(a.parts)
+	if len(b.parts) > n {
+		n = len(b.parts)
 	}
 	for i := 0; i < n; i++ {
 		av, bv := 0, 0
-		if i < len(a) {
-			av = a[i]
+		if i < len(a.parts) {
+			av = a.parts[i]
 		}
-		if i < len(b) {
-			bv = b[i]
+		if i < len(b.parts) {
+			bv = b.parts[i]
 		}
 		if av != bv {
 			if av < bv {
@@ -275,6 +359,12 @@ func vvCompare(a, b []int) int {
 			}
 			return 1
 		}
+	}
+	if a.prerelease && !b.prerelease {
+		return -1
+	}
+	if !a.prerelease && b.prerelease {
+		return 1
 	}
 	return 0
 }
