@@ -22,12 +22,27 @@ info:
       - inspector <0.14.1           (CVE-2025-49596)
       - serena <1.5.2               (CVE-2026-49471)
       - mcpjam <=1.4.2              (CVE-2026-23744)
+      - secure-filesystem-server >=1.0.0 <2.0.1
+                                    (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
+      - secure-filesystem-server >=1.0.0 <2.0.1
+                                    (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
+      - mcp-fetch >=2026.10.10 <=2026.10.19
+                                    (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
+      - mcp-fetch >=2026.10.10 <=2026.10.19
+                                    (GHSA-3jqg-r5pp-rmp2; fixed in 2026.10.24)
+      - mcp-fetch >=2026.10.10 <=2026.10.19
+                                    (GHSA-66qx-2266-pmj6; fixed in 2026.10.24)
 
     Every finding is an INDICATOR. The version is self-reported and trivially
     spoofed, and matching a range does not prove the vulnerable code path is
     reachable from this surface. Each finding names its advisories so the
     operator verifies against the actual patch. A supplied bearer token is used
     for read-only inventory when the endpoint is protected.
+
+    Earlier filesystem releases report a static 0.2.0 server version, and
+    earlier mcp-fetch releases may report the MCP SDK version. Those values
+    cannot identify the installed package release. The inventory entries
+    start where the reference servers report their package versions.
 
     A name that matches a table entry but reports an unparseable version is a
     low indicator: neither clean nor vulnerable can be claimed from what the
@@ -38,6 +53,11 @@ info:
     - https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
     - https://nvd.nist.gov/vuln/detail/CVE-2025-49596
     - https://nvd.nist.gov/vuln/detail/CVE-2026-49471
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-v38p-wf49-hx2j
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6
     - https://cwe.mitre.org/data/definitions/1104.html
 
   tags:

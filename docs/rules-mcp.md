@@ -1226,6 +1226,18 @@ citations in both the YAML and the finding evidence.
 - **inspector** <0.14.1 - unauthenticated RCE via DNS rebinding (CVE-2025-49596)
 - **serena** <1.5.2 - dashboard memory poisoning to RCE via DNS rebinding (CVE-2026-49471)
 - **mcpjam** <=1.4.2 - exposed control endpoint RCE (CVE-2026-23744)
+- **secure-filesystem-server** >=1.0.0 <2.0.1 - path validation mismatch (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
+- **secure-filesystem-server** >=1.0.0 <2.0.1 - symlink metadata disclosure (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
+- **mcp-fetch** >=2026.10.10 <=2026.10.19 - IDNA private-address guard bypass (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
+- **mcp-fetch** >=2026.10.10 <=2026.10.19 - robots.txt redirect bypass (GHSA-3jqg-r5pp-rmp2; fixed in 2026.10.24)
+- **mcp-fetch** >=2026.10.10 <=2026.10.19 - NAT64 private-address guard bypass (GHSA-66qx-2266-pmj6; fixed in 2026.10.24)
+
+The filesystem and fetch names match exactly. Multiple bounds must all match;
+a prerelease of a fixed version remains below that version. These advisories
+also affect older package releases. Earlier filesystem builds report a static
+`0.2.0` server version, and earlier `mcp-fetch` builds may report the SDK
+version. The inventory rule does not match those older ranges; verify the
+installed packages directly.
 
 Every finding is an **indicator**. The version is self-reported and trivially
 spoofable, and matching a range does not prove the vulnerable code path is

@@ -188,6 +188,74 @@ func TestVV_AtlassianTOCTOU(t *testing.T) {
 	}
 }
 
+func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
+	cases := []struct {
+		name, version string
+		refs          []string
+	}{
+		{"secure-filesystem-server", "2025.8.20", nil},
+		{"secure-filesystem-server", "2025.8.21", nil},
+		{"secure-filesystem-server", "2026.8.31", nil},
+		{"secure-filesystem-server", "2026.9.1", nil},
+		{"secure-filesystem-server", "0.2.0", nil},
+		{"secure-filesystem-server", "0.9.0", nil},
+		{"secure-filesystem-server", "1.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
+		{"secure-filesystem-server", "2.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
+		{"secure-filesystem-server", "2.0.1-rc.1", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
+		{"secure-filesystem-server", "2.0.1", nil},
+		{"proxy-secure-filesystem-server", "2.0.0", nil},
+		{"mcp-fetch", "0.6.0", nil},
+		{"mcp-fetch", "0.6.1", nil},
+		{"mcp-fetch", "2026.10.9", nil},
+		{"mcp-fetch", "2026.10.10", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6"}},
+		{"mcp-fetch", "2026.10.19", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6"}},
+		{"mcp-fetch", "2026.10.20", nil},
+		{"mcp-fetch", "2026.10.24", nil},
+		{"custom-mcp-fetch", "2026.10.19", nil},
+		{"mcp-remote", "0.1.16-rc.1", []string{"CVE-2025-6514"}},
+		{"mcp-remote", "0.1.16+build.1", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/"+tc.version, func(t *testing.T) {
+			ts := vvServer(tc.name, tc.version)
+			defer ts.Close()
+			findings, err := runVV(t, ts)
+			if err != nil || len(findings) != len(tc.refs) {
+				t.Fatalf("findings=%+v err=%v, want %v", findings, err, tc.refs)
+			}
+			for i, ref := range tc.refs {
+				if !strings.Contains(findings[i].Evidence, ref) || findings[i].Confidence != attack.RiskIndicator {
+					t.Fatalf("finding[%d]=%+v, want %s indicator", i, findings[i], ref)
+				}
+				if strings.HasPrefix(ref, "GHSA-") {
+					severity := "medium"
+					fixed := "2026.10.24"
+					if tc.name == "secure-filesystem-server" {
+						fixed = "2.0.1"
+					}
+					if ref == "GHSA-3jqg-r5pp-rmp2" || ref == "GHSA-66qx-2266-pmj6" || ref == "GHSA-hhwq-wxfx-cj7g" {
+						severity = "low"
+					}
+					if findings[i].Severity != severity || !strings.Contains(findings[i].Remediation, fixed) {
+						t.Fatalf("finding[%d]=%+v, want %s severity and %s fix", i, findings[i], severity, fixed)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestVV_UnrecognizedVersionSuffixIsUnverifiable(t *testing.T) {
+	ts := vvServer("secure-filesystem-server", "2.0.1rc1")
+	defer ts.Close()
+	findings, err := runVV(t, ts)
+	if err != nil || len(findings) != 2 || findings[0].Severity != "low" ||
+		!strings.Contains(findings[0].Evidence, "GHSA-7rgq-gccq-qphx") ||
+		!strings.Contains(findings[1].Evidence, "GHSA-hhwq-wxfx-cj7g") {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
 // TestVV_ModernWireMeta: on the modern wire the identity travels under
 // result._meta rather than result.serverInfo; the extractor reads both.
 func TestVV_ModernWireMeta(t *testing.T) {
