@@ -300,6 +300,52 @@ mcp_subscription_probe:
 	}
 }
 
+func TestScanFilesystemSuffixProbeRejectsDifferentTarget(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := "target: https://mcp.example.com\nmcp_filesystem_suffix_probe:\n  allowed_directory: /srv/disposable\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", "https://other.example.com")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(),
+		"mcp_filesystem_suffix_probe cannot be used with a different --target") {
+		t.Fatalf("error = %v, want filesystem probe target mismatch", err)
+	}
+}
+
+func TestScanFilesystemSuffixProbeDryRunDoesNotCallTool(t *testing.T) {
+	previousContext := scanCmd.Context()
+	scanCmd.SetContext(context.Background())
+	t.Cleanup(func() { scanCmd.SetContext(previousContext) })
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer target.Close()
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := fmt.Sprintf("target: %s\nmcp_filesystem_suffix_probe:\n  allowed_directory: /srv/private-marker\n", target.URL)
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", target.URL)
+	setScanFlag(t, "protocol", "mcp")
+	setScanFlag(t, "dry-run", "true")
+	setScanSliceFlag(t, "rule-ids", []string{"mcp-filesystem-suffix-001"})
+	output, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+	if err != nil || requests.Load() != 0 || strings.Contains(output, "private-marker") {
+		t.Fatalf("error=%v requests=%d output=%q", err, requests.Load(), output)
+	}
+}
+
 func TestEffectiveTimeout(t *testing.T) {
 	tests := []struct {
 		name        string

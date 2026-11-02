@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **34 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **35 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -19,9 +19,10 @@ An exact `expected_denials` entry can confirm observed access when the operator
 declares that operation forbidden. It does not promote errors or unverified
 access.
 
-Acceptance is judged at the **protocol layer** throughout: a probe counts as
-accepted only on HTTP 200 carrying a JSON-RPC `result` envelope. A 200 with a
-JSON-RPC `error` (the common MCP rejection shape) is a rejection, not a finding.
+Rules that test action acceptance judge it at the **protocol layer**: a probe
+counts as accepted only on HTTP 200 carrying a JSON-RPC `result` envelope. A 200
+with a JSON-RPC `error` is a rejection. The filesystem suffix rule instead
+compares path error responses to test where lookup occurred.
 
 ## Protocol currency
 
@@ -189,6 +190,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
+| `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
@@ -1061,6 +1063,43 @@ whose safe tools take no such parameter reports clean: the rule does not
 dispatch unannotated tools, and the catalog records that trade-off here rather
 than hiding it behind a clean-looking result.
 The rule tests eligible parameters in name order, up to eight per wire.
+
+---
+
+### mcp-filesystem-suffix-001
+
+**Filesystem Trailing-Character Boundary** | Severity: Medium | indicator | CWE-436
+
+This opt-in rule checks the path mismatch described in
+[GHSA-7rgq-gccq-qphx](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx).
+Set a target and `mcp_filesystem_suffix_probe.allowed_directory` in the same
+config file. The directory must be a canonical, non-root POSIX path on the
+target, and its trailing quote and space siblings should not exist. Approve the
+exact `get_file_info` tool with `--mcp-invoke-tool get_file_info` or
+`mcp_invoke_tools`. Batesian also requires the tool to advertise
+`readOnlyHint: true`, no destructive hint, and a single required string `path`
+argument. Review the tool yourself; its annotation is not a safety guarantee.
+
+```yaml
+target: https://mcp.example.com/mcp
+mcp_filesystem_suffix_probe:
+  allowed_directory: /srv/disposable
+```
+
+```sh
+batesian scan --config batesian.yaml --rule-ids mcp-filesystem-suffix-001 --mcp-invoke-tool get_file_info
+```
+
+The rule asks for metadata on a random nonexistent path inside the directory,
+then on a random outside sibling. It continues only if the inside lookup returns
+a missing-path error and the outside lookup is denied. It then tries the allowed
+directory with a trailing single quote, double quote, and space. A missing-path
+error naming the exact suffixed path is a **medium indicator** that validation
+and filesystem lookup used different paths. Denial of all three is clean.
+Ambiguous errors, an inaccessible control, and missing approval are **not
+tested**. The rule does not read file contents or create paths. It omits paths
+and raw responses from findings. A finding alone does not establish the
+installed package or version; check the deployment separately.
 
 ---
 
