@@ -1,0 +1,37 @@
+id: a2a-grpc-task-access-001
+info:
+  name: A2A gRPC Cross-Tenant Task Disclosure
+  author: batesian
+  severity: high
+  description: |
+    Opt-in A2A v1.0 gRPC task-access check. Requires an explicit gRPC target
+    matching an unscoped Agent Card interface and two principals with distinct
+    credentials and tenant labels. Each principal creates and reads its own
+    task. The rule confirms a disclosure only when the second principal reads
+    the owner's task ID and unique probe text while an anonymous read is denied.
+    Public tasks, unsupported calls, malformed replies, and tenant-scoped
+    interfaces are not tested by this rule.
+
+  references:
+    - https://a2a-protocol.org/v1.0.1/specification/#grpc-protocol-binding
+    - https://a2a-protocol.org/v1.0.1/specification/
+    - https://cwe.mitre.org/data/definitions/639.html
+
+  tags:
+    - a2a
+    - grpc
+    - multi-tenant
+    - authorization
+    - idor
+    - cwe-639
+
+attack:
+  protocol: a2a
+  type: a2a-grpc-task-access
+
+remediation: |
+  1. Bind each task ID to its authenticated owner or tenant at creation.
+  2. Enforce that binding on every gRPC GetTask call, regardless of whether
+     other advertised bindings already enforce it.
+  3. Return a not-found or permission-denied gRPC status for inaccessible tasks
+     without disclosing their content or existence.

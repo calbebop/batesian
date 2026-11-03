@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **57 bundled rules:** 21 A2A and 36 MCP checks focused on protocol-specific weaknesses.
+- **58 bundled rules:** 22 A2A and 36 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,7 +87,7 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [21 A2A rules](docs/rules-a2a.md) and [36 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [22 A2A rules](docs/rules-a2a.md) and [36 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
@@ -226,9 +226,11 @@ Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, 
 
 ## Safe operation
 
-Batesian does not send A2A gRPC requests. Agent Card checks still apply to
-gRPC-only agents, but active A2A rule coverage requires JSON-RPC or HTTP+JSON.
-See the [binding assessment](docs/protocol-coverage.md#a2a-grpc-assessment).
+The opt-in A2A gRPC rule tests task access using two configured principals. Set
+`--a2a-grpc-target grpcs://host:port` to the card-advertised address, or add
+`a2a_grpc_target` beside `target` in the config. Plaintext `grpc://` is limited
+to loopback. Other A2A rules use JSON-RPC or HTTP+JSON; see the
+[binding assessment](docs/protocol-coverage.md#a2a-grpc-assessment) for limits.
 
 - `--dry-run` records a redacted request plan and sends no network traffic. Header values, URL userinfo and queries, and request body values are hidden; hosts and paths remain visible. Requests that depend on live responses, acquired tokens, or callbacks cannot be expanded fully until a real scan.
 - `--proxy 127.0.0.1:8080` routes scan and OAuth traffic through an intercepting proxy. Environment proxy variables are honored when the flag is absent; Go excludes loopback targets from environment proxies.

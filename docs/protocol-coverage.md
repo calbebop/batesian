@@ -12,6 +12,7 @@ is present.
 |---|---|---|---|
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Current [A2A Python SDK 1.x](https://github.com/a2aproject/a2a-python/releases) | Card discovery; JSON-RPC `SendMessage`/`GetTask`; HTTP+JSON `message:send`/`tasks/{id}`; confirmed `a2a-session-smuggle-001` on JSON-RPC | The SDK target is not a secured deployment. The rule check is on JSON-RPC only. |
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Bundled dual-binding tenant fixture | `a2a-multitenant-isolation-001` reads owner-created tasks across advertised JSON-RPC and HTTP+JSON in both directions, with protected, public, and malformed controls. | The fixture exercises the authorization oracle, not an official SDK deployment. Tenant-scoped interface pairs are not covered by this cross-binding check. |
+| [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Pinned [A2A Go SDK v2.7.0](https://github.com/a2aproject/a2a-go/releases/tag/v2.7.0) gRPC handler | `a2a-grpc-task-access-001` against protected, vulnerable, public, malformed, and unsupported task-read controls in Go tests | Opt-in v1.0 `SendMessage`/`GetTask` only. No streaming, v0.3 gRPC, or tenant-scoped interfaces. |
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Bundled vulnerable and bound push fixtures | JSON-RPC and HTTP+JSON subscription scope controls | These fixtures implement only the routes needed by the rule. |
 | [A2A 0.3.0](https://a2a-protocol.org/v0.3.0/specification/) | Bundled JSON-RPC fixtures and Go test servers | Legacy method names, card shapes, and security rule controls in Go tests | There is no current official 0.3 SDK target in CI. |
 | [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, session opening, and a clean two-principal cache-scope scan on PRs and weekly | The SDK server returns the same data to both test principals; the vulnerable cache-scope control is a Go fixture. |
@@ -28,20 +29,19 @@ pin expected protocol behavior when a dependency changes.
 ## A2A gRPC assessment
 
 [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/#grpc-protocol-binding)
-defines gRPC as a standard binding using protobuf over HTTP/2. The
+defines gRPC using protobuf over HTTP/2. The
 [official TCK](https://github.com/a2aproject/a2a-tck#transports) tests gRPC,
-JSON-RPC, and HTTP+JSON server conformance. Batesian currently sends active
-A2A probes only over JSON-RPC and HTTP+JSON. Agent Card checks can still assess
-a card that advertises only gRPC, but HTTP rule results do not cover its gRPC
-service.
+JSON-RPC, and HTTP+JSON conformance. Batesian's opt-in gRPC rule checks one
+v1.0 `SendMessage`/`GetTask` authorization boundary with the official Go SDK
+handler as its compatibility fixture. The configured endpoint must match a
+card-advertised address, and plaintext is limited to loopback. The rule uses
+per-call deadlines, bounded responses, and no streams.
 
-Defer active gRPC probes until there is a testable gRPC target and a security
-oracle with vulnerable and protected controls. Adding the binding requires
-protobuf models, TLS and HTTP/2 transport, metadata and credential handling,
-bounded streams, and separate 1.0 and 0.3 compatibility checks. The TCK can
-validate protocol behavior, but it cannot establish a security finding for a
-Batesian rule. A card with no routable JSON-RPC or HTTP+JSON binding must not
-turn a weak JSON-RPC response into a clean HTTP rule verdict.
+Other A2A rules still use JSON-RPC and HTTP+JSON. gRPC task access is not broad
+transport parity: v0.3, streaming, push, tenant-scoped interfaces, and path-based
+gRPC proxies remain untested. The TCK validates protocol behavior but does not
+establish a security finding. A gRPC-only card must not make HTTP rules look
+clean when their bindings are unavailable.
 
 ## Modern MCP state and cache checks
 

@@ -54,6 +54,9 @@ type Options struct {
 	// tool should not spring.
 	Proxy string
 
+	// A2AGRPCTarget is an explicit, card-matched gRPC endpoint for the opt-in task check.
+	A2AGRPCTarget string
+
 	// OAuthOrigins are exact additional origins the operator has authorized for
 	// target-advertised OAuth endpoints. The scan target's own origin is always
 	// allowed. Everything else is denied unless it appears here.

@@ -1,6 +1,6 @@
 # A2A Attack Rules
 
-Batesian ships **21 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
+Batesian ships **22 rules** targeting the [Agent-to-Agent (A2A) protocol](https://a2a-protocol.org/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to A2A-specific semantics
 (agent cards, JWS card signatures, tasks/contexts, push notifications, peer
@@ -93,9 +93,10 @@ evidence. A card rule with no card has nothing to say either way.
 
 ### Rules that need a task first
 
-Twelve rules cannot say anything until they have created a task: `a2a-task-idor-001`,
+Thirteen rules cannot say anything until they have created a task: `a2a-task-idor-001`,
 `a2a-push-ssrf-001`, `a2a-session-smuggle-001`, `a2a-context-fixation-001`,
 `a2a-delegation-integrity-001`, `a2a-multitenant-isolation-001`,
+`a2a-grpc-task-access-001`,
 `a2a-push-binding-001`, `a2a-push-lifecycle-001`, `a2a-subscription-scope-001`,
 `a2a-task-cancel-idor-001`,
 `a2a-task-enumeration-001` and `a2a-push-callback-auth-001`.
@@ -129,6 +130,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-peer-impersonation-001` | [Forged JWT Acceptance](#a2a-peer-impersonation-001) | High / Medium | confirmed / indicator | CWE-290 |
 | `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | Critical | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
+| `a2a-grpc-task-access-001` | [gRPC Cross-Tenant Task Disclosure](#a2a-grpc-task-access-001) | High | confirmed | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
@@ -364,6 +366,27 @@ explicit denial for the other principal on the source, an anonymous denial on
 the destination, and the other principal's destination read to return the
 owner's task ID and text. Tenant-scoped or ambiguous interface pairs, missing
 cross-binding owner reads, and unsupported routes are reported as not tested.
+
+---
+
+### a2a-grpc-task-access-001
+
+**gRPC Cross-Tenant Task Disclosure** | Severity: High | CWE-639
+
+This opt-in v1.0 rule checks one advertised gRPC endpoint. Set
+`--a2a-grpc-target grpcs://host:port` or `a2a_grpc_target` in `batesian.yaml`.
+Plaintext `grpc://` is accepted only for loopback fixtures. The configured
+address must match an unscoped gRPC interface in the target's HTTP Agent Card;
+the card alone never authorizes a connection to another host or port. A config
+value is tied to the `target` in the same file. Explicit `--proxy` is not
+supported by this prototype.
+
+Two principals need distinct credentials and tenant labels. Each creates a
+task and reads its own unique text. A confirmed finding requires the other
+principal to read the owner's task ID and text while an anonymous read is
+explicitly denied. Public tasks, unverified owner reads, direct `Message`
+replies, unsupported calls, and tenant-scoped card interfaces are not tested.
+The rule does not test streaming, v0.3 gRPC, or other gRPC operations.
 
 ---
 

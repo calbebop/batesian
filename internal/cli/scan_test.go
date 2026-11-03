@@ -221,6 +221,23 @@ func TestScanExpectedDenialsRejectDifferentTarget(t *testing.T) {
 	}
 }
 
+func TestScanA2AGRPCTargetRejectsDifferentTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := "target: https://agent.example.com\na2a_grpc_target: grpcs://agent.example.com:50051\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", "https://other.example.com")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(),
+		"a2a_grpc_target cannot be used with a different --target") {
+		t.Fatalf("error = %v, want gRPC target mismatch", err)
+	}
+}
+
 func TestScanSubscriptionProbeRejectsDifferentTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "batesian.yaml")
 	content := `target: https://mcp.example.com
