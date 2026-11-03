@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **35 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **36 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -191,6 +191,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
+| `mcp-filesystem-symlink-001` | [Filesystem Symlink Metadata Exposure](#mcp-filesystem-symlink-001) | Low | indicator | CWE-200 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
@@ -1100,6 +1101,47 @@ Ambiguous errors, an inaccessible control, and missing approval are **not
 tested**. The rule does not read file contents or create paths. It omits paths
 and raw responses from findings. A finding alone does not establish the
 installed package or version; check the deployment separately.
+
+---
+
+### mcp-filesystem-symlink-001
+
+**Filesystem Symlink Metadata Exposure** | Severity: Low | indicator | CWE-200
+
+This opt-in rule checks the metadata exposure described in
+[GHSA-hhwq-wxfx-cj7g](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g).
+Prepare a dedicated disposable directory containing only a symlink to a
+disposable file outside it. The example file is 1,536 bytes long. Confirm the
+link and target before scanning; keep the file unchanged during the scan. Set
+the target and fixture paths in the same config file. The file size must be
+1,024 to 65,536 bytes in increments of 512 bytes so the formatted listing
+size can be compared without rounding ambiguity.
+
+```yaml
+target: https://mcp.example.com/mcp
+mcp_filesystem_symlink_probe:
+  allowed_directory: /srv/disposable
+  link_name: outside-link
+  outside_path: /srv/outside/fixture.bin
+  outside_size_bytes: 1536
+```
+
+Approve both exact tools after reviewing them:
+
+```sh
+batesian scan --config batesian.yaml --rule-ids mcp-filesystem-symlink-001 --mcp-invoke-tool get_file_info --mcp-invoke-tool list_directory_with_sizes
+```
+
+The rule requires both tools to declare `readOnlyHint: true`, no destructive
+hint, and a single required string `path` argument. These annotations are
+supplied by the server, so review the tools yourself. It first checks that
+`get_file_info` works on the allowed directory, then requires it to deny the
+outside file and the link. It compares the link's
+`list_directory_with_sizes` entry with the known outside file size. A
+match is a **low indicator**. A different reported size is clean for this
+fixture; missing or ambiguous entries are **not tested**. The rule makes no
+filesystem changes, does not read file contents, and omits paths, sizes, and
+raw responses from findings. It does not establish the installed package.
 
 ---
 

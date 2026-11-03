@@ -381,6 +381,37 @@ func TestLoad_MCPFilesystemSuffixProbe(t *testing.T) {
 	}
 }
 
+func TestLoad_MCPFilesystemSymlinkProbe(t *testing.T) {
+	const valid = "target: https://mcp.example.com\nmcp_filesystem_symlink_probe:\n  allowed_directory: /srv/disposable\n  link_name: outside-link\n  outside_path: /srv/outside/fixture.bin\n  outside_size_bytes: 1536\n"
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", valid, true},
+		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1), false},
+		{"root", strings.Replace(valid, "/srv/disposable", "/", 1), false},
+		{"outside inside", strings.Replace(valid, "/srv/outside/fixture.bin", "/srv/disposable/fixture.bin", 1), false},
+		{"noncanonical outside", strings.Replace(valid, "/srv/outside/fixture.bin", "/srv/../outside/fixture.bin", 1), false},
+		{"path-shaped link", strings.Replace(valid, "outside-link", "../outside-link", 1), false},
+		{"unmatched size", strings.Replace(valid, "1536", "1537", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(configPath, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(configPath)
+			if tc.valid {
+				if err != nil || cfg.MCPFilesystemSymlinkProbe.OutsideSizeBytes != 1536 {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "mcp_filesystem_symlink_probe") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_PrincipalMissingName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")

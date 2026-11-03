@@ -1,0 +1,32 @@
+id: mcp-filesystem-symlink-001
+info:
+  name: MCP Filesystem Symlink Metadata Exposure
+  author: batesian
+  severity: low
+  description: |
+    Compares a directory listing against an operator-prepared disposable
+    symlink to a file outside the allowed directory. Direct metadata requests
+    for the allowed directory must succeed, while requests for the outside
+    file and link must be denied before a listed file size can become an
+    indicator. The probe calls only approved, read-only metadata tools and
+    does not create paths or read file contents.
+
+  references:
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    - https://cwe.mitre.org/data/definitions/200.html
+
+  tags:
+    - mcp
+    - filesystem
+    - authorization
+    - cwe-200
+
+attack:
+  protocol: mcp
+  type: mcp-filesystem-symlink
+
+remediation: |
+  Validate each child path before following a symlink to collect metadata, or
+  report the link's own metadata without following it. Upgrade affected
+  @modelcontextprotocol/server-filesystem deployments to 2.0.1 or later.
