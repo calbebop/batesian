@@ -26,15 +26,18 @@ compares path error responses to test where lookup occurred.
 
 ## Protocol currency
 
-The rules cover the **handshake-based** MCP revisions (`2024-11-05` through
-`2025-11-25`) and, where noted below, the stateless `2026-07-28` wire. Legacy
-requests use `initialize`; modern requests carry protocol metadata on each call.
+The HTTP rules cover the **Streamable HTTP** handshake revisions (`2025-03-26`
+through `2025-11-25`) and, where noted below, the stateless `2026-07-28` wire.
+Handshake requests use `initialize`; modern requests carry protocol metadata on
+each call. Batesian does not implement the `2024-11-05` HTTP+SSE transport, which
+uses a separate event stream and message endpoint. Downgrade checks that send a
+`2024-11-05` version over Streamable HTTP test negotiation, not an SSE-only server.
 
 The **[`2026-07-28` revision](https://modelcontextprotocol.io/specification/2026-07-28/changelog)**
-makes MCP stateless. It removes the `initialize`/`notifications/initialized`
-handshake in favour of per-request `_meta`, protocol-level sessions and the
-`Mcp-Session-Id` header, the HTTP GET stream and `Last-Event-ID` resumability,
-and `logging/setLevel`. It also moves tasks into an extension. Individual rules
+makes MCP stateless. It replaces the `initialize`/`notifications/initialized`
+handshake with per-request `_meta` and removes protocol-level sessions, the
+`Mcp-Session-Id` header, the HTTP GET stream, `Last-Event-ID` resumability, and
+`logging/setLevel`. It also moves tasks into an extension. Individual rules
 whose surface changed carry a **Currency** note below.
 
 Some current SDKs can serve both eras on one endpoint, but deployments can also
