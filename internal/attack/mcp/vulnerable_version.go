@@ -48,6 +48,11 @@ var vvTable = []vvAdvisory{
 		refs:  "CVE-2025-68143, CVE-2025-68144, CVE-2025-68145",
 	},
 	{
+		key: "mcp-git", exact: true, affected: ">=2026.10.10 <2026.10.28", severity: "medium",
+		title: "reference git server repository confinement bypass",
+		refs:  "GHSA-w766-5x43-whvw", fixed: "2026.10.28", pkg: "mcp-server-git",
+	},
+	{
 		key: "mcp-remote", affected: "<0.1.16", severity: "high",
 		title: "mcp-remote OAuth flow command injection",
 		refs:  "CVE-2025-6514",
@@ -88,6 +93,18 @@ var vvTable = []vvAdvisory{
 		affected: ">=1.0.0 <2.0.1", severity: "low",
 		title: "reference filesystem server symlink metadata disclosure",
 		refs:  "GHSA-hhwq-wxfx-cj7g", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key: "secure-filesystem-server", exact: true,
+		affected: ">=1.0.0 <2.0.1", severity: "medium",
+		title: "reference filesystem server case-variant symlink write escape",
+		refs:  "GHSA-4gxg-m5jx-9j57", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key: "secure-filesystem-server", exact: true,
+		affected: ">=1.0.0 <2.0.1", severity: "low",
+		title: "reference filesystem server parent-directory write race",
+		refs:  "GHSA-53mr-w429-c597", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
 		key: "mcp-fetch", exact: true,

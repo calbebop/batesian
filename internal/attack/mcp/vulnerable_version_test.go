@@ -199,11 +199,17 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 		{"secure-filesystem-server", "2026.9.1", nil},
 		{"secure-filesystem-server", "0.2.0", nil},
 		{"secure-filesystem-server", "0.9.0", nil},
-		{"secure-filesystem-server", "1.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
-		{"secure-filesystem-server", "2.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
-		{"secure-filesystem-server", "2.0.1-rc.1", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g"}},
+		{"secure-filesystem-server", "1.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g", "GHSA-4gxg-m5jx-9j57", "GHSA-53mr-w429-c597"}},
+		{"secure-filesystem-server", "2.0.0", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g", "GHSA-4gxg-m5jx-9j57", "GHSA-53mr-w429-c597"}},
+		{"secure-filesystem-server", "2.0.1-rc.1", []string{"GHSA-7rgq-gccq-qphx", "GHSA-hhwq-wxfx-cj7g", "GHSA-4gxg-m5jx-9j57", "GHSA-53mr-w429-c597"}},
 		{"secure-filesystem-server", "2.0.1", nil},
 		{"proxy-secure-filesystem-server", "2.0.0", nil},
+		{"mcp-git", "2026.10.9", nil},
+		{"mcp-git", "2026.10.10", []string{"GHSA-w766-5x43-whvw"}},
+		{"mcp-git", "2026.10.19", []string{"GHSA-w766-5x43-whvw"}},
+		{"mcp-git", "2026.10.28-rc.1", []string{"GHSA-w766-5x43-whvw"}},
+		{"mcp-git", "2026.10.28", nil},
+		{"custom-mcp-git", "2026.10.19", nil},
 		{"mcp-fetch", "0.6.0", nil},
 		{"mcp-fetch", "0.6.1", nil},
 		{"mcp-fetch", "2026.10.9", nil},
@@ -233,7 +239,11 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 					if tc.name == "secure-filesystem-server" {
 						fixed = "2.0.1"
 					}
-					if ref == "GHSA-3jqg-r5pp-rmp2" || ref == "GHSA-66qx-2266-pmj6" || ref == "GHSA-hhwq-wxfx-cj7g" {
+					if tc.name == "mcp-git" {
+						fixed = "2026.10.28"
+					}
+					if ref == "GHSA-3jqg-r5pp-rmp2" || ref == "GHSA-66qx-2266-pmj6" ||
+						ref == "GHSA-hhwq-wxfx-cj7g" || ref == "GHSA-53mr-w429-c597" {
 						severity = "low"
 					}
 					if findings[i].Severity != severity || !strings.Contains(findings[i].Remediation, fixed) {
@@ -249,9 +259,11 @@ func TestVV_UnrecognizedVersionSuffixIsUnverifiable(t *testing.T) {
 	ts := vvServer("secure-filesystem-server", "2.0.1rc1")
 	defer ts.Close()
 	findings, err := runVV(t, ts)
-	if err != nil || len(findings) != 2 || findings[0].Severity != "low" ||
+	if err != nil || len(findings) != 4 || findings[0].Severity != "low" ||
 		!strings.Contains(findings[0].Evidence, "GHSA-7rgq-gccq-qphx") ||
-		!strings.Contains(findings[1].Evidence, "GHSA-hhwq-wxfx-cj7g") {
+		!strings.Contains(findings[1].Evidence, "GHSA-hhwq-wxfx-cj7g") ||
+		!strings.Contains(findings[2].Evidence, "GHSA-4gxg-m5jx-9j57") ||
+		!strings.Contains(findings[3].Evidence, "GHSA-53mr-w429-c597") {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 }

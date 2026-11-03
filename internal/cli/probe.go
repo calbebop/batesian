@@ -276,6 +276,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		printer.Error("MCP connection failed: " + redactor.text(err.Error()))
 		return fmt.Errorf("could not connect to MCP server: %w", err)
 	}
+	defer client.CloseSession(ctx, session)
 	printer.Success(fmt.Sprintf("MCP server connected (%s)", elapsed.Round(time.Millisecond)))
 
 	result := &report.MCPProbeResult{
@@ -389,6 +390,7 @@ func listUnauthMCPResources(ctx context.Context, endpoint string, timeout time.D
 	if err != nil {
 		return nil, err
 	}
+	defer client.CloseSession(ctx, session)
 	if session.Endpoint != endpoint {
 		return nil, fmt.Errorf("anonymous MCP session resolved to a different endpoint")
 	}
