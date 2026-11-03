@@ -55,6 +55,11 @@ func (r *Recorder) Requests() []RecordedRequest {
 	return out
 }
 
+// RecordGRPC adds an opt-in gRPC call to the dry-run plan without opening a connection.
+func (r *Recorder) RecordGRPC(target, method string) {
+	r.record("GRPC "+method, target, nil, nil)
+}
+
 func (r *Recorder) record(method, rawURL string, header http.Header, body []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

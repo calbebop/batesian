@@ -60,6 +60,7 @@ func init() {
 	scanCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
 	scanCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
 	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
+	scanCmd.Flags().String("a2a-grpc-target", "", "Opt in to A2A gRPC task access at this card-advertised grpc:// loopback or grpcs:// host:port")
 	scanCmd.Flags().StringSlice("oauth-origin", nil, "Allow target-advertised OAuth endpoints on this exact additional origin (comma-separated)")
 	scanCmd.Flags().StringSlice("mcp-scope-tool", nil, "Allow calls to this tool and assert the limited principal lacks its required scope (comma-separated)")
 	scanCmd.Flags().StringSlice("mcp-invoke-tool", nil, "Allow traversal and task rules to call this exact MCP tool name (comma-separated)")
@@ -131,6 +132,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
+	a2aGRPCTarget, _ := cmd.Flags().GetString("a2a-grpc-target")
 	oauthOrigins, _ := cmd.Flags().GetStringSlice("oauth-origin")
 	mcpScopeTools, _ := cmd.Flags().GetStringSlice("mcp-scope-tool")
 	mcpInvokeTools, _ := cmd.Flags().GetStringSlice("mcp-invoke-tool")
@@ -153,6 +155,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 	if cfg.MCPFilesystemSymlinkProbe != nil && target != cfg.Target {
 		return errors.New("mcp_filesystem_symlink_probe cannot be used with a different --target")
+	}
+	if cfg.A2AGRPCTarget != "" && target != cfg.Target && !cmd.Flags().Changed("a2a-grpc-target") {
+		return errors.New("a2a_grpc_target cannot be used with a different --target")
 	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
@@ -228,6 +233,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	// An explicit empty proxy overrides the config.
 	if !cmd.Flags().Changed("proxy") {
 		proxy = cfg.Proxy
+	}
+	if !cmd.Flags().Changed("a2a-grpc-target") {
+		a2aGRPCTarget = cfg.A2AGRPCTarget
+	}
+	if a2aGRPCTarget != "" {
+		if _, err := attackpkg.ParseA2AGRPCTarget(a2aGRPCTarget); err != nil {
+			return fmt.Errorf("invalid --a2a-grpc-target: %w", err)
+		}
 	}
 	oauthOrigins = effectiveOAuthOrigins(cmd.Flags().Changed("oauth-origin"), oauthOrigins, cfg.OAuthOrigins)
 	if err := attackpkg.ValidateOAuthOrigins(oauthOrigins); err != nil {
@@ -356,6 +369,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		TimeoutSeconds:            timeoutSecs,
 		SkipTLS:                   skipTLS,
 		Proxy:                     proxy,
+		A2AGRPCTarget:             a2aGRPCTarget,
 		OAuthOrigins:              oauthOrigins,
 		MCPScopeTools:             mcpScopeTools,
 		MCPInvokeTools:            mcpInvokeTools,

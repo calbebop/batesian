@@ -412,6 +412,34 @@ func TestLoad_MCPFilesystemSymlinkProbe(t *testing.T) {
 	}
 }
 
+func TestLoad_A2AGRPCTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"secure", "target: https://agent.example\na2a_grpc_target: grpcs://agent.example:50051\n", true},
+		{"loopback", "target: http://127.0.0.1:9999\na2a_grpc_target: grpc://127.0.0.1:50051\n", true},
+		{"missing target", "a2a_grpc_target: grpcs://agent.example:50051\n", false},
+		{"remote plaintext", "target: https://agent.example\na2a_grpc_target: grpc://agent.example:50051\n", false},
+		{"path", "target: https://agent.example\na2a_grpc_target: grpcs://agent.example:50051/path\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tc.valid {
+				if err != nil || cfg.A2AGRPCTarget == "" {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "a2a_grpc_target") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_PrincipalMissingName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")

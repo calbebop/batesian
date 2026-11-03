@@ -53,6 +53,9 @@ type Config struct {
 	// (HTTPS_PROXY, HTTP_PROXY, NO_PROXY).
 	Proxy string `yaml:"proxy"`
 
+	// A2AGRPCTarget permits the opt-in A2A gRPC task check at this exact address.
+	A2AGRPCTarget string `yaml:"a2a_grpc_target"`
+
 	// OAuthOrigins are exact additional origins that target-advertised OAuth
 	// endpoints may use. The target origin itself is always allowed.
 	OAuthOrigins []string `yaml:"oauth_origins"`
@@ -212,6 +215,14 @@ func (c *Config) validate(path string) error {
 	if c.TimeoutSeconds != 0 {
 		if _, err := httpx.TimeoutDuration(c.TimeoutSeconds); err != nil {
 			return fmt.Errorf("config %s: invalid timeout: %w", path, err)
+		}
+	}
+	if c.A2AGRPCTarget != "" {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: a2a_grpc_target requires a target in the same config file", path)
+		}
+		if _, err := attack.ParseA2AGRPCTarget(c.A2AGRPCTarget); err != nil {
+			return fmt.Errorf("config %s: invalid a2a_grpc_target: %w", path, err)
 		}
 	}
 
@@ -403,6 +414,11 @@ func Example() string {
 # NO_PROXY instead; note that Go does not send loopback targets through an
 # environment proxy, so a scan against 127.0.0.1 needs this set explicitly.
 # proxy: 127.0.0.1:8080
+
+# Opt-in A2A v1.0 gRPC task-access check. Must match an unscoped Agent Card
+# interface and be paired with two principals below. Plaintext is loopback-only.
+# The prototype does not support the explicit proxy setting above.
+# a2a_grpc_target: grpcs://agent.example.com:50051
 
 # Exact additional origins allowed for target-advertised OAuth endpoints.
 # The target origin is always allowed. Add external authorization servers only
