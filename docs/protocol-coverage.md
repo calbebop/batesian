@@ -16,6 +16,10 @@ is present.
 | [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, session opening, and a clean two-principal cache-scope scan on PRs and weekly | The SDK server returns the same data to both test principals; the vulnerable cache-scope control is a Go fixture. |
 | [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) | Same dual-era SDK target and bundled fixtures | Legacy `initialize` and session opening, plus rule controls | No official SDK in every supported language is exercised. |
 
+The 2024-11-05 HTTP+SSE transport is not covered. It uses a long-lived GET stream
+and a separate POST endpoint rather than the Streamable HTTP request path used by
+Batesian. See the [official Go SDK transport guide](https://go.sdk.modelcontextprotocol.io/protocol/).
+
 The SDK dependencies intentionally float within a major version. These gates
 catch changes in the current Python implementations; the fixture and Go tests
 pin expected protocol behavior when a dependency changes.

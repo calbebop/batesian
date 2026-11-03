@@ -2,6 +2,8 @@ import re
 import unittest
 from pathlib import Path
 
+from verify_release import check_rule_claim
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,6 +36,15 @@ class RuleDocumentationTests(unittest.TestCase):
         for protocol, count in counts.items():
             self.assertIn(f"[{count} {protocol.upper()} rules]", readme)
         self.assertIn(f"{counts['a2a']} A2A and {counts['mcp']} MCP", readme)
+
+        release_config = (ROOT / ".goreleaser.yaml").read_text(encoding="utf-8")
+        check_rule_claim(release_config, ROOT)
+
+        fixtures = (ROOT / "testdata" / "README.md").read_text(encoding="utf-8")
+        self.assertIn(
+            f"**{counts['a2a']} A2A + {counts['mcp']} MCP = {sum(counts.values())} rules**",
+            fixtures,
+        )
 
 
 if __name__ == "__main__":
