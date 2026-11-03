@@ -1,7 +1,7 @@
 # Protocol and advisory coverage
 
 This page records what the live compatibility gates and endpoint rules actually
-exercise. The advisory matrix was reviewed on 2026-11-02; the modern protocol
+exercise. The advisory matrix was reviewed on 2026-11-03; the modern protocol
 sections were updated on 2026-10-30. A rule finding describes observed behavior
 on the scanned surface; it does not establish that a particular package or CVE
 is present.
@@ -63,7 +63,9 @@ OAuth authorization-server metadata is accepted only when its `issuer` matches
 the issuer used for the well-known URL. The DCR redirect probe includes an
 S256 PKCE challenge but does not exchange an authorization code. Legacy sessions
 opened through shared wire discovery are closed with DELETE when the server
-issues a session ID; servers may decline cleanup with HTTP 405.
+issues a session ID. `probe` also closes its authenticated and anonymous legacy
+sessions, including after inventory errors. Servers may decline cleanup with
+HTTP 405; stateless modern requests need no session cleanup.
 
 Legacy `resources/read` may use `-32002` for a missing resource. The 2026-07-28
 revision uses `-32602`. Some SDKs also use `-32001` for a missing session.
@@ -82,8 +84,11 @@ failure mode without establishing the cited advisory.
 | [Python SDK session retention, GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv) | Session creation is observable; unbounded retention and memory growth are not established by a short scan. | None specific. | Check installed SDK version, stateful mode, session limits, and process memory over time. |
 | [TypeScript SDK response crossover, GHSA-jm63-cq47-j5jp](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-jm63-cq47-j5jp) | Potentially, with two isolated clients using colliding JSON-RPC IDs. | `mcp-response-crossover-001` confirms an observed cross-client resource response with a denied baseline and stable controls. It does not identify the package or version. | Inspect transport/server instance lifetime and SDK version; absence of a finding does not rule out the race. |
 | [server-everything environment disclosure, GHSA-mvf5-2qqv-rg3c](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-mvf5-2qqv-rg3c) | Open tool listing, authentication, and Origin responses are observable. Environment exfiltration requires invoking `get-env`. | `mcp-tools-unauth-001` and `mcp-dns-rebind-origin-001` may report contributing behavior; neither proves this advisory. | Verify package version, network binding, CORS, and whether `get-env` exposes secrets. Do not invoke it during a routine scan. |
+| [mcp-server-git repository confinement bypass, GHSA-w766-5x43-whvw](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-w766-5x43-whvw) | A prepared nested `.git` indirection could expose an outside repository, but creating it changes target state. | `mcp-vulnerable-version-001` flags self-reported `mcp-git` versions from 2026.10.10 through 2026.10.27. It does not invoke Git tools or verify `--repository` confinement. | Verify the installed `mcp-server-git` version and whether an attacker can place a nested `.git` file inside the allowed repository. |
 | [server-filesystem path mismatch, GHSA-7rgq-gccq-qphx](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx) | Yes, with a configured allowed directory and approved metadata tool. | `mcp-filesystem-suffix-001` compares missing-path and denied-path controls with trailing quote and space siblings. `mcp-vulnerable-version-001` flags affected self-reported 1.x versions; earlier builds report a static server version. Neither identifies the installed package independently. | Check the installed package version and ensure the suffixed siblings are nonexistent in a controlled deployment. |
 | [server-filesystem symlink metadata disclosure, GHSA-hhwq-wxfx-cj7g](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g) | Yes, with a disposable symlink and outside file of known size. | `mcp-filesystem-symlink-001` compares denied direct metadata controls with the link's directory listing. `mcp-vulnerable-version-001` separately flags affected self-reported 1.x versions. Neither identifies the installed package independently. | Verify the installed package version and run the opt-in probe with an unchanged fixture. |
+| [server-filesystem case-variant symlink write, GHSA-4gxg-m5jx-9j57](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-4gxg-m5jx-9j57) | Exploitation requires a case-insensitive filesystem, a prepared symlink, and a write or create operation. | `mcp-vulnerable-version-001` flags self-reported 1.x and 2.0.0 versions. The read-only symlink metadata rule does not test this write escape. | Verify the installed package version, filesystem case behavior, and allowed-directory layout. Test writes only in an isolated disposable fixture. |
+| [server-filesystem parent-directory race, GHSA-53mr-w429-c597](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-53mr-w429-c597) | Exploitation requires a competing local actor to replace a validated parent directory before a write. | `mcp-vulnerable-version-001` flags self-reported 1.x and 2.0.0 versions. A bounded remote scan cannot prove the race is reachable. | Verify the installed package version and local filesystem threat model. Do not run a race exploit in routine scans. |
 | [mcp-server-fetch IDNA SSRF, GHSA-v38p-wf49-hx2j](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-v38p-wf49-hx2j) | A controlled outbound callback may prove a fetch. It cannot by itself prove access to a private address. | `mcp-vulnerable-version-001` flags affected self-reported `mcp-fetch` versions. It does not invoke the `fetch` tool or establish SSRF. | Verify the installed package version and DNS behavior in an isolated network. |
 | [mcp-server-fetch robots redirect bypass, GHSA-3jqg-r5pp-rmp2](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2) | Potentially, with a controlled redirect and robots policy. | `mcp-vulnerable-version-001` flags affected self-reported `mcp-fetch` versions from 2026.10.10 onward. Older builds may report an SDK version instead. It does not test redirect enforcement. | Verify the installed package version and redirect policy with a controlled server. |
 | [mcp-server-fetch NAT64 SSRF, GHSA-66qx-2266-pmj6](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6) | Potentially, on a network with NAT64 egress. | `mcp-vulnerable-version-001` flags affected self-reported `mcp-fetch` versions. It does not test NAT64 routing or invoke the `fetch` tool. | Verify the installed package version and network behavior in an isolated deployment. |
@@ -92,9 +97,10 @@ failure mode without establishing the cited advisory.
 `mcp-vulnerable-version-001` matches a closed set of self-reported component
 names and versions documented in [the MCP rules](rules-mcp.md#mcp-vulnerable-version-001).
 It covers recent filesystem and fetch server releases above when those reference
-servers report their exact names and package versions. It cannot infer an
-installed SDK version from a generic server name. Every match is an indicator,
-not exploit confirmation.
+servers report their exact names and package versions. The git server reports
+`mcp-git` with its package version from the 2026.10.10 release onward. It
+cannot infer an installed SDK version from a generic server name. Every match
+is an indicator, not exploit confirmation.
 
 **Log-only evidence.** The current [MCP Python SDK logging guide](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/handlers/logging.md)
 uses process logging on stderr; those records do not appear in an endpoint

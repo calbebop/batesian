@@ -217,6 +217,28 @@ func (c *Client) Connect(ctx context.Context) (*Session, error) {
 	return nil, fmt.Errorf("no MCP server found at %s (tried %v)", c.baseURL, candidates)
 }
 
+// CloseSession releases a legacy Streamable HTTP session when the server permits it.
+func (c *Client) CloseSession(ctx context.Context, s *Session) {
+	if s == nil || s.Modern || s.SessionID == "" {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(closeCtx, http.MethodDelete, s.Endpoint, nil)
+	if err != nil {
+		return
+	}
+	s.setRequestHeaders(req)
+	req.Header.Set("User-Agent", "batesian/dev (https://github.com/calbebop/batesian)")
+	if c.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
+	resp, err := c.http.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
 // ListTools returns the complete tool listing or an error.
 func (c *Client) ListTools(ctx context.Context, s *Session) ([]Tool, error) {
 	var tools []Tool
@@ -348,6 +370,13 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 	}
 
 	sessionID := resp.Header.Get("Mcp-Session-Id")
+	session := &Session{Endpoint: ep, SessionID: sessionID, ProtocolVersion: "2025-11-25"}
+	connected := false
+	defer func() {
+		if !connected {
+			c.CloseSession(ctx, session)
+		}
+	}()
 	respBody, err := readResponseBody(resp, 1)
 	_ = resp.Body.Close()
 	if err != nil {
@@ -374,17 +403,13 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		return nil, fmt.Errorf("invalid MCP initialize result from %s", ep)
 	}
 
-	session := &Session{
-		Endpoint:        ep,
-		SessionID:       sessionID,
-		ProtocolVersion: version,
-		ServerInfo: ServerInfo{
-			Name:    strField(si, "name"),
-			Version: strField(si, "version"),
-			Title:   strField(si, "title"),
-		},
-		Capabilities: caps,
+	session.ProtocolVersion = version
+	session.ServerInfo = ServerInfo{
+		Name:    strField(si, "name"),
+		Version: strField(si, "version"),
+		Title:   strField(si, "title"),
 	}
+	session.Capabilities = caps
 
 	notif, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -402,11 +427,12 @@ func (c *Client) tryInitialize(ctx context.Context, ep string) (*Session, error)
 		}
 		return nil, fmt.Errorf("%w: transport error", errInitializedRejected)
 	}
-	defer resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusAccepted {
 		return nil, fmt.Errorf("%w: HTTP %d", errInitializedRejected, resp2.StatusCode)
 	}
 
+	connected = true
 	return session, nil
 }
 

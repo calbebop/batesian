@@ -182,6 +182,104 @@ func TestLegacyRequestsCarryNegotiatedVersion(t *testing.T) {
 	}
 }
 
+func TestInitializeClosesSessionAfterHandshakeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, version string
+		invalidResult bool
+	}{
+		{"invalid result", "2025-11-25", true},
+		{"initialized refused", "2025-03-26", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var deletes []http.Header
+			initCalls := 0
+			var mu sync.Mutex
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					mu.Lock()
+					deletes = append(deletes, r.Header.Clone())
+					mu.Unlock()
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				var body struct {
+					Method string `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				switch body.Method {
+				case "initialize":
+					mu.Lock()
+					initCalls++
+					mu.Unlock()
+					w.Header().Set("Mcp-Session-Id", "unfinished")
+					if tc.invalidResult {
+						_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":%q,"serverInfo":{"name":"fixture","version":"1"},"capabilities":{}}}`, tc.version)
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusBadRequest)
+				default:
+					t.Errorf("unexpected method %q", body.Method)
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer srv.Close()
+
+			client, err := NewClient(srv.URL, WithBearerToken("valid"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Initialize(t.Context()); err == nil {
+				t.Fatal("expected handshake failure")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(deletes) != initCalls {
+				t.Fatalf("cleanup DELETEs = %d, opened sessions = %d", len(deletes), initCalls)
+			}
+			for _, headers := range deletes {
+				if headers.Get("Mcp-Session-Id") != "unfinished" ||
+					headers.Get("Mcp-Protocol-Version") != tc.version ||
+					headers.Get("Authorization") != "Bearer valid" {
+					t.Fatalf("cleanup DELETE headers = %v", headers)
+				}
+			}
+		})
+	}
+}
+
+func TestCloseSessionIgnoresCanceledProbeContext(t *testing.T) {
+	deletes := 0
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.Header.Get("Mcp-Session-Id") != "session" {
+			t.Errorf("unexpected cleanup request: %s %v", r.Method, r.Header)
+		}
+		mu.Lock()
+		deletes++
+		mu.Unlock()
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	client.CloseSession(ctx, &Session{Endpoint: srv.URL, SessionID: "session", ProtocolVersion: "2025-11-25"})
+	mu.Lock()
+	defer mu.Unlock()
+	if deletes != 1 {
+		t.Fatalf("cleanup DELETEs = %d, want 1", deletes)
+	}
+}
+
 func TestConnectSelectsModernWhenAvailable(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

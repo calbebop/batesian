@@ -1265,6 +1265,7 @@ patched version is published and unambiguous carry an entry, each with its
 citations in both the YAML and the finding evidence.
 
 - **mcp-server-git** <2025.12.18 - argument injection and path escape chain (CVE-2025-68143/44/45)
+- **mcp-git** >=2026.10.10 <2026.10.28 - nested gitdir repository confinement bypass (GHSA-w766-5x43-whvw; fixed in 2026.10.28)
 - **mcp-remote** <0.1.16 - OAuth flow command injection (CVE-2025-6514)
 - **mcp-atlassian** <0.17.0 - attachment path traversal to RCE (CVE-2026-27825/26)
 - **mcp-atlassian** <0.22.0 - SSRF DNS-rebinding TOCTOU bypass of the 27826 fix (GHSA-489g-7rxv-6c8q; a 0.16.x deployment matches this entry and the one above, which is accurate rather than duplicate: two distinct advisories, two distinct fixes)
@@ -1273,16 +1274,18 @@ citations in both the YAML and the finding evidence.
 - **mcpjam** <=1.4.2 - exposed control endpoint RCE (CVE-2026-23744)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - path validation mismatch (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - symlink metadata disclosure (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
+- **secure-filesystem-server** >=1.0.0 <2.0.1 - case-variant symlink write escape (GHSA-4gxg-m5jx-9j57; fixed in 2.0.1)
+- **secure-filesystem-server** >=1.0.0 <2.0.1 - parent-directory write race (GHSA-53mr-w429-c597; fixed in 2.0.1)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - IDNA private-address guard bypass (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - robots.txt redirect bypass (GHSA-3jqg-r5pp-rmp2; fixed in 2026.10.24)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - NAT64 private-address guard bypass (GHSA-66qx-2266-pmj6; fixed in 2026.10.24)
 
-The filesystem and fetch names match exactly. Multiple bounds must all match;
+The filesystem, fetch, and `mcp-git` names match exactly. Multiple bounds must all match;
 a prerelease of a fixed version remains below that version. These advisories
 also affect older package releases. Earlier filesystem builds report a static
-`0.2.0` server version, and earlier `mcp-fetch` builds may report the SDK
-version. The inventory rule does not match those older ranges; verify the
-installed packages directly.
+`0.2.0` server version, and earlier `mcp-fetch` and `mcp-server-git` builds may
+report the SDK version. The inventory rule does not match those older ranges;
+verify the installed packages directly.
 
 Every finding is an **indicator**. The version is self-reported and trivially
 spoofable, and matching a range does not prove the vulnerable code path is

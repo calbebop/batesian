@@ -466,14 +466,28 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 		anonInit      bool
 		anonResources bool
 		wantFlag      bool
+		wantDeletes   []string
+		refuseDelete  bool
 	}{
-		{"auth-gated", "valid", false, false, false},
-		{"session-gated", "valid", true, false, false},
-		{"open-with-token", "valid", true, true, true},
-		{"open-without-token", "", true, true, true},
+		{"auth-gated", "valid", false, false, false, []string{"Bearer valid|authenticated|2025-11-25"}, false},
+		{"session-gated", "valid", true, false, false, []string{"|anonymous|2025-11-25", "Bearer valid|authenticated|2025-11-25"}, false},
+		{"open-with-token", "valid", true, true, true, []string{"|anonymous|2025-11-25", "Bearer valid|authenticated|2025-11-25"}, false},
+		{"open-without-token", "", true, true, true, []string{"|anonymous|2025-11-25"}, false},
+		{"delete-refused", "valid", true, true, true, []string{"|anonymous|2025-11-25", "Bearer valid|authenticated|2025-11-25"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var deletes []string
+			var deletesMu sync.Mutex
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					deletesMu.Lock()
+					deletes = append(deletes, r.Header.Get("Authorization")+"|"+r.Header.Get("Mcp-Session-Id")+"|"+r.Header.Get("Mcp-Protocol-Version"))
+					deletesMu.Unlock()
+					if tc.refuseDelete {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+					}
+					return
+				}
 				var call struct {
 					Method string          `json:"method"`
 					ID     json.RawMessage `json:"id"`
@@ -525,12 +539,23 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 			if !strings.Contains(out.String(), "Resources (1)") {
 				t.Errorf("resource surface was not enumerated:\n%s", out.String())
 			}
+			sort.Strings(tc.wantDeletes)
+			deletesMu.Lock()
+			sort.Strings(deletes)
+			if !slices.Equal(deletes, tc.wantDeletes) {
+				t.Errorf("session DELETEs = %q, want %q", deletes, tc.wantDeletes)
+			}
+			deletesMu.Unlock()
 		})
 	}
 }
 
 func TestProbeMCP_ModernOnlyProtectedServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			t.Error("stateless modern probe sent DELETE")
+			return
+		}
 		var body map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
@@ -632,7 +657,16 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 	} {
 		t.Run(tc.capability, func(t *testing.T) {
 			listCalls := 0
+			deleteCalls := 0
+			var deletesMu sync.Mutex
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					deletesMu.Lock()
+					deleteCalls++
+					deletesMu.Unlock()
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
 				var req struct {
 					Method string          `json:"method"`
 					ID     json.RawMessage `json:"id"`
@@ -646,6 +680,7 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 				case "server/discover":
 					w.WriteHeader(http.StatusNotFound)
 				case "initialize":
+					w.Header().Set("Mcp-Session-Id", "incomplete")
 					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"%s":{}},"serverInfo":{"name":"fixture","version":"1"}}}`, tc.capability)
 				case "notifications/initialized":
 					w.WriteHeader(http.StatusAccepted)
@@ -671,6 +706,11 @@ func TestProbeMCP_ListRPCErrorDoesNotReturnPartialInventory(t *testing.T) {
 			if listCalls != 2 {
 				t.Errorf("%s calls = %d, want 2", tc.method, listCalls)
 			}
+			deletesMu.Lock()
+			if deleteCalls != 1 {
+				t.Errorf("session DELETEs = %d, want 1 after inventory failure", deleteCalls)
+			}
+			deletesMu.Unlock()
 			if strings.Contains(out.String(), "Server Identity") {
 				t.Errorf("partial inventory was rendered as complete:\n%s", out.String())
 			}

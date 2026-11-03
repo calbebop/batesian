@@ -16,6 +16,8 @@ info:
     Current entries:
 
       - mcp-server-git <2025.12.18 (CVE-2025-68143/44/45)
+      - mcp-git >=2026.10.10 <2026.10.28
+                                    (GHSA-w766-5x43-whvw; fixed in 2026.10.28)
       - mcp-remote <0.1.16          (CVE-2025-6514)
       - mcp-atlassian <0.17.0       (CVE-2026-27825/26)
       - mcp-atlassian <0.22.0       (GHSA-489g TOCTOU bypass)
@@ -26,6 +28,10 @@ info:
                                     (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
       - secure-filesystem-server >=1.0.0 <2.0.1
                                     (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
+      - secure-filesystem-server >=1.0.0 <2.0.1
+                                    (GHSA-4gxg-m5jx-9j57; fixed in 2.0.1)
+      - secure-filesystem-server >=1.0.0 <2.0.1
+                                    (GHSA-53mr-w429-c597; fixed in 2.0.1)
       - mcp-fetch >=2026.10.10 <=2026.10.19
                                     (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
       - mcp-fetch >=2026.10.10 <=2026.10.19
@@ -40,9 +46,9 @@ info:
     for read-only inventory when the endpoint is protected.
 
     Earlier filesystem releases report a static 0.2.0 server version, and
-    earlier mcp-fetch releases may report the MCP SDK version. Those values
-    cannot identify the installed package release. The inventory entries
-    start where the reference servers report their package versions.
+    earlier mcp-fetch and mcp-server-git releases may report the MCP SDK
+    version. Those values cannot identify the installed package release. The
+    inventory entries start where the reference servers report package versions.
 
     A name that matches a table entry but reports an unparseable version is a
     low indicator: neither clean nor vulnerable can be claimed from what the
@@ -55,6 +61,9 @@ info:
     - https://nvd.nist.gov/vuln/detail/CVE-2026-49471
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-w766-5x43-whvw
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-4gxg-m5jx-9j57
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-53mr-w429-c597
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-v38p-wf49-hx2j
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6
