@@ -331,8 +331,8 @@ tested**.
 **Multi-Tenant Task Isolation Breach** | Severity: High | CWE-639
 
 A **stateful, multi-principal chained** rule (the first to use the chaining
-engine). Unlike `a2a-task-idor-001` (anonymous access), this confirms that a
-*fully authenticated* principal in one tenant cannot read another tenant's task.
+engine). Unlike `a2a-task-idor-001` (anonymous access), this detects when a
+*fully authenticated* principal reads another tenant's task.
 It requires **two principals with valid, distinct credentials**, configured via
 the `principals:` block in `batesian.yaml` or repeated `--principal
 name=...,token=...,tenant=...` flags.
@@ -353,7 +353,17 @@ The rule tests JSON-RPC and advertised HTTP+JSON `POST /message:send` and
 advertises `tenant`, both principals need distinct routes at the same URL that
 match their configured labels. A missing or ambiguous match is not tested. REST
 reads request up to ten history messages. JSON-RPC tasks can feed chained rules;
-REST tasks are tested separately and are not reused across bindings.
+REST tasks are tested separately for same-binding reads.
+
+For a card that advertises both unscoped v1.0 JSON-RPC and HTTP+JSON, the rule
+also tests the same task across the first compatible interface pair in both
+directions. It creates an owner task and a second-principal control task on the
+source binding. A cross-binding finding requires both principals to read their own
+probe text on the source, the task owner to read it on the destination, an
+explicit denial for the other principal on the source, an anonymous denial on
+the destination, and the other principal's destination read to return the
+owner's task ID and text. Tenant-scoped or ambiguous interface pairs, missing
+cross-binding owner reads, and unsupported routes are reported as not tested.
 
 ---
 

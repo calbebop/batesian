@@ -70,6 +70,9 @@ func (e *MultiTenantIsolationExecutor) ExecuteChained(ctx context.Context, targe
 	restFindings, restErr, restAdvertised := e.probeREST(ctx, vars.BaseURL, vars.RandID, a, b, clientA, clientB, unauthClient)
 	findings = append(findings, restFindings...)
 	incomplete = errors.Join(incomplete, restErr)
+	crossFindings, crossErr := e.probeCrossBinding(ctx, vars, a, b, clientA, clientB, unauthClient)
+	findings = append(findings, crossFindings...)
+	incomplete = errors.Join(incomplete, crossErr)
 	if !jsonRPC && !restAdvertised {
 		return nil, errors.Join(incomplete, attack.ErrInconclusive)
 	}
