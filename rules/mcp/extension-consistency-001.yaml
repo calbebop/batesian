@@ -1,0 +1,34 @@
+id: mcp-extension-consistency-001
+info:
+  name: MCP Extension Resource Consistency
+  author: batesian
+  severity: medium
+  description: |
+    Checks the required Resources capability, up to three advertised MCP Skills
+    entries, and three MCP Apps tool UI references across two list pages on the
+    modern wire. A Skills content finding requires a stable manifest whose
+    SKILL.md bytes repeatedly fail its size or SHA-256 digest. An Apps finding
+    requires a stable tool reference whose read response repeatedly violates
+    the UI resource format. Findings are indicators of broken content binding
+    or resource metadata, not host-side compromise.
+
+  references:
+    - https://skills.extensions.modelcontextprotocol.io/specification/beta/skills
+    - https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
+
+  tags:
+    - mcp
+    - skills
+    - apps
+    - integrity
+
+attack:
+  protocol: mcp
+  type: mcp-extension-consistency
+
+remediation: |
+  For Skills, publish the SKILL.md digest and byte size for the exact content
+  returned by resources/read; refresh the manifest when content changes. For
+  Apps, use a ui:// resource URI and return content under that same URI with
+  text/html;profile=mcp-app and text or a valid base64 blob. Keep host approval,
+  sandbox, and content verification controls in place separately.

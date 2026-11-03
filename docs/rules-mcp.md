@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **36 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **37 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -176,6 +176,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-task-idor-001` | [Task Readable Across Authorization Contexts](#mcp-task-idor-001) | Critical / High | confirmed | CWE-639 / CWE-200 |
 | `mcp-task-access-001` | [MCP Tasks Extension Cross-Principal Access](#mcp-task-access-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-cache-scope-001` | [Public Cache Scope Across Principals](#mcp-cache-scope-001) | Medium | indicator | CWE-524 |
+| `mcp-extension-consistency-001` | [Extension Resource Consistency](#mcp-extension-consistency-001) | Medium / Low | indicator | - |
 | `mcp-subscription-scope-001` | [Cross-Principal Resource Update](#mcp-subscription-scope-001) | Medium | indicator | CWE-863 |
 | `mcp-mrtr-state-001` | [Cross-Principal Request State Replay](#mcp-mrtr-state-001) | High | indicator / policy-confirmed | CWE-639 |
 | `mcp-response-crossover-001` | [Cross-Client Response Crossover](#mcp-response-crossover-001) | High | confirmed | CWE-362 |
@@ -535,6 +536,34 @@ invalidation or infer user-specific content from changing results. If discovery
 or repeated reads cannot be compared, the rule reports not tested. Set
 `cacheScope: private` for caller-specific results, keep the same scope across
 list pages, and enforce access on each primitive separately.
+
+---
+
+### mcp-extension-consistency-001
+
+**Extension Resource Consistency** | Severity: Medium / Low | indicator
+
+This read-only check uses the modern `2026-07-28` wire. If the server declares
+the [MCP Skills extension](https://skills.extensions.modelcontextprotocol.io/specification/beta/skills),
+it checks that the required Resources capability is present on repeated discovery.
+An absent capability is a low severity indicator. Otherwise,
+it samples up to three static `SKILL.md` entries across two `skills/list` pages,
+refreshes each entry with `skills/get`, and compares the returned bytes with
+the current manifest's size and SHA-256 digest.
+After a mismatch, it calls `skills/get` and reads again. It reports only when
+the manifest remains the same and the mismatch repeats. Dynamic entries,
+empty or partial listings, and changed manifests are not evidence of a clean
+catalog.
+
+For [MCP Apps](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx),
+it advertises HTML UI support and samples up to three distinct tool UI references
+across two `tools/list` pages. A finding requires a stable reference with a
+non-`ui://` URI, or repeated `resources/read` responses that lack the referenced
+URI, `text/html;profile=mcp-app`, or text/base64 content. A repeated
+`-32602` read rejection also qualifies. UI-only resources may be
+absent from `resources/list`, so this rule does not require a listing. It never
+calls tools, loads skill instructions, renders HTML, or evaluates host sandbox
+enforcement. Evidence omits resource URIs and content.
 
 ---
 
