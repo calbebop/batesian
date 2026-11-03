@@ -519,6 +519,9 @@ func TestProbeMCP_ResourceFlagUsesSeparateAnonymousSession(t *testing.T) {
 			if gotFlag != tc.wantFlag {
 				t.Errorf("unauthenticated resource flag = %v, want %v:\n%s", gotFlag, tc.wantFlag, out.String())
 			}
+			if gotFlag && (strings.Contains(out.String(), "HIGH") || !strings.Contains(out.String(), "INFO")) {
+				t.Errorf("anonymous resource listing must be informational:\n%s", out.String())
+			}
 			if !strings.Contains(out.String(), "Resources (1)") {
 				t.Errorf("resource surface was not enumerated:\n%s", out.String())
 			}

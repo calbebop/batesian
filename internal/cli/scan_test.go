@@ -826,42 +826,53 @@ func TestLoadRules_RejectsDuplicateIDs(t *testing.T) {
 }
 
 func TestScan_InvalidRulePackStopsBeforeNetwork(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "invalid.yaml"), []byte(cliRuleYAML+"unexpected: true\n"), 0o644); err != nil {
-		t.Fatalf("writing rule: %v", err)
-	}
-	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
-	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("writing config: %v", err)
-	}
+	for _, tc := range []struct {
+		name, rule, want string
+	}{
+		{"unknown field", cliRuleYAML + "unexpected: true\n", "invalid.yaml"},
+		{"unknown executor", strings.Replace(cliRuleYAML, "extcard-unauth-disclosure", "unknown-executor", 1), "unregistered attack.type"},
+		{"unknown protocol", strings.Replace(cliRuleYAML, "protocol: a2a", "protocol: mcq", 1), "unsupported attack.protocol"},
+		{"protocol mismatch", strings.Replace(cliRuleYAML, "protocol: a2a", "protocol: mcp", 1), "want a2a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "invalid.yaml"), []byte(tc.rule), 0o644); err != nil {
+				t.Fatalf("writing rule: %v", err)
+			}
+			configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+				t.Fatalf("writing config: %v", err)
+			}
 
-	var oauthHits, targetHits atomic.Int32
-	oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		oauthHits.Add(1)
-	}))
-	defer oauth.Close()
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		targetHits.Add(1)
-	}))
-	defer target.Close()
-	t.Setenv("BATESIAN_TOKEN", "")
-	if scanCmd.Flags().Lookup("target") == nil {
-		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
-	}
-	setScanFlag(t, "config", configPath)
-	setScanFlag(t, "rules-dir", dir)
-	setScanFlag(t, "target", target.URL)
-	setScanFlag(t, "token", "")
-	setScanFlag(t, "client-id", "client")
-	setScanFlag(t, "token-url", oauth.URL)
-	setScanFlag(t, "dry-run", "false")
+			var oauthHits, targetHits atomic.Int32
+			oauth := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				oauthHits.Add(1)
+			}))
+			defer oauth.Close()
+			target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				targetHits.Add(1)
+			}))
+			defer target.Close()
+			t.Setenv("BATESIAN_TOKEN", "")
+			if scanCmd.Flags().Lookup("target") == nil {
+				scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+			}
+			setScanFlag(t, "config", configPath)
+			setScanFlag(t, "rules-dir", dir)
+			setScanFlag(t, "target", target.URL)
+			setScanFlag(t, "token", "")
+			setScanFlag(t, "client-id", "client")
+			setScanFlag(t, "token-url", oauth.URL)
+			setScanFlag(t, "dry-run", "false")
 
-	err := runScan(scanCmd, nil)
-	if err == nil || !strings.Contains(err.Error(), "invalid.yaml") {
-		t.Fatalf("expected rule load error, got %v", err)
-	}
-	if oauthHits.Load() != 0 || targetHits.Load() != 0 {
-		t.Fatalf("network calls before rule validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+			err := runScan(scanCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q rule load error, got %v", tc.want, err)
+			}
+			if oauthHits.Load() != 0 || targetHits.Load() != 0 {
+				t.Fatalf("network calls before rule validation: oauth=%d target=%d", oauthHits.Load(), targetHits.Load())
+			}
+		})
 	}
 }
 
