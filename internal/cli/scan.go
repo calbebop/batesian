@@ -425,6 +425,7 @@ func loadRules(builtins fs.FS, extraDir string) ([]*rules.Rule, error) {
 	if err := ruleWarningsError("built-in rules", warns); err != nil {
 		return nil, err
 	}
+	builtinsCount := len(loaded)
 
 	if extraDir != "" {
 		extra, extraWarns, extraErr := rules.LoadDir(extraDir)
@@ -438,6 +439,19 @@ func loadRules(builtins fs.FS, extraDir string) ([]*rules.Rule, error) {
 	}
 	if err := rules.ValidateUniqueIDs(loaded); err != nil {
 		return nil, fmt.Errorf("loading rule catalogs: %w", err)
+	}
+	protocolByType := make(map[string]string, builtinsCount)
+	for _, rule := range loaded[:builtinsCount] {
+		protocolByType[rule.Attack.Type] = rule.Attack.Protocol
+	}
+	for _, rule := range loaded {
+		if _, ok := attackpkg.Resolve(rule.Attack.Type); !ok {
+			return nil, fmt.Errorf("loading rule catalogs: rule %q has unregistered attack.type %q", rule.ID, rule.Attack.Type)
+		}
+		if protocol, ok := protocolByType[rule.Attack.Type]; ok && protocol != rule.Attack.Protocol {
+			return nil, fmt.Errorf("loading rule catalogs: rule %q uses attack.type %q for %s, want %s",
+				rule.ID, rule.Attack.Type, rule.Attack.Protocol, protocol)
+		}
 	}
 
 	return loaded, nil

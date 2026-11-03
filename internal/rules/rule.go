@@ -54,6 +54,8 @@ func (r *Rule) Validate() error {
 	}
 	if r.Attack.Protocol == "" {
 		errs = append(errs, "missing attack.protocol")
+	} else if r.Attack.Protocol != "a2a" && r.Attack.Protocol != "mcp" {
+		errs = append(errs, fmt.Sprintf("unsupported attack.protocol %q (want a2a or mcp)", r.Attack.Protocol))
 	}
 	if r.Attack.Type == "" {
 		errs = append(errs, "missing attack.type")

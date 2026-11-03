@@ -77,6 +77,14 @@ func TestParseRule_MissingType(t *testing.T) {
 	}
 }
 
+func TestParseRule_RejectsUnsupportedProtocol(t *testing.T) {
+	data := strings.Replace(validRuleYAML, "protocol: a2a", "protocol: mcq", 1)
+	_, err := parseRule([]byte(data), "test.yaml")
+	if err == nil || !strings.Contains(err.Error(), `unsupported attack.protocol "mcq"`) {
+		t.Fatalf("expected unsupported protocol error, got %v", err)
+	}
+}
+
 func TestParseRule_RejectsUnknownFields(t *testing.T) {
 	tests := []struct {
 		name  string

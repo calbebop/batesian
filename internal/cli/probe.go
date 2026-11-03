@@ -327,7 +327,7 @@ func probeMCP(ctx context.Context, target, token string, timeout time.Duration, 
 		}
 		if anonErr == nil && len(anonResources) > 0 {
 			result.Flags = append(result.Flags, report.AttackFlag{
-				Severity: "high",
+				Severity: "info",
 				RuleID:   "mcp-resources-unauth-001",
 				Message:  fmt.Sprintf("%d resource(s) listed without authentication. Run scan to read content.", len(anonResources)),
 			})

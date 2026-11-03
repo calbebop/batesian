@@ -125,7 +125,7 @@ func init() {
 
 The `a2a` and `mcp` packages are blank-imported by `internal/engine/engine.go`, so
 their `init()` functions run and populate the registry automatically. No central
-switch statement to edit; an unknown `attack.type` resolves to an error.
+switch statement to edit; an unknown `attack.type` stops the scan during rule loading.
 
 ---
 
