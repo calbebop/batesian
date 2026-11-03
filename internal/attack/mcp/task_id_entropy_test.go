@@ -289,6 +289,7 @@ func TestEntropy_SequentialFiresHigh(t *testing.T) {
 	}
 	if seq == nil {
 		t.Fatalf("expected a sequential-handles finding among %d: %+v", len(findings), findings)
+		return
 	}
 	if seq.Severity != "high" || seq.Confidence != attack.RiskIndicator {
 		t.Errorf("want high/indicator for sequential handles, got %q/%q", seq.Severity, seq.Confidence)

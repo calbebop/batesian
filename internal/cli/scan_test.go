@@ -1341,6 +1341,7 @@ func setScanFlag(t *testing.T, name, value string) {
 	flag := scanCmd.Flags().Lookup(name)
 	if flag == nil {
 		t.Fatalf("unknown scan flag %q", name)
+		return
 	}
 	oldValue, oldChanged := flag.Value.String(), flag.Changed
 	t.Cleanup(func() {
@@ -1358,6 +1359,7 @@ func setScanSliceFlag(t *testing.T, name string, values []string) {
 	flag := scanCmd.Flags().Lookup(name)
 	if flag == nil {
 		t.Fatalf("unknown scan flag %q", name)
+		return
 	}
 	slice, ok := flag.Value.(interface {
 		GetSlice() []string

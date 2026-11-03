@@ -142,6 +142,7 @@ func setRulesOutputFlag(t *testing.T, value string) {
 	flag := rulesCmd.Flags().Lookup("output")
 	if flag == nil {
 		t.Fatal("rules output flag is not registered")
+		return
 	}
 	oldValue, oldChanged := flag.Value.String(), flag.Changed
 	t.Cleanup(func() {

@@ -89,6 +89,7 @@ func setProbeFlag(t *testing.T, name, value string) {
 	flag := probeCmd.Flags().Lookup(name)
 	if flag == nil {
 		t.Fatalf("unknown probe flag %q", name)
+		return
 	}
 	oldValue, oldChanged := flag.Value.String(), flag.Changed
 	t.Cleanup(func() {
