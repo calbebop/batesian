@@ -180,6 +180,10 @@ violation. Merely accepting a push-notification config is not reported.
 Supplying `--oob-url` points the callback at an external collector and emits
 operator guidance for manual confirmation.
 
+The [A2A Java SDK push SSRF advisory](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-q78c-5jjq-57g8)
+describes a related failure. A callback does not identify the SDK or prove
+redirect or DNS-rebinding reachability.
+
 Three bindings are driven. On **v1.0** the callback is registered through
 `CreateTaskPushNotificationConfig` or sent inline as
 `configuration.taskPushNotificationConfig` in `SendMessage`. The inline path can
@@ -234,6 +238,11 @@ findings.
 **Precondition:** supply `--token` so there is an authenticated owner identity to
 test against. Without a token the owner-task read is skipped; the unauthenticated
 task-list probe still runs.
+
+The [A2A Java SDK fail-open authorization advisory](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-qw47-mcm5-934w)
+can affect a fully open server that this rule intentionally leaves unflagged.
+Use `a2a-multitenant-isolation-001` for authenticated tenant boundaries, and
+check the deployed SDK version and authorization wiring separately.
 
 ---
 

@@ -1,7 +1,7 @@
 # Protocol and advisory coverage
 
 This page records what the live compatibility gates and endpoint rules actually
-exercise. The advisory matrix was reviewed on 2026-11-03; the modern protocol
+exercise. The advisory matrix was reviewed on 2026-11-04; the modern protocol
 sections were updated on 2026-10-30. A rule finding describes observed behavior
 on the scanned surface; it does not establish that a particular package or CVE
 is present.
@@ -76,10 +76,27 @@ as a denial.
 
 ## Advisory-to-rule matrix
 
-The table separates an **endpoint behavior** that a bounded HTTP scan may see
+The tables separate an **endpoint behavior** that a bounded scan may see
 from a **component or deployment condition** that needs package inventory,
 client instrumentation, or host metrics. An existing rule may test a related
 failure mode without establishing the cited advisory.
+
+### A2A Java SDK
+
+As of 2026-11-04, the official Java SDK listed five published advisories. Its
+package version and authorization wiring are not exposed reliably by an Agent
+Card, so Batesian does not identify an affected Java release from endpoint
+behavior alone.
+
+| Advisory | Endpoint visibility | Batesian coverage | Remaining verification |
+|---|---|---|---|
+| [Fail-open task authorization, GHSA-qw47-mcm5-934w](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-qw47-mcm5-934w) | Another caller may read a task, but an endpoint scan cannot establish the SDK version, handler wiring, or intended sharing policy. | `a2a-multitenant-isolation-001` requires a private-task control. `a2a-task-idor-001` requires anonymous creation to be denied. Both stay silent on a fully open server. `a2a-card-security-unenforced-001` requires a card that promises authentication. The opt-in `a2a-grpc-task-access-001` checks one gRPC task-read boundary. None identifies this advisory. | Check the installed `server-common` version and `TaskAuthorizationProvider` wiring. Upgrade releases through 1.2.0.Final to 1.3.0.Final or later, and verify that production has an ownership policy rather than `a2a.authorization.required=false`. |
+| [Push callback SSRF, GHSA-q78c-5jjq-57g8](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-q78c-5jjq-57g8) | A controlled callback can show delivery to the scanner's private listener. It cannot prove access to other internal addresses or redirect and DNS-rebinding bypasses. | `a2a-push-ssrf-001` reports observed private callback delivery as an indicator, not a confirmed exploit or SDK fingerprint. No callback is inconclusive when the listener is unreachable or the task finishes before delivery. | Check the installed `server-common` version, upgrade releases through 1.2.0.Final to 1.3.0.Final or later, and verify push destination and egress policy for resolved addresses and redirects. |
+| [Client API-key redirect leak, GHSA-9rhm-2h4x-jwmx](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-9rhm-2h4x-jwmx) | A server can advertise a custom credential header and redirect, but the credential leak occurs in a Java client following that redirect. | No client-side test. Agent Card inspection does not establish how a client handles credentials. | Check the Java client version and redirect handling; releases through 1.2.0.Final are affected and 1.3.0.Final is patched. Use synthetic credentials in an isolated client test. |
+| [REST push credentials in logs, GHSA-x32g-jvvm-4725](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-x32g-jvvm-4725) | A malformed push-config request may return an error, but the alleged exposure is in server logs, not the response. | No log-side test. Batesian does not submit credentials to provoke a logging failure. | Check the installed `transport-rest` version and log handling; releases through 1.2.0.Final are affected and 1.3.0.Final is patched. Verify with synthetic values and authorized log access. |
+| [Android POST redirect leak, GHSA-4fpj-g9jf-9rgg](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-4fpj-g9jf-9rgg) | The leak occurs when the Android client follows a cross-authority redirect while sending a custom auth header. | No Android client-side test. | Check `http-client-android` independently: 1.3.0.Final and 1.3.1.Final are affected, and 1.3.2.Final is patched. Test redirects with synthetic credentials if needed. |
+
+### MCP SDKs and reference servers
 
 | Advisory | Observable from an MCP endpoint? | Batesian coverage | Remaining verification |
 |---|---|---|---|
