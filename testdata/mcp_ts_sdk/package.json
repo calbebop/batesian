@@ -1,0 +1,9 @@
+{
+  "name": "batesian-mcp-ts-sdk-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0"
+  }
+}

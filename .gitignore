@@ -24,6 +24,9 @@ env/
 *.egg
 .pytest_cache/
 
+# Node SDK compatibility fixtures
+node_modules/
+
 # Environment / secrets
 .env
 .env.*

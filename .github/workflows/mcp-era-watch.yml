@@ -1,6 +1,6 @@
 name: MCP era watch
 
-# Validates MCP era detection and cache scope against the current Python SDK.
+# Validates MCP behavior against current Python and TypeScript SDKs.
 
 on:
   pull_request:
@@ -91,3 +91,67 @@ jobs:
       - name: Server log
         if: failure()
         run: cat /tmp/mcp-modern-server.log
+
+  typescript:
+    name: Check the current TypeScript SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install the MCP TypeScript SDK
+        # Track the current v2 server without running dependency scripts.
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
+        working-directory: testdata/mcp_ts_sdk
+
+      - name: Check both protocol eras and a named tool
+        run: |
+          node testdata/mcp_ts_sdk/server.mjs > "$RUNNER_TEMP/mcp-ts-sdk.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:7798/mcp \
+              -X POST -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -H 'MCP-Protocol-Version: 2026-07-28' \
+              -H 'Mcp-Method: server/discover' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"ci","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}' \
+              | jq -e '.result.supportedVersions | index("2026-07-28")' > /dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            cat "$RUNNER_TEMP/mcp-ts-sdk.log"
+            exit 1
+          fi
+
+          go test -tags=integration \
+            -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live|TestNamedTool_LiveTypeScriptSDK' \
+            -v ./internal/attack/mcp/
+        env:
+          BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7798/mcp
+          BATESIAN_LIVE_MCP_SDK: typescript
+
+      - name: Server log
+        if: failure()
+        run: cat "$RUNNER_TEMP/mcp-ts-sdk.log"

@@ -52,3 +52,30 @@ func TestOpenSessions_LiveDualEraServer(t *testing.T) {
 		}
 	}
 }
+
+// The TypeScript fixture exposes a harmless named tool. A modern call requires
+// both Mcp-Method and Mcp-Name, while the legacy call uses its initialized session.
+func TestNamedTool_LiveTypeScriptSDK(t *testing.T) {
+	if os.Getenv("BATESIAN_LIVE_MCP_SDK") != "typescript" {
+		t.Skip("requires the TypeScript SDK fixture")
+	}
+
+	sessions, err := openSessions(context.Background(), liveClient(), liveEndpoint(t))
+	if err != nil {
+		t.Fatalf("openSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected both protocol eras, got %d", len(sessions))
+	}
+	for _, session := range sessions {
+		resp, err := session.post(context.Background(), liveClient(), 2, "tools/call", map[string]interface{}{
+			"name": "fixture_ping", "arguments": map[string]interface{}{},
+		})
+		if err != nil {
+			t.Fatalf("%v tools/call: %v", session.Era, err)
+		}
+		if !resp.IsAccepted() || !resp.ContainsAny("fixture-pong") {
+			t.Errorf("%v tools/call failed: %s", session.Era, resp.BodyString())
+		}
+	}
+}
