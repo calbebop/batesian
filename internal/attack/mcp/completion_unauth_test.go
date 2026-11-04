@@ -320,6 +320,7 @@ func TestCompletionUnauth_ResourceOracle(t *testing.T) {
 	}
 	if disclosure == nil {
 		t.Fatal("expected a medium disclosure indicator")
+		return
 	}
 	if !strings.Contains(disclosure.Title, "resource template") {
 		t.Errorf("expected disclosure to name the resource template, got %q", disclosure.Title)

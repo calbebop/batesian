@@ -292,6 +292,7 @@ func TestPoisoning_HiddenCharactersAreIndicators(t *testing.T) {
 			f := findingsWith(findings, "hidden characters")
 			if f == nil {
 				t.Fatalf("missing hidden-character finding: %+v", findings)
+				return
 			}
 			if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
 				t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
@@ -474,6 +475,7 @@ func TestPoisoning_DriftIsIndicator(t *testing.T) {
 	}
 	if drift == nil {
 		t.Fatalf("expected a drift finding among %d: %+v", len(findings), findings)
+		return
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected only the drift finding, got %d: %+v", len(findings), findings)

@@ -44,6 +44,7 @@ var nameBearingMethods = map[string]string{
 	"tools/call":     "name",
 	"prompts/get":    "name",
 	"resources/read": "uri",
+	"skills/get":     "uri",
 	"tasks/get":      "taskId",
 	"tasks/update":   "taskId",
 	"tasks/cancel":   "taskId",
@@ -252,9 +253,20 @@ func modernDiscoveryEndpoints(baseURL, legacyEndpoint string) []string {
 // era it serves, so answering it proves nothing on its own; see
 // modernWireAdvertised for what treating the answer as proof cost.
 func discoverModern(ctx context.Context, client *attack.HTTPClient, ep string) (mcpSession, bool, error) {
+	return discoverModernWithCaps(ctx, client, ep, nil)
+}
+
+func discoverModernWithCaps(ctx context.Context, client *attack.HTTPClient, ep string,
+	clientCaps map[string]interface{}) (mcpSession, bool, error) {
 	// An earlier rule's refusal does not establish this rule's access.
 	probe := mcpSession{Endpoint: ep, Era: EraModern}
-	resp, err := probe.post(ctx, client, "batesian-discover", "server/discover", nil)
+	headers, body := probe.request("batesian-discover", "server/discover", nil)
+	if clientCaps != nil {
+		params := body["params"].(map[string]interface{})
+		meta := params["_meta"].(map[string]interface{})
+		meta[metaClientCapabilities] = clientCaps
+	}
+	resp, err := client.POST(ctx, ep, headers, body)
 	if err != nil || resp == nil {
 		return mcpSession{}, false, fmt.Errorf("%w: modern MCP discovery did not answer", attack.ErrInconclusive)
 	}
