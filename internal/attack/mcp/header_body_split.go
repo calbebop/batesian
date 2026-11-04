@@ -38,10 +38,10 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 		return nil, sessionErr
 	}
 
-	// Set when a wire turned out not to enforce Mcp-Method presence, carrying the
-	// version that wire speaks. A wire that does enforce presence is tested on its
-	// merits and never sets this.
-	unawareAt := ""
+	// An initialize reply cannot establish the modern wire, regardless of its
+	// reported version.
+	legacyUnawareAt := ""
+	modernUnaware := false
 	blockedReason := ""
 	// Kept apart from blockedReason so an undetermined Mcp-Name probe can never
 	// override a verdict the Mcp-Method dimension actually reasoned its way to. That
@@ -55,7 +55,11 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 		f, unaware, tested, blocked := e.probe(ctx, client, session)
 		findings = append(findings, labelEra(session, f)...)
 		if unaware != "" {
-			unawareAt = unaware
+			if session.Era == EraModern {
+				modernUnaware = true
+			} else {
+				legacyUnawareAt = unaware
+			}
 		}
 		if tested {
 			anyTested = true
@@ -64,7 +68,7 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 			blockedReason = blocked
 		}
 
-		if session.ProtocolVersion < headerValidationVersion {
+		if session.Era != EraModern {
 			continue
 		}
 		// Check Mcp-Name independently of Mcp-Method.
@@ -92,9 +96,12 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	if anyTested {
 		return nil, nil
 	}
-	if unawareAt != "" && unawareAt < headerValidationVersion {
-		return nil, fmt.Errorf("%w: no SEP-2243 surface at MCP %s; Mcp-Method validation was introduced in %s",
-			attack.ErrInconclusive, unawareAt, headerValidationVersion)
+	if modernUnaware {
+		return nil, nil
+	}
+	if legacyUnawareAt != "" {
+		return nil, fmt.Errorf("%w: no SEP-2243 surface on the initialize wire (reported MCP %s); Mcp-Method validation requires the modern wire introduced in %s",
+			attack.ErrInconclusive, legacyUnawareAt, headerValidationVersion)
 	}
 	return nil, nil
 }

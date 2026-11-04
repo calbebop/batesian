@@ -177,11 +177,50 @@ func TestSplit_UnawareOnALegacyWireIsNotTested(t *testing.T) {
 	}
 }
 
+func TestSplit_InitializeVersionDoesNotEstablishModernWire(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "unknown-future"} {
+		t.Run(version, func(t *testing.T) {
+			ts := splitServerAt("unaware", version)
+			defer ts.Close()
+
+			findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
+				Execute(context.Background(), ts.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("initialize-only wire must be untested: findings=%+v err=%v", findings, err)
+			}
+			if !strings.Contains(err.Error(), version) {
+				t.Fatalf("skip reason omits reported version %q: %v", version, err)
+			}
+		})
+	}
+}
+
 // On a wire that does carry the requirement, a server ignoring the header is a
 // real observation rather than an untested one. It is still not this rule's
 // subject, which is the mismatch, so the result is clean and not a finding.
 func TestSplit_UnawareOnAModernWireIsClean(t *testing.T) {
-	ts := splitServerAt("unaware", "2026-07-28")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req["method"] {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{
+					"supportedVersions": []string{"2026-07-28"},
+					"capabilities":      map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]interface{}{"resultType": "complete", "tools": []interface{}{}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
 	defer ts.Close()
 
 	if findings := runSplit(t, ts); len(findings) != 0 {

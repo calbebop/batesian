@@ -131,15 +131,16 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Gate on the tasks capability and on task-augmented tools/call specifically.
 	if !sessA.ServerSupports("tasks") || !tasksSupportsToolCall(sessA.RawInit) {
-		// A server carrying tasks under the 2026-07-28 extension advertises them
-		// somewhere this rule does not look and speaks a wire it does not drive, so
-		// the surface is present and untested rather than absent. Reporting clean
-		// would assert that task scoping is sound on a server whose task surface was
-		// never touched.
-		if tasksExtensionAdvertised(sessA.RawInit) || sessA.ProtocolVersion >= modernEraVersion {
+		// An advertised extension or unknown revision may carry tasks outside the
+		// core capability this rule checks. Neither establishes an absent surface.
+		if tasksExtensionAdvertised(sessA.RawInit) {
 			return nil, fmt.Errorf("%w: %s carries tasks under the %s extension rather than the "+
 				"2025-11-25 core capability, and this rule drives the core wire only",
 				attack.ErrInconclusive, sessA.Endpoint, tasksExtensionName)
+		}
+		if !knownHandshakeVersion(sessA.ProtocolVersion) {
+			return nil, fmt.Errorf("%w: initialize reported unrecognized MCP version %s, so task capability semantics were not established",
+				attack.ErrInconclusive, sessA.ProtocolVersion)
 		}
 		return nil, nil
 	}

@@ -452,6 +452,10 @@ suppressed here rather than mislabelled as broken object-level authorization. A
 server that scopes tasks to their creating context answers the cross-context read
 with `-32602` and produces no finding.
 
+If `initialize` reports an unknown protocol revision without the core tasks
+capability, the rule reports **not tested**. The revision alone cannot establish
+whether that task surface is absent.
+
 Every precondition reports **not tested** rather than clean when it produced no
 verdict: a `tools/list` this principal cannot read, a task creation that was
 refused or errored, an anonymous control that returned no answer, and a
@@ -754,9 +758,10 @@ header contributes nothing.
 **Not tested** is reported only when no wire exercised the check and the reason was
 the revision: a legacy-only server has no such requirement to violate, and calling
 that clean would assert header/body consistency about a server never asked. A
-server that enforces header presence is tested whatever version it advertises, and
-one on 2026-07-28 or later that ignores the header reports clean, since this rule's
-subject is the mismatch rather than the absence.
+server that enforces header presence is tested whatever version it advertises. A
+discovered modern wire that ignores the header reports clean, since this rule's
+subject is the mismatch rather than the absence. An `initialize` response alone
+does not establish that modern wire, even if it reports `2026-07-28`.
 
 **Two more dimensions of the same requirement.** `Mcp-Name` is a second REQUIRED
 header, sourced from `params.name` or `params.uri` on `tools/call`, `resources/read`

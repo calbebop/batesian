@@ -151,6 +151,15 @@ func (s mcpSession) header() map[string]string {
 // TestOffersCurrentHandshakeRevision, which fails if it drifts again.
 const latestStable = "2025-11-25"
 
+func knownHandshakeVersion(version string) bool {
+	switch version {
+	case "2024-10-07", "2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25":
+		return true
+	default:
+		return false
+	}
+}
+
 // legacyHandshakeBody is the initialize request the handshake wire is opened with.
 //
 // It exists so a rule that repeats the handshake as a probe sends the SAME request
