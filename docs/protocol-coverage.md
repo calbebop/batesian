@@ -2,7 +2,7 @@
 
 This page records what the live compatibility gates and endpoint rules actually
 exercise. The advisory matrix was reviewed on 2026-11-04; the modern protocol
-sections were updated on 2026-10-30. A rule finding describes observed behavior
+sections were updated on 2026-11-04. A rule finding describes observed behavior
 on the scanned surface; it does not establish that a particular package or CVE
 is present.
 
@@ -16,15 +16,16 @@ is present.
 | [A2A 1.0.1](https://a2a-protocol.org/v1.0.1/specification/) | Bundled vulnerable and bound push fixtures | JSON-RPC and HTTP+JSON subscription scope controls | These fixtures implement only the routes needed by the rule. |
 | [A2A 0.3.0](https://a2a-protocol.org/v0.3.0/specification/) | Bundled JSON-RPC fixtures and Go test servers | Legacy method names, card shapes, and security rule controls in Go tests | There is no current official 0.3 SDK target in CI. |
 | [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, session opening, and a clean two-principal cache-scope scan on PRs and weekly | The SDK server returns the same data to both test principals; the vulnerable cache-scope control is a Go fixture. |
-| [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) | Same dual-era SDK target and bundled fixtures | Legacy `initialize` and session opening, plus rule controls | No official SDK in every supported language is exercised. |
+| [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP TypeScript server SDK 2.x](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/packages/server) | `server/discover`, dual-era session opening, and a named tool call through Batesian's modern request headers on PRs and weekly | The fixture has no authentication or tenant policy; it checks protocol compatibility, not authorization findings. |
+| [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) | Both dual-era SDK targets and bundled fixtures | Legacy `initialize` and session opening, plus rule controls | No official SDK in every supported language is exercised. |
 
 The 2024-11-05 HTTP+SSE transport is not covered. It uses a long-lived GET stream
 and a separate POST endpoint rather than the Streamable HTTP request path used by
 Batesian. See the [official Go SDK transport guide](https://go.sdk.modelcontextprotocol.io/protocol/).
 
-The SDK dependencies intentionally float within a major version. These gates
-catch changes in the current Python implementations; the fixture and Go tests
-pin expected protocol behavior when a dependency changes.
+The Python and TypeScript SDK dependencies intentionally float within a major
+version. These gates catch changes in the current implementations; the fixtures
+and Go tests pin expected protocol behavior when a dependency changes.
 
 ## A2A gRPC assessment
 
