@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	attackpkg "github.com/calbebop/batesian/internal/attack"
 	// Register built-in executors through their init functions.
@@ -20,12 +21,25 @@ import (
 // RunResult holds findings and the outcome of one rule. Partial findings may
 // accompany a skipped or errored result.
 type RunResult struct {
-	Rule          *rules.Rule
-	Findings      []attackpkg.Finding
-	TargetObjects []attackpkg.TargetObject
-	Err           error
-	Skipped       bool
-	SkipMsg       string
+	Rule           *rules.Rule
+	Findings       []attackpkg.Finding
+	TargetObjects  []attackpkg.TargetObject
+	Err            error
+	Skipped        bool
+	SkipMsg        string
+	BudgetExceeded bool
+}
+
+var errScanBudget = errors.New("scan budget exhausted")
+
+// ScanBudgetExhausted reports whether any rule stopped because of the budget.
+func ScanBudgetExhausted(results []RunResult) bool {
+	for _, result := range results {
+		if result.BudgetExceeded {
+			return true
+		}
+	}
+	return false
 }
 
 // Engine executes rules against a target.
@@ -62,6 +76,20 @@ type planEntry struct {
 // Producers run before consumers against a shared blackboard. Rule errors are
 // captured in RunResult instead of aborting the scan.
 func (e *Engine) Run(ctx context.Context, target string, rs []*rules.Rule) []RunResult {
+	return e.run(ctx, target, rs)
+}
+
+// RunWithBudget limits rule execution. Cleanup inside a rule may finish after the deadline.
+func (e *Engine) RunWithBudget(ctx context.Context, target string, rs []*rules.Rule, budget time.Duration) []RunResult {
+	if budget <= 0 {
+		return e.run(ctx, target, rs)
+	}
+	limited, cancel := context.WithTimeoutCause(ctx, budget, errScanBudget)
+	defer cancel()
+	return e.run(limited, target, rs)
+}
+
+func (e *Engine) run(ctx context.Context, target string, rs []*rules.Rule) []RunResult {
 	run := Engine{opts: cloneOptions(e.opts)}
 	if run.opts.Discovery == nil {
 		run.opts.Discovery = attackpkg.NewDiscoveryCache()
@@ -99,14 +127,11 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 			SkipMsg: fmt.Sprintf("no executor for attack type %q", r.Attack.Type),
 		}
 	}
-
-	// Bail out immediately if the scan context was already cancelled.
 	if ctx.Err() != nil {
-		return RunResult{
-			Rule:    r,
-			Skipped: true,
-			SkipMsg: "context cancelled before executor started",
+		if errors.Is(context.Cause(ctx), errScanBudget) {
+			return RunResult{Rule: r, Skipped: true, SkipMsg: "scan budget exhausted before rule started", BudgetExceeded: true}
 		}
+		return RunResult{Rule: r, Skipped: true, SkipMsg: "context cancelled before executor started"}
 	}
 
 	state := &attackpkg.TargetState{}
@@ -137,6 +162,12 @@ func (e *Engine) runOne(ctx context.Context, target string, entry planEntry, bb 
 	for i := range findings {
 		findings[i].Confidence = findings[i].EffectiveConfidence()
 		attackpkg.ApplyExpectedDenial(&findings[i], opts.ExpectedDenials)
+	}
+	if errors.Is(context.Cause(ctx), errScanBudget) {
+		return RunResult{
+			Rule: r, Findings: findings, Skipped: true,
+			SkipMsg: "scan budget exhausted during rule", BudgetExceeded: true,
+		}
 	}
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("%w: scan context %v", attackpkg.ErrInconclusive, ctx.Err())

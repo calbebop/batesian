@@ -259,6 +259,8 @@ A finding is marked `confirmed` when the rule proves a failed boundary, includin
 
 `scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. Check rule outcomes in JSON or SARIF before treating a scan as complete; a zero exit code alone is not a clean bill of health. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 
+Use `--scan-budget 300` to set an optional five-minute budget for rule execution. The default is unlimited. This is separate from the per-request `--timeout` and can also be set as `scan_budget: 300` in the config; an explicit `--scan-budget 0` disables a configured budget. OAuth setup and `--dry-run` are outside the budget. Rules cooperate with cancellation, and bounded cleanup may continue after the deadline. If the budget expires, completed findings remain in the report, interrupted and unstarted rules are marked skipped, JSON sets `scan_budget_exhausted`, and SARIF sets `scanBudgetExhausted` in invocation properties. Review incomplete coverage before relying on the result.
+
 ## CI integration
 
 The following workflow uses v1.8.1 coverage metadata to upload A2A findings

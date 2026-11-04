@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/rules"
@@ -14,6 +15,7 @@ import (
 type lifecycleExecutor func(context.Context, attack.Options) ([]attack.Finding, error)
 
 var cacheLifetimeSink func(*attack.DiscoveryCache)
+var budgetExecutor lifecycleExecutor
 
 func init() {
 	attack.Register("test-engine-cache-lifetime", func(attack.RuleContext) attack.Executor {
@@ -22,6 +24,62 @@ func init() {
 			return nil, nil
 		})
 	})
+	attack.Register("test-engine-budget", func(attack.RuleContext) attack.Executor {
+		return budgetExecutor
+	})
+}
+
+func TestRunWithBudgetPreservesPartialCoverage(t *testing.T) {
+	called := 0
+	budgetExecutor = func(ctx context.Context, opts attack.Options) ([]attack.Finding, error) {
+		called++
+		if called == 1 {
+			return []attack.Finding{{RuleID: "first", Evidence: "confirmed"}}, nil
+		}
+		if called == 2 {
+			opts.TargetState.Record(attack.TargetObject{Kind: "test_object", ID: "created", Cleanup: attack.CleanupNotAttempted})
+			<-ctx.Done()
+			return []attack.Finding{{RuleID: "second", Evidence: "earlier subcheck"}}, ctx.Err()
+		}
+		t.Fatal("rule started after budget expired")
+		return nil, nil
+	}
+	defer func() { budgetExecutor = nil }()
+	ruleset := []*rules.Rule{
+		{ID: "first", Attack: rules.AttackBlock{Type: "test-engine-budget"}},
+		{ID: "second", Attack: rules.AttackBlock{Type: "test-engine-budget"}},
+		{ID: "third", Attack: rules.AttackBlock{Type: "test-engine-budget"}},
+	}
+	start := time.Now()
+	results := New(attack.Options{}).RunWithBudget(t.Context(), "https://agent.example", ruleset, 30*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("budget did not stop rule execution: %v", elapsed)
+	}
+	if called != 2 || len(results) != 3 || results[0].Skipped || len(results[0].Findings) != 1 {
+		t.Fatalf("completed rule lost: calls=%d results=%+v", called, results)
+	}
+	if !results[1].BudgetExceeded || !results[1].Skipped || len(results[1].Findings) != 1 || len(results[1].TargetObjects) != 1 ||
+		!strings.Contains(results[1].SkipMsg, "during rule") {
+		t.Fatalf("partial rule lost: %+v", results[1])
+	}
+	if !results[2].BudgetExceeded || !results[2].Skipped || len(results[2].Findings) != 0 ||
+		!strings.Contains(results[2].SkipMsg, "before rule started") {
+		t.Fatalf("unstarted rule not reported: %+v", results[2])
+	}
+}
+
+func TestRunWithBudgetDoesNotMislabelParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	budgetExecutor = func(ctx context.Context, _ attack.Options) ([]attack.Finding, error) {
+		cancel()
+		return nil, ctx.Err()
+	}
+	defer func() { budgetExecutor = nil }()
+	rule := &rules.Rule{ID: "cancelled", Attack: rules.AttackBlock{Type: "test-engine-budget"}}
+	results := New(attack.Options{}).RunWithBudget(ctx, "https://agent.example", []*rules.Rule{rule, rule}, time.Minute)
+	if len(results) != 2 || results[0].BudgetExceeded || results[1].BudgetExceeded || !results[1].Skipped {
+		t.Fatalf("parent cancellation marked as budget: %+v", results)
+	}
 }
 
 func (f lifecycleExecutor) Execute(ctx context.Context, _ string, opts attack.Options) ([]attack.Finding, error) {

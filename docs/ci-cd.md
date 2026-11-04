@@ -192,6 +192,7 @@ loaded rule descriptors. The hash ignores rule-file ordering and YAML comments.
 count and any skip reason or error. Outcomes are captured before coalescing, so
 the finding count can exceed the coalesced `summary.total`. The existing
 `findings`, `skipped`, `errors`, and `summary` fields remain available.
+An optional `--scan-budget SECONDS` (or config `scan_budget`) limits rule execution. A budgeted scan may still finish bounded cleanup after the deadline. If it expires, JSON sets top-level `scan_budget_exhausted: true` and `budget_exceeded: true` on interrupted or unstarted rule outcomes. SARIF sets invocation `properties.scanBudgetExhausted: true` and reports those rules as skipped. Findings from completed subchecks remain available. The coverage gates below reject these incomplete scans.
 Each `rule_outcomes` entry can also list `target_objects` with creation (`accepted` or `unverified`) and cleanup (`not_attempted`, `attempted`, `completed`, or `unavailable`) status. SARIF places the same records under invocation `properties.targetObjects`. Review these records even for clean or incomplete rules.
 
 To require complete coverage in a JSON pipeline:

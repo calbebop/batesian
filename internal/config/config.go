@@ -44,6 +44,8 @@ type Config struct {
 
 	// TimeoutSeconds is the per-request HTTP timeout.
 	TimeoutSeconds int `yaml:"timeout"`
+	// ScanBudgetSeconds limits rule execution; zero disables it.
+	ScanBudgetSeconds int `yaml:"scan_budget"`
 
 	// SkipTLS disables TLS certificate verification.
 	SkipTLS bool `yaml:"skip_tls"`
@@ -215,6 +217,11 @@ func (c *Config) validate(path string) error {
 	if c.TimeoutSeconds != 0 {
 		if _, err := httpx.TimeoutDuration(c.TimeoutSeconds); err != nil {
 			return fmt.Errorf("config %s: invalid timeout: %w", path, err)
+		}
+	}
+	if c.ScanBudgetSeconds != 0 {
+		if _, err := httpx.TimeoutDuration(c.ScanBudgetSeconds); err != nil {
+			return fmt.Errorf("config %s: invalid scan_budget: %w", path, err)
 		}
 	}
 	if c.A2AGRPCTarget != "" {
@@ -404,6 +411,9 @@ func Example() string {
 
 # Per-request HTTP timeout in seconds (default: 10).
 # timeout: 30
+
+# Overall rule execution budget in seconds; 0 disables it (default).
+# scan_budget: 300
 
 # Disable TLS certificate verification (not recommended for production).
 # skip_tls: false

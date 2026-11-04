@@ -28,6 +28,29 @@ func TestLoad_EmptyPath_NoFile(t *testing.T) {
 	}
 }
 
+func TestLoadScanBudget(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		want    int
+		invalid bool
+	}{
+		{"0", 0, false}, {"30", 30, false}, {"-1", 0, true}, {"9223372037", 0, true},
+	} {
+		path := filepath.Join(t.TempDir(), "batesian.yaml")
+		if err := os.WriteFile(path, []byte("scan_budget: "+tc.value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if tc.invalid {
+			if err == nil || !strings.Contains(err.Error(), "scan_budget") {
+				t.Errorf("scan_budget %s: error = %v", tc.value, err)
+			}
+		} else if err != nil || cfg.ScanBudgetSeconds != tc.want {
+			t.Errorf("scan_budget %s: config = %+v, error = %v", tc.value, cfg, err)
+		}
+	}
+}
+
 func TestLoadExpectedDenials(t *testing.T) {
 	tests := []struct {
 		name      string

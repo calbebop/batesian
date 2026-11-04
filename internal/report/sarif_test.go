@@ -452,6 +452,20 @@ func TestWriteSARIF_ReportsIncompleteCoverage(t *testing.T) {
 	}
 }
 
+func TestWriteSARIFMarksBudgetExhaustion(t *testing.T) {
+	results := []engine.RunResult{{
+		Rule: &rules.Rule{ID: "budget-rule"}, Skipped: true,
+		BudgetExceeded: true, SkipMsg: "scan budget exhausted before rule started",
+	}}
+	var buf bytes.Buffer
+	if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"scanBudgetExhausted": true`)) {
+		t.Fatalf("budget marker missing from SARIF: %s", buf.String())
+	}
+}
+
 func TestWriteSARIF_PreservesFindingWithRuleError(t *testing.T) {
 	results := sarifFixture()
 	results[0].Err = errors.New("follow-up failed")

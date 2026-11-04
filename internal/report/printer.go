@@ -330,6 +330,9 @@ func (p *Printer) PrintScanSummary(results []engine.RunResult) error {
 			errored++
 		}
 	}
+	if engine.ScanBudgetExhausted(results) {
+		fmt.Fprintln(p.w, Yellow("Scan budget exhausted. Results include partial coverage; review skipped rules."))
+	}
 
 	// The summary counts rules that were not exercised but does not say why. Rules
 	// go unexercised for reasons that have nothing to do with reachability: an
