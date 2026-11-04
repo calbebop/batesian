@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/config"
@@ -727,6 +728,50 @@ func TestScan_ConfigOutputFieldApplies(t *testing.T) {
 	outcomes, ok := doc["rule_outcomes"].([]any)
 	if !ok || len(outcomes) != int(selected) {
 		t.Errorf("rule outcomes = %v", doc["rule_outcomes"])
+	}
+}
+
+func TestScanBudgetInterruptsSlowRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	cfgPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(cfgPath, []byte("output: table\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setScanFlag(t, "no-config", "false")
+	setScanFlag(t, "config", cfgPath)
+	setScanFlag(t, "target", srv.URL)
+	setScanFlag(t, "protocol", "a2a")
+	setScanSliceFlag(t, "rule-ids", []string{"a2a-card-trust-001"})
+	setScanFlag(t, "timeout", "5")
+	setScanFlag(t, "scan-budget", "1")
+	setScanFlag(t, "output", "table")
+	start := time.Now()
+	output, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("scan budget did not interrupt slow request: %v", elapsed)
+	}
+	if !strings.Contains(output, "Scan budget exhausted") || !strings.Contains(output, "partial coverage") {
+		t.Fatalf("budget was not visible in table output: %s", output)
+	}
+}
+
+func TestScanBudgetDuration(t *testing.T) {
+	for _, tc := range []struct {
+		seconds int
+		wantErr bool
+	}{
+		{0, false}, {3, false}, {-1, true}, {int(^uint(0) >> 1), true},
+	} {
+		got, err := scanBudgetDuration(tc.seconds)
+		if (err != nil) != tc.wantErr || (tc.seconds == 0 && got != 0) {
+			t.Errorf("scanBudgetDuration(%d) = %v, %v", tc.seconds, got, err)
+		}
 	}
 }
 

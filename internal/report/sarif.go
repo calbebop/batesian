@@ -51,11 +51,12 @@ type sarifInvocation struct {
 }
 
 type sarifCoverage struct {
-	RulesSelected  int                 `json:"rulesSelected"`
-	RulesCompleted int                 `json:"rulesCompleted"`
-	RulesSkipped   int                 `json:"rulesSkipped"`
-	RulesErrored   int                 `json:"rulesErrored"`
-	TargetObjects  []sarifTargetObject `json:"targetObjects,omitempty"`
+	RulesSelected       int                 `json:"rulesSelected"`
+	RulesCompleted      int                 `json:"rulesCompleted"`
+	RulesSkipped        int                 `json:"rulesSkipped"`
+	RulesErrored        int                 `json:"rulesErrored"`
+	ScanBudgetExhausted bool                `json:"scanBudgetExhausted"`
+	TargetObjects       []sarifTargetObject `json:"targetObjects,omitempty"`
 }
 
 type sarifTargetObject struct {
@@ -235,6 +236,7 @@ func buildSARIF(results []engine.RunResult, toolVersion, assessedTarget string) 
 func buildSARIFInvocation(results []engine.RunResult) sarifInvocation {
 	var invocation sarifInvocation
 	invocation.Properties.RulesSelected = len(results)
+	invocation.Properties.ScanBudgetExhausted = engine.ScanBudgetExhausted(results)
 
 	for _, result := range results {
 		for _, object := range result.TargetObjects {

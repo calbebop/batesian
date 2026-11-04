@@ -58,6 +58,7 @@ func init() {
 	scanCmd.Flags().String("rules-dir", "", "Additional rules directory (supplements built-in rules)")
 	scanCmd.Flags().String("token", "", "Bearer token for authenticated requests")
 	scanCmd.Flags().Int("timeout", 10, "Request timeout in seconds")
+	scanCmd.Flags().Int("scan-budget", 0, "Overall rule execution budget in seconds (0 disables)")
 	scanCmd.Flags().Bool("skip-tls", false, "Skip TLS certificate verification")
 	scanCmd.Flags().String("proxy", "", "Route all requests through an intercepting proxy, e.g. 127.0.0.1:8080 (default: honor HTTPS_PROXY/HTTP_PROXY/NO_PROXY); usually paired with --skip-tls")
 	scanCmd.Flags().String("a2a-grpc-target", "", "Opt in to A2A gRPC task access at this card-advertised grpc:// loopback or grpcs:// host:port")
@@ -130,6 +131,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	oauthAudience, _ := cmd.Flags().GetString("oauth-audience")
 	oauthResource, _ := cmd.Flags().GetString("oauth-resource")
 	timeoutSecs, _ := cmd.Flags().GetInt("timeout")
+	scanBudgetSecs, _ := cmd.Flags().GetInt("scan-budget")
 	skipTLS, _ := cmd.Flags().GetBool("skip-tls")
 	proxy, _ := cmd.Flags().GetString("proxy")
 	a2aGRPCTarget, _ := cmd.Flags().GetString("a2a-grpc-target")
@@ -226,6 +228,13 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 	timeoutSecs = effectiveTimeout(cmd.Flags().Changed("timeout"), timeoutSecs, cfg.TimeoutSeconds)
 	timeout, err := requestTimeout(timeoutSecs)
+	if err != nil {
+		return err
+	}
+	if !cmd.Flags().Changed("scan-budget") {
+		scanBudgetSecs = cfg.ScanBudgetSeconds
+	}
+	scanBudget, err := scanBudgetDuration(scanBudgetSecs)
 	if err != nil {
 		return err
 	}
@@ -392,7 +401,12 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	eng := engine.New(opts)
 	ctx := cmd.Context()
 	scanStarted = true
-	results := eng.Run(ctx, target, filtered)
+	var results []engine.RunResult
+	if dryRun {
+		results = eng.Run(ctx, target, filtered)
+	} else {
+		results = eng.RunWithBudget(ctx, target, filtered, scanBudget)
+	}
 
 	if dryRun {
 		// No traffic was sent; report the recorded request plan instead of findings.
@@ -1054,12 +1068,13 @@ func buildScanJSON(input scanJSONInput) (map[string]any, error) {
 		"ruleset": scanJSONRuleset{
 			Source: source, Loaded: len(input.Loaded), Selected: len(input.Outcomes), SHA256: digest,
 		},
-		"target":        input.Target,
-		"findings":      findings,
-		"rule_outcomes": input.Outcomes,
-		"skipped":       skipped,
-		"errors":        ruleErrors,
-		"summary":       buildSummary(input.Reported),
+		"target":                input.Target,
+		"findings":              findings,
+		"rule_outcomes":         input.Outcomes,
+		"skipped":               skipped,
+		"errors":                ruleErrors,
+		"summary":               buildSummary(input.Reported),
+		"scan_budget_exhausted": engine.ScanBudgetExhausted(input.Reported),
 	}, nil
 }
 

@@ -126,6 +126,26 @@ func TestPartialFindingKeepsSkippedOutcome(t *testing.T) {
 	}
 }
 
+func TestScanJSONMarksBudgetCoverage(t *testing.T) {
+	rule := &rules.Rule{ID: "budget-rule"}
+	results := []engine.RunResult{{
+		Rule: rule, Skipped: true, BudgetExceeded: true, SkipMsg: "scan budget exhausted during rule",
+		Findings: []attack.Finding{{RuleID: rule.ID, Severity: "high", Evidence: "earlier check"}},
+	}}
+	doc, err := buildScanJSON(scanJSONInput{Target: "https://agent.example", Reported: results,
+		Outcomes: buildRuleOutcomes(results), Loaded: []*rules.Rule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["scan_budget_exhausted"] != true {
+		t.Fatalf("missing scan budget marker: %+v", doc)
+	}
+	outcome := doc["rule_outcomes"].([]scanJSONRuleOutcome)[0]
+	if !outcome.BudgetExceeded || outcome.Status != "skipped" || outcome.FindingCount != 1 {
+		t.Fatalf("partial rule outcome lost: %+v", outcome)
+	}
+}
+
 func TestRuleCatalogSHA256StableAcrossOrder(t *testing.T) {
 	a := &rules.Rule{ID: "a", Info: rules.RuleInfo{Severity: "high"}}
 	b := &rules.Rule{ID: "b", Info: rules.RuleInfo{Severity: "low"}}

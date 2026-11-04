@@ -29,6 +29,18 @@ func TestPrintScanSummary_InconclusiveNotClean(t *testing.T) {
 	}
 }
 
+func TestPrintScanSummaryShowsBudgetExhaustion(t *testing.T) {
+	var buf bytes.Buffer
+	results := []engine.RunResult{{Rule: &rules.Rule{ID: "pending"}, Skipped: true,
+		BudgetExceeded: true, SkipMsg: "scan budget exhausted before rule started"}}
+	if err := report.New(&buf, false).PrintScanSummary(results); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "Scan budget exhausted") || !strings.Contains(buf.String(), "partial coverage") {
+		t.Fatalf("budget coverage warning missing: %s", buf.String())
+	}
+}
+
 func TestPrintScanSummary_PartialFindingRemainsIncomplete(t *testing.T) {
 	var buf bytes.Buffer
 	result := engine.RunResult{
