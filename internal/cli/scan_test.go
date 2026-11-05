@@ -185,6 +185,11 @@ func TestBuildExpectedDenials(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Operation != attack.MCPResourcesRead {
 		t.Fatalf("MCP resource denials = %+v, error = %v", got, err)
 	}
+	entry.Operation = attack.MCPSessionUse
+	got, err = buildExpectedDenials([]config.ExpectedDenialConfig{entry}, principals)
+	if err != nil || len(got) != 1 || got[0].Operation != attack.MCPSessionUse {
+		t.Fatalf("MCP session denials = %+v, error = %v", got, err)
+	}
 	for _, tt := range []struct {
 		name  string
 		entry config.ExpectedDenialConfig
@@ -196,6 +201,7 @@ func TestBuildExpectedDenials(t *testing.T) {
 		{"wrong owner tenant", config.ExpectedDenialConfig{Operation: attack.A2ATasksCancel, Caller: "tenant-b", Owner: "tenant-a", OwnerTenant: "B"}, "owner_tenant does not match"},
 		{"MCP task unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPTasksCancel, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
 		{"MCP resource unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPResourcesRead, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
+		{"MCP session unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPSessionUse, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := buildExpectedDenials([]config.ExpectedDenialConfig{tt.entry}, principals)
