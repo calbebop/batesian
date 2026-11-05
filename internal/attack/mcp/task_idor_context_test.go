@@ -187,11 +187,13 @@ func ctxScopedServer(t *testing.T, cfg ctxScopedConfig) *httptest.Server {
 			if method == "tasks/result" {
 				result(map[string]interface{}{"content": []interface{}{
 					map[string]interface{}{"type": "text", "text": "research output"},
+				}, "_meta": map[string]interface{}{
+					"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": tid},
 				}})
 				return
 			}
 			result(map[string]interface{}{
-				"status": "working", "createdAt": "2026-07-20T07:00:00Z",
+				"taskId": tid, "status": "working", "createdAt": "2026-07-20T07:00:00Z",
 			})
 
 		default:

@@ -237,6 +237,10 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
+			if mode == "get-bogus-open" && !exists && r.Header.Get("Authorization") == "Bearer tok-b" {
+				result(map[string]interface{}{"taskId": tid, "status": "completed"})
+				return
+			}
 			scopedGet := false
 			switch mode {
 			case "secure", "tool-paged", "list-only", "list-paged", "list-paged-secure", "list-paged-loop",
@@ -247,6 +251,19 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			}
 			if !exists || (scopedGet && own != sid) {
 				rpcErr(-32602, "Task not found")
+				return
+			}
+			if mode == "owner-wrong-id" && r.Header.Get("Authorization") == "Bearer tok-a" {
+				result(map[string]interface{}{"taskId": "other-task", "status": "completed"})
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer tok-b" &&
+				(mode == "get-wrong-id" || mode == "get-missing-id") {
+				state := map[string]interface{}{"status": "completed"}
+				if mode == "get-wrong-id" {
+					state["taskId"] = "other-task"
+				}
+				result(state)
 				return
 			}
 			if (mode == "poll-503" || mode == "poll-503-rpc-error") && r.Header.Get("Authorization") == "Bearer tok-b" {
@@ -265,7 +282,7 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			// Terminal immediately so the rule can proceed to tasks/result without
 			// burning its polling budget.
 			result(map[string]interface{}{
-				"taskId": tid, "status": "completed", "statusMessage": "done",
+				"taskId": tid, "status": "completed", "statusMessage": "CONFIDENTIAL status",
 				"createdAt": "2026-07-20T07:00:00Z", "lastUpdatedAt": "2026-07-20T07:00:05Z", "ttl": 60000,
 			})
 
@@ -303,14 +320,41 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
+			if mode == "result-bogus-open" && !exists && r.Header.Get("Authorization") == "Bearer tok-b" {
+				result(map[string]interface{}{
+					"content": []interface{}{},
+					"_meta":   map[string]interface{}{"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": tid}},
+				})
+				return
+			}
 			if !exists || mode == "metadata-only" || mode == "list-only" ||
 				strings.HasPrefix(mode, "list-paged") || (mode == "secure" || mode == "tool-paged") && own != sid {
 				rpcErr(-32602, "Task not found")
 				return
 			}
+			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-invalid" {
+				result(map[string]interface{}{"ok": true})
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-mismatch" {
+				result(map[string]interface{}{"content": []interface{}{map[string]interface{}{
+					"type": "text", "text": "other task output",
+				}}, "_meta": map[string]interface{}{
+					"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": tid},
+				}})
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-wrong-task" {
+				result(map[string]interface{}{
+					"content": []interface{}{map[string]interface{}{"type": "text", "text": "CONFIDENTIAL research output"}},
+					"_meta":   map[string]interface{}{"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": "other-task"}},
+				})
+				return
+			}
 			result(map[string]interface{}{
 				"content": []interface{}{map[string]interface{}{"type": "text", "text": "CONFIDENTIAL research output"}},
 				"isError": false,
+				"_meta":   map[string]interface{}{"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": tid}},
 			})
 
 		case "tasks/list":
@@ -561,6 +605,42 @@ func TestTaskIDOR_PaginatedToolDiscovery(t *testing.T) {
 	}
 }
 
+func TestTaskIDOR_RequiresCorrelatedTaskReads(t *testing.T) {
+	for _, mode := range []string{"get-bogus-open", "get-wrong-id", "get-missing-id", "owner-wrong-id"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := taskIDORServer(mode)
+			defer srv.Close()
+			findings, err := execTaskIDOR(t, srv, attack.Options{Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+			}})
+			if len(findings) != 1 || !strings.Contains(findings[0].Title, "tasks/list") ||
+				!errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("uncorrelated read: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_RequiresCorrelatedResult(t *testing.T) {
+	for _, mode := range []string{"result-bogus-open", "result-mismatch", "result-invalid", "result-wrong-task"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := taskIDORServer(mode)
+			defer srv.Close()
+			findings, err := execTaskIDOR(t, srv, attack.Options{Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+			}})
+			if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("uncorrelated result: findings=%+v err=%v", findings, err)
+			}
+			for _, finding := range findings {
+				if strings.Contains(finding.Title, "tasks/result") {
+					t.Fatalf("uncorrelated result reported as confirmed: %+v", finding)
+				}
+			}
+		})
+	}
+}
+
 func TestTaskIDOR_ClosesStatefulSessions(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -743,6 +823,10 @@ func TestTaskIDOR_CrossContext(t *testing.T) {
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("expected ConfirmedExploit, got %v", f.Confidence)
 		}
+		if strings.Contains(f.Description+f.Evidence, "task-1") ||
+			strings.Contains(f.Description+f.Evidence, "CONFIDENTIAL") {
+			t.Errorf("finding includes task handle or result content: %+v", f)
+		}
 		switch {
 		case strings.Contains(f.Title, "tasks/get"):
 			sawGet = true
@@ -754,8 +838,8 @@ func TestTaskIDOR_CrossContext(t *testing.T) {
 			if f.Severity != "critical" {
 				t.Errorf("tasks/result finding should be critical, got %q", f.Severity)
 			}
-			if !strings.Contains(f.Evidence, "CONFIDENTIAL research output") {
-				t.Errorf("result finding should cite the disclosed output, got evidence %q", f.Evidence)
+			if !strings.Contains(f.Evidence, "owner result matched: yes") {
+				t.Errorf("result finding should cite the owner comparison, got evidence %q", f.Evidence)
 			}
 		case strings.Contains(f.Title, "tasks/list"):
 			sawList = true
