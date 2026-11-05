@@ -76,7 +76,7 @@ func crossBindingServer(mode string) *httptest.Server {
 					rpcErr(w, id, -32001, "Task not found")
 					return
 				}
-				text := value.marker
+				text := value.marker + " server-private-canary"
 				if mode == "rest-leak-redacted-owner" && who == value.owner && value.source == "rest" &&
 					strings.Contains(text, "cross-binding") {
 					text = "redacted"
@@ -137,7 +137,7 @@ func crossBindingServer(mode string) *httptest.Server {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			text := value.marker
+			text := value.marker + " server-private-canary"
 			if mode == "rest-leak-redacted-owner" && who == value.owner && value.source == "rpc" &&
 				strings.Contains(text, "cross-binding") {
 				text = "redacted"
@@ -190,7 +190,9 @@ func TestMultiTenantCrossBindingTaskReads(t *testing.T) {
 			for _, finding := range findings {
 				if finding.Confidence != attack.ConfirmedExploit ||
 					!strings.Contains(finding.Evidence, "source reader: denied") ||
-					!strings.Contains(finding.Evidence, "destination anonymous: denied") {
+					!strings.Contains(finding.Evidence, "destination anonymous: denied") ||
+					!strings.Contains(finding.Evidence, "matched task content omitted") ||
+					strings.Contains(finding.Description+finding.Evidence, "server-private-canary") {
 					t.Fatalf("finding lacked cross-binding controls: %+v", finding)
 				}
 			}

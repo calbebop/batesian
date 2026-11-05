@@ -172,6 +172,9 @@ func tenantServer(mode string) *httptest.Server {
 				if mode == "unrelated" {
 					text = "other text"
 				}
+				if mode == "vulnerable" {
+					text += " server-private-canary"
+				}
 				taskWithHistory(w, id, taskID, "ctx-"+own, text)
 			}
 		default:
@@ -217,8 +220,9 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 			t.Errorf("expected a 3-hop provenance chain, got %+v", f.Chain)
 		}
 		if !strings.Contains(f.Evidence, "owner marker: batesian mt probe ") ||
-			!strings.Contains(f.Evidence, "response: ") {
-			t.Errorf("expected probe and response evidence, got %q", f.Evidence)
+			!strings.Contains(f.Evidence, "matched task content omitted") ||
+			strings.Contains(f.Description+f.Evidence, "server-private-canary") {
+			t.Errorf("task response leaked into finding: %+v", f)
 		}
 	}
 }

@@ -196,7 +196,7 @@ func readCrossRPC(ctx context.Context, client *attack.HTTPClient, rpcURL string,
 		return tenantRead{unknown: true}
 	}
 	location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
-	return tenantRead{method: "GetTask", location: location, response: snippet(resp.Body, 500),
+	return tenantRead{method: "GetTask", location: location,
 		matched: matched, unknown: location == ""}
 }
 
@@ -222,7 +222,7 @@ func readCrossREST(ctx context.Context, client *attack.HTTPClient, base string, 
 		return tenantRead{unknown: true}
 	}
 	location, matched := taskMarkerLocation(resp.Body, taskID, marker)
-	return tenantRead{method: "GET /tasks/{id}", location: location, response: snippet(resp.Body, 500),
+	return tenantRead{method: "GET /tasks/{id}", location: location,
 		matched: matched, unknown: location == ""}
 }
 
@@ -233,9 +233,9 @@ func (e *MultiTenantIsolationExecutor) crossBindingFinding(direction, source, de
 		Title: "A2A task content crosses a tenant boundary on another advertised binding",
 		Description: fmt.Sprintf("Principal %q (tenant %q) received principal %q's (tenant %q) probe text from task %s through %s. The same principal was denied on the creation binding; the owner read the content on both bindings, and an anonymous destination read was denied.",
 			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.method),
-		Evidence: fmt.Sprintf("direction: %s\nsource: %s\ndestination: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\ntask: %s\nowner marker: %s\nsource reader: denied\ndestination anonymous: denied\ndestination response: %s",
+		Evidence: fmt.Sprintf("direction: %s\nsource: %s\ndestination: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\ntask: %s\nowner marker: %s\nsource reader: denied\ndestination anonymous: denied\nmatched task content omitted",
 			direction, source, destination, owner.Name, owner.Tenant, reader.Name, reader.Tenant,
-			taskID, marker, read.response),
+			taskID, marker),
 		Remediation: e.rule.Remediation, TargetURL: destination,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task on " + source, Outcome: "owner read probe text on both bindings"},

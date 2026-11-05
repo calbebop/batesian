@@ -142,7 +142,7 @@ func restReadAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Serv
 			}
 			mu.Lock()
 			reads = append(reads, r.Header.Get("Authorization"))
-			text := marker
+			text := marker + " server-private-canary"
 			mu.Unlock()
 			if mode == "escaped-id" && r.URL.EscapedPath() != taskPath+"task%2Fa%3Fb" {
 				w.WriteHeader(http.StatusNotFound)
@@ -250,6 +250,10 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 				if !strings.Contains(findings[0].TargetURL, "/agent/") ||
 					!strings.Contains(findings[0].Evidence, "batesian idor probe") {
 					t.Fatalf("finding lacks REST task evidence: %+v", findings[0])
+				}
+				if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
+					!strings.Contains(findings[0].Evidence, "matched task content omitted") {
+					t.Fatalf("REST task response leaked into finding: %+v", findings[0])
 				}
 			}
 			mu.Lock()

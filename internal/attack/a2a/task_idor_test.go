@@ -122,7 +122,7 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 			mu.Lock()
 			text := ownerText
 			mu.Unlock()
-			taskWithHistory(w, id, taskID, ctxID, text)
+			taskWithHistory(w, id, taskID, ctxID, text+" server-private-canary")
 		default:
 			rpcErr(w, id, -32601, "Method not found")
 		}
@@ -145,6 +145,10 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 	}
 	if f.Access == nil || f.Access.Operation != attack.A2ATasksGet || f.Access.Caller != "anonymous" || f.Access.Owner != "default" {
 		t.Errorf("task read needs owner/caller access metadata: %+v", f.Access)
+	}
+	if strings.Contains(f.Description+f.Evidence, "server-private-canary") ||
+		!strings.Contains(f.Evidence, "matched task content omitted") {
+		t.Errorf("task response leaked into finding: %+v", f)
 	}
 }
 
@@ -821,7 +825,7 @@ func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
 					}
 					tasks := make([]map[string]string, 0, len(tc.listedIDs))
 					for _, id := range tc.listedIDs {
-						tasks = append(tasks, map[string]string{"id": id})
+						tasks = append(tasks, map[string]string{"id": id, "private": "server-private-canary"})
 					}
 					writeJSON(w, map[string]interface{}{"tasks": tasks})
 					return
@@ -866,6 +870,10 @@ func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
 				}
 				if !strings.Contains(findings[0].Evidence, "task-owner") {
 					t.Fatalf("finding must identify the disclosed owner task: %s", findings[0].Evidence)
+				}
+				if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
+					!strings.Contains(findings[0].Evidence, "list content omitted") {
+					t.Fatalf("REST list content leaked into finding: %+v", findings[0])
 				}
 			}
 		})

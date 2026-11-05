@@ -239,7 +239,7 @@ func (e *SessionSmuggleExecutor) evaluateAcceptance(ctx context.Context, client 
 			case taskHistoryPresent:
 				switch classifyHistoryMarker(history, marker) {
 				case historyMarkerAgent:
-					confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\n%s", taskID, marker, snippet(body, 400))
+					confirmed.Evidence = fmt.Sprintf("taskId: %s\ninjected marker stored as agent role in history\nmarker: %s\nmatched task content omitted", taskID, marker)
 					return &confirmed, incomplete
 				case historyMarkerUser:
 					// Marker present but not as an agent message: the server normalized the

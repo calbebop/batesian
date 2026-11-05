@@ -234,6 +234,8 @@ owner's task ID in a correlated response. Both bindings follow `nextPageToken`
 for up to ten pages; incomplete scans are inconclusive. When JSON-RPC already
 shows the owner's task, the REST list probe is skipped to avoid duplicate
 findings.
+Findings record the matching method and content location without copying task
+responses or list pages into the report.
 
 **Precondition:** supply `--token` so there is an authenticated owner identity to
 test against. Without a token the owner-task read is skipped; the unauthenticated
