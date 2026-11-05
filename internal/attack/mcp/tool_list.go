@@ -11,12 +11,17 @@ const toolListPageCap = 10
 
 // listToolPages returns only complete, correlated listings.
 func listToolPages(ctx context.Context, client *attack.HTTPClient, s mcpSession, startID int) ([]json.RawMessage, bool) {
+	return listToolPagesWith(ctx, client, s, startID, nil)
+}
+
+func listToolPagesWith(ctx context.Context, client *attack.HTTPClient, s mcpSession, startID int,
+	attach func(map[string]string)) ([]json.RawMessage, bool) {
 	tools := make([]json.RawMessage, 0)
 	seen := map[string]bool{}
 	var params map[string]interface{}
 	for page := 0; page < toolListPageCap; page++ {
 		id := startID + page
-		resp, err := s.post(ctx, client, id, "tools/list", params)
+		resp, err := s.postShaping(ctx, client, id, "tools/list", params, attach)
 		if verdict, _ := classifyProbe(resp, err, id); verdict != probeAnswered {
 			return nil, false
 		}

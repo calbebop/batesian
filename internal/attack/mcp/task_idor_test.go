@@ -46,6 +46,10 @@ func taskIDORServer(mode string) *httptest.Server {
 }
 
 func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server {
+	return taskIDORServerWithCleanup(mode, calls, nil)
+}
+
+func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]string) *httptest.Server {
 	var mu sync.Mutex
 	sessions := 0
 	// taskID -> owning session id
@@ -54,6 +58,15 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 	bReads := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if closed != nil {
+				mu.Lock()
+				*closed = append(*closed, r.Header.Get("Mcp-Session-Id")+":"+r.Header.Get("Authorization"))
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if mode == "not-mcp" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -125,6 +138,17 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			w.WriteHeader(http.StatusAccepted)
 
 		case "tools/list":
+			if strings.HasPrefix(mode, "tool-paged") {
+				cursor, _ := params["cursor"].(string)
+				if cursor == "" {
+					result(map[string]interface{}{"tools": []interface{}{}, "nextCursor": "page-2"})
+					return
+				}
+				if mode == "tool-paged-incomplete" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+			}
 			tool := map[string]interface{}{
 				"name":        "research",
 				"description": "long running research",
@@ -215,7 +239,8 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			mu.Unlock()
 			scopedGet := false
 			switch mode {
-			case "secure", "list-only", "list-failed", "list-rpc-failed", "list-denied",
+			case "secure", "tool-paged", "list-only", "list-paged", "list-paged-secure", "list-paged-loop",
+				"list-paged-limit", "list-paged-rejected", "list-failed", "list-rpc-failed", "list-denied",
 				"list-denied-envelope", "list-rpc-error", "list-400-rpc-error",
 				"list-method-absent", "list-408-rpc-error", "list-incomplete", "list-malformed":
 				scopedGet = true
@@ -278,7 +303,8 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			mu.Lock()
 			own, exists := owner[tid]
 			mu.Unlock()
-			if !exists || mode == "metadata-only" || mode == "list-only" || (mode == "secure" && own != sid) {
+			if !exists || mode == "metadata-only" || mode == "list-only" ||
+				strings.HasPrefix(mode, "list-paged") || (mode == "secure" || mode == "tool-paged") && own != sid {
 				rpcErr(-32602, "Task not found")
 				return
 			}
@@ -288,6 +314,41 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			})
 
 		case "tasks/list":
+			if strings.HasPrefix(mode, "list-paged") {
+				cursor, _ := params["cursor"].(string)
+				if mode == "list-paged-rejected" && cursor != "" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if mode == "list-paged-loop" {
+					result(map[string]interface{}{"tasks": []interface{}{}, "nextCursor": "again"})
+					return
+				}
+				if mode == "list-paged-limit" {
+					result(map[string]interface{}{"tasks": []interface{}{}, "nextCursor": cursor + "next"})
+					return
+				}
+				if cursor == "" {
+					result(map[string]interface{}{"tasks": []interface{}{}, "nextCursor": "page-2"})
+					return
+				}
+				if cursor != "page-2" {
+					rpcErr(-32602, "Invalid cursor")
+					return
+				}
+				if mode == "list-paged-secure" {
+					result(map[string]interface{}{"tasks": []interface{}{}})
+					return
+				}
+				mu.Lock()
+				listed := make([]interface{}, 0, len(owner))
+				for tid := range owner {
+					listed = append(listed, map[string]interface{}{"taskId": tid, "status": "completed"})
+				}
+				mu.Unlock()
+				result(map[string]interface{}{"tasks": listed})
+				return
+			}
 			if mode == "list-failed" || mode == "get-and-list-incomplete" {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
@@ -339,7 +400,7 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			listed := []interface{}{}
 			for tid, own := range owner {
 				// A correctly-scoped server returns only the caller's own tasks.
-				if (mode == "secure" || mode == "metadata-only") && own != sid {
+				if (mode == "secure" || mode == "tool-paged" || mode == "metadata-only") && own != sid {
 					continue
 				}
 				listed = append(listed, map[string]interface{}{"taskId": tid, "status": "completed"})
@@ -431,6 +492,107 @@ func TestTaskIDOR_TaskListOutcomes(t *testing.T) {
 			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
 				(!tc.inconclusive && err != nil) {
 				t.Fatalf("want incomplete=%t, got findings=%+v err=%v", tc.inconclusive, findings, err)
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_PaginatedTaskList(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		wantFinding  bool
+		inconclusive bool
+	}{
+		{mode: "list-paged", wantFinding: true},
+		{mode: "list-paged-secure"},
+		{mode: "list-paged-loop", inconclusive: true},
+		{mode: "list-paged-limit", inconclusive: true},
+		{mode: "list-paged-rejected", inconclusive: true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := taskIDORServer(tc.mode)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(t.Context(), srv.URL, attack.Options{
+					TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if (len(findings) == 1) != tc.wantFinding || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want finding=%t inconclusive=%t",
+					findings, err, tc.wantFinding, tc.inconclusive)
+			}
+			if tc.wantFinding && !strings.Contains(findings[0].Title, "tasks/list") {
+				t.Fatalf("unexpected finding: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_PaginatedToolDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		mode         string
+		inconclusive bool
+	}{
+		{"tool-paged", false},
+		{"tool-paged-incomplete", true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := taskIDORServerWithCalls(tc.mode, &calls)
+			defer srv.Close()
+			findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(t.Context(), srv.URL, attack.Options{
+					TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if len(findings) != 0 || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
+				(!tc.inconclusive && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want inconclusive=%t", findings, err, tc.inconclusive)
+			}
+			if (calls.Load() == 0) != tc.inconclusive {
+				t.Fatalf("tool calls=%d, want inconclusive=%t", calls.Load(), tc.inconclusive)
+			}
+		})
+	}
+}
+
+func TestTaskIDOR_ClosesStatefulSessions(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want []string
+	}{
+		{"no-tasks-cap", []string{"sess-1:Bearer tok-a"}},
+		{"a-notify-503", []string{"sess-1:Bearer tok-a"}},
+		{"b-notify-503", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b"}},
+		{"secure", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b"}},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var closed []string
+			srv := taskIDORServerWithCleanup(tc.mode, nil, &closed)
+			defer srv.Close()
+			_, _ = mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+				Execute(t.Context(), srv.URL, attack.Options{
+					TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+					Principals: []attack.Principal{
+						{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+					},
+				})
+			if len(closed) != len(tc.want) {
+				t.Fatalf("closed sessions = %v, want %v", closed, tc.want)
+			}
+			for _, want := range tc.want {
+				found := false
+				for _, got := range closed {
+					found = found || got == want
+				}
+				if !found {
+					t.Fatalf("closed sessions = %v, missing %s", closed, want)
+				}
 			}
 		})
 	}

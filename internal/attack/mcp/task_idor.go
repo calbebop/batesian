@@ -122,6 +122,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Session A, which also discovers the endpoint.
 	sessA, initErr := e.initSession(ctx, client, vars.BaseURL, discovery)
+	defer closeTaskIDORSession(ctx, client, sessA, discovery)
 	if initErr != nil {
 		if errors.Is(initErr, attack.ErrInconclusive) {
 			return nil, initErr
@@ -185,7 +186,9 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 		enforcedOn: "the MCP endpoint",
 		anonProbe:  "anonymous initialize: refused",
 	}
-	if anonSess, anonErr := e.initSession(ctx, client, vars.BaseURL, anonymousPrincipal); anonErr == nil {
+	anonSess, anonErr := e.initSession(ctx, client, vars.BaseURL, anonymousPrincipal)
+	defer closeTaskIDORSession(ctx, client, anonSess, anonymousPrincipal)
+	if anonErr == nil {
 		anonTask, anonPremise := e.createTask(ctx, client, anonSess, anonymousPrincipal, tool)
 		switch anonPremise {
 		case premiseUndetermined:
@@ -226,6 +229,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	// Step 3: principal B opens a session. Session IDs are not auth contexts.
 	sessB, errB := e.initSession(ctx, client, vars.BaseURL, princB)
+	defer closeTaskIDORSession(ctx, client, sessB, princB)
 	if errB != nil {
 		return nil, fmt.Errorf("%w: principal %s could not open a session at %s (%v), so its access "+
 			"to principal %s's task was never tested",
@@ -312,6 +316,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 		}
 		session := mcpSession{
 			Endpoint:        ep,
+			Era:             EraLegacy,
 			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
 			ProtocolVersion: negotiatedVersion(resp.Body),
 			RawInit:         resp.Body,
@@ -321,7 +326,7 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			"method":  "notifications/initialized",
 		})
 		if !initializedNotificationOK(initialized, initErr) {
-			return mcpSession{}, fmt.Errorf("%w: notifications/initialized for principal %s at %s did not complete",
+			return session, fmt.Errorf("%w: notifications/initialized for principal %s at %s did not complete",
 				attack.ErrInconclusive, p.name, ep)
 		}
 		return session, nil
@@ -330,6 +335,10 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 		return mcpSession{}, handshakeRefusal{observed.reason}
 	}
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)
+}
+
+func closeTaskIDORSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, p taskPrincipal) {
+	closeLegacySessionsWith(ctx, client, []mcpSession{session}, func(h map[string]string) { attachPrincipal(h, p) })
 }
 
 // headers builds the per-request headers for a session and principal.
@@ -386,45 +395,59 @@ func tasksSupportsList(rawInit []byte) bool {
 	return ok
 }
 
-// listTasks returns the first page's task IDs and whether the read was judged.
+const taskListMaxPages = 4
+
+// listTasks follows a bounded number of pages and preserves observed task IDs.
 func (e *TaskIDORExecutor) listTasks(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal) ([]string, probeVerdict) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      6,
-		"method":  "tasks/list",
-		"params":  map[string]interface{}{},
-	})
-	verdict, body := classifyTaskRead(resp, err, 6, false)
-	if verdict != probeAnswered {
-		return nil, verdict
-	}
-	result, ok := body["result"].(map[string]interface{})
-	if !ok {
-		return nil, probeInconclusive
-	}
-	tasks, ok := result["tasks"].([]interface{})
-	if !ok {
-		return nil, probeInconclusive
-	}
-	ids := make([]string, 0, len(tasks))
-	for _, item := range tasks {
-		task, ok := item.(map[string]interface{})
+	var ids []string
+	cursor := ""
+	seen := map[string]bool{}
+	for page := range taskListMaxPages {
+		params := map[string]interface{}{}
+		if page > 0 {
+			params["cursor"] = cursor
+		}
+		requestID := 6 + page
+		resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
+			"jsonrpc": "2.0", "id": requestID, "method": "tasks/list", "params": params,
+		})
+		verdict, body := classifyTaskRead(resp, err, requestID, false)
+		if verdict != probeAnswered {
+			if page > 0 && verdict == probeRejected {
+				verdict = probeInconclusive
+			}
+			return ids, verdict
+		}
+		result, ok := body["result"].(map[string]interface{})
 		if !ok {
 			return ids, probeInconclusive
 		}
-		id, ok := task["taskId"].(string)
-		if !ok || id == "" {
+		tasks, ok := result["tasks"].([]interface{})
+		if !ok {
 			return ids, probeInconclusive
 		}
-		ids = append(ids, id)
-	}
-	if next, present := result["nextCursor"]; present {
-		cursor, ok := next.(string)
-		if !ok || cursor != "" {
+		for _, item := range tasks {
+			task, ok := item.(map[string]interface{})
+			if !ok {
+				return ids, probeInconclusive
+			}
+			id, ok := task["taskId"].(string)
+			if !ok || id == "" {
+				return ids, probeInconclusive
+			}
+			ids = append(ids, id)
+		}
+		next, present := result["nextCursor"]
+		if !present || next == nil {
+			return ids, probeAnswered
+		}
+		cursor, ok = next.(string)
+		if !ok || seen[cursor] {
 			return ids, probeInconclusive
 		}
+		seen[cursor] = true
 	}
-	return ids, probeAnswered
+	return ids, probeInconclusive
 }
 
 func classifyTaskRead(resp *attack.Response, err error, id int, taskNotFoundIsRefusal bool) (probeVerdict, map[string]interface{}) {
@@ -465,37 +488,26 @@ func containsTaskID(ids []string, taskID string) bool {
 
 // findSafeTaskTool requires exact approval in addition to a read-only hint.
 func (e *TaskIDORExecutor) findSafeTaskTool(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, randID string, approved []string) (safeTool, taskPremise, []string) {
-	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tools/list",
-		"params":  map[string]interface{}{},
-	})
-	// A refused listing is undetermined, not evidence that tasks are absent.
-	if verdict, _ := classifyProbe(resp, err, 2); verdict != probeAnswered {
-		return safeTool{}, premiseUndetermined, nil
-	}
-	var body struct {
-		Result struct {
-			Tools []struct {
-				Name      string `json:"name"`
-				Execution struct {
-					TaskSupport string `json:"taskSupport"`
-				} `json:"execution"`
-				Annotations *struct {
-					ReadOnlyHint    *bool `json:"readOnlyHint"`
-					DestructiveHint *bool `json:"destructiveHint"`
-				} `json:"annotations"`
-				InputSchema map[string]interface{} `json:"inputSchema"`
-			} `json:"tools"`
-		} `json:"result"`
-		Error map[string]interface{} `json:"error"`
-	}
-	if err := json.Unmarshal(resp.Body, &body); err != nil || body.Error != nil {
+	listed, ok := listToolPagesWith(ctx, client, s, 20, func(h map[string]string) { attachPrincipal(h, p) })
+	if !ok {
 		return safeTool{}, premiseUndetermined, nil
 	}
 	var pending []string
-	for _, t := range body.Result.Tools {
+	for _, raw := range listed {
+		var t struct {
+			Name      string `json:"name"`
+			Execution struct {
+				TaskSupport string `json:"taskSupport"`
+			} `json:"execution"`
+			Annotations *struct {
+				ReadOnlyHint    *bool `json:"readOnlyHint"`
+				DestructiveHint *bool `json:"destructiveHint"`
+			} `json:"annotations"`
+			InputSchema map[string]interface{} `json:"inputSchema"`
+		}
+		if json.Unmarshal(raw, &t) != nil || t.Name == "" {
+			return safeTool{}, premiseUndetermined, nil
+		}
 		if t.Execution.TaskSupport != "optional" && t.Execution.TaskSupport != "required" {
 			continue
 		}
