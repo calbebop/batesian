@@ -215,7 +215,6 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 type tenantRead struct {
 	method   string
 	location string
-	response string
 	matched  bool
 	denied   bool
 	unknown  bool
@@ -270,7 +269,7 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 		location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
 		result.matched = result.matched || matched
 		if location != "" {
-			return tenantRead{method: shape.method, location: location, response: snippet(resp.Body, 500), matched: true, unknown: result.unknown}
+			return tenantRead{method: shape.method, location: location, matched: true, unknown: result.unknown}
 		}
 		if !matched {
 			result.unknown = true
@@ -294,8 +293,8 @@ func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner at
 			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.location, read.method),
 		Evidence: fmt.Sprintf(
 			"reader: %s (tenant %s)\nowner: %s (tenant %s)\ntask: %s\nmethod: %s\n"+
-				"owner marker: %s\nlocation: %s\nresponse: %s",
-			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.method, marker, read.location, read.response),
+				"owner marker: %s\nlocation: %s\nmatched task content omitted",
+			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.method, marker, read.location),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{

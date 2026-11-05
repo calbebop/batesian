@@ -137,7 +137,6 @@ func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctxA, ctxB context.Context
 		return tenantRead{
 			method:   "GET " + route.taskPath + "/{id}",
 			location: location,
-			response: snippet(resp.Body, 500),
 			matched:  matched,
 			unknown:  !matched,
 		}

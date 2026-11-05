@@ -69,6 +69,7 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 					"id": "task-smuggle-1", "contextId": "ctx-smuggle-1",
 					"status":  map[string]string{"state": "working"},
 					"history": []interface{}{stored},
+					"private": "server-private-canary",
 				},
 			})
 		default:
@@ -86,6 +87,10 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 	}
 	if findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
+	}
+	if strings.Contains(findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "matched task content omitted") {
+		t.Errorf("task history response leaked into finding: %+v", findings[0])
 	}
 }
 

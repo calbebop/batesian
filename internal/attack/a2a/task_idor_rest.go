@@ -142,8 +142,8 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 		Title:      "A2A task content visible without owner credentials",
 		Description: fmt.Sprintf("An anonymous REST task read returned the owner's unique probe text in task %s's %s, "+
 			"despite the same task-creation endpoint rejecting anonymous callers. The observation alone does not establish whether the task is private.", taskID, location),
-		Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous GET: HTTP %d\n%s",
-			taskID, marker, location, read.StatusCode, snippet(read.Body, 500)),
+		Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous GET: HTTP %d\nmatched task content omitted",
+			taskID, marker, location, read.StatusCode),
 		Remediation: e.rule.Remediation,
 		TargetURL:   readURL,
 		Access:      &attack.AccessObservation{Operation: attack.A2ATasksGet, Caller: "anonymous", Owner: "default"},
