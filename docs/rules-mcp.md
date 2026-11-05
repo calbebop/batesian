@@ -467,14 +467,14 @@ another, reporting three failures, all **confirmed**:
   the task produced, not metadata (**critical**).
 - An accepted cross-context `tasks/list` **enumerates** another context's tasks
   (**critical**). This is the strongest of the three because it needs no prior
-  knowledge of any task id at all, so every task on the server can be listed and
-  then read. It is gated on the `tasks.list` capability being advertised, and is
+  knowledge of a task id. It is gated on the `tasks.list` capability and is
   checked independently of the by-id failures: the spec requires anything
   gettable to also be listable, but not the converse, so a server can scope
-  `tasks/get` and still leak the list.
+  `tasks/get` and still leak the list. Batesian follows up to four list pages;
+  an unfinished page walk reports not tested for unobserved tasks.
 
-A finding is raised only after anonymous task creation is *rejected*, proving the
-server does enforce authentication. A server with no authentication at all is
+A finding requires an anonymous initialize or task creation refusal, or an
+anonymous task read refusal after open creation. A server with no authentication is
 suppressed here rather than mislabelled as broken object-level authorization. A
 server that scopes tasks to their creating context answers the cross-context read
 with `-32602` and produces no finding.
@@ -494,9 +494,13 @@ no safely-annotated tool is a genuine not-applicable.
 rule also requires a task-capable tool with a consistent `readOnlyHint: true`,
 but server-supplied annotations are not a safety guarantee. Missing approval
 reports not tested; unannotated and non-read-only tools are never called.
+Batesian checks up to ten `tools/list` pages for an approved task tool and
+reports not tested if that page walk does not finish.
 Because `tasks/result`
 blocks until a task is terminal, the rule polls `tasks/get` within a bounded
 budget and requests the result only once the task has finished.
+It closes each stateful session with a bounded, best-effort DELETE, including
+sessions whose initialization notification fails.
 
 **Currency.** Tasks were introduced as experimental in 2025-11-25, and the
 **2026-07-28** revision moved them out of the core protocol into the

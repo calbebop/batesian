@@ -26,7 +26,7 @@ info:
     the session is conformant, so the rule does not compare session ids.
 
     The rule creates a task as one principal and attempts to read it from a
-    separate session as another, reporting two distinct failures:
+    separate session as another, reporting three distinct failures:
 
     - tasks/get returns another context's task (high). Task metadata discloses
       execution status, timing, and status messages for work the caller did not
@@ -34,18 +34,21 @@ info:
     - tasks/result returns another context's result (critical). This is the
       actual output of the tool invocation, not metadata, so whatever that tool
       produced crosses the authorization boundary.
+    - tasks/list exposes another context's task (critical). The rule follows up
+      to four pages and leaves an unfinished list walk not tested.
 
-    A finding is raised only after an anonymous task creation is rejected, which
-    proves the server enforces authentication for task creation. Anonymous task
-    access is suppressed here rather than mislabelled as a broken object-level
-    authorization check.
+    A finding requires an anonymous initialize or task creation refusal, or an
+    anonymous task read refusal after open creation. A fully open task surface
+    is suppressed rather than reported as broken object-level authorization.
 
     Safety: creating a task invokes a real tool. Approve its exact name with
     --mcp-invoke-tool or mcp_invoke_tools after reviewing it. The rule also
     requires consistent readOnlyHint true and task support, but annotations are
-    untrusted hints. Missing approval is NOT TESTED, not clean. Because
-    tasks/result blocks until a task is terminal, the rule polls tasks/get within
+    untrusted hints. Missing approval is NOT TESTED, not clean. Tool discovery
+    follows up to ten tools/list pages; an unfinished walk is also NOT TESTED.
+    Because tasks/result blocks until a task is terminal, the rule polls tasks/get within
     a bounded budget and only requests the result once the task has finished.
+    Stateful sessions are closed with best-effort DELETE after the check.
 
     Currency: tasks were introduced as experimental in 2025-11-25, and the
     2026-07-28 revision moved them out of the core protocol into the
