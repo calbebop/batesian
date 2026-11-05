@@ -659,7 +659,7 @@ func buildExpectedDenials(entries []config.ExpectedDenialConfig, principals []at
 	for i, entry := range entries {
 		if entry.Operation == attackpkg.A2ATasksCancel || entry.Operation == attackpkg.MCPTasksGet ||
 			entry.Operation == attackpkg.MCPTasksUpdate || entry.Operation == attackpkg.MCPTasksCancel ||
-			entry.Operation == attackpkg.MCPResourcesRead {
+			entry.Operation == attackpkg.MCPResourcesRead || entry.Operation == attackpkg.MCPSessionUse {
 			owner, ok := byName[entry.Owner]
 			if !ok {
 				return nil, fmt.Errorf("expected_denials[%d]: unknown owner principal %q", i, entry.Owner)

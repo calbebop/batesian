@@ -1,0 +1,40 @@
+id: mcp-session-principal-001
+info:
+  name: MCP Session Principal Binding
+  author: batesian
+  severity: high
+  description: |
+    Checks whether a stateful Streamable HTTP session created by one
+    authenticated principal accepts a request from another. The operator must
+    configure distinct owner and caller principals and an expected denial for
+    mcp.sessions.use. No tool is invoked.
+
+    Both principals must initialize and list tools in separate sessions. The
+    caller then lists tools using the owner's session ID. The owner must still
+    use that session afterward. An accepted cross-principal request is reported
+    only if anonymous access to the owner session, a never-issued session ID,
+    and a missing session ID are refused. All requests are read-only except
+    session initialization and best-effort DELETE cleanup.
+
+    This tests the boundary in the Python SDK session-principal advisory, not
+    the installed package or version. It does not test the older HTTP+SSE
+    transport or stateless MCP 2026-07-28 requests.
+  references:
+    - https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-jpw9-pfvf-9f58
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+    - https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices
+    - https://cwe.mitre.org/data/definitions/639.html
+  tags:
+    - mcp
+    - session
+    - authentication
+    - authorization
+    - cwe-639
+attack:
+  protocol: mcp
+  type: mcp-session-principal
+remediation: |
+  Authenticate every request and bind stateful session IDs to the authenticated
+  principal. Reject a request that presents another principal's session ID.
+  For the Python SDK, upgrade to mcp 1.27.2 or later and ensure the token
+  verifier supplies the subject when multiple users share one OAuth client.

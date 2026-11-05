@@ -352,7 +352,7 @@ func validateExpectedDenial(d ExpectedDenialConfig) error {
 		if d.Caller != "anonymous" || d.Owner != "" || d.CallerTenant != "" || d.OwnerTenant != "" {
 			return errors.New("MCP access policy requires caller: anonymous and no owner or tenant")
 		}
-	case attack.MCPTasksGet, attack.MCPTasksUpdate, attack.MCPTasksCancel, attack.MCPResourcesRead:
+	case attack.MCPTasksGet, attack.MCPTasksUpdate, attack.MCPTasksCancel, attack.MCPResourcesRead, attack.MCPSessionUse:
 		if d.Caller == "" || d.Owner == "" || d.Caller == d.Owner || d.Caller == "anonymous" ||
 			d.Caller == "default" || d.Owner == "anonymous" || d.Owner == "default" {
 			return errors.New("MCP cross-principal policy requires distinct named caller and owner principals")
@@ -543,6 +543,9 @@ func Example() string {
 #     caller: tenant-b
 #     owner: tenant-a
 #   - operation: mcp.resources.read
+#     caller: tenant-b
+#     owner: tenant-a
+#   - operation: mcp.sessions.use
 #     caller: tenant-b
 #     owner: tenant-a
 `

@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **37 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **38 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -192,6 +192,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-dns-rebind-origin-001` | [Origin Validation / DNS Rebinding](#mcp-dns-rebind-origin-001) | High | confirmed | CWE-350 |
 | `mcp-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#mcp-jsonrpc-batch-bypass-001) | High | confirmed | CWE-288 |
 | `mcp-session-as-credential-001` | [Session ID Accepted as a Credential](#mcp-session-as-credential-001) | High | confirmed | CWE-287 / CWE-565 |
+| `mcp-session-principal-001` | [Session Principal Binding](#mcp-session-principal-001) | High | policy-confirmed | CWE-639 |
 | `mcp-log-optin-001` | [Log Notifications Without a Per-Request Opt-In](#mcp-log-optin-001) | Medium | confirmed | CWE-200 / CWE-532 |
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
@@ -1020,6 +1021,46 @@ Currency: `Mcp-Session-Id` is normative in revisions 2025-03-26 through
 2025-11-25. The 2026-07-28 revision removes protocol-level sessions, so a server
 on that revision returns no session id and the rule reports itself not applicable
 at step 1.
+
+---
+
+### mcp-session-principal-001
+
+**MCP Session Principal Binding** | Severity: High | policy-confirmed | CWE-639
+
+This opt-in rule checks whether one authenticated principal can use another's
+stateful Streamable HTTP session, as described in the [Python SDK advisory](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-jpw9-pfvf-9f58).
+Configure two distinct bearer-token principals and declare that the caller must
+not use the owner's session:
+
+```yaml
+target: https://mcp.example.com/mcp
+principals:
+  - name: alice
+    token: "${ALICE_TOKEN}"
+  - name: bob
+    token: "${BOB_TOKEN}"
+expected_denials:
+  - operation: mcp.sessions.use
+    owner: alice
+    caller: bob
+```
+
+Run `batesian scan --config batesian.yaml --rule-ids mcp-session-principal-001`.
+Both principals must initialize and list tools in separate sessions. Batesian
+then lists tools with Bob's token on Alice's session and checks that Alice can
+still use it. If Bob is accepted, anonymous access to Alice's session, a
+never-issued session ID, and a request with no session ID must all be refused
+before Batesian reports a **high policy-confirmed** finding. A rejected Bob
+request is clean after both positive controls pass. Missing controls and
+ambiguous replies are **not tested**.
+
+The rule invokes no tools and closes both sessions with best-effort DELETE. It
+omits tokens and session IDs from findings. A finding establishes the declared
+session boundary failure, not the installed SDK or version. The rule applies
+to stateful 2025-03-26 through 2025-11-25 Streamable HTTP; it does not test
+HTTP+SSE or the stateless 2026-07-28 wire. The two tokens must represent
+different principals. Distinct token strings alone do not prove distinct users.
 
 ---
 

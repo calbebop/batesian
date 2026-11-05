@@ -20,7 +20,7 @@ The recording uses a deliberately vulnerable local fixture. Recreate it with `./
 
 ## Highlights
 
-- **59 bundled rules:** 22 A2A and 37 MCP checks focused on protocol-specific weaknesses.
+- **60 bundled rules:** 22 A2A and 38 MCP checks focused on protocol-specific weaknesses.
 - **Active verification:** rules evaluate live responses, state transitions, and out-of-band callbacks instead of relying on banners or static heuristics.
 - **Evidence-aware results:** confirmed behavior is separated from indicators that require manual validation.
 - **Honest coverage:** skipped, unsupported, and errored rules remain visible instead of being reported as clean.
@@ -87,7 +87,7 @@ batesian scan --target https://agent.example.com \
 
 ## Coverage
 
-The bundled catalogs contain [22 A2A rules](docs/rules-a2a.md) and [37 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
+The bundled catalogs contain [22 A2A rules](docs/rules-a2a.md) and [38 MCP rules](docs/rules-mcp.md). Every descriptor maps to compiled attack logic, CWE references, and remediation guidance.
 
 | Area | Examples |
 | --- | --- |
@@ -244,6 +244,7 @@ to loopback. Other A2A rules use JSON-RPC or HTTP+JSON; see the
 - The [filesystem symlink check](docs/rules-mcp.md#mcp-filesystem-symlink-001) requires a target-bound `mcp_filesystem_symlink_probe` with an operator-prepared link and outside file. It calls only approved metadata tools and never reads file contents.
 - The [MCP subscription check](docs/rules-mcp.md#mcp-subscription-scope-001) runs only with a target-bound `mcp_subscription_probe` in the config. It calls the specified update tool once, so use a disposable resource and arguments.
 - The [MCP cross-audience check](docs/rules-mcp.md#mcp-oauth-audience-002) needs a working target JWT and a target-bound `mcp_cross_audience_token` issued for another resource. It uses read-only requests and reports accepted other-resource tokens as indicators.
+- The [MCP session-principal check](docs/rules-mcp.md#mcp-session-principal-001) requires two bearer-token principals and a target-bound `mcp.sessions.use` expected denial. It compares read-only listings across stateful sessions and closes both sessions afterward.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 
 ## Results and exit behavior
