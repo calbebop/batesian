@@ -128,7 +128,8 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 			gate := probeInitGate(ctx, client, endpoint)
 			if gate.gate == gateOnInit || gate.gate == gateAfterInit {
 				targetVerdict := crossLegacyBearer(ctx, client, endpoint, gate, opts.Token)
-				if targetVerdict == accessGranted {
+				switch targetVerdict {
+				case accessGranted:
 					legacyDone = true
 					otherVerdict := crossLegacyBearer(ctx, client, endpoint, gate, otherToken)
 					if otherVerdict == accessGranted {
@@ -136,7 +137,7 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 					} else {
 						incomplete = errors.Join(incomplete, fmt.Errorf("%w: the other-resource token was not accepted on the legacy wire; its validity at its own resource was not independently verified", attack.ErrInconclusive))
 					}
-				} else if targetVerdict == accessUndetermined {
+				case accessUndetermined:
 					incomplete = errors.Join(incomplete, fmt.Errorf("%w: the target token could not establish a legacy MCP control", attack.ErrInconclusive))
 				}
 			}
@@ -148,7 +149,8 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 			gate := probeModernAuthGate(ctx, client, endpoint)
 			if gate.ready {
 				_, targetVerdict := probeModernBearer(ctx, client, endpoint, gate.method, opts.Token)
-				if targetVerdict == accessGranted {
+				switch targetVerdict {
+				case accessGranted:
 					modernDone = true
 					_, otherVerdict := probeModernBearer(ctx, client, endpoint, gate.method, otherToken)
 					if otherVerdict == accessGranted {
@@ -156,7 +158,7 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 					} else {
 						incomplete = errors.Join(incomplete, fmt.Errorf("%w: the other-resource token was not accepted on the modern wire; its validity at its own resource was not independently verified", attack.ErrInconclusive))
 					}
-				} else if targetVerdict == accessUndetermined {
+				case accessUndetermined:
 					incomplete = errors.Join(incomplete, fmt.Errorf("%w: the target token could not establish a modern MCP control", attack.ErrInconclusive))
 				}
 			}
