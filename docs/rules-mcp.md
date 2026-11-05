@@ -273,9 +273,35 @@ than misattributed to a specific matching bug. A trap acceptance is a
 control that carried no JSON-RPC result envelope (so it could not be clearly
 rejected) downgrades trap acceptances to an **indicator**, and a 2xx body with
 no result envelope is never itself treated as acceptance. Catching a
-server that validates signatures correctly but still mishandles `aud` (the
-CVE-2026-30863 / RFC 7523-bis class) requires a real validly-signed cross-resource
-token and is tracked as a follow-up.
+server that validates signatures correctly but still mishandles `aud` requires
+the separate opt-in check below.
+
+**Valid cross-audience token (opt-in).** Supply a working target bearer token
+with `--token` or `BATESIAN_TOKEN`, plus a distinct token issued by the same
+issuer for another resource through a target-bound config file. Use an
+environment reference so the second token is not stored in the file:
+
+```yaml
+target: https://mcp.example.com/mcp
+audience_claim: https://mcp.example.com/mcp
+mcp_cross_audience_token: "${OTHER_RESOURCE_TOKEN}"
+rule_ids:
+  - mcp-oauth-audience-002
+```
+
+The expected audience may instead come from RFC 9728 protected-resource
+metadata. Both tokens must be signed, unexpired JWTs with the same `iss`; the
+target token must include that audience and the other token must exclude it.
+The probe first requires anonymous refusal and acceptance of the target token
+at the same read-only MCP method, then submits the other token. It checks
+legacy `initialize` or a gated listing and modern `server/discover` or a gated
+listing. An accepted other token is a **high indicator**. Batesian does not
+verify that token's signature or its validity at the issuing resource, so
+confirm its provenance before assigning the result to a server or SDK. A
+rejected other token is **not tested**, since a bad or revoked token would look
+the same. Opaque tokens, missing controls, and conflicting advertised metadata
+are also **not tested**. Findings omit token values. Only the audience rule
+uses `mcp_cross_audience_token`; the value is never a general scan principal.
 
 ---
 
@@ -302,8 +328,8 @@ answers both anonymously is reported **not tested** - the unauthenticated-access
 rules own that surface. A confirmed finding therefore means a forged or unsigned
 token was accepted on a surface that gates: signature validation is absent,
 which also defeats audience binding and enables replay.
-Audience-matching bugs on signature-valid tokens are isolated by
-`mcp-oauth-audience-002`.
+`mcp-oauth-audience-002` also supports the opt-in valid cross-audience token
+check described above.
 
 ---
 

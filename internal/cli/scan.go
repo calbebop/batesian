@@ -158,6 +158,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.MCPFilesystemSymlinkProbe != nil && target != cfg.Target {
 		return errors.New("mcp_filesystem_symlink_probe cannot be used with a different --target")
 	}
+	if cfg.MCPCrossAudienceToken != "" && target != cfg.Target {
+		return errors.New("mcp_cross_audience_token cannot be used with a different --target")
+	}
 	if cfg.A2AGRPCTarget != "" && target != cfg.Target && !cmd.Flags().Changed("a2a-grpc-target") {
 		return errors.New("a2a_grpc_target cannot be used with a different --target")
 	}
@@ -266,6 +269,14 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 	if audienceClaim == "" {
 		audienceClaim = cfg.AudienceClaim
+	}
+	var crossAudienceToken string
+	if cfg.MCPCrossAudienceToken != "" {
+		crossAudienceToken, err = configPrincipalToken(cfg.MCPCrossAudienceToken)
+		if err != nil {
+			return fmt.Errorf("mcp_cross_audience_token: %w", err)
+		}
+		redactor.addSecret(crossAudienceToken)
 	}
 
 	principals, perr := buildPrincipals(cfg.Principals, principalFlags)
@@ -387,6 +398,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		MCPFilesystemSymlinkProbe: filesystemSymlinkProbe,
 		Verbose:                   verbose,
 		AudienceClaim:             audienceClaim,
+		MCPCrossAudienceToken:     crossAudienceToken,
 		Principals:                principals,
 		ExpectedDenials:           expectedDenials,
 	}

@@ -97,6 +97,23 @@ func TestLoadExpectedDenialsRequiresTarget(t *testing.T) {
 	}
 }
 
+func TestLoadCrossAudienceTokenRequiresTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	if err := os.WriteFile(path, []byte("mcp_cross_audience_token: ${OTHER_RESOURCE_TOKEN}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "requires a target") {
+		t.Fatalf("error = %v, want target requirement", err)
+	}
+	if err := os.WriteFile(path, []byte("target: https://mcp.example.com/mcp\nmcp_cross_audience_token: ${OTHER_RESOURCE_TOKEN}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.MCPCrossAudienceToken != "${OTHER_RESOURCE_TOKEN}" {
+		t.Fatalf("config = %+v, error = %v", cfg, err)
+	}
+}
+
 func TestLoadWithSource_ReportsDiscoveredParent(t *testing.T) {
 	parent := t.TempDir()
 	child := filepath.Join(parent, "child")

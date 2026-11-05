@@ -243,6 +243,7 @@ to loopback. Other A2A rules use JSON-RPC or HTTP+JSON; see the
 - The [filesystem suffix check](docs/rules-mcp.md#mcp-filesystem-suffix-001) requires a target-bound `mcp_filesystem_suffix_probe` with a disposable allowed directory and explicit approval of `get_file_info`. It requests metadata for missing paths only.
 - The [filesystem symlink check](docs/rules-mcp.md#mcp-filesystem-symlink-001) requires a target-bound `mcp_filesystem_symlink_probe` with an operator-prepared link and outside file. It calls only approved metadata tools and never reads file contents.
 - The [MCP subscription check](docs/rules-mcp.md#mcp-subscription-scope-001) runs only with a target-bound `mcp_subscription_probe` in the config. It calls the specified update tool once, so use a disposable resource and arguments.
+- The [MCP cross-audience check](docs/rules-mcp.md#mcp-oauth-audience-002) needs a working target JWT and a target-bound `mcp_cross_audience_token` issued for another resource. It uses read-only requests and reports accepted other-resource tokens as indicators.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.
 
 ## Results and exit behavior

@@ -268,6 +268,56 @@ mcp_subscription_probe:
 	}
 }
 
+func TestScanCrossAudienceTokenRejectsDifferentTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := "target: https://mcp.example.com/mcp\nmcp_cross_audience_token: ${OTHER_RESOURCE_TOKEN}\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", "https://other.example.com/mcp")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(),
+		"mcp_cross_audience_token cannot be used with a different --target") {
+		t.Fatalf("error = %v, want cross-audience target mismatch", err)
+	}
+}
+
+func TestScanCrossAudienceTokenDryRun(t *testing.T) {
+	previousContext := scanCmd.Context()
+	scanCmd.SetContext(context.Background())
+	t.Cleanup(func() { scanCmd.SetContext(previousContext) })
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer target.Close()
+	path := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := fmt.Sprintf("target: %s/mcp\nmcp_cross_audience_token: ${OTHER_RESOURCE_TOKEN}\n", target.URL)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OTHER_RESOURCE_TOKEN", "other-resource-secret-marker")
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", path)
+	setScanFlag(t, "target", target.URL+"/mcp")
+	setScanFlag(t, "protocol", "mcp")
+	setScanFlag(t, "dry-run", "true")
+	setScanSliceFlag(t, "rule-ids", []string{"mcp-oauth-audience-002"})
+	output, err := captureCLIOutput(t, func() error { return runScan(scanCmd, nil) })
+	if err != nil || requests.Load() != 0 {
+		t.Fatalf("dry run: error=%v, requests=%d", err, requests.Load())
+	}
+	if strings.Contains(output, "other-resource-secret-marker") {
+		t.Fatal("dry run output includes other-resource token")
+	}
+}
+
 func TestScanSubscriptionProbeDryRunDoesNotCallTool(t *testing.T) {
 	previousContext := scanCmd.Context()
 	scanCmd.SetContext(context.Background())
