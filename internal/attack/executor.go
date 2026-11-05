@@ -87,6 +87,10 @@ type Options struct {
 	// auto-discovery and otherwise reports Inconclusive.
 	AudienceClaim string
 
+	// MCPCrossAudienceToken opts into a read-only bearer check with a token
+	// issued for another resource. It is not shared with other rules.
+	MCPCrossAudienceToken string
+
 	// Principals are additional authenticated identities (each with its own token
 	// and optional tenant) that multi-step chained rules can act as. Cross-tenant
 	// and handoff rules need at least two principals to prove that one identity

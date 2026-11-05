@@ -42,14 +42,11 @@ info:
     and metadata. Both wires require an anonymous control to identify a gated
     method; protocol errors do not count as audience rejections.
 
-    Honest scope: because probes are forged HS256 self-signed tokens, acceptance
-    indicates that **both** signature validation and audience matching are
-    inadequate. Catching servers that validate signatures correctly but still
-    mishandle `aud` matching (the Parse CVE-2026-30863 / RFC 7523-bis class)
-    requires a real validly-signed token from the same issuer with a different
-    audience and is tracked as a follow-up issue. If `mcp-token-replay-001` is
-    already firing on this target, fix those findings first; this rule's
-    results will likely be subsumed.
+    Forged-token acceptance indicates inadequate signature validation too.
+    With mcp_cross_audience_token, the rule also compares a working target JWT
+    with an operator-supplied JWT issued for another resource. Acceptance at an
+    anonymous-gated method is an indicator; a refusal is inconclusive because
+    the other token's validity at its own resource is not independently checked.
 
     Audience input precedence:
       1. `--audience-claim` flag / `audience_claim` config field
@@ -65,6 +62,8 @@ info:
     - https://www.rfc-editor.org/rfc/rfc9700
     - https://modelcontextprotocol.io/docs/concepts/authorization
     - https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1581
+    - https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-rvq5-wwqv-78pq
+    - https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-w4fh-qvv9-3v23
     - https://nvd.nist.gov/vuln/detail/CVE-2026-30863
     - https://eprint.iacr.org/2025/629
     - https://cwe.mitre.org/data/definitions/863.html
@@ -101,3 +100,5 @@ remediation: |
   5. Advertise a stable resource identifier via RFC 9728 protected resource
      metadata (`/.well-known/oauth-protected-resource`) so clients and
      scanners use the same audience value the server validates against.
+  6. Enable resource-audience validation in the installed MCP SDK; patched SDKs
+     may require an explicit option or expected-resource value.

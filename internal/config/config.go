@@ -99,6 +99,10 @@ type Config struct {
 	// discovery before skipping the rule with Inconclusive.
 	AudienceClaim string `yaml:"audience_claim"`
 
+	// MCPCrossAudienceToken is valid for another resource, for the opt-in
+	// audience check. An environment reference is recommended.
+	MCPCrossAudienceToken string `yaml:"mcp_cross_audience_token"`
+
 	// Principals are additional authenticated identities for multi-tenant and
 	// handoff chained rules. Each needs a valid token; cross-tenant isolation
 	// rules use two or more to attempt access that must fail.
@@ -259,6 +263,11 @@ func (c *Config) validate(path string) error {
 			return fmt.Errorf("config %s: duplicate principal name %q", path, p.Name)
 		}
 		seen[p.Name] = true
+	}
+	if c.MCPCrossAudienceToken != "" {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: mcp_cross_audience_token requires a target in the same config file", path)
+		}
 	}
 	if probe := c.MCPSubscriptionProbe; probe != nil {
 		if strings.TrimSpace(c.Target) == "" {
@@ -496,6 +505,11 @@ func Example() string {
 # When unset, batesian attempts RFC 9728 protected-resource-metadata
 # discovery; if that also fails, the rule reports Inconclusive.
 # audience_claim: https://api.example.com/mcp
+
+# Opt-in valid-token audience check. Set target above and provide a working
+# target token via --token or BATESIAN_TOKEN. Use a token issued by the same
+# issuer for a different resource; only the audience rule uses this value.
+# mcp_cross_audience_token: "${OTHER_RESOURCE_TOKEN}"
 
 # Additional authenticated identities for multi-tenant / handoff rules.
 # Cross-tenant isolation checks use two or more principals to confirm that

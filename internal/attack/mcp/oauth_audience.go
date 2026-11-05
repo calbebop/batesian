@@ -15,9 +15,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// OAuthAudienceExecutor tests audience-matching traps on both MCP wires.
-// A forged-token acceptance also implies broken signature validation; this rule
-// does not test validly signed tokens issued for another resource.
+// OAuthAudienceExecutor tests forged audience traps and optional valid-token
+// cross-audience acceptance on both MCP wires.
 type OAuthAudienceExecutor struct {
 	rule attack.RuleContext
 }
@@ -73,7 +72,16 @@ type probeOutcome struct {
 }
 
 // Execute runs the audience-matching probes against the target.
-func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts attack.Options) (findings []attack.Finding, resultErr error) {
+func (e *OAuthAudienceExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	forged, forgedErr := e.executeForged(ctx, target, opts)
+	if opts.MCPCrossAudienceToken == "" {
+		return forged, forgedErr
+	}
+	cross, crossErr := e.probeCrossAudience(ctx, target, opts)
+	return append(forged, cross...), errors.Join(forgedErr, crossErr)
+}
+
+func (e *OAuthAudienceExecutor) executeForged(ctx context.Context, target string, opts attack.Options) (findings []attack.Finding, resultErr error) {
 	var discoveryErr error
 	defer func() { resultErr = errors.Join(resultErr, discoveryErr) }()
 
