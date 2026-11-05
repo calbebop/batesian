@@ -18,6 +18,7 @@ func hostInjectCard(url string) map[string]interface{} {
 	return map[string]interface{}{
 		"name":               "Test Agent",
 		"description":        "Test agent",
+		"privateNote":        "server-private-canary",
 		"version":            "0.3.0",
 		"url":                url,
 		"capabilities":       map[string]interface{}{},
@@ -67,6 +68,10 @@ func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 		}
 		if f.Confidence != attack.RiskIndicator {
 			t.Errorf("expected RiskIndicator, got %v", f.Confidence)
+		}
+		if strings.Contains(f.Description+f.Evidence, "server-private-canary") ||
+			!strings.Contains(f.Evidence, "card content omitted") {
+			t.Errorf("agent card content leaked into finding: %+v", f)
 		}
 	}
 }

@@ -45,8 +45,9 @@ func jwtAcceptingServer(t *testing.T) *httptest.Server {
 			"jsonrpc": "2.0",
 			"id":      readBody(r)["id"],
 			"result": map[string]interface{}{
-				"id":     "task-001",
-				"status": map[string]interface{}{"state": "completed"},
+				"id":      "task-001",
+				"status":  map[string]interface{}{"state": "completed"},
+				"private": "server-private-canary",
 			},
 		})
 	}))
@@ -73,8 +74,9 @@ func unauthAllowedServer(t *testing.T) *httptest.Server {
 			"jsonrpc": "2.0",
 			"id":      id,
 			"result": map[string]interface{}{
-				"id":     "task-002",
-				"status": map[string]interface{}{"state": "completed"},
+				"id":      "task-002",
+				"status":  map[string]interface{}{"state": "completed"},
+				"private": "server-private-canary",
 			},
 		})
 	}))
@@ -201,6 +203,10 @@ func TestPeerImpersonation_ForgedJWTAccepted(t *testing.T) {
 	if !strings.Contains(findings[0].Description, "does not establish") {
 		t.Errorf("finding must qualify unobserved peer privileges: %s", findings[0].Description)
 	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "reply content omitted") {
+		t.Errorf("forged send reply leaked into finding: %+v", findings[0])
+	}
 }
 
 func TestPeerImpersonation_FindingRetainsEarlierIncompleteVersion(t *testing.T) {
@@ -319,6 +325,10 @@ func TestPeerImpersonation_UnauthAllowed(t *testing.T) {
 	}
 	if strings.Contains(findings[0].Title, "impersonation") {
 		t.Errorf("anonymous access does not prove impersonation: %s", findings[0].Title)
+	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "reply content omitted") {
+		t.Errorf("public send reply leaked into finding: %+v", findings[0])
 	}
 }
 

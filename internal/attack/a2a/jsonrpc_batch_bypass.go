@@ -202,8 +202,8 @@ func (e *BatchBypassExecutor) finding(endpoint, shape string, ctrl, test *attack
 		Description: description,
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nshape: %s\nsingle request: HTTP %d (%s)\n"+
-				"batch [request]: HTTP %d (%s)\n%s",
-			endpoint, shape, ctrl.StatusCode, refusal, test.StatusCode, evidence, snippet(test.Body, 400)),
+				"batch [request]: HTTP %d (%s)\nreply content omitted",
+			endpoint, shape, ctrl.StatusCode, refusal, test.StatusCode, evidence),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}}

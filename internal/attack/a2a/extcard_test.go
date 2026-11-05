@@ -48,6 +48,7 @@ func extendedCard() map[string]interface{} {
 	return map[string]interface{}{
 		"name":        "Extended Agent",
 		"description": "Private capabilities",
+		"privateNote": "server-private-canary",
 		"version":     "1.0.0",
 		"supportedInterfaces": []map[string]string{{
 			"url": "https://agent.example.com", "protocolBinding": "JSONRPC", "protocolVersion": "1.0",
@@ -103,6 +104,11 @@ func TestExtCardExecutor_Vulnerable(t *testing.T) {
 		}
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("finding %q: want ConfirmedExploit, got %q", f.Title, f.Confidence)
+		}
+		if strings.Contains(f.Description+f.Evidence, "server-private-canary") ||
+			strings.Contains(f.Description+f.Evidence, "batesian-invalid-") ||
+			!strings.Contains(f.Evidence, "card content omitted") {
+			t.Errorf("extended card or fabricated token leaked into finding: %+v", f)
 		}
 	}
 	if !hasCritical {
@@ -321,5 +327,9 @@ func TestExtCardExecutor_HTTPGetRawCard(t *testing.T) {
 	// a critical auth bypass.
 	if findings[0].Severity != "critical" {
 		t.Errorf("expected critical (fabricated token accepted), got %q", findings[0].Severity)
+	}
+	if strings.Contains(findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "card content omitted") {
+		t.Errorf("HTTP card content leaked into finding: %+v", findings[0])
 	}
 }

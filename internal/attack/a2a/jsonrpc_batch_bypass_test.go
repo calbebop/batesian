@@ -22,7 +22,7 @@ func batchServer(mode string) *httptest.Server {
 	taskNotFound := func(id interface{}) map[string]interface{} {
 		return map[string]interface{}{
 			"jsonrpc": "2.0", "id": id,
-			"error": map[string]interface{}{"code": -32001, "message": "Task not found"},
+			"error": map[string]interface{}{"code": -32001, "message": "Task not found", "data": "server-private-canary"},
 		}
 	}
 
@@ -92,6 +92,10 @@ func TestBatchBypass_Bypassed(t *testing.T) {
 	}
 	if f.Severity != "medium" {
 		t.Errorf("expected medium severity, got %q", f.Severity)
+	}
+	if strings.Contains(f.Description+f.Evidence, "server-private-canary") ||
+		!strings.Contains(f.Evidence, "reply content omitted") {
+		t.Errorf("batch error response leaked into finding: %+v", f)
 	}
 }
 
@@ -514,7 +518,8 @@ func TestBatchBypass_TaskResultConfirmsBypass(t *testing.T) {
 			"jsonrpc": "2.0", "id": requests[0]["id"],
 			"result": map[string]interface{}{
 				"id": "exposed-task", "contextId": "exposed-context",
-				"status": map[string]interface{}{"state": "TASK_STATE_WORKING"},
+				"status":  map[string]interface{}{"state": "TASK_STATE_WORKING"},
+				"private": "server-private-canary",
 			},
 		}})
 	}))
@@ -523,6 +528,10 @@ func TestBatchBypass_TaskResultConfirmsBypass(t *testing.T) {
 	findings := runBatchBypass(t, srv)
 	if len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
 		t.Fatalf("task result should confirm bypass: findings=%+v", findings)
+	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "reply content omitted") {
+		t.Errorf("batch task response leaked into finding: %+v", findings[0])
 	}
 }
 
