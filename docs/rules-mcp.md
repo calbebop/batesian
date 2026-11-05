@@ -473,6 +473,14 @@ another, reporting three failures, all **confirmed**:
   `tasks/get` and still leak the list. Batesian follows up to four list pages;
   an unfinished page walk reports not tested for unobserved tasks.
 
+For by-ID findings, the owner must read the created task, the other principal
+must receive a refusal for a never-issued ID, and `tasks/get` must return the
+requested task ID with a valid status. A `tasks/result` finding also requires a
+refused unknown-ID control, matching related-task metadata, and output matching
+the owner's result. Unanswered controls leave those subchecks not tested;
+`tasks/list` is assessed independently. Findings redact task IDs, status
+messages, and tool output.
+
 A finding requires an anonymous initialize or task creation refusal, or an
 anonymous task read refusal after open creation. A server with no authentication is
 suppressed here rather than mislabelled as broken object-level authorization. A

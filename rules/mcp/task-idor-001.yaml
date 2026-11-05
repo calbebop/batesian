@@ -37,6 +37,12 @@ info:
     - tasks/list exposes another context's task (critical). The rule follows up
       to four pages and leaves an unfinished list walk not tested.
 
+    By-ID findings require a successful owner read, refusal of a never-issued
+    task ID, and a tasks/get response naming the requested task. A tasks/result
+    finding also requires matching related-task metadata, a refused unknown-ID
+    control, and output matching the owner's result. Task handles, status
+    messages, and tool output are redacted from findings.
+
     A finding requires an anonymous initialize or task creation refusal, or an
     anonymous task read refusal after open creation. A fully open task surface
     is suppressed rather than reported as broken object-level authorization.

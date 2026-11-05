@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -198,7 +199,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 				attack.ErrInconclusive, sessA.Endpoint)
 		case premiseMet:
 			_ = anonTask
-			switch _, anonRead := e.getTask(ctx, client, anonSess, anonymousPrincipal, taskID); anonRead {
+			switch _, anonRead := e.getTask(ctx, client, anonSess, anonymousPrincipal, taskID, 9); anonRead {
 			case probeAnswered:
 				return nil, nil // anonymous task access is not a cross-context bypass
 			case probeInconclusive:
@@ -238,29 +239,48 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 
 	var findings []attack.Finding
 	var incomplete error
+	bogusTaskID := "batesian-never-issued-" + vars.RandID
 
-	// Step 4: can B read A's task by id? A correctly-scoped server answers -32602.
-	meta, readVerdict := e.getTask(ctx, client, sessB, princB, taskID)
-	switch readVerdict {
-	case probeInconclusive:
-		incomplete = fmt.Errorf("%w: principal %s's read of principal %s's task %s at %s returned no "+
-			"verdict, so whether the task is bound to its creating context was never observed",
-			attack.ErrInconclusive, princB.name, princA.name, taskID, sessA.Endpoint)
-	case probeAnswered:
-		findings = append(findings, e.metadataFinding(sessA.Endpoint, taskID, meta, true, auth))
-
-		// Poll before tasks/result, which blocks until the task is terminal.
-		if e.pollTerminal(ctx, client, sessB, princB, taskID) {
-			switch content, verdict := e.getResult(ctx, client, sessB, princB, taskID); verdict {
-			case probeAnswered:
-				findings = append(findings, e.resultFinding(sessA.Endpoint, taskID, tool.name, content, true, auth))
-			case probeInconclusive:
-				incomplete = fmt.Errorf("%w: principal %s's tasks/result at %s returned no verdict",
-					attack.ErrInconclusive, princB.name, sessB.Endpoint)
+	// Step 4: confirm the owner's task and reject an unknown ID before comparing B.
+	if _, ownerRead := e.getTask(ctx, client, sessA, princA, taskID, 10); ownerRead != probeAnswered {
+		incomplete = fmt.Errorf("%w: principal %s could not read the task it created, so cross-context task reads were not assessed",
+			attack.ErrInconclusive, princA.name)
+	} else if _, control := e.getTask(ctx, client, sessB, princB, bogusTaskID, 11); control != probeRejected {
+		incomplete = fmt.Errorf("%w: principal %s's read of a never-issued task ID was not explicitly refused",
+			attack.ErrInconclusive, princB.name)
+	} else {
+		meta, readVerdict := e.getTask(ctx, client, sessB, princB, taskID, 4)
+		switch readVerdict {
+		case probeInconclusive:
+			incomplete = fmt.Errorf("%w: principal %s's read of principal %s's task at %s returned no "+
+				"verdict, so whether the task is bound to its creating context was never observed",
+				attack.ErrInconclusive, princB.name, princA.name, sessA.Endpoint)
+		case probeAnswered:
+			findings = append(findings, e.metadataFinding(sessA.Endpoint, meta, true, auth))
+			pollCtx, cancel := context.WithTimeout(ctx, taskPollBudget)
+			terminal := e.pollTerminal(pollCtx, client, sessB, princB, taskID, 20) &&
+				e.pollTerminal(pollCtx, client, sessA, princA, taskID, 40)
+			cancel()
+			if terminal {
+				if _, control := e.getResult(ctx, client, sessB, princB, bogusTaskID, 12); control != probeRejected {
+					incomplete = fmt.Errorf("%w: principal %s's tasks/result for a never-issued task ID was not explicitly refused",
+						attack.ErrInconclusive, princB.name)
+				} else if content, verdict := e.getResult(ctx, client, sessB, princB, taskID, 5); verdict == probeAnswered {
+					ownerContent, ownerVerdict := e.getResult(ctx, client, sessA, princA, taskID, 13)
+					if ownerVerdict != probeAnswered || !sameTaskResult(content, ownerContent) {
+						incomplete = fmt.Errorf("%w: tasks/result did not match the owner's task output",
+							attack.ErrInconclusive)
+					} else {
+						findings = append(findings, e.resultFinding(sessA.Endpoint, tool.name, true, auth))
+					}
+				} else if verdict == probeInconclusive {
+					incomplete = fmt.Errorf("%w: principal %s's tasks/result at %s returned no verdict",
+						attack.ErrInconclusive, princB.name, sessB.Endpoint)
+				}
+			} else {
+				incomplete = fmt.Errorf("%w: the created task was not confirmed terminal, so tasks/result was not assessed",
+					attack.ErrInconclusive)
 			}
-		} else {
-			incomplete = fmt.Errorf("%w: task %s was not confirmed terminal, so tasks/result was not assessed",
-				attack.ErrInconclusive, taskID)
 		}
 	}
 
@@ -272,7 +292,7 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 	if tasksSupportsList(sessA.RawInit) {
 		ids, verdict := e.listTasks(ctx, client, sessB, princB)
 		if containsTaskID(ids, taskID) {
-			findings = append(findings, e.enumerationFinding(sessA.Endpoint, taskID, len(ids), true, auth))
+			findings = append(findings, e.enumerationFinding(sessA.Endpoint, len(ids), true, auth))
 		}
 		if verdict == probeInconclusive {
 			return findings, errors.Join(incomplete, fmt.Errorf("%w: principal %s's tasks/list at %s returned no complete verdict, so task enumeration was not assessed",
@@ -594,20 +614,19 @@ func (e *TaskIDORExecutor) createTask(ctx context.Context, client *attack.HTTPCl
 
 // taskState is the subset of a Task object the rule reports on.
 type taskState struct {
-	Status        string `json:"status"`
-	StatusMessage string `json:"statusMessage"`
-	CreatedAt     string `json:"createdAt"`
+	TaskID string `json:"taskId"`
+	Status string `json:"status"`
 }
 
 // getTask distinguishes a returned task, an explicit rejection, and no verdict.
-func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (taskState, probeVerdict) {
+func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string, requestID int) (taskState, probeVerdict) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      4,
+		"id":      requestID,
 		"method":  "tasks/get",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	verdict, _ := classifyTaskRead(resp, err, 4, true)
+	verdict, _ := classifyTaskRead(resp, err, requestID, true)
 	if verdict != probeAnswered {
 		return taskState{}, verdict
 	}
@@ -617,8 +636,13 @@ func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClien
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		return taskState{}, probeInconclusive
 	}
-	if body.Result == nil || body.Result.Status == "" {
-		// 2xx, no error, and no task: nothing was refused and nothing was disclosed.
+	if body.Result == nil || body.Result.TaskID != taskID {
+		// An unrelated task response does not establish access.
+		return taskState{}, probeInconclusive
+	}
+	switch body.Result.Status {
+	case "working", "input_required", "completed", "failed", "cancelled":
+	default:
 		return taskState{}, probeInconclusive
 	}
 	return *body.Result, probeAnswered
@@ -626,10 +650,10 @@ func (e *TaskIDORExecutor) getTask(ctx context.Context, client *attack.HTTPClien
 
 // pollTerminal waits for the task to reach a terminal status, within budget.
 // tasks/result blocks until terminal, so polling first keeps the scan bounded.
-func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) bool {
+func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string, startID int) bool {
 	deadline := time.Now().Add(taskPollBudget)
 	for i := 0; i < taskPollMaxTries && time.Now().Before(deadline); i++ {
-		st, verdict := e.getTask(ctx, client, s, p, taskID)
+		st, verdict := e.getTask(ctx, client, s, p, taskID, startID+i)
 		if verdict != probeAnswered {
 			return false
 		}
@@ -647,14 +671,14 @@ func (e *TaskIDORExecutor) pollTerminal(ctx context.Context, client *attack.HTTP
 }
 
 // getResult distinguishes disclosure, explicit refusal, and an unjudged read.
-func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string) (string, probeVerdict) {
+func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal, taskID string, requestID int) (string, probeVerdict) {
 	resp, err := client.POST(ctx, s.Endpoint, e.headers(s, p), map[string]interface{}{
 		"jsonrpc": "2.0",
-		"id":      5,
+		"id":      requestID,
 		"method":  "tasks/result",
 		"params":  map[string]interface{}{"taskId": taskID},
 	})
-	verdict, _ := classifyTaskRead(resp, err, 5, true)
+	verdict, _ := classifyTaskRead(resp, err, requestID, true)
 	if verdict != probeAnswered {
 		return "", verdict
 	}
@@ -664,10 +688,34 @@ func (e *TaskIDORExecutor) getResult(ctx context.Context, client *attack.HTTPCli
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		return "", probeInconclusive
 	}
-	if len(body.Result) == 0 {
+	var result map[string]interface{}
+	if json.Unmarshal(body.Result, &result) != nil || result == nil {
+		return "", probeInconclusive
+	}
+	if _, ok := result["content"].([]interface{}); !ok {
+		return "", probeInconclusive
+	}
+	meta, _ := result["_meta"].(map[string]interface{})
+	related, _ := meta["io.modelcontextprotocol/related-task"].(map[string]interface{})
+	if related["taskId"] != taskID {
 		return "", probeInconclusive
 	}
 	return string(body.Result), probeAnswered
+}
+
+func sameTaskResult(a, b string) bool {
+	var left, right map[string]interface{}
+	if json.Unmarshal([]byte(a), &left) != nil || json.Unmarshal([]byte(b), &right) != nil {
+		return false
+	}
+	leftContent, leftOK := left["content"].([]interface{})
+	rightContent, rightOK := right["content"].([]interface{})
+	if !leftOK || !rightOK {
+		return false
+	}
+	return reflect.DeepEqual(leftContent, rightContent) &&
+		reflect.DeepEqual(left["structuredContent"], right["structuredContent"]) &&
+		reflect.DeepEqual(left["isError"], right["isError"])
 }
 
 // requestorLabel describes what boundary was actually crossed, so the finding
@@ -679,7 +727,7 @@ func requestorLabel(crossPrincipal bool) string {
 	return "a separate authenticated session"
 }
 
-func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState, crossPrincipal bool, auth authEvidence) attack.Finding {
+func (e *TaskIDORExecutor) metadataFinding(endpoint string, st taskState, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -687,23 +735,23 @@ func (e *TaskIDORExecutor) metadataFinding(endpoint, taskID string, st taskState
 		Confidence: attack.ConfirmedExploit,
 		Title:      "MCP task readable by another authorization context (tasks/get IDOR)",
 		Description: fmt.Sprintf(
-			"tasks/get at %s returned task %s to %s that did not create it. Authentication is enforced "+
+			"tasks/get at %s returned the owner's task to %s. Authentication is enforced "+
 				"on %s, so a credential is required, yet task lookup is not bound to the creating "+
 				"context. The MCP spec requires receivers to reject tasks/get for tasks outside the "+
 				"requestor's authorization context, so any caller who learns or guesses a task id can "+
 				"track another context's work.",
-			endpoint, taskID, requestorLabel(crossPrincipal), auth.enforcedOn),
+			endpoint, requestorLabel(crossPrincipal), auth.enforcedOn),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntask: %s\nauthentication enforced on: %s\n%s\n"+
+			"endpoint: %s\ntask ID: redacted\nauthentication enforced on: %s\n%s\n"+
 				"cross-context tasks/get: accepted\n"+
-				"disclosed status: %s\nstatusMessage: %s\ncreatedAt: %s",
-			endpoint, taskID, auth.enforcedOn, auth.anonProbe, st.Status, st.StatusMessage, st.CreatedAt),
+				"disclosed status: %s\nstatus message: redacted",
+			endpoint, auth.enforcedOn, auth.anonProbe, st.Status),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int, crossPrincipal bool, auth authEvidence) attack.Finding {
+func (e *TaskIDORExecutor) enumerationFinding(endpoint string, total int, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -711,22 +759,22 @@ func (e *TaskIDORExecutor) enumerationFinding(endpoint, taskID string, total int
 		Confidence: attack.ConfirmedExploit,
 		Title:      "MCP tasks/list enumerates another authorization context's tasks",
 		Description: fmt.Sprintf(
-			"tasks/list at %s returned task %s to %s that did not create it, in a list of %d task(s). "+
+			"tasks/list at %s returned the owner's task to %s in a list of %d task(s). "+
 				"This is a stronger failure than reading a task by id: the caller needs no prior knowledge "+
-				"of any task id, so every task on the server can be enumerated and then read. The MCP spec "+
+				"of a task id to discover it. The MCP spec "+
 				"requires receivers to return only tasks associated with the requestor's authorization "+
 				"context, and to not advertise the tasks.list capability at all when requestors cannot be "+
-				"identified.", endpoint, taskID, requestorLabel(crossPrincipal), total),
+				"identified.", endpoint, requestorLabel(crossPrincipal), total),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nauthentication enforced on: %s\n%s\n"+
-				"cross-context tasks/list: accepted\ntasks returned: %d\nincludes another context's task: %s",
-			endpoint, auth.enforcedOn, auth.anonProbe, total, taskID),
+				"cross-context tasks/list: accepted\ntasks returned: %d\nincludes owner's task: yes\ntask ID: redacted",
+			endpoint, auth.enforcedOn, auth.anonProbe, total),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
 }
 
-func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content string, crossPrincipal bool, auth authEvidence) attack.Finding {
+func (e *TaskIDORExecutor) resultFinding(endpoint, toolName string, crossPrincipal bool, auth authEvidence) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -734,15 +782,15 @@ func (e *TaskIDORExecutor) resultFinding(endpoint, taskID, toolName, content str
 		Confidence: attack.ConfirmedExploit,
 		Title:      "MCP task result readable by another authorization context (tasks/result IDOR)",
 		Description: fmt.Sprintf(
-			"tasks/result at %s returned the completed output of task %s to %s that did not create it. "+
+			"tasks/result at %s returned the owner's completed task output to %s. "+
 				"This is the actual result of the %q tool invocation, not task metadata, so whatever that "+
 				"tool returned is disclosed across the authorization boundary. The MCP spec requires "+
 				"receivers to reject tasks/result for tasks outside the requestor's authorization context.",
-			endpoint, taskID, requestorLabel(crossPrincipal), toolName),
+			endpoint, requestorLabel(crossPrincipal), toolName),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntask: %s\ntool: %s\nauthentication enforced on: %s\n%s\n"+
-				"cross-context tasks/result: accepted\ndisclosed result: %s",
-			endpoint, taskID, toolName, auth.enforcedOn, auth.anonProbe, snippetMCP([]byte(content))),
+			"endpoint: %s\ntask ID: redacted\ntool: %s\nauthentication enforced on: %s\n%s\n"+
+				"cross-context tasks/result: accepted\nowner result matched: yes\nresult content: redacted",
+			endpoint, toolName, auth.enforcedOn, auth.anonProbe),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
