@@ -90,7 +90,7 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 			newSID := fmt.Sprintf("sess-%d", sessions)
 			mu.Unlock()
 			caps := map[string]interface{}{"tools": map[string]interface{}{}}
-			if mode != "no-tasks-cap" {
+			if mode != "no-tasks-cap" && mode != "unknown-version-no-tasks" {
 				tasksCap := map[string]interface{}{
 					"cancel":   map[string]interface{}{},
 					"requests": map[string]interface{}{"tools": map[string]interface{}{"call": map[string]interface{}{}}},
@@ -101,8 +101,12 @@ func taskIDORServerWithCalls(mode string, calls *atomic.Int32) *httptest.Server 
 				caps["tasks"] = tasksCap
 			}
 			w.Header().Set("Mcp-Session-Id", newSID)
+			version := "2025-11-25"
+			if mode == "unknown-version-no-tasks" {
+				version = "2026-01-01"
+			}
 			result(map[string]interface{}{
-				"protocolVersion": "2025-11-25",
+				"protocolVersion": version,
 				"serverInfo":      map[string]interface{}{"name": "task-srv", "version": "1.0"},
 				"capabilities":    caps,
 			})
@@ -909,5 +913,19 @@ func TestTaskIDOR_NoTasksAnywhereStaysClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %d", len(findings))
+	}
+}
+
+func TestTaskIDOR_UnknownHandshakeVersionIsNotClean(t *testing.T) {
+	srv := taskIDORServer("unknown-version-no-tasks")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(context.Background(), srv.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unknown task semantics must be untested: findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(err.Error(), "2026-01-01") {
+		t.Fatalf("skip reason omits negotiated version: %v", err)
 	}
 }
