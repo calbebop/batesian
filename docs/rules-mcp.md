@@ -1324,18 +1324,18 @@ not evidence that a port lacks an MCP listener.
 
 Three outcomes, all from read-only probes:
 
-1. An anonymous `initialize` is followed by a read-only listing advertised by
-   that session. A nonempty listing confirms an open surface. If the
-   foreign-Origin handshake and the same listing also succeed, the finding is **high**. A
-   refused or inconclusive Origin comparison leaves it at **medium**.
+1. An anonymous legacy `initialize` or modern `server/discover` is followed by
+   a read-only listing advertised by that response. A nonempty listing confirms
+   an open surface. If discovery and the same listing also succeed with a
+   foreign Origin, the finding is **high**. A refused or inconclusive Origin
+   comparison leaves it at **medium**.
 2. A page fingerprinting as "MCP Inspector" or "Serena" without a confirmed
    unauthenticated listing is a **low indicator** naming the exposed product page.
 3. Closed ports and unrelated services produce nothing. Transient or unanswered
    probes are incomplete.
 
-Nothing is ever invoked through a discovered surface; the initialize that
-proves the finding creates no state the listener was not already prepared to
-track for its own clients.
+No tools are invoked through a discovered surface. Legacy sessions issued by
+the listener are closed with bounded best-effort DELETE requests.
 
 ---
 

@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -129,6 +132,218 @@ func TestShadow_HardenedOriginMedium(t *testing.T) {
 	f := findings[0]
 	if f.Severity != "medium" || f.Confidence != attack.ConfirmedExploit {
 		t.Errorf("want medium/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	}
+}
+
+func shadowModernHandler(refuseOrigin, protectList bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]interface{}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if req["method"] == "initialize" {
+			http.Error(w, "modern only", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Mcp-Protocol-Version") != "2026-07-28" {
+			http.Error(w, "missing modern version", http.StatusBadRequest)
+			return
+		}
+		if refuseOrigin && r.Header.Get("Origin") != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req["method"] {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{
+					"resultType": "complete", "supportedVersions": []string{"2026-07-28"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+					"serverInfo":   map[string]string{"name": "modern-shadow", "version": "1"},
+				},
+			})
+		case "tools/list":
+			if protectList {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{
+					"resultType": "complete", "ttlMs": 0, "cacheScope": "public",
+					"tools": []interface{}{map[string]string{"name": "inspect"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func TestShadow_ModernOnlySurface(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		refuseOrigin bool
+		protectList  bool
+		severity     string
+	}{
+		{"open origin", false, false, "high"},
+		{"refused origin", true, false, "medium"},
+		{"protected list", false, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shadow := httptest.NewServer(shadowModernHandler(tc.refuseOrigin, tc.protectList))
+			defer shadow.Close()
+			withShadowPorts(t, portOf(shadow.URL))
+			findings, err := runShadow(t, "http://127.0.0.1:1")
+			wantFindings := 0
+			if tc.severity != "" {
+				wantFindings = 1
+			}
+			if err != nil || len(findings) != wantFindings {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if tc.severity != "" && (findings[0].Severity != tc.severity ||
+				!strings.Contains(findings[0].Evidence, "tools/list")) {
+				t.Fatalf("modern finding=%+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestShadow_ModernRepliesNeedMatchingDiscoveryAndCompleteListing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		wrongID     bool
+		partialList bool
+	}{
+		{"unmatched discovery", true, false},
+		{"incomplete listing", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					var req map[string]interface{}
+					_ = json.NewDecoder(r.Body).Decode(&req)
+					if req["method"] == "server/discover" && tc.wrongID {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": "unrelated",
+							"result": map[string]interface{}{"supportedVersions": []string{"2026-07-28"},
+								"capabilities": map[string]interface{}{"tools": map[string]interface{}{}}},
+						})
+						return
+					}
+					if req["method"] == "tools/list" && tc.partialList {
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "id": req["id"],
+							"result": map[string]interface{}{"resultType": "input_required",
+								"tools": []interface{}{map[string]string{"name": "inspect"}}},
+						})
+						return
+					}
+					body, _ := json.Marshal(req)
+					r.Body = io.NopCloser(bytes.NewReader(body))
+				}
+				shadowModernHandler(false, false)(w, r)
+			}))
+			defer shadow.Close()
+			withShadowPorts(t, portOf(shadow.URL))
+			findings, err := runShadow(t, "http://127.0.0.1:1")
+			if len(findings) != 0 || (tc.partialList && !errors.Is(err, attack.ErrInconclusive)) ||
+				(!tc.partialList && err != nil) {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestShadow_ClosesLegacySessions(t *testing.T) {
+	for _, protectList := range []bool{false, true} {
+		t.Run(strconv.FormatBool(protectList), func(t *testing.T) {
+			var mu sync.Mutex
+			var closed []string
+			shadow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					mu.Lock()
+					closed = append(closed, r.Header.Get("Mcp-Session-Id")+":"+r.Header.Get("Origin"))
+					mu.Unlock()
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				var req map[string]interface{}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				switch req["method"] {
+				case "initialize":
+					id := "baseline"
+					if r.Header.Get("Origin") != "" {
+						id = "foreign"
+					}
+					w.Header().Set("Mcp-Session-Id", id)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req["id"], "result": map[string]interface{}{
+							"protocolVersion": "2025-11-25",
+							"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
+							"serverInfo":      map[string]string{"name": "legacy-shadow", "version": "1"},
+						},
+					})
+				case "tools/list":
+					if protectList {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req["id"],
+						"result": map[string]interface{}{"tools": []interface{}{map[string]string{"name": "inspect"}}},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer shadow.Close()
+			withShadowPorts(t, portOf(shadow.URL))
+			_, err := runShadow(t, "http://127.0.0.1:1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{"baseline:"}
+			if !protectList {
+				want = append(want, "foreign:https://dns-rebind.batesian.invalid")
+			}
+			slices.Sort(closed)
+			slices.Sort(want)
+			if !slices.Equal(closed, want) {
+				t.Fatalf("closed=%v want=%v", closed, want)
+			}
+		})
+	}
+}
+
+func TestShadow_IPv6AdjacentPort(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	shadow := httptest.NewUnstartedServer(shadowModernHandler(false, false))
+	shadow.Listener = listener
+	shadow.Start()
+	defer shadow.Close()
+	withShadowPorts(t, portOf(shadow.URL))
+	findings, err := runShadow(t, "http://[::1]:1")
+	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
+		t.Fatalf("IPv6 findings=%+v err=%v", findings, err)
 	}
 }
 
