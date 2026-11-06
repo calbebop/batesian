@@ -48,7 +48,7 @@ func canaryServerWithCalls(mode string, calls *atomic.Int32, seen *atomic.Value)
 		}
 		w.Header().Set("Content-Type", "application/json")
 
-		if mode == "reflect" {
+		if mode == "reflect" && method == "tools/list" {
 			// VULNERABLE: echo the presented token in the error message.
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
@@ -127,6 +127,111 @@ func TestCanary_NonMCP(t *testing.T) {
 	defer ts.Close()
 
 	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func TestCanary_GenericJSONRPCReflectionIsNotMCP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID interface{} `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{
+				"code": -32000, "message": "invalid token: " + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+			},
+		})
+	}))
+	defer ts.Close()
+
+	assertInconclusive(t, mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
+}
+
+func TestCanary_DirectModernListProvesMCP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "initialize" {
+			http.Error(w, "invalid token: "+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "tools/list" && r.Header.Get("MCP-Protocol-Version") == modernVersion {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{
+					"resultType": "complete", "tools": []interface{}{}, "ttlMs": 0, "cacheScope": "private",
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{"code": -32601, "message": "method not found"},
+		})
+	}))
+	defer ts.Close()
+
+	findings := runCanary(t, ts)
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "request: legacy initialize") {
+		t.Fatalf("expected a finding from the reflected initialization response: %+v", findings)
+	}
+}
+
+func TestCanary_ClosesLegacySession(t *testing.T) {
+	var deletes atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var req struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "canary-session")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]interface{}{
+					"protocolVersion": "2025-06-18", "serverInfo": map[string]string{"name": "fixture", "version": "1"},
+					"capabilities": map[string]interface{}{"tools": map[string]interface{}{}},
+				},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{
+					"code": -32000, "message": "invalid token: " + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32601, "message": "method not found"},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	if findings := runCanary(t, ts); len(findings) != 1 {
+		t.Fatalf("expected credential reflection finding, got %+v", findings)
+	}
+	if deletes.Load() != 1 {
+		t.Fatalf("expected one legacy session cleanup, got %d", deletes.Load())
+	}
 }
 
 func modernCanaryHandler(reflectToken, legacy bool) http.Handler {

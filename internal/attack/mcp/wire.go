@@ -390,30 +390,37 @@ func closeLegacySessionsWith(ctx context.Context, client *attack.HTTPClient, ses
 func directModernList(ctx context.Context, client *attack.HTTPClient, endpoint, method, field string) (mcpSession, bool) {
 	session := mcpSession{Endpoint: endpoint, Era: EraModern, ProtocolVersion: modernEraVersion}
 	resp, err := session.post(ctx, client, 2, method, nil)
-	verdict, body := classifyProbe(resp, err, 2)
-	if verdict != probeAnswered || !validRPCResult(body) {
-		return mcpSession{}, false
-	}
-	result, ok := body["result"].(map[string]interface{})
-	if !ok || result["resultType"] != "complete" {
-		return mcpSession{}, false
-	}
-	if _, ok := result[field].([]interface{}); !ok {
-		return mcpSession{}, false
-	}
-	ttl, ok := result["ttlMs"].(json.Number)
-	if !ok {
-		return mcpSession{}, false
-	}
-	millis, err := strconv.ParseInt(ttl.String(), 10, 64)
-	if err != nil || millis < 0 {
-		return mcpSession{}, false
-	}
-	if result["cacheScope"] != "public" && result["cacheScope"] != "private" {
+	if !modernListProof(resp, err, 2, field) {
 		return mcpSession{}, false
 	}
 	session.directProof = true
 	return session, true
+}
+
+func modernListProof(resp *attack.Response, err error, id int, field string) bool {
+	verdict, body := classifyProbe(resp, err, id)
+	if verdict != probeAnswered || !validRPCResult(body) {
+		return false
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok || result["resultType"] != "complete" {
+		return false
+	}
+	if _, ok := result[field].([]interface{}); !ok {
+		return false
+	}
+	ttl, ok := result["ttlMs"].(json.Number)
+	if !ok {
+		return false
+	}
+	millis, err := strconv.ParseInt(ttl.String(), 10, 64)
+	if err != nil || millis < 0 {
+		return false
+	}
+	if result["cacheScope"] != "public" && result["cacheScope"] != "private" {
+		return false
+	}
+	return true
 }
 
 func runOnSessions(sessions []mcpSession, sessionErr error, baseURL string,
