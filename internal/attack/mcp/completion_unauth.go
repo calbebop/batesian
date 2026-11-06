@@ -191,7 +191,7 @@ func (e *CompletionUnauthExecutor) probeSession(ctx context.Context, client *att
 					"caller. Values may include identifiers, file paths, or usernames. Without an explicit "+
 					"access policy, this does not establish a policy violation.",
 				disclosure.ref.label, session.Endpoint, len(disclosure.values)),
-			Evidence:    fmt.Sprintf("HTTP %d from %s\n%s\nvalues (%d): %v", disclosure.status, session.Endpoint, disclosure.ref.label, len(disclosure.values), sampleValues(disclosure.values)),
+			Evidence:    fmt.Sprintf("HTTP %d from %s\n%s\nvalues returned: %d (omitted)", disclosure.status, session.Endpoint, disclosure.ref.label, len(disclosure.values)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
 			Access:      &attack.AccessObservation{Operation: attack.MCPCompletionComplete, Caller: "anonymous"},
@@ -483,14 +483,4 @@ func completionValues(body map[string]interface{}) []string {
 		}
 	}
 	return out
-}
-
-// sampleValues caps disclosed values for evidence so a large completion list
-// does not bloat the report.
-func sampleValues(values []string) []string {
-	const max = 10
-	if len(values) <= max {
-		return values
-	}
-	return append(values[:max:max], "...")
 }

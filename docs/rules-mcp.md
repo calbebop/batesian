@@ -277,6 +277,9 @@ no result envelope is never itself treated as acceptance. Catching a
 server that validates signatures correctly but still mishandles `aud` requires
 the separate opt-in check below.
 
+Finding evidence names the probe, gate, and HTTP status without copying the
+forged JWT or server response.
+
 **Valid cross-audience token (opt-in).** Supply a working target bearer token
 with `--token` or `BATESIAN_TOKEN`, plus a distinct token issued by the same
 issuer for another resource through a target-bound config file. Use an
@@ -329,6 +332,10 @@ answers both anonymously is reported **not tested** - the unauthenticated-access
 rules own that surface. A confirmed finding therefore means a forged or unsigned
 token was accepted on a surface that gates: signature validation is absent,
 which also defeats audience binding and enables replay.
+
+Findings record the probe and gated method without copying forged tokens or
+server responses.
+
 `mcp-oauth-audience-002` also supports the opt-in valid cross-audience token
 check described above.
 
@@ -372,7 +379,7 @@ known. An exact `expected_denials` entry for `mcp.prompts.list` or
 auth, or does not implement `prompts/list`, produces no finding.
 Pagination follows at most ten pages. A malformed cursor, non-authorization
 JSON-RPC error or interrupted read leaves the verdict incomplete; observed
-content remains in the findings.
+content access remains in the findings, but prompt text is omitted.
 
 ---
 
@@ -403,6 +410,9 @@ An anonymous result envelope is an **info indicator**; a generic
 non-authentication JSON-RPC error is also an indicator because validation
 middleware may have produced it before method dispatch. Real suggestion values
 for a discovered prompt or resource template produce a **medium indicator**.
+
+Findings include the number of returned suggestions, not their values.
+
 An exact `expected_denials` entry for `mcp.completion.complete` can confirm a
 result or value disclosure, but not an error response.
 The rule falls back to a synthetic reference when discovery is unavailable.

@@ -127,11 +127,9 @@ func TestPromptUnauth_GetEvidenceExcludesMetadataAndSecrets(t *testing.T) {
 		name       string
 		text       string
 		metaSecret string
-		want       string
-		forbidden  string
 	}{
-		{"metadata", "public prompt", metadataSecret, "public prompt", metadataSecret},
-		{"payload", "Authorization: Bearer " + payloadSecret, "", "[redacted", payloadSecret},
+		{"metadata", "public prompt", metadataSecret},
+		{"payload", "Authorization: Bearer " + payloadSecret, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := map[string]interface{}{
@@ -146,7 +144,9 @@ func TestPromptUnauth_GetEvidenceExcludesMetadataAndSecrets(t *testing.T) {
 			if err != nil || len(findings) != 2 {
 				t.Fatalf("expected list and get findings, got %+v (err=%v)", findings, err)
 			}
-			if !strings.Contains(findings[1].Evidence, tc.want) || strings.Contains(findings[1].Evidence, tc.forbidden) {
+			if !strings.Contains(findings[1].Evidence, "content returned (omitted)") ||
+				strings.Contains(findings[1].Evidence, tc.text) ||
+				tc.metaSecret != "" && strings.Contains(findings[1].Evidence, tc.metaSecret) {
 				t.Fatalf("unexpected prompt evidence: %q", findings[1].Evidence)
 			}
 		})
@@ -233,7 +233,9 @@ func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
 			if errors.Is(err, attack.ErrInconclusive) != wantIncomplete || len(findings) != 2 {
 				t.Fatalf("expected list and later content findings, got %+v (err=%v)", findings, err)
 			}
-			if !strings.Contains(findings[1].Title, `"second"`) || !strings.Contains(findings[1].Evidence, "later content") {
+			if !strings.Contains(findings[1].Title, `"second"`) ||
+				!strings.Contains(findings[1].Evidence, "content returned (omitted)") ||
+				strings.Contains(findings[1].Evidence, "later content") {
 				t.Fatalf("expected second prompt content, got %+v", findings[1])
 			}
 			firstOutcome := map[string]string{
