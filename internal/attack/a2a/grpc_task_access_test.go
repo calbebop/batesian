@@ -61,14 +61,19 @@ func (f *grpcTaskFixture) GetTask(ctx context.Context, req *a2a.GetTaskRequest) 
 	if f.mode == "unsupported" {
 		return nil, a2a.ErrUnsupportedOperation
 	}
-	if who == "" && f.mode != "public" {
-		return nil, a2a.ErrUnauthenticated
-	}
 	owner := "A"
 	if strings.Contains(task.History[0].Parts[0].Text(), "reader") {
 		owner = "B"
 	}
-	if who != "" && who != owner && f.mode != "vulnerable" && f.mode != "tls-vulnerable" && f.mode != "wrong-task" {
+	publicTask := f.mode == "public" || strings.HasPrefix(f.mode, "reader-public") && owner == "B"
+	if who == "" && !publicTask {
+		return nil, a2a.ErrUnauthenticated
+	}
+	crossAllowed := f.mode == "vulnerable" || f.mode == "tls-vulnerable" || f.mode == "wrong-task" ||
+		f.mode == "reader-to-owner" && who == "B" && owner == "A" ||
+		f.mode == "owner-to-reader" && who == "A" && owner == "B" ||
+		strings.HasPrefix(f.mode, "reader-public") && (owner == "B" || f.mode == "reader-public-forward-leak")
+	if who != "" && who != owner && !crossAllowed {
 		return nil, a2a.ErrTaskNotFound
 	}
 	copy := *task
@@ -169,13 +174,17 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 		inconclusive bool
 	}{
 		{"protected", 0, false},
-		{"vulnerable", 1, false},
+		{"vulnerable", 2, false},
+		{"reader-to-owner", 1, false},
+		{"owner-to-reader", 1, false},
 		{"tls-protected", 0, false},
-		{"tls-vulnerable", 1, false},
+		{"tls-vulnerable", 2, false},
 		{"tls-untrusted", 0, true},
 		{"header-auth", 0, false},
 		{"public", 0, true},
-		{"wrong-task", 0, true},
+		{"reader-public", 0, true},
+		{"reader-public-forward-leak", 1, true},
+		{"wrong-task", 1, true},
 		{"redacted-owner", 0, true},
 		{"reader-invalid", 0, true},
 		{"unsupported", 0, true},
@@ -206,9 +215,20 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
-			if tc.findings == 1 && (findings[0].Confidence != attack.ConfirmedExploit ||
-				!strings.Contains(findings[0].Evidence, "anonymous: denied")) {
-				t.Fatalf("finding lacked controls: %+v", findings[0])
+			for _, finding := range findings {
+				if finding.Confidence != attack.ConfirmedExploit ||
+					!strings.Contains(finding.Evidence, "anonymous: denied") {
+					t.Fatalf("finding lacked controls: %+v", finding)
+				}
+			}
+			if tc.mode == "owner-to-reader" && !strings.Contains(findings[0].Evidence, "owner: reader (tenant B)") {
+				t.Fatalf("reverse-direction finding missing: %+v", findings[0])
+			}
+			if tc.mode == "reader-to-owner" && !strings.Contains(findings[0].Evidence, "owner: owner (tenant A)") {
+				t.Fatalf("forward-direction finding missing: %+v", findings[0])
+			}
+			if tc.mode == "reader-public-forward-leak" && !strings.Contains(findings[0].Evidence, "owner: owner (tenant A)") {
+				t.Fatalf("public reverse task suppressed forward finding: %+v", findings[0])
 			}
 			if tc.mode == "card-mismatch" || tc.mode == "card-scheme-mismatch" ||
 				tc.mode == "card-path" || tc.mode == "mixed-tenants" {
@@ -233,7 +253,7 @@ func TestGRPCTaskAccessDryRunSendsNothing(t *testing.T) {
 			{Name: "reader", Tenant: "B", Token: "token-b"},
 		},
 	})
-	if err != nil || cardReads.Load() != 0 || len(recorder.Requests()) != 7 {
+	if err != nil || cardReads.Load() != 0 || len(recorder.Requests()) != 9 {
 		t.Fatalf("dry run err=%v card reads=%d plan=%+v", err, cardReads.Load(), recorder.Requests())
 	}
 	fixture.mu.Lock()
