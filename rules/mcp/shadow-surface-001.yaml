@@ -17,13 +17,14 @@ info:
       2. 24282 - Serena dashboard/API default (CVE-2026-49471)
       3. 3000  - the conventional dev-server port
 
-    ORACLES. An anonymous initialize followed by a nonempty read-only listing
-    confirms an open shadow surface. A foreign-Origin handshake and the same
-    listing both succeeding raises it to high. A refused or unobserved Origin
-    comparison leaves it at medium. A known dashboard page without confirmed
-    unauthenticated listing is a low indicator.
+    ORACLES. An anonymous legacy initialize or modern server/discover followed
+    by a nonempty read-only listing confirms an open shadow surface. Discovery
+    and the same listing succeeding with a foreign Origin raises it to high.
+    A refused or unobserved Origin comparison leaves it at medium. A known
+    dashboard page without confirmed unauthenticated listing is a low indicator.
 
-    Probes only initialize and read listings; tools are never invoked.
+    Probes only discovery and read listings; tools are never invoked. Legacy
+    sessions are closed with bounded best-effort DELETE requests.
 
     A closed port is a clean result. Timeouts, rate limits, and server errors
     leave a port incomplete rather than clean.

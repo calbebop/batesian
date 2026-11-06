@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -80,13 +81,12 @@ func (e *ShadowSurfaceExecutor) Execute(ctx context.Context, target string, opts
 
 // probePort distinguishes a closed or unrelated listener from an incomplete probe.
 func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HTTPClient, scheme, host string, port int) (*attack.Finding, bool) {
-	base := scheme + "://" + host + ":" + strconv.Itoa(port)
+	base := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
 
 	marker, incomplete := e.fingerprint(ctx, client, base)
 
 	mcpPath := ""
-	var initBody []byte
-	var sessionID string
+	var session mcpSession
 	for _, path := range shadowPaths {
 		resp, err := client.POST(ctx, base+path, nil, legacyHandshakeBody())
 		if shadowProbeIncomplete(resp, err) {
@@ -97,9 +97,23 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 			continue
 		}
 		mcpPath = path
-		initBody = resp.Body
-		sessionID = resp.Headers.Get("Mcp-Session-Id")
+		session = mcpSession{Endpoint: base + path, Era: EraLegacy,
+			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
+			ProtocolVersion: negotiatedVersion(resp.Body), RawInit: resp.Body}
+		defer closeLegacySessions(ctx, client, []mcpSession{session})
 		break
+	}
+	if mcpPath == "" {
+		for _, path := range shadowPaths {
+			modern, resp, err := shadowModernSession(ctx, client, base+path, nil)
+			if shadowProbeIncomplete(resp, err) {
+				incomplete = true
+			}
+			if modern.Endpoint != "" {
+				mcpPath, session = path, modern
+				break
+			}
+		}
 	}
 
 	if mcpPath == "" {
@@ -113,18 +127,18 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 		return e.dashboardFinding(base, host, port, marker, probeEvidence), incomplete
 	}
 
-	endpoint := base + mcpPath
-	session := mcpSession{Endpoint: endpoint, SessionID: sessionID,
-		ProtocolVersion: negotiatedVersion(initBody), RawInit: initBody}
-	_, _ = client.POST(ctx, endpoint, session.header(), map[string]interface{}{
-		"jsonrpc": "2.0", "method": "notifications/initialized",
-	})
+	endpoint := session.Endpoint
+	if session.Era == EraLegacy {
+		_, _ = client.POST(ctx, endpoint, session.header(), map[string]interface{}{
+			"jsonrpc": "2.0", "method": "notifications/initialized",
+		})
+	}
 
 	method, count := "", 0
 	for i, candidate := range advertisedListMethods(session) {
 		id := i + 2
 		resp, err := session.post(ctx, client, id, candidate, nil)
-		items, valid := shadowListItems(resp, err, id, candidate)
+		items, valid := shadowListItems(resp, err, id, candidate, session.Era)
 		if valid && items > 0 {
 			method, count = candidate, items
 			break
@@ -141,21 +155,36 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 			"MCP initialize answered; no unauthenticated read-only listing was observed"), incomplete
 	}
 
-	// Check both the foreign-Origin handshake and the same read-only listing.
-	rebindResp, rebindErr := client.POST(ctx, endpoint, map[string]string{"Origin": foreignOrigin}, legacyHandshakeBody())
+	// Repeat discovery and the listing with a foreign Origin.
+	var rebindResp *attack.Response
+	var rebindErr error
+	var foreignSession mcpSession
+	if session.Era == EraModern {
+		foreignSession, rebindResp, rebindErr = shadowModernSession(ctx, client, endpoint,
+			map[string]string{"Origin": foreignOrigin})
+	} else {
+		rebindResp, rebindErr = client.POST(ctx, endpoint, map[string]string{"Origin": foreignOrigin}, legacyHandshakeBody())
+		if rebindErr == nil && rebindResp != nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body) {
+			foreignSession = mcpSession{Endpoint: endpoint, Era: EraLegacy,
+				SessionID:       rebindResp.Headers.Get("Mcp-Session-Id"),
+				ProtocolVersion: negotiatedVersion(rebindResp.Body), RawInit: rebindResp.Body}
+			defer closeLegacySessionsWith(ctx, client, []mcpSession{foreignSession},
+				func(h map[string]string) { h["Origin"] = foreignOrigin })
+		}
+	}
 	originRefused := rebindErr == nil && rebindResp != nil && rebindResp.StatusCode == http.StatusForbidden
 	originOpen := false
-	if rebindErr == nil && rebindResp != nil && rebindResp.IsSuccess() && initializeSucceeded(rebindResp.Body) {
-		foreignSession := mcpSession{Endpoint: endpoint, SessionID: rebindResp.Headers.Get("Mcp-Session-Id"),
-			ProtocolVersion: negotiatedVersion(rebindResp.Body), RawInit: rebindResp.Body}
-		headers := foreignSession.header()
-		headers["Origin"] = foreignOrigin
-		_, _ = client.POST(ctx, endpoint, headers, map[string]interface{}{
-			"jsonrpc": "2.0", "method": "notifications/initialized",
-		})
+	if foreignSession.Endpoint != "" {
+		if foreignSession.Era == EraLegacy {
+			headers := foreignSession.header()
+			headers["Origin"] = foreignOrigin
+			_, _ = client.POST(ctx, endpoint, headers, map[string]interface{}{
+				"jsonrpc": "2.0", "method": "notifications/initialized",
+			})
+		}
 		foreignList, listErr := foreignSession.postShaping(ctx, client, 2, method, nil,
 			func(headers map[string]string) { headers["Origin"] = foreignOrigin })
-		foreignCount, valid := shadowListItems(foreignList, listErr, 2, method)
+		foreignCount, valid := shadowListItems(foreignList, listErr, 2, method, foreignSession.Era)
 		originOpen = valid && foreignCount > 0
 		originRefused = listErr == nil && foreignList != nil && foreignList.StatusCode == http.StatusForbidden
 	}
@@ -196,6 +225,26 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 	}, incomplete || (!originOpen && !originRefused)
 }
 
+func shadowModernSession(ctx context.Context, client *attack.HTTPClient, endpoint string,
+	extraHeaders map[string]string) (mcpSession, *attack.Response, error) {
+	session := mcpSession{Endpoint: endpoint, Era: EraModern, ProtocolVersion: modernEraVersion}
+	const id = "batesian-shadow-discover"
+	headers, body := session.request(id, "server/discover", nil)
+	for name, value := range extraHeaders {
+		headers[name] = value
+	}
+	resp, err := client.POST(ctx, endpoint, headers, body)
+	if err != nil || resp == nil || !resp.IsSuccess() || !modernWireAdvertised(resp.Body) {
+		return mcpSession{}, resp, err
+	}
+	result, ok := parseResponseBody(resp.Body)
+	if !ok || !matchesRPCStringID(result, id) || !validRPCResult(result) {
+		return mcpSession{}, resp, err
+	}
+	session.RawInit = resp.Body
+	return session, resp, nil
+}
+
 func (e *ShadowSurfaceExecutor) dashboardFinding(base, host string, port int, marker, probeEvidence string) *attack.Finding {
 	return &attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "low", Confidence: attack.RiskIndicator,
@@ -206,8 +255,12 @@ func (e *ShadowSurfaceExecutor) dashboardFinding(base, host string, port int, ma
 	}
 }
 
-func shadowListItems(resp *attack.Response, err error, id int, method string) (int, bool) {
+func shadowListItems(resp *attack.Response, err error, id int, method string, era Era) (int, bool) {
 	if err != nil || resp == nil || !resp.IsSuccess() {
+		return 0, false
+	}
+	field := strings.TrimSuffix(method, "/list")
+	if era == EraModern && !modernListProof(resp, err, id, field) {
 		return 0, false
 	}
 	body, ok := parseResponseBody(resp.Body)
@@ -218,7 +271,7 @@ func shadowListItems(resp *attack.Response, err error, id int, method string) (i
 	if !ok {
 		return 0, false
 	}
-	items, ok := result[strings.TrimSuffix(method, "/list")].([]interface{})
+	items, ok := result[field].([]interface{})
 	if !ok {
 		return 0, false
 	}
