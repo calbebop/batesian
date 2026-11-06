@@ -116,12 +116,13 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 				Confidence: attack.ConfirmedExploit,
 				Title:      fmt.Sprintf("A2A task %q stored content overwritten", taskID),
 				Description: fmt.Sprintf(
-					"The completed task %q stored %q in %s. After a continuation, the same field "+
-						"contains %q instead. A reader of that task receives altered content.",
-					taskID, originalText, contentKey, tamperedText),
+					"The completed task %q stored the original probe marker in %s. After a continuation, "+
+						"the same field contained the replacement marker without the original. A reader of that "+
+						"task receives altered content.", taskID, contentKey),
 				Evidence: fmt.Sprintf(
-					"Task ID: %q\nWire: %s\nContent field: %s\nBefore: %.300s\nAfter: %.300s",
-					taskID, wire.name, contentKey, baseline.fields[contentKey], stored),
+					"Task ID: %q\nWire: %s\nContent field: %s\nBefore: original marker present\n"+
+						"After: replacement marker present; original marker absent\nStored content omitted",
+					taskID, wire.name, contentKey),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			}}, nil

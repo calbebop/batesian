@@ -12,7 +12,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -361,7 +360,7 @@ func jsonStringValues(line string) []string {
 	return values
 }
 
-func matchHiddenText(values []string) (rune, int, string, bool) {
+func matchHiddenText(values []string) (rune, int, bool) {
 	for _, value := range values {
 		previous := rune(0)
 		for idx, r := range value {
@@ -370,20 +369,10 @@ func matchHiddenText(values []string) (rune, int, string, bool) {
 				previous = r
 				continue
 			}
-			runes := []rune(value)
-			pos := utf8.RuneCountInString(value[:idx])
-			start := max(0, pos-12)
-			end := min(len(runes), pos+13)
-			snippet := strings.Map(func(r rune) rune {
-				if isHiddenRune(r) || isBMPVariationSelector(r) {
-					return '\u25A1'
-				}
-				return r
-			}, string(runes[start:end]))
-			return r, idx, snippet, true
+			return r, idx, true
 		}
 	}
-	return 0, 0, "", false
+	return 0, 0, false
 }
 
 func isBMPVariationSelector(r rune) bool { return r >= 0xFE00 && r <= 0xFE0F }
@@ -395,15 +384,15 @@ func isHiddenRune(r rune) bool {
 		r < 0x20 && r != '\t' && r != '\n' && r != '\r' || r == 0x7F
 }
 
-func matchInjectionText(values []string) (string, string, bool) {
+func matchInjectionText(values []string) (string, bool) {
 	for _, pattern := range injectionPatterns {
 		for _, value := range values {
-			if loc := pattern.re.FindStringIndex(value); loc != nil {
-				return pattern.name, matchSnippet(value, loc), true
+			if pattern.re.MatchString(value) {
+				return pattern.name, true
 			}
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
 // manifestFindings inspects one listing and optionally reports drift.
@@ -464,7 +453,7 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 			})
 		}
 
-		if r, idx, snippet, ok := matchHiddenText(values); ok {
+		if r, idx, ok := matchHiddenText(values); ok {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
@@ -472,17 +461,17 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 				Confidence: attack.RiskIndicator,
 				Title:      fmt.Sprintf("MCP tool %q carries hidden characters in its definition", name),
 				Description: fmt.Sprintf(
-					"Entry %d of the tools/list response from %s contains U+%04X (shown as \u25A1 in the evidence). "+
+					"Entry %d of the tools/list response from %s contains U+%04X. "+
 						"Non-printing characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
 						"Review the code point and surrounding text before treating the definition as poisoned.",
 					i+1, endpoint, r),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\n...%s...", endpoint, name, r, idx, snippet),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\nmatching text omitted", endpoint, name, r, idx),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			})
 		}
 
-		if pattern, snippet, ok := matchInjectionText(values); ok {
+		if pattern, ok := matchInjectionText(values); ok {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
@@ -494,7 +483,7 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 						"Agents may consume names, descriptions, and schemas, so imperative text about prior "+
 						"instructions, credentials, or outbound URLs can signal poisoning. This check is "+
 						"heuristic; review the matched text before treating it as malicious.", i+1, endpoint, pattern),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\n%s", endpoint, name, pattern, snippet),
+				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\nmatching text omitted", endpoint, name, pattern),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			})
@@ -532,17 +521,4 @@ func toolDisplayName(line string, pos int) string {
 		return t.Name
 	}
 	return fmt.Sprintf("<entry %d>", pos+1)
-}
-
-// matchSnippet returns a short window around a regex match for evidence.
-func matchSnippet(s string, loc []int) string {
-	start := loc[0] - 20
-	if start < 0 {
-		start = 0
-	}
-	end := loc[1] + 20
-	if end > len(s) {
-		end = len(s)
-	}
-	return "..." + s[start:end] + "..."
 }
