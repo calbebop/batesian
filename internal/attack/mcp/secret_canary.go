@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -65,7 +64,6 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	applicable := false
 	reflected := false
 	reflectedAt := ""
-	reflectedJSONRPC := false
 	var incomplete []string
 
 	record := func(resp *attack.Response, err error, at string) {
@@ -77,7 +75,6 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		if !reflected && strings.Contains(body, canary) {
 			reflected = true
 			reflectedAt = at
-			reflectedJSONRPC = looksJSONRPC(body)
 		}
 		if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 ||
 			resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -101,6 +98,7 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		if isMCPInitialize(initResp) {
 			applicable = true
 			session := mcpSession{Endpoint: ep, Era: EraLegacy, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
+			defer closeLegacySessions(ctx, client, []mcpSession{session})
 			initialized, initErr := client.POST(ctx, ep, session.header(), map[string]interface{}{
 				"jsonrpc": "2.0", "method": "notifications/initialized",
 			})
@@ -115,17 +113,16 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 	modern := mcpSession{Endpoint: ep, Era: EraModern}
 	discover, discoverErr := modern.post(ctx, client, 4, "server/discover", nil)
 	record(discover, discoverErr, "modern server/discover")
-	if discover != nil && ((classifyAccess(discover, discoverErr, 4) == accessGranted && modernWireAdvertised(discover.Body)) ||
-		(authRefusal(discover) && hasBearerChallenge(discover))) {
+	if discover != nil && classifyAccess(discover, discoverErr, 4) == accessGranted && modernWireAdvertised(discover.Body) {
 		applicable = true
 	}
 	for i, method := range []string{"tools/list", "resources/list"} {
-		resp, listErr := modern.post(ctx, client, i+5, method, nil)
+		id := i + 5
+		resp, listErr := modern.post(ctx, client, id, method, nil)
 		record(resp, listErr, "modern "+method)
-	}
-
-	if !applicable && reflectedJSONRPC {
-		applicable = true
+		if modernListProof(resp, listErr, id, []string{"tools", "resources"}[i]) {
+			applicable = true
+		}
 	}
 
 	if !applicable || !reflected {
@@ -155,17 +152,6 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		return []attack.Finding{finding}, true, "credential-canary responses were not observed: " + strings.Join(incomplete, ", ")
 	}
 	return []attack.Finding{finding}, true, ""
-}
-
-// looksJSONRPC rejects generic JSON errors that only resemble MCP replies.
-func looksJSONRPC(body string) bool {
-	var envelope struct {
-		JSONRPC string          `json:"jsonrpc"`
-		Result  json.RawMessage `json:"result"`
-		Error   json.RawMessage `json:"error"`
-	}
-	return json.Unmarshal([]byte(body), &envelope) == nil && envelope.JSONRPC == "2.0" &&
-		(envelope.Result != nil || envelope.Error != nil)
 }
 
 func randomHex(n int) (string, error) {

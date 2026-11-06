@@ -902,6 +902,9 @@ black-box-observable half of secret leakage; verifying secrets never reach
 external log/trace sinks additionally requires access to those sinks.
 Findings identify the request that reflected the canary, while omitting the
 canary value and response body.
+A finding also requires independent MCP evidence from a valid legacy handshake,
+modern discovery, or a modern list result. A generic JSON-RPC echo is not enough.
+Stateful legacy sessions opened by this probe are closed after the check.
 
 ---
 
