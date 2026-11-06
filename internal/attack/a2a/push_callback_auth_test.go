@@ -2,8 +2,10 @@ package a2a_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,15 +28,16 @@ func cbAuthRC() attack.RuleContext {
 
 // cbAuthServer models a v1.0 agent sending a task notification.
 type cbAuthServer struct {
-	mu              sync.Mutex
-	registeredURL   string
-	registeredID    string
-	signed          bool
-	wrongCredential bool
-	tokenOnly       bool
-	preflight       bool
-	wrongTaskFirst  bool
-	callOut         bool
+	mu                   sync.Mutex
+	registeredURL        string
+	registeredID         string
+	registeredCredential string
+	signed               bool
+	wrongCredential      bool
+	tokenOnly            bool
+	preflight            bool
+	wrongTaskFirst       bool
+	callOut              bool
 }
 
 func (s *cbAuthServer) handler() http.HandlerFunc {
@@ -68,7 +71,7 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 		case "CreateTaskPushNotificationConfig":
 			url, token := req.Params.URL, req.Params.Token
 			s.mu.Lock()
-			s.registeredURL, s.registeredID = url, req.Params.ID
+			s.registeredURL, s.registeredID, s.registeredCredential = url, req.Params.ID, req.Params.Authentication.Credentials
 			s.mu.Unlock()
 			if req.Params.Authentication.Scheme != "Bearer" || len(req.Params.Authentication.Credentials) != 64 ||
 				strings.Contains(url, req.Params.Authentication.Credentials) || req.Params.Authentication.Credentials == token {
@@ -385,11 +388,10 @@ func TestCbAuth_NoCallbackNotTested(t *testing.T) {
 	}
 }
 
-// TestCbAuth_ExternalOOBInfoIndicator: with an external collector the scanner
-// cannot see the callback itself; an info indicator names the token to check
-// for instead.
+// An external collector requires manual verification of the callback credential.
 func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
-	target := httptest.NewServer((&cbAuthServer{signed: false, callOut: true}).handler())
+	server := &cbAuthServer{signed: false, callOut: true}
+	target := httptest.NewServer(server.handler())
 	defer target.Close()
 
 	state := &attack.TargetState{}
@@ -405,8 +407,18 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 		t.Errorf("want info/RiskIndicator for external OOB, got %q/%q",
 			findings[0].Severity, findings[0].Confidence)
 	}
-	if !strings.Contains(findings[0].Evidence, "expected bearer credential:") {
-		t.Errorf("external OOB evidence omitted the credential to verify: %q", findings[0].Evidence)
+	server.mu.Lock()
+	credential := server.registeredCredential
+	server.mu.Unlock()
+	if credential == "" {
+		t.Fatal("server did not receive a callback credential")
+	}
+	hash := sha256.Sum256([]byte(credential))
+	if !strings.Contains(findings[0].Evidence, fmt.Sprintf("expected bearer credential SHA-256: %x", hash)) {
+		t.Errorf("external OOB evidence omitted the credential fingerprint: %q", findings[0].Evidence)
+	}
+	if strings.Contains(findings[0].Evidence+findings[0].Description, credential) {
+		t.Error("finding contains the raw callback credential")
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||

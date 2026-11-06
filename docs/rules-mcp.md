@@ -900,6 +900,8 @@ that rejects or errors without echoing the token produces no finding. The canary
 is unique per run, so a substring match cannot false-positive. This is the
 black-box-observable half of secret leakage; verifying secrets never reach
 external log/trace sinks additionally requires access to those sinks.
+Findings identify the request that reflected the canary, while omitting the
+canary value and response body.
 
 ---
 
