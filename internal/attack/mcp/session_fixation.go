@@ -52,7 +52,9 @@ func (e *SessionFixationExecutor) Requires() []attack.ArtifactKind { return nil 
 // Execute satisfies attack.Executor by running the chained logic against a
 // throwaway blackboard, so the rule still works outside the engine.
 func (e *SessionFixationExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
-	return e.ExecuteChained(ctx, target, opts, attack.NewBlackboard())
+	bb := attack.NewBlackboard()
+	defer bb.Close()
+	return e.ExecuteChained(ctx, target, opts, bb)
 }
 
 // ExecuteChained runs the session-fixation check.
@@ -78,10 +80,18 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	if err != nil {
 		return nil, inconclusive(err)
 	}
+	defer closeLegacySessions(ctx, client, []mcpSession{session})
 	ep := session.Endpoint
 
 	// Step 1: initialize again, this time presenting a client-chosen session id.
 	seeded, verdict := e.initWithSession(ctx, client, ep, fixed)
+	seeded.Era = EraLegacy
+	keepSeeded := false
+	defer func() {
+		if !keepSeeded {
+			closeLegacySessions(ctx, client, []mcpSession{seeded})
+		}
+	}()
 	switch verdict {
 	case accessRefused:
 		return nil, nil
@@ -137,6 +147,8 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	// Confirmed: sessions ARE enforced (unseeded id rejected) yet the server
 	// adopted the client-supplied id.
 	bb.Publish(attack.Artifact{Kind: attack.ArtifactSession, Value: fixed, Producer: e.rule.ID})
+	bb.DeferCleanup(func() { closeLegacySessions(ctx, client, []mcpSession{seeded}) })
+	keepSeeded = true
 
 	chain := []attack.ChainStep{
 		{Hop: 1, Action: "initialize with client-chosen Mcp-Session-Id " + fixed, Outcome: "server adopted the client-supplied session id"},

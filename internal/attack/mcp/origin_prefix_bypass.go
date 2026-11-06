@@ -116,6 +116,7 @@ func (e *OriginPrefixBypassExecutor) originWith(ctx context.Context, client *att
 	}
 	headers := map[string]string{"Content-Type": "application/json", "Origin": origin}
 	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
+	defer closeLegacyOriginProbe(ctx, client, session.Endpoint, resp, origin)
 	return originResponseVerdict(resp, err, session, "")
 }
 

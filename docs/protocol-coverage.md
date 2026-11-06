@@ -66,9 +66,11 @@ OAuth authorization-server metadata is accepted only when its `issuer` matches
 the issuer used for the well-known URL. The DCR redirect probe includes an
 S256 PKCE challenge but does not exchange an authorization code. Legacy sessions
 opened through shared wire discovery are closed with DELETE when the server
-issues a session ID. `probe` also closes its authenticated and anonymous legacy
-sessions, including after inventory errors. Servers may decline cleanup with
-HTTP 405; stateless modern requests need no session cleanup.
+issues a session ID. The Origin and logging probes close issued legacy sessions;
+session fixation keeps a confirmed session live for chained rules and closes it
+when the scan ends. `probe` closes its authenticated and
+anonymous legacy sessions, including after inventory errors. Servers may
+decline cleanup with HTTP 405; stateless modern requests need no session cleanup.
 
 Legacy `resources/read` may use `-32002` for a missing resource. The 2026-07-28
 revision uses `-32602`. Some SDKs also use `-32001` for a missing session.

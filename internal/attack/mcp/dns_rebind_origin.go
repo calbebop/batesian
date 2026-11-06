@@ -86,6 +86,7 @@ func (e *DNSRebindOriginExecutor) originAccepted(ctx context.Context, client *at
 	// to do with Origin, and the rule read that as Origin validation.
 	headers := map[string]string{"Content-Type": "application/json", "Origin": foreignOrigin}
 	resp, err := client.POST(ctx, session.Endpoint, headers, legacyHandshakeBody())
+	defer closeLegacyOriginProbe(ctx, client, session.Endpoint, resp, foreignOrigin)
 	return originResponseVerdict(resp, err, session, "")
 }
 
