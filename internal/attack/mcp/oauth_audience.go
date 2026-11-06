@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -61,11 +60,9 @@ const (
 
 // probeOutcome captures the per-probe result against a chosen endpoint.
 type probeOutcome struct {
-	probe    audienceProbe
-	verdict  audVerdict
-	status   int
-	bodySnip string
-	tokenHP  string // header.payload (signature redacted)
+	probe   audienceProbe
+	verdict audVerdict
+	status  int
 	// judgedAt names the surface the verdict came from: "initialize", or the
 	// gated method an ungated-initialize server was re-probed against.
 	judgedAt string
@@ -200,10 +197,9 @@ func runModernAudienceProbes(ctx context.Context, anon *attack.HTTPClient, baseU
 				return "", nil, fmt.Errorf("forging token for probe %s: %w", p.name, err)
 			}
 			resp, access := probeModernBearer(ctx, anon, ep, gate.method, tok)
-			outcome := probeOutcome{probe: p, verdict: verdictInconclusive, tokenHP: jwtHeaderPayload(tok), judgedAt: gate.method}
+			outcome := probeOutcome{probe: p, verdict: verdictInconclusive, judgedAt: gate.method}
 			if resp != nil {
 				outcome.status = resp.StatusCode
-				outcome.bodySnip = snippetMCP(resp.Body)
 			}
 			switch access {
 			case accessGranted:
@@ -529,7 +525,6 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 				outcomes = append(outcomes, probeOutcome{
 					probe:    p,
 					verdict:  verdictInconclusive,
-					tokenHP:  jwtHeaderPayload(tok),
 					judgedAt: "initialize",
 				})
 				continue
@@ -545,8 +540,6 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 				probe:    p,
 				verdict:  verdict,
 				status:   resp.StatusCode,
-				bodySnip: snippetMCP(resp.Body),
-				tokenHP:  jwtHeaderPayload(tok),
 				judgedAt: "initialize",
 			})
 		}
@@ -572,14 +565,11 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 					if reason != "" {
 						incomplete = append(incomplete, outcomes[i].probe.name+": "+reason)
 					}
-					outcomes[i].tokenHP = jwtHeaderPayload(tok)
 					outcomes[i].judgedAt = judgedAtLabel(gp.method)
 					outcomes[i].verdict = verdictInconclusive
 					outcomes[i].status = 0
-					outcomes[i].bodySnip = ""
 					if mresp != nil {
 						outcomes[i].status = mresp.StatusCode
-						outcomes[i].bodySnip = snippetMCP(mresp.Body)
 					}
 					switch verdict {
 					case accessGranted:
@@ -813,8 +803,7 @@ func writeOutcomeLine(sb *strings.Builder, o probeOutcome) {
 	if o.judgedAt != "" && o.judgedAt != "initialize" {
 		fmt.Fprintf(sb, "      judged at: %s\n", o.judgedAt)
 	}
-	fmt.Fprintf(sb, "      token header.payload: %s...[signature omitted]\n", o.tokenHP)
-	fmt.Fprintf(sb, "      response snippet: %s\n", oneLine(o.bodySnip))
+	sb.WriteString("      forged token and response content omitted\n")
 }
 
 // summarizeAudience returns a short, low-leakage description of the operator's
@@ -833,20 +822,4 @@ func summarizeAudience(expected string) string {
 		return fmt.Sprintf("%s://%s (host len=%d)", parsed.Scheme, host, len(host))
 	}
 	return fmt.Sprintf("%s://%s... (host len=%d)", parsed.Scheme, host[:headLen], len(host))
-}
-
-func oneLine(s string) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	if len(s) <= 200 {
-		return s
-	}
-	// Back the cut to a rune boundary so a multi-byte character is never split.
-	// The result ends up in Finding.Evidence, which is marshalled to JSON/SARIF,
-	// where a trailing partial rune is silently rewritten to U+FFFD.
-	cut := 200
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "..."
 }

@@ -511,7 +511,7 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      req.ID,
-					"result":  map[string]interface{}{"tools": []interface{}{}},
+					"result":  map[string]interface{}{"tools": []interface{}{}, "private": "server-private-canary"},
 				})
 				return
 			}
@@ -559,6 +559,11 @@ func TestTokenReplay_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
 	for _, f := range findings {
 		if !strings.Contains(f.Evidence, "judged at tools/list") {
 			t.Errorf("evidence must name the gated method the token was judged at: %s", f.Evidence)
+		}
+		if strings.Contains(f.Evidence, "server-private-canary") ||
+			strings.Contains(f.Evidence, "token header.payload") ||
+			!strings.Contains(f.Evidence, "response content omitted") {
+			t.Errorf("token or response content leaked into finding: %+v", f)
 		}
 	}
 }

@@ -177,8 +177,8 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 					Title:       fmt.Sprintf("MCP server %s", p.titleSufx),
 					Description: p.descSufx,
 					Evidence: fmt.Sprintf(
-						"probe: %s (judged at initialize, which refuses an anonymous caller)\ntoken header.payload: %s...[signature omitted]\nHTTP %d from %s\n%s",
-						p.name, jwtHeaderPayload(p.token), resp.StatusCode, ep, snippetMCP(resp.Body),
+						"probe: %s (judged at initialize, which refuses an anonymous caller)\nHTTP %d from %s\nforged token and response content omitted",
+						p.name, resp.StatusCode, ep,
 					),
 					Remediation: e.rule.Remediation,
 					TargetURL:   ep,
@@ -200,8 +200,8 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 						Title:       fmt.Sprintf("MCP server %s", p.titleSufx),
 						Description: p.descSufx,
 						Evidence: fmt.Sprintf(
-							"probe: %s (judged at %s, which refuses an anonymous caller while initialize accepts one)\ntoken header.payload: %s...[signature omitted]\n%s",
-							p.name, gp.method, jwtHeaderPayload(p.token), evidenceSnippet(mresp, ep),
+							"probe: %s (judged at %s, which refuses an anonymous caller while initialize accepts one)\n%s",
+							p.name, gp.method, responseStatusEvidence(mresp, ep),
 						),
 						Remediation: e.rule.Remediation,
 						TargetURL:   ep,
@@ -242,8 +242,8 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 				Confidence:  attack.ConfirmedExploit,
 				Title:       fmt.Sprintf("MCP server %s [MCP %s wire]", p.titleSufx, modernEraVersion),
 				Description: p.descSufx,
-				Evidence: fmt.Sprintf("wire: MCP %s (stateless)\nprobe: %s (judged at %s, which refuses an anonymous caller)\ntoken header.payload: %s...[signature omitted]\n%s",
-					modernEraVersion, p.name, gate.method, jwtHeaderPayload(p.token), evidenceSnippet(resp, ep)),
+				Evidence: fmt.Sprintf("wire: MCP %s (stateless)\nprobe: %s (judged at %s, which refuses an anonymous caller)\n%s",
+					modernEraVersion, p.name, gate.method, responseStatusEvidence(resp, ep)),
 				Remediation: e.rule.Remediation,
 				TargetURL:   ep,
 			})
@@ -284,13 +284,11 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 	return nil, nil
 }
 
-// evidenceSnippet renders a method-probe response for a finding's evidence,
-// covering the nil response a transport failure leaves behind.
-func evidenceSnippet(resp *attack.Response, ep string) string {
+func responseStatusEvidence(resp *attack.Response, ep string) string {
 	if resp == nil {
 		return fmt.Sprintf("no response from %s", ep)
 	}
-	return fmt.Sprintf("HTTP %d from %s\n%s", resp.StatusCode, ep, snippetMCP(resp.Body))
+	return fmt.Sprintf("HTTP %d from %s\nforged token and response content omitted", resp.StatusCode, ep)
 }
 
 // oauthWellKnownPaths are the discovery documents that signal a server
@@ -366,14 +364,4 @@ func forgeAlgNoneJWT(claims map[string]interface{}) (string, error) {
 	p := base64.RawURLEncoding.EncodeToString(payloadJSON)
 	// alg:none requires an empty (but present) signature segment.
 	return h + "." + p + ".", nil
-}
-
-// jwtHeaderPayload returns the header.payload segments of a JWT without the signature,
-// safe for inclusion in evidence output.
-func jwtHeaderPayload(token string) string {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) >= 2 {
-		return parts[0] + "." + parts[1]
-	}
-	return "[invalid-token]"
 }

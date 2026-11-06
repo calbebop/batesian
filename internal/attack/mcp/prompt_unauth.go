@@ -145,12 +145,6 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 		if content == "" {
 			continue
 		}
-		for _, pattern := range credentialPatterns {
-			if pattern.MatchString(content) {
-				content = "[redacted: credential pattern detected]"
-				break
-			}
-		}
 		findings = append(findings, attack.Finding{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -162,7 +156,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 				"prompts/get for %q at %s returned full template content without authentication. "+
 					"The content is readable by unauthenticated callers; whether that violates policy depends on the deployment.",
 				name, session.Endpoint),
-			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent snippet: %.400s", getResp.StatusCode, session.Endpoint, name, content),
+			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent returned (omitted)", getResp.StatusCode, session.Endpoint, name),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
 			Access:      &attack.AccessObservation{Operation: attack.MCPPromptsGet, Caller: "anonymous"},

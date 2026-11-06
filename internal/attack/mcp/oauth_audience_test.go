@@ -65,6 +65,7 @@ func initializeOK(w http.ResponseWriter) {
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]interface{}{},
 			"serverInfo":      map[string]interface{}{"name": "ok", "version": "1.0"},
+			"private":         "server-private-canary",
 		},
 	})
 }
@@ -605,7 +606,10 @@ func TestOAuthAudience_EvidenceRedaction(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
-	if strings.Contains(findings[0].Evidence, sensitive) {
+	if strings.Contains(findings[0].Evidence, sensitive) ||
+		strings.Contains(findings[0].Evidence, "token header.payload") ||
+		strings.Contains(findings[0].Evidence, "server-private-canary") ||
+		!strings.Contains(findings[0].Evidence, "response content omitted") {
 		t.Errorf("evidence leaked operator audience %q: %s", sensitive, findings[0].Evidence)
 	}
 	// The evidence still needs to identify *this* run by length so the

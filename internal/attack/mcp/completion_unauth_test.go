@@ -332,7 +332,8 @@ func TestCompletionUnauth_ResourceTemplatePagination(t *testing.T) {
 	defer srv.Close()
 	findings := runCompletionUnauth(t, srv)
 	if len(findings) != 2 || !strings.Contains(findings[1].Title, "resource template") ||
-		!strings.Contains(findings[1].Evidence, "prod.env") ||
+		!strings.Contains(findings[1].Evidence, "values returned: 1 (omitted)") ||
+		strings.Contains(findings[1].Evidence, "prod.env") ||
 		!strings.Contains(findings[0].Evidence, "resources/templates/list: complete") {
 		t.Fatalf("second-page disclosure not reported: %+v", findings)
 	}
@@ -351,7 +352,8 @@ func TestCompletionUnauth_PromptPagination(t *testing.T) {
 	defer srv.Close()
 	findings := runCompletionUnauth(t, srv)
 	if len(findings) != 2 || !strings.Contains(findings[1].Title, "secret_query") ||
-		!strings.Contains(findings[1].Evidence, "prod.env") ||
+		!strings.Contains(findings[1].Evidence, "values returned: 1 (omitted)") ||
+		strings.Contains(findings[1].Evidence, "prod.env") ||
 		!strings.Contains(findings[0].Evidence, "prompts/list: complete") {
 		t.Fatalf("second-page prompt disclosure not reported: %+v", findings)
 	}
@@ -363,7 +365,8 @@ func TestCompletionUnauth_PartialTemplateInventoryRetainsDisclosure(t *testing.T
 	findings := runCompletionUnauth(t, srv)
 	if len(findings) != 2 || !strings.Contains(findings[0].Evidence, "resources/templates/list: incomplete") ||
 		!strings.Contains(findings[0].Evidence, "completion assessment incomplete") ||
-		!strings.Contains(findings[1].Evidence, "observed.txt") {
+		!strings.Contains(findings[1].Evidence, "values returned: 1 (omitted)") ||
+		strings.Contains(findings[1].Evidence, "observed.txt") {
 		t.Fatalf("partial inventory lost observed disclosure: %+v", findings)
 	}
 }
