@@ -730,7 +730,9 @@ credential on an observed task notification is a confirmed finding; no
 callback is inconclusive. The rule tries the same JSON-RPC and HTTP+JSON
 registration paths as `a2a-push-ssrf-001`, including v1.0 inline configuration.
 With an external `--oob-url`, registration is informational and delivery needs
-manual verification. The rule attempts to delete confirmed configs with
+manual verification. Compare the SHA-256 of the observed Bearer credential with
+the fingerprint in the finding; the credential itself is omitted. The rule
+attempts to delete confirmed configs with
 returned IDs after readback confirms the callback URL. Inline or unidentified
 configs may remain. External OOB probes retain configs for manual verification.
 A refused task creation is not tested.

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -64,8 +63,9 @@ func (e *SecretCanaryExecutor) Execute(ctx context.Context, target string, opts 
 
 func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPClient, ep, canary string) ([]attack.Finding, bool, string) {
 	applicable := false
-	reflectedIn := ""
+	reflected := false
 	reflectedAt := ""
+	reflectedJSONRPC := false
 	var incomplete []string
 
 	record := func(resp *attack.Response, err error, at string) {
@@ -74,9 +74,10 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			return
 		}
 		body := resp.BodyString()
-		if reflectedIn == "" && strings.Contains(body, canary) {
-			reflectedIn = body
+		if !reflected && strings.Contains(body, canary) {
+			reflected = true
 			reflectedAt = at
+			reflectedJSONRPC = looksJSONRPC(body)
 		}
 		if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode >= 500 ||
 			resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -123,11 +124,11 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 		record(resp, listErr, "modern "+method)
 	}
 
-	if !applicable && reflectedIn != "" && looksJSONRPC(reflectedIn) {
+	if !applicable && reflectedJSONRPC {
 		applicable = true
 	}
 
-	if !applicable || reflectedIn == "" {
+	if !applicable || !reflected {
 		if applicable && len(incomplete) != 0 {
 			return nil, true, "credential-canary responses were not observed: " + strings.Join(incomplete, ", ")
 		}
@@ -145,8 +146,8 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 				"response body. Copying credentials into protocol output means the secret flows into any sink that "+
 				"records responses - server logs, distributed traces, error trackers, shared SSE streams, and "+
 				"client-side console output - exposing it to anyone with access to those sinks.", ep),
-		Evidence: fmt.Sprintf("endpoint: %s\nrequest: %s\ncanary token: %s\nreflected in response: %s",
-			ep, reflectedAt, canary, snippetAround(reflectedIn, canary)),
+		Evidence: fmt.Sprintf("endpoint: %s\nrequest: %s\ncanary token: reflected in response (value omitted)\nresponse content omitted",
+			ep, reflectedAt),
 		Remediation: e.rule.Remediation,
 		TargetURL:   ep,
 	}
@@ -165,41 +166,6 @@ func looksJSONRPC(body string) bool {
 	}
 	return json.Unmarshal([]byte(body), &envelope) == nil && envelope.JSONRPC == "2.0" &&
 		(envelope.Result != nil || envelope.Error != nil)
-}
-
-// snippetAround returns a short window of text surrounding the first occurrence
-// of needle, so evidence shows the reflection context without dumping the body.
-func snippetAround(body, needle string) string {
-	idx := strings.Index(body, needle)
-	if idx < 0 {
-		return ""
-	}
-	start := idx - 40
-	if start < 0 {
-		start = 0
-	}
-	end := idx + len(needle) + 40
-	if end > len(body) {
-		end = len(body)
-	}
-	// Both window edges are byte offsets into arbitrary response text. Move each
-	// to a rune boundary so a multi-byte character is never split: the snippet
-	// ends up in Finding.Evidence, which is marshalled to JSON/SARIF, where a
-	// partial rune is silently rewritten to U+FFFD.
-	for start < end && !utf8.RuneStart(body[start]) {
-		start++
-	}
-	for end > start && end < len(body) && !utf8.RuneStart(body[end]) {
-		end--
-	}
-	prefix, suffix := "", ""
-	if start > 0 {
-		prefix = "..."
-	}
-	if end < len(body) {
-		suffix = "..."
-	}
-	return prefix + body[start:end] + suffix
 }
 
 func randomHex(n int) (string, error) {
