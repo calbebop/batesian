@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -24,7 +25,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// GRPCTaskAccessExecutor checks one A2A v1.0 gRPC task authorization boundary.
+// GRPCTaskAccessExecutor checks A2A v1.0 gRPC task access in both directions.
 type GRPCTaskAccessExecutor struct{ rule attack.RuleContext }
 
 func init() {
@@ -73,7 +74,7 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 		_, _ = principalClient(opts, vars, owner).GET(ctx,
 			endpoint.AppendPath(vars.BaseURL, cardPathPrimary), cardHeaders)
 		if opts.Recorder != nil {
-			for _, method := range []string{"SendMessage", "SendMessage", "GetTask", "GetTask", "GetTask", "GetTask"} {
+			for _, method := range []string{"SendMessage", "SendMessage", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask"} {
 				opts.Recorder.RecordGRPC(opts.A2AGRPCTarget, method)
 			}
 		}
@@ -112,26 +113,43 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 	}
 	ownerRead := grpcReadTask(ctx, client, requestTimeout, ownerHeaders, ownerTask, ownerMarker)
 	readerRead := grpcReadTask(ctx, client, requestTimeout, readerHeaders, readerTask, readerMarker)
-	anonymousRead := grpcReadTask(ctx, client, requestTimeout, nil, ownerTask, ownerMarker)
-	crossRead := grpcReadTask(ctx, client, requestTimeout, readerHeaders, ownerTask, ownerMarker)
 	if ownerRead.location == "" || readerRead.location == "" {
 		return nil, fmt.Errorf("%w: the task owner or second principal could not read its own gRPC probe text",
 			attack.ErrInconclusive)
 	}
-	if anonymousRead.location != "" {
-		return nil, fmt.Errorf("%w: the owner task is publicly readable on gRPC; tenant attribution is not established",
-			attack.ErrInconclusive)
-	}
-	if !anonymousRead.denied || anonymousRead.unknown {
-		return nil, fmt.Errorf("%w: anonymous gRPC task-read control was not an explicit denial", attack.ErrInconclusive)
-	}
-	if crossRead.location == "" {
-		if crossRead.denied && !crossRead.unknown {
-			return nil, nil
+	var findings []attack.Finding
+	var incomplete error
+	for _, direction := range []struct {
+		owner, reader  attack.Principal
+		readerHeaders  map[string]string
+		taskID, marker string
+	}{
+		{owner, reader, readerHeaders, ownerTask, ownerMarker},
+		{reader, owner, ownerHeaders, readerTask, readerMarker},
+	} {
+		anonymous := grpcReadTask(ctx, client, requestTimeout, nil, direction.taskID, direction.marker)
+		if anonymous.location != "" {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s's gRPC task is publicly readable; tenant attribution is not established",
+				attack.ErrInconclusive, direction.owner.Name))
+			continue
 		}
-		return nil, fmt.Errorf("%w: cross-tenant gRPC task read was not judged", attack.ErrInconclusive)
+		if !anonymous.denied || anonymous.unknown {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous gRPC read of %s's task was not explicitly denied",
+				attack.ErrInconclusive, direction.owner.Name))
+			continue
+		}
+		cross := grpcReadTask(ctx, client, requestTimeout, direction.readerHeaders, direction.taskID, direction.marker)
+		if cross.location != "" {
+			findings = append(findings, e.finding(opts.A2AGRPCTarget, direction.owner, direction.reader,
+				direction.taskID, direction.marker, cross))
+			continue
+		}
+		if !cross.denied || cross.unknown {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s's gRPC read of %s's task was not judged",
+				attack.ErrInconclusive, direction.reader.Name, direction.owner.Name))
+		}
 	}
-	return []attack.Finding{e.finding(opts.A2AGRPCTarget, owner, reader, ownerTask, ownerMarker, crossRead)}, nil
+	return findings, incomplete
 }
 
 func grpcDiscoveryCard(ctx context.Context, client *attack.HTTPClient, base string,

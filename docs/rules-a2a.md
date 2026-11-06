@@ -398,9 +398,11 @@ value is tied to the `target` in the same file. Explicit `--proxy` is not
 supported by this prototype.
 
 Two principals need distinct credentials and tenant labels. Each creates a
-task and reads its own unique text. A confirmed finding requires the other
-principal to read the owner's task ID and text while an anonymous read is
-explicitly denied. Public tasks, unverified owner reads, direct `Message`
+task and reads its own unique text. The rule checks access in both directions.
+Each direction needs its own explicitly denied anonymous control before a
+cross-tenant read can produce a confirmed finding. An inconclusive direction
+does not discard a finding from the other direction. Public tasks and
+unverified owner reads cannot produce confirmed findings. Direct `Message`
 replies, unsupported calls, and tenant-scoped card interfaces are not tested.
 The rule does not test streaming, v0.3 gRPC, or other gRPC operations.
 
