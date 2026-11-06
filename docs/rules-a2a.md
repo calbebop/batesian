@@ -339,6 +339,8 @@ alongside the original means the original was preserved - a conformant
 continuation, and no finding. If the re-submission is accepted but the stored
 result cannot be read back, nothing was determined and the rule reports **not
 tested**.
+The finding identifies the task, wire, and content field, but omits stored task
+text from the report.
 
 ---
 

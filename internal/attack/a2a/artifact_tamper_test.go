@@ -62,12 +62,13 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 					text, _ = p["text"].(string)
 				}
 			}
-			store.set(taskID, text) // vulnerable: always overwrite
+			stored := text + " private-artifact-payload-marker"
+			store.set(taskID, stored) // vulnerable: always overwrite
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": req["id"],
 				"result": map[string]interface{}{
 					"id": taskID, "status": map[string]string{"state": "completed"},
-					"artifacts": storedArtifact(text),
+					"artifacts": storedArtifact(stored),
 				},
 			})
 		case "tasks/get":
@@ -108,6 +109,12 @@ func TestArtifactTamper_OverwriteAllowed(t *testing.T) {
 	for _, f := range findings {
 		if f.Confidence == attack.ConfirmedExploit {
 			hasConfirmed = true
+			if strings.Contains(f.Title+f.Description+f.Evidence, "private-artifact-payload-marker") {
+				t.Error("finding copied stored task content")
+			}
+			if !strings.Contains(f.Evidence, "replacement marker present; original marker absent") {
+				t.Errorf("finding omitted overwrite evidence: %q", f.Evidence)
+			}
 		}
 	}
 	if !hasConfirmed {
