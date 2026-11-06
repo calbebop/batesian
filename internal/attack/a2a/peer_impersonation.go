@@ -136,10 +136,9 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
 				"Forged JWT (redacted): %s...[signature omitted]\niss: %s\nissuer source: %s\naud: %s\n"+
-					"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\n%s",
+					"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
 				jwtHeader(forgedToken), claims.iss, claims.source, claims.aud, wire,
-				forgedResp.StatusCode, baselineResp.StatusCode,
-				snippet(forgedResp.Body, 400)),
+				forgedResp.StatusCode, baselineResp.StatusCode),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 		})
@@ -158,9 +157,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 					"peer identity or elevated privilege was verified.",
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
-				"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\n%s",
-				wire, forgedResp.StatusCode, baselineResp.StatusCode,
-				snippet(forgedResp.Body, 400)),
+				"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
+				wire, forgedResp.StatusCode, baselineResp.StatusCode),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 		})

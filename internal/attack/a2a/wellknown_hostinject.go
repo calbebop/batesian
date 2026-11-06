@@ -125,8 +125,8 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 						"into %s: %s.",
 					vars.BaseURL, path, probe.header, probe.value, impact, strings.Join(reflectedIn, ", ")),
 				Evidence: fmt.Sprintf(
-					"GET %s%s\n%s: %s\nReflected in field(s): %v\nResponse snippet: %.300s",
-					vars.BaseURL, path, probe.header, probe.value, reflectedIn, string(resp.Body)),
+					"GET %s%s: HTTP %d\n%s: %s\nReflected in field(s): %v\ncard content omitted",
+					vars.BaseURL, path, resp.StatusCode, probe.header, probe.value, reflectedIn),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint.AppendPath(vars.BaseURL, path),
 			})

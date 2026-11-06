@@ -1,9 +1,6 @@
 package a2a
 
-import (
-	"testing"
-	"unicode/utf8"
-)
+import "testing"
 
 // The helpers below all consume raw response bodies from the host being scanned.
 // A hostile or simply broken target controls those bytes, so a panic in any of
@@ -51,25 +48,10 @@ func FuzzExtractTaskContext(f *testing.F) {
 	f.Add([]byte(`{"result":[]}`))
 	f.Add([]byte(`null`))
 	f.Add([]byte(``))
-	// 65 bytes of multi-byte runes: byte 64 lands mid-rune.
-	f.Add([]byte(`{"e":"éééééééééééééééééééééééééééééé"}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = extractTaskContext(data)
 		_ = isJSONRPCError(data)
 		_ = bodyShowsCanceled(data, "task-id")
-
-		// snippet feeds Finding.Evidence, which is marshalled into JSON and SARIF.
-		const limit = 64
-		got := snippet(data, limit)
-		// It may append a 3-byte ellipsis when it truncates, but no more.
-		if len(got) > limit+len("...") {
-			t.Fatalf("snippet exceeded its limit: got %d bytes for %q", len(got), data)
-		}
-		// Truncating valid UTF-8 must not produce invalid UTF-8: a split rune
-		// would be silently rewritten to U+FFFD in the report output.
-		if utf8.Valid(data) && !utf8.ValidString(got) {
-			t.Fatalf("snippet split a rune: %q produced invalid UTF-8 %q", data, got)
-		}
 	})
 }

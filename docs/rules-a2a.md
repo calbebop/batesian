@@ -161,6 +161,7 @@ treated as a correct rejection,
 not a finding. To avoid noise, outcomes are coalesced to **one finding per
 transport** (an invalid-token acceptance is preferred over a no-token acceptance,
 since accepting a bogus token is the stronger signal).
+Findings omit the returned card and the fabricated token.
 
 This is a confirmed bug in Google's official `a2a-samples` reference
 implementation ([issue #340](https://github.com/google-a2a/a2a-samples/issues/340)).
@@ -288,6 +289,7 @@ any `*.url`/`*.uri`, or any value that is itself a URL) is **high / indicator** 
 that is the advertised service location peers and registries trust. Reflection
 that only lands in a non-URL field (e.g. `description`) is a real injection
 primitive but lower direct impact, reported as **medium / indicator**.
+Findings identify the reflected field and header without copying the card body.
 
 ---
 
@@ -318,6 +320,7 @@ shows that the token passed the endpoint's gate, not which claim was accepted or
 whether peer-specific privileges were granted. If both requests succeed, the
 rule reports anonymous access as an **indicator** because public access may be
 intentional.
+Findings record the wire and HTTP outcomes without copying the send reply.
 
 ---
 
@@ -603,6 +606,7 @@ A2A also uses it for inaccessible tasks. The probe uses a random, non-existent
 task ID and does not mutate state. [JSON-RPC 2.0 permits batches](https://www.jsonrpc.org/specification#batch);
 servers that accept them must apply the same authentication and authorization
 checks as for single requests.
+Findings record the matched result category without copying the batch reply.
 
 ---
 

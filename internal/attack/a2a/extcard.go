@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/calbebop/batesian/internal/attack"
 	"github.com/calbebop/batesian/internal/endpoint"
@@ -143,9 +142,9 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 			Title:      fmt.Sprintf("Extended Agent Card (%s) returned to a fabricated Bearer token", transport),
 			Description: fmt.Sprintf(
 				"%s %s returned HTTP %d for the extended agent card while presenting an invalid "+
-					"token %q. The server claims authentication but does not validate it, so any "+
-					"caller can read the privileged extended card.", transport, endpoint, resp.StatusCode, token),
-			Evidence:    fmt.Sprintf("transport: %s\nHTTP %d from %s\nAuthorization: Bearer %s\n%s", transport, resp.StatusCode, endpoint, token, snippet(resp.Body, 400)),
+					"token. The server claims authentication but does not validate it, so any "+
+					"caller can read the privileged extended card.", transport, endpoint, resp.StatusCode),
+			Evidence:    fmt.Sprintf("transport: %s\nHTTP %d from %s\nAuthorization: fabricated Bearer token\ncard content omitted", transport, resp.StatusCode, endpoint),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 		}
@@ -160,7 +159,7 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 			"%s %s returned HTTP %d for the extended agent card without any Authorization header. "+
 				"The extended card discloses privileged capability listings intended only for "+
 				"authenticated callers.", transport, endpoint, resp.StatusCode),
-		Evidence:    fmt.Sprintf("transport: %s\nHTTP %d from %s (no auth)\n%s", transport, resp.StatusCode, endpoint, snippet(resp.Body, 400)),
+		Evidence:    fmt.Sprintf("transport: %s\nHTTP %d from %s (no auth)\ncard content omitted", transport, resp.StatusCode, endpoint),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
@@ -221,23 +220,4 @@ func isJSONRPCError(body []byte) bool {
 // extCardDisclosed accepts a successful HTTP response with a complete card.
 func extCardDisclosed(resp *attack.Response) bool {
 	return resp != nil && resp.IsSuccess() && protocola2a.IsCompleteAgentCard(resp.Body)
-}
-
-// snippet returns at most the first n bytes of body as a string, appending an
-// ellipsis when it truncates.
-//
-// Truncation backs up to a UTF-8 rune boundary so a multi-byte character is
-// never split. Snippets are taken from the scanned target's raw response and end
-// up in Finding.Evidence, which is marshalled into JSON and SARIF; a trailing
-// partial rune would be silently rewritten to U+FFFD there, corrupting the
-// evidence for any target that returns non-ASCII text.
-func snippet(body []byte, n int) string {
-	if len(body) <= n {
-		return string(body)
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(body[cut]) {
-		cut--
-	}
-	return string(body[:cut]) + "..."
 }
