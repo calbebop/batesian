@@ -1390,18 +1390,12 @@ components with published vulnerabilities. The reported version is a lead, not
 proof that an affected code path is reachable. When `--token` is supplied, this
 read-only inventory uses it for protected discovery.
 
-The advisory table is deliberately short, and closed: only products whose
-patched version is published and unambiguous carry an entry, each with its
-citations in both the YAML and the finding evidence.
+The advisory table matches exact server identities whose reported versions map
+to package releases. Each entry has citations in the YAML and finding evidence.
+Findings omit raw server names and version suffixes.
 
-- **mcp-server-git** <2025.12.18 - argument injection and path escape chain (CVE-2025-68143/44/45)
 - **mcp-git** >=2026.10.10 <2026.10.28 - nested gitdir repository confinement bypass (GHSA-w766-5x43-whvw; fixed in 2026.10.28)
-- **mcp-remote** <0.1.16 - OAuth flow command injection (CVE-2025-6514)
-- **mcp-atlassian** <0.17.0 - attachment path traversal to RCE (CVE-2026-27825/26)
-- **mcp-atlassian** <0.22.0 - SSRF DNS-rebinding TOCTOU bypass of the 27826 fix (GHSA-489g-7rxv-6c8q; a 0.16.x deployment matches this entry and the one above, which is accurate rather than duplicate: two distinct advisories, two distinct fixes)
-- **inspector** <0.14.1 - unauthenticated RCE via DNS rebinding (CVE-2025-49596)
 - **serena** <1.5.2 - dashboard memory poisoning to RCE via DNS rebinding (CVE-2026-49471)
-- **mcpjam** <=1.4.2 - exposed control endpoint RCE (CVE-2026-23744)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - path validation mismatch (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - symlink metadata disclosure (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - case-variant symlink write escape (GHSA-4gxg-m5jx-9j57; fixed in 2.0.1)
@@ -1410,9 +1404,15 @@ citations in both the YAML and the finding evidence.
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - robots.txt redirect bypass (GHSA-3jqg-r5pp-rmp2; fixed in 2026.10.24)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - NAT64 private-address guard bypass (GHSA-66qx-2266-pmj6; fixed in 2026.10.24)
 
-The filesystem, fetch, and `mcp-git` names match exactly. Multiple bounds must all match;
-a prerelease of a fixed version remains below that version. These advisories
-also affect older package releases. Earlier filesystem builds report a static
+The `mcp-remote` client, Inspector and MCPJam control interfaces, and older Git
+server releases cannot be identified by a target MCP handshake. The
+`mcp-atlassian` handshake does not reliably report its package version. Check
+installed packages and the relevant control interfaces separately.
+
+The filesystem, fetch, `mcp-git`, and `serena` names match exactly. Multiple
+bounds must all match; a prerelease of a fixed version remains below that
+version. These advisories also affect older package releases. Earlier filesystem
+builds report a static
 `0.2.0` server version, and earlier `mcp-fetch` and `mcp-server-git` builds may
 report the SDK version. The inventory rule does not match those older ranges;
 verify the installed packages directly.
@@ -1427,8 +1427,8 @@ Two edge cases are pinned rather than papered over:
 - A name that matches a table entry but reports an unparseable version is a
   **low indicator** - neither clean nor vulnerable can be claimed from what
   the server publishes.
-- An identity matching nothing reports clean, because the table is reviewed
-  and closed rather than a heuristic net.
+- An identity matching nothing yields no finding under this rule. It does not
+  establish that installed components are unaffected.
 
 Both wires are read where served: legacy carries identity in
 `result.serverInfo`, modern under `result._meta`, and the two need not agree.

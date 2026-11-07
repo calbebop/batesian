@@ -84,6 +84,14 @@ from a **component or deployment condition** that needs package inventory,
 client instrumentation, or host metrics. An existing rule may test a related
 failure mode without establishing the cited advisory.
 
+The version rule does not infer [mcp-remote](https://github.com/advisories/GHSA-6xpm-ggf7-wc3p)
+client exposure or [Inspector](https://github.com/advisories/GHSA-7f8r-222p-6f5g)
+and [MCPJam](https://github.com/advisories/GHSA-232v-j27c-5pp6) control-plane
+versions from an MCP server handshake. Older Git releases and
+[mcp-atlassian](https://github.com/sooperset/mcp-atlassian/blob/main/src/mcp_atlassian/servers/main.py)
+also lack a reliable handshake-to-package version mapping. Verify those
+components through package inventory and their relevant control interfaces.
+
 ### A2A Java SDK
 
 As of 2026-11-04, the official Java SDK listed five published advisories. Its

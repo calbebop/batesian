@@ -52,10 +52,9 @@ func runVV(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
 
-// TestVV_VulnerableGitFires: the reference git server one patch behind. MUST
-// fire a high indicator naming the advisory set.
+// TestVV_VulnerableGitFires: the reference git server reports an affected package release.
 func TestVV_VulnerableGitFires(t *testing.T) {
-	ts := vvServer("mcp-server-git", "2025.12.17")
+	ts := vvServer("mcp-git", "2026.10.19")
 	defer ts.Close()
 
 	findings, err := runVV(t, ts)
@@ -66,18 +65,17 @@ func TestVV_VulnerableGitFires(t *testing.T) {
 		t.Fatalf("expected exactly 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Severity != "high" || f.Confidence != attack.RiskIndicator {
-		t.Errorf("want high/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
 	}
-	if !strings.Contains(f.Evidence, "CVE-2025-68143") {
+	if !strings.Contains(f.Evidence, "GHSA-w766-5x43-whvw") {
 		t.Errorf("evidence should cite the advisories, got: %q", f.Evidence)
 	}
 }
 
-// TestVV_PatchedSilent: same product at the patched version. MUST stay
-// silent.
+// TestVV_PatchedSilent: same product at the patched version.
 func TestVV_PatchedSilent(t *testing.T) {
-	ts := vvServer("mcp-server-git", "2025.12.18")
+	ts := vvServer("mcp-git", "2026.10.28")
 	defer ts.Close()
 
 	findings, err := runVV(t, ts)
@@ -108,7 +106,7 @@ func TestVV_UnknownProductSilent(t *testing.T) {
 // not parseable, so neither clean nor vulnerable can be claimed - low
 // indicator instead of silence.
 func TestVV_UnparseableVersionLow(t *testing.T) {
-	ts := vvServer("mcp-remote", "not-a-version")
+	ts := vvServer("serena", "not-a-version")
 	defer ts.Close()
 
 	findings, err := runVV(t, ts)
@@ -133,9 +131,9 @@ func TestVV_Boundaries(t *testing.T) {
 		version string
 		want    int
 	}{
-		{"inspector at bound excluded", "mcp-inspector-proxy", "0.14.1", 0},
-		{"inspector just below fires", "mcp-inspector-proxy", "0.14.0", 1},
-		{"mcpjam inclusive bound fires", "mcpjam-inspector", "1.4.2", 1},
+		{"serena at bound excluded", "serena", "1.5.2", 0},
+		{"serena just below fires", "serena", "1.5.1", 1},
+		{"git at lower bound fires", "mcp-git", "2026.10.10", 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
@@ -154,35 +152,51 @@ func TestVV_Boundaries(t *testing.T) {
 	}
 }
 
-// TestVV_AtlassianTOCTOU: the 27826 fix shipped in 0.17.0 but its bypass
-// (GHSA-489g) was only patched in 0.22.0, so the table carries a second,
-// wider entry. A deployment between the two bounds fires once - the TOCTOU
-// advisory alone; one below both bounds fires twice; at 0.22.0 silent.
-func TestVV_AtlassianTOCTOU(t *testing.T) {
-	cases := []struct {
-		version string
-		want    int
-	}{
-		{"0.16.9", 2}, // traversal + TOCTOU
-		{"0.17.5", 1}, // TOCTOU only: the earlier fix is present...
-		{"0.21.9", 1}, // ...but so is the gap it left
-		{"0.22.0", 0}, // patched
-	}
-	for _, tc := range cases {
-		t.Run("v"+tc.version, func(t *testing.T) {
-			ts := vvServer("mcp-atlassian", tc.version)
+func TestVV_ExcludedAndPartialIdentities(t *testing.T) {
+	for _, tc := range []struct{ name, version string }{
+		{"mcp-server-git", "2025.12.17"},
+		{"mcp-remote", "0.1.15"},
+		{"mcp-atlassian", "0.16.9"},
+		{"inspector", "0.14.0"},
+		{"mcpjam", "1.4.2"},
+		{"custom-mcp-git", "2026.10.19"},
+		{"mcp-git-proxy", "2026.10.19"},
+		{"custom-serena", "1.5.1"},
+		{"mcp-inspector-proxy", "0.14.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := vvServer(tc.name, tc.version)
 			defer ts.Close()
-
 			findings, err := runVV(t, ts)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestVV_OmitsReportedVersionSuffix(t *testing.T) {
+	const private = "private-canary"
+	for _, tc := range []struct {
+		name, product, version, want string
+	}{
+		{"build suffix", "mcp-git", "2026.10.19+" + private, "2026.10.19"},
+		{"prerelease suffix", "serena", "1.5.2-rc." + private, "1.5.2 (prerelease)"},
+		{"unparseable", "serena", private, "unparseable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := vvServer(tc.product, tc.version)
+			defer ts.Close()
+			findings, err := runVV(t, ts)
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			report, err := json.Marshal(findings)
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatal(err)
 			}
-			if len(findings) != tc.want {
-				t.Fatalf("version %q: want %d findings, got %d: %+v",
-					tc.version, tc.want, len(findings), findings)
-			}
-			if tc.want >= 1 && !strings.Contains(findings[len(findings)-1].Evidence, "GHSA-489g") {
-				t.Errorf("newest finding should cite the TOCTOU advisory, got: %q", findings[len(findings)-1].Evidence)
+			if strings.Contains(string(report), private) || !strings.Contains(findings[0].Evidence, tc.want) {
+				t.Fatalf("reported version leaked or normalized value missing: %s", report)
 			}
 		})
 	}
@@ -207,6 +221,7 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 		{"mcp-git", "2026.10.9", nil},
 		{"mcp-git", "2026.10.10", []string{"GHSA-w766-5x43-whvw"}},
 		{"mcp-git", "2026.10.19", []string{"GHSA-w766-5x43-whvw"}},
+		{"MCP-GIT", "2026.10.19", []string{"GHSA-w766-5x43-whvw"}},
 		{"mcp-git", "2026.10.28-rc.1", []string{"GHSA-w766-5x43-whvw"}},
 		{"mcp-git", "2026.10.28", nil},
 		{"custom-mcp-git", "2026.10.19", nil},
@@ -218,8 +233,6 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 		{"mcp-fetch", "2026.10.20", nil},
 		{"mcp-fetch", "2026.10.24", nil},
 		{"custom-mcp-fetch", "2026.10.19", nil},
-		{"mcp-remote", "0.1.16-rc.1", []string{"CVE-2025-6514"}},
-		{"mcp-remote", "0.1.16+build.1", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+"/"+tc.version, func(t *testing.T) {
@@ -239,7 +252,7 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 					if tc.name == "secure-filesystem-server" {
 						fixed = "2.0.1"
 					}
-					if tc.name == "mcp-git" {
+					if strings.EqualFold(tc.name, "mcp-git") {
 						fixed = "2026.10.28"
 					}
 					if ref == "GHSA-3jqg-r5pp-rmp2" || ref == "GHSA-66qx-2266-pmj6" ||
@@ -338,7 +351,7 @@ func TestVV_UsesSuppliedTokenForReadOnlyInventory(t *testing.T) {
 						"jsonrpc": "2.0", "id": req.ID,
 						"result": map[string]interface{}{
 							"protocolVersion": "2025-06-18",
-							"serverInfo":      map[string]interface{}{"name": "mcp-server-git", "version": "2025.12.17"},
+							"serverInfo":      map[string]interface{}{"name": "mcp-git", "version": "2026.10.19"},
 							"capabilities":    map[string]interface{}{},
 						},
 					})
@@ -355,7 +368,7 @@ func TestVV_UsesSuppliedTokenForReadOnlyInventory(t *testing.T) {
 							"supportedVersions": []string{"2026-07-28"},
 							"_meta": map[string]interface{}{
 								"io.modelcontextprotocol/serverInfo": map[string]interface{}{
-									"name": "mcp-server-git", "version": "2025.12.17",
+									"name": "mcp-git", "version": "2026.10.19",
 								},
 							},
 						},
