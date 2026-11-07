@@ -46,18 +46,28 @@ func writeToolsResult(w http.ResponseWriter, id interface{}) {
 //   - "rejects-seeded": refuses an initialize that carries a client-chosen id,
 //     which is what the reference implementation does and what this rule tests
 //     for. A plain initialize on the same endpoint still succeeds.
-func fixationServer(t *testing.T, mode string) *httptest.Server {
+func fixationServer(t *testing.T, mode string, onDelete ...func(string)) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	valid := map[string]bool{}
 	counter := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		supplied := r.Header.Get("Mcp-Session-Id")
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			delete(valid, supplied)
+			mu.Unlock()
+			for _, notify := range onDelete {
+				notify(supplied)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
 		id := req["id"]
-		supplied := r.Header.Get("Mcp-Session-Id")
 		w.Header().Set("Content-Type", "application/json")
 
 		switch method {
@@ -378,5 +388,55 @@ func TestSessionFixation_RefusedCrossPrincipal(t *testing.T) {
 	}
 	if len(findings[0].Chain) != 3 || !strings.Contains(findings[0].Evidence, "cross-principal borrow (victim): refused") {
 		t.Fatalf("cross-principal refusal was not recorded: %+v", findings[0])
+	}
+}
+
+func TestSessionFixation_ClosesPublishedSessionAfterChaining(t *testing.T) {
+	for _, chained := range []bool{false, true} {
+		t.Run(fmt.Sprint(chained), func(t *testing.T) {
+			var mu sync.Mutex
+			var closed []string
+			srv := fixationServer(t, "fixable", func(id string) {
+				mu.Lock()
+				closed = append(closed, id)
+				mu.Unlock()
+			})
+			defer srv.Close()
+			exec := mcpattack.NewSessionFixationExecutor(sfRuleCtx())
+			var bb *attack.Blackboard
+			var findings []attack.Finding
+			var err error
+			if chained {
+				bb = attack.NewBlackboard()
+				findings, err = exec.ExecuteChained(context.Background(), srv.URL, testOpts(), bb)
+			} else {
+				findings, err = exec.Execute(context.Background(), srv.URL, testOpts())
+			}
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			mu.Lock()
+			before := append([]string(nil), closed...)
+			mu.Unlock()
+			if chained {
+				if len(before) != 1 || before[0] != "srv-1" {
+					t.Fatalf("before blackboard close: %v", before)
+				}
+				artifact, ok := bb.First(attack.ArtifactSession)
+				if !ok || artifact.Value == "" {
+					t.Fatalf("missing published session: %+v", artifact)
+				}
+				bb.Close()
+				bb.Close()
+				mu.Lock()
+				after := append([]string(nil), closed...)
+				mu.Unlock()
+				if len(after) != 2 || after[1] != artifact.Value {
+					t.Fatalf("after blackboard close: %v, artifact=%s", after, artifact.Value)
+				}
+			} else if len(before) != 2 || before[0] != "srv-1" || !strings.HasPrefix(before[1], "batesian-fixed-") {
+				t.Fatalf("after direct execute: %v", before)
+			}
+		})
 	}
 }

@@ -393,6 +393,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 
 		session := mcpSession{
 			Endpoint:        ep,
+			Era:             EraLegacy,
 			SessionID:       initResp.Headers.Get("Mcp-Session-Id"),
 			ProtocolVersion: negotiatedVersion(initResp.Body),
 			RawInit:         initResp.Body,

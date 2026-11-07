@@ -109,6 +109,7 @@ func (e *Engine) run(ctx context.Context, target string, rs []*rules.Rule) []Run
 	plan = orderPlan(plan)
 
 	bb := attackpkg.NewBlackboard()
+	defer bb.Close()
 	results := make([]RunResult, 0, len(plan))
 	for _, entry := range plan {
 		results = append(results, run.runOne(ctx, target, entry, bb))

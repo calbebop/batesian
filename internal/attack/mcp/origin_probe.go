@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -31,4 +32,15 @@ func originResponseVerdict(resp *attack.Response, err error, session mcpSession,
 		return probeAnswered
 	}
 	return probeInconclusive
+}
+
+func closeLegacyOriginProbe(ctx context.Context, client *attack.HTTPClient, endpoint string,
+	resp *attack.Response, origin string) {
+	if resp == nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+		return
+	}
+	probe := mcpSession{Endpoint: endpoint, Era: EraLegacy,
+		SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body)}
+	closeLegacySessionsWith(ctx, client, []mcpSession{probe},
+		func(headers map[string]string) { headers["Origin"] = origin })
 }

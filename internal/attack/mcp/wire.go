@@ -194,7 +194,6 @@ func openSessions(ctx context.Context, client *attack.HTTPClient, baseURL string
 
 	endpoints := modernDiscoveryEndpoints(baseURL, "")
 	if legacyErr == nil {
-		legacy.Era = EraLegacy
 		out = append(out, legacy)
 		endpoints = modernDiscoveryEndpoints(baseURL, legacy.Endpoint)
 	}

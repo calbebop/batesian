@@ -32,6 +32,7 @@ func (e *LoggingUnauthExecutor) Execute(ctx context.Context, target string, opts
 	if err != nil {
 		return nil, inconclusive(err)
 	}
+	defer closeLegacySessions(ctx, client, []mcpSession{session})
 
 	if !session.ServerSupports("logging") {
 		return nil, nil

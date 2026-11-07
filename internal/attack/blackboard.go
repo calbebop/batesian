@@ -59,6 +59,7 @@ type Artifact struct {
 type Blackboard struct {
 	mu        sync.RWMutex
 	artifacts []Artifact
+	cleanups  []func()
 }
 
 // NewBlackboard returns an empty, ready-to-use Blackboard.
@@ -71,6 +72,24 @@ func (b *Blackboard) Publish(a Artifact) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.artifacts = append(b.artifacts, a)
+}
+
+// DeferCleanup keeps an artifact's backing state alive until the scan ends.
+func (b *Blackboard) DeferCleanup(cleanup func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cleanups = append(b.cleanups, cleanup)
+}
+
+// Close runs registered cleanup actions once, in reverse order.
+func (b *Blackboard) Close() {
+	b.mu.Lock()
+	cleanups := b.cleanups
+	b.cleanups = nil
+	b.mu.Unlock()
+	for i := len(cleanups) - 1; i >= 0; i-- {
+		cleanups[i]()
+	}
 }
 
 // ByKind returns all artifacts of the given kind, in publication order.
