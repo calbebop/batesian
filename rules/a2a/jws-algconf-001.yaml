@@ -10,20 +10,23 @@ info:
     The A2A v0.3.0 spec added an optional signatures field (RFC 7515 JWS) to
     AgentCards for cryptographic integrity verification. The rule reports:
 
-    1. alg:none - any verifier that reads alg from the token header and dispatches
-       to a "none" handler will accept a completely forged card with no signature
-       material whatsoever.
+    1. alg:none - an unsigned signature that an authenticated card verifier must
+       reject. Acceptance by a client could allow a forged card.
 
-    2. Symmetric algorithms (HS256/384/512) - wrong key type for public card
-       verification; enables key confusion attacks using the exposed public key.
+    2. Missing protected alg - violates A2A signature requirements. This alone
+       does not establish that a verifier accepts forged cards.
 
-    3. Empty signature value - passes broken implementations that skip the bytes
+    3. Symmetric algorithms (HS256/384/512) - require shared signing secrets
+       for public card verification. Verifiers that trust the card's algorithm
+       could also be vulnerable to key confusion.
+
+    4. Empty signature value - passes broken implementations that skip the bytes
        check while failing correct ones.
 
-    4. jku in unprotected header - the key URL is outside signature coverage;
+    5. jku in unprotected header - the key URL is outside signature coverage;
        clients must independently bind the key source to the expected agent.
 
-    5. Cross-domain jku - an informational trust-boundary review, not a
+    6. Cross-domain jku - an informational trust-boundary review, not a
        vulnerability by itself. A2A permits a separate JWKS host.
 
   references:

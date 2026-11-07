@@ -83,6 +83,43 @@ func TestJWSAlgConfExecutor_AlgNone(t *testing.T) {
 	}
 }
 
+func TestJWSAlgConfExecutor_MissingProtectedAlg(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header map[string]interface{}
+	}{
+		{name: "absent"},
+		{name: "unprotected", header: map[string]interface{}{"alg": "none"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signature := map[string]interface{}{
+				"protected": buildProtectedHeader(map[string]interface{}{"kid": "key-1"}),
+				"signature": "c2ln",
+			}
+			if tc.header != nil {
+				signature["header"] = tc.header
+			}
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, map[string]interface{}{
+					"name": "Test Agent", "signatures": []interface{}{signature},
+				})
+			}))
+			defer ts.Close()
+
+			findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			finding := findings[0]
+			if finding.Severity != "medium" ||
+				!strings.Contains(finding.Evidence, "protected.alg: missing") ||
+				strings.Contains(finding.Title+finding.Description+finding.Evidence, "alg:none") {
+				t.Fatalf("misclassified missing protected alg: %+v", finding)
+			}
+		})
+	}
+}
+
 // TestJWSAlgConfExecutor_WellFormedSignature verifies that a card with a sound
 // signature config (asymmetric alg, non-empty signature, no jku) produces zero
 // findings - the secure/patched case.
@@ -169,6 +206,72 @@ func TestJWSAlgConfExecutor_KeySourceAssessment(t *testing.T) {
 				t.Fatalf("findings = %+v, want one %s finding", findings, tc.wantSeverity)
 			}
 		})
+	}
+}
+
+func TestJWSAlgConfExecutor_OmitsCardMetadataFromFindings(t *testing.T) {
+	private := []string{
+		"private-kid-canary", "private-alg-canary", "private-jku-canary",
+		"private-header-canary", "private-unprotected-canary", "private-crosshost-canary",
+	}
+	card := map[string]interface{}{
+		"name": "Test Agent",
+		"signatures": []interface{}{
+			map[string]interface{}{
+				"protected": buildProtectedHeader(map[string]interface{}{
+					"alg": "none", "kid": private[0],
+				}),
+				"signature": "",
+			},
+			map[string]interface{}{
+				"protected": buildProtectedHeader(map[string]interface{}{
+					"alg":  "HS256-" + private[1],
+					"jku":  "http://keys.example/jwks?token=" + private[2],
+					"note": private[3],
+				}),
+				"header": map[string]interface{}{
+					"jku": "https://keys.example/jwks?token=" + private[4],
+				},
+				"signature": "",
+			},
+			map[string]interface{}{
+				"protected": buildProtectedHeader(map[string]interface{}{
+					"alg": "ES256",
+					"jku": "https://keys.example/jwks?token=" + private[5],
+				}),
+				"signature": "c2ln",
+			},
+		},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, card)
+	}))
+	defer ts.Close()
+
+	findings, err := a2a.NewJWSAlgConfExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(findings) != 6 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range private {
+		if strings.Contains(string(report), marker) {
+			t.Fatalf("card metadata %q appeared in findings", marker)
+		}
+	}
+	for _, condition := range []string{
+		"protected.alg: none", "protected.alg: HS-prefixed", "empty signature",
+		"protected.jku: host differs", "protected.jku: HTTP scheme", "header.jku: present outside signature",
+	} {
+		found := false
+		for _, finding := range findings {
+			found = found || strings.Contains(finding.Evidence, condition)
+		}
+		if !found {
+			t.Fatalf("missing %q in finding evidence: %+v", condition, findings)
+		}
 	}
 }
 

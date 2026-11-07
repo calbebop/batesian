@@ -106,46 +106,60 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		}
 		alg, _ := sig.protectedHeader["alg"].(string)
 		jku, _ := sig.protectedHeader["jku"].(string)
-		header, signature, headerJSON := sig.header, sig.signature, sig.protectedJSON
+		header, signature := sig.header, sig.signature
 
-		// Check 1: alg:none or missing alg
-		switch strings.ToLower(alg) {
-		case "none", "":
+		// Check 1: alg:none or missing protected alg
+		switch alg {
+		case "none":
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "critical",
 				Confidence: attack.RiskIndicator,
-				Title:      fmt.Sprintf("A2A agent card signatures[%d] uses alg:%q - trivially forgeable if verified", i, alg),
-				Description: "The JWS protected header specifies alg:\"none\", meaning no signature " +
-					"material protects the card. Any attacker can serve a forged card that passes " +
-					"verification in any library that reads the algorithm from the token header.",
-				Evidence:    fmt.Sprintf("signatures[%d].protected decodes to: %s", i, string(headerJSON)),
+				Title:      fmt.Sprintf("A2A agent card signatures[%d] declares alg:none", i),
+				Description: "The protected header declares an unsigned JWS algorithm. " +
+					"Clients that require an authenticated card must reject it; a client that " +
+					"accepts unsigned cards could accept a forged card. This check does not test a client.",
+				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: none; protected header omitted", i),
+				Remediation: e.rule.Remediation,
+				TargetURL:   cardURL,
+			})
+		case "":
+			findings = append(findings, attack.Finding{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
+				Title:      fmt.Sprintf("A2A agent card signatures[%d] is missing a protected alg", i),
+				Description: "A2A requires alg in the protected JWS header. This signature " +
+					"does not meet that requirement; missing alg does not show that any client " +
+					"accepts a forged card.",
+				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: missing; protected header omitted", i),
 				Remediation: e.rule.Remediation,
 				TargetURL:   cardURL,
 			})
 		}
 
 		// Check 2: symmetric algorithms unsuitable for public card verification
-		if strings.HasPrefix(strings.ToUpper(alg), "HS") {
+		if strings.HasPrefix(alg, "HS") {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   "high",
 				Confidence: attack.RiskIndicator,
-				Title:      fmt.Sprintf("A2A agent card signatures[%d] uses symmetric algorithm %s", i, alg),
-				Description: fmt.Sprintf("Symmetric algorithm %s requires the verifier to hold the same "+
-					"key as the signer. For a public agent card, every verifying client must share the "+
-					"signing secret - defeating the purpose of signatures. Also enables RS256->HS256 "+
-					"confusion attacks using the exposed public key as the HMAC secret.", alg),
-				Evidence:    fmt.Sprintf("signatures[%d].protected: %s", i, string(headerJSON)),
+				Title:      fmt.Sprintf("A2A agent card signatures[%d] uses an HS-prefixed algorithm", i),
+				Description: "A symmetric JWS algorithm requires the verifier to hold the same " +
+					"key as the signer. For a public agent card, every verifying client must share the " +
+					"signing secret. A verifier that accepts an untrusted algorithm could also " +
+					"be vulnerable to key confusion.",
+				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: HS-prefixed; protected header omitted", i),
 				Remediation: e.rule.Remediation,
 				TargetURL:   cardURL,
 			})
 		}
 
 		// Check 3: empty signature value with non-none alg
-		if signature == "" && strings.ToLower(alg) != "none" {
+		if signature == "" && alg != "none" {
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
@@ -155,7 +169,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				Description: "The signature field is empty but alg is not \"none\". This card will " +
 					"fail verification in correct implementations but may silently pass broken ones " +
 					"that skip the signature bytes check.",
-				Evidence:    fmt.Sprintf("signatures[%d]: alg=%s, signature=\"\"", i, alg),
+				Evidence:    fmt.Sprintf("signatures[%d]: non-none alg, empty signature; protected header omitted", i),
 				Remediation: e.rule.Remediation,
 				TargetURL:   cardURL,
 			})
@@ -176,7 +190,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Description: "The protected jku points to a different host than the agent. " +
 						"This is allowed by A2A and can be intentional; the scanner cannot establish " +
 						"whether the key source is trusted by clients.",
-					Evidence: fmt.Sprintf("agent host: %s, jku host: %s", agentHost, jkuHost),
+					Evidence: fmt.Sprintf("signatures[%d].protected.jku: host differs from agent host; URL omitted", i),
 					Remediation: "Confirm that clients trust this JWKS host and bind its keys to the expected agent. " +
 						"Do not accept arbitrary jku values from untrusted cards.",
 					TargetURL: cardURL,
@@ -191,7 +205,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Title:      fmt.Sprintf("A2A agent card signatures[%d] jku uses plaintext HTTP", i),
 					Description: "The jku URL uses HTTP instead of HTTPS. An attacker with network access " +
 						"can intercept the JWKS fetch and substitute malicious keys.",
-					Evidence:    fmt.Sprintf("jku: %s", jku),
+					Evidence:    fmt.Sprintf("signatures[%d].protected.jku: HTTP scheme; URL omitted", i),
 					Remediation: e.rule.Remediation,
 					TargetURL:   cardURL,
 				})
@@ -210,7 +224,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Description: "The jku field is outside signature coverage. This is risky if clients " +
 						"use it to choose a trusted key source without independently binding the key to the agent. " +
 						"The scanner cannot determine the verifier's trust policy.",
-					Evidence: fmt.Sprintf("header.jku: %s (unprotected, not covered by signature)", unprotectedJKU),
+					Evidence: fmt.Sprintf("signatures[%d].header.jku: present outside signature; URL omitted", i),
 					Remediation: "Put jku in the protected header, or ensure clients pin the expected " +
 						"key source and reject untrusted key URLs.",
 					TargetURL: cardURL,
@@ -230,7 +244,6 @@ type cardSignature struct {
 	protectedHeader map[string]interface{}
 	header          map[string]interface{}
 	signature       string
-	protectedJSON   []byte
 }
 
 func parseCardSignature(raw interface{}) (cardSignature, bool) {
@@ -280,7 +293,6 @@ func parseCardSignature(raw interface{}) (cardSignature, bool) {
 		protectedHeader: protectedHeader,
 		header:          header,
 		signature:       signature,
-		protectedJSON:   protectedJSON,
 	}, true
 }
 

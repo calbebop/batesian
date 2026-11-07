@@ -298,13 +298,14 @@ Findings identify the reflected field and header without copying the card body.
 **AgentCard JWS Signature Configuration** | Severity: Critical / High / Medium / Info | CWE-327
 
 A **static analyzer** of the agent card's optional JWS `signatures` field
-(RFC 7515). It flags weak signature metadata: `alg: none`,
+(RFC 7515). It flags weak signature metadata: `alg: none`, a missing protected `alg`,
 symmetric algorithms used for public-card verification, empty signature values,
 and unprotected or plaintext-HTTP `jku` URLs. A cross-host JWKS is an
 informational trust-boundary review, not a vulnerability by itself. The rule
 only reads the published card; it never verifies a signature against a client.
 Every finding is reported as an **indicator** (severity reflects
-impact-if-true, not a demonstrated exploit).
+impact-if-true, not a demonstrated exploit). Findings identify the signature
+index and observed condition without copying protected headers or key URLs.
 
 ---
 
