@@ -119,6 +119,114 @@ func TestCardTrust_SignatureStripping(t *testing.T) {
 	}
 }
 
+func TestCardTrust_SignatureMismatchRequiresMatchingInterface(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		primary      map[string]interface{}
+		legacy       map[string]interface{}
+		wantSeverity string
+	}{
+		{
+			name:    "different agents",
+			primary: signedCard("https://agent.example/a2a", nil),
+			legacy:  map[string]interface{}{"name": "Another Agent", "url": "https://agent.example/a2a"},
+		},
+		{
+			name:         "different endpoints",
+			primary:      signedCard("https://agent.example/a2a", nil),
+			legacy:       map[string]interface{}{"name": "Test Agent", "url": "https://other.example/a2a"},
+			wantSeverity: "medium",
+		},
+		{
+			name:    "different card shapes",
+			primary: signedV1Card("https://agent.example/a2a"),
+			legacy:  map[string]interface{}{"name": "Test Agent", "url": "https://agent.example/a2a"},
+		},
+		{
+			name:    "different tenants",
+			primary: signedV1Card("https://agent.example/a2a"),
+			legacy: func() map[string]interface{} {
+				card := v1Card("https://agent.example/a2a")
+				card["supportedInterfaces"].([]interface{})[0].(map[string]interface{})["tenant"] = "other"
+				return card
+			}(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(tc.primary, tc.legacy, "no-store")
+			defer ts.Close()
+			findings := runCardTrust(t, ts)
+			if tc.wantSeverity == "" {
+				if len(findings) != 0 {
+					t.Fatalf("unexpected cross-path findings: %+v", findings)
+				}
+				return
+			}
+			if len(findings) != 1 || findings[0].Severity != tc.wantSeverity {
+				t.Fatalf("findings=%+v, want one %s finding", findings, tc.wantSeverity)
+			}
+		})
+	}
+}
+
+func TestCardTrust_OmitsCardAndCacheValues(t *testing.T) {
+	const private = "private-card-value"
+	for _, tc := range []struct {
+		name    string
+		primary map[string]interface{}
+		legacy  map[string]interface{}
+		cache   string
+	}{
+		{
+			name:    "signature mismatch",
+			primary: signedCard("https://agent.example/"+private, nil),
+			legacy:  map[string]interface{}{"name": "Test Agent", "url": "https://agent.example/" + private},
+			cache:   "no-store",
+		},
+		{
+			name:    "preferred endpoint mismatch",
+			primary: v1Card("https://agent.example/" + private),
+			legacy:  v1Card("https://other.example/" + private),
+			cache:   "no-store",
+		},
+		{
+			name:    "incomplete interface",
+			primary: v1Card("https://agent.example/" + private),
+			legacy: func() map[string]interface{} {
+				card := v1Card("https://agent.example/" + private)
+				delete(card["supportedInterfaces"].([]interface{})[0].(map[string]interface{}), "protocolBinding")
+				return card
+			}(),
+			cache: "no-store",
+		},
+		{
+			name:    "stale cache",
+			primary: unsignedCard(),
+			legacy:  unsignedCard(),
+			cache:   `public, max-age=86400, extension="` + private + `"`,
+		},
+		{
+			name:    "immutable cache",
+			primary: unsignedCard(),
+			legacy:  unsignedCard(),
+			cache:   `immutable, extension="` + private + `"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := cardServer(tc.primary, tc.legacy, tc.cache)
+			defer ts.Close()
+			finding := onlyFinding(t, runCardTrust(t, ts))
+			report, err := json.Marshal(finding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(report), private) {
+				t.Fatalf("card or header value leaked into finding: %s", report)
+			}
+		})
+	}
+}
+
 // TestCardTrust_UrlMismatch: both signed, different url. MUST fire indicator/medium.
 func TestCardTrust_UrlMismatch(t *testing.T) {
 	ts := cardServer(signedCard("https://agent.example/", future()), signedCard("https://other.example/", future()), "no-store")

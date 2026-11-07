@@ -16,15 +16,14 @@ info:
 
       1. Canonicalization / multi-path consistency. The card is fetched from both
          /.well-known/agent-card.json and the legacy /.well-known/agent.json. If
-         one path serves a SIGNED card and the other serves an UNSIGNED card, an
-         attacker (or MITM) can steer verification to the unsigned path to strip
-         the signature requirement - reported as an indicator. If their
-         signature status matches and comparable preferred interfaces point to
-         different URLs (`supportedInterfaces[0].url` in v1, top-level `url` in
-         v0.3), reported as an INDICATOR (routing ambiguity). Different card
-         shapes or preferred interface bindings, versions, or tenants are not
-         compared. Missing preferred endpoint fields on either served card are
-         also an INDICATOR.
+         one path advertises signatures and the other does not, a high indicator
+         requires matching card names and comparable preferred interfaces with
+         the same URL. Comparable interfaces with different URLs
+         (`supportedInterfaces[0].url` in v1, top-level `url` in v0.3) produce a
+         medium routing-ambiguity indicator. Different names, card shapes,
+         bindings, versions, or tenants are not compared. Missing preferred
+         endpoint fields on either served card are also an indicator when names
+         match.
 
       2. Stale-cache trust. A long max-age, applicable s-maxage, or Expires
          lifetime (>= 1h) without unqualified
