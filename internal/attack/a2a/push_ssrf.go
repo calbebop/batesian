@@ -69,8 +69,8 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 	}()
 	endpoint, endpointOK := resolveA2AEndpoint(ctx, attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 	reached := false
-	callbackURL := listenerURL + "/batesian-" + vars.RandID
 	token := "batesian-" + vars.RandID
+	callbackURL := listenerURL + "/" + token
 
 	// Try multiple transport bindings and SDK versions.
 	// Note: A JSON-RPC error response (e.g. -32601 Method Not Found) is not a
@@ -277,9 +277,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 		}
 		if privatePushCallbackURL(callbackURL) {
 			evidence := fmt.Sprintf(
-				"Target accepted task with pushNotificationConfig.url=%q (binding: %s)\n"+
-					"OOB callback received: %s %s",
-				callbackURL, acceptedBinding, cb.Method, cb.URL,
+				"Target accepted task with a private push callback (binding: %s)\n"+
+					"OOB callback received: %s (matched marker; URL omitted)",
+				acceptedBinding, cb.Method,
 			)
 			findings = append(findings, attack.Finding{
 				RuleID:     e.rule.ID,
@@ -287,9 +287,9 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 				Severity:   "medium",
 				Confidence: attack.RiskIndicator,
 				Title:      "A2A agent delivered to a local or private push callback",
-				Description: fmt.Sprintf("The A2A server at %s made an HTTP request to the local or private callback address %s. "+
+				Description: fmt.Sprintf("The A2A server at %s made an HTTP request to the configured local or private callback address. "+
 					"Review whether private callbacks are allowed. Access to other internal services was not tested.",
-					target, callbackURL),
+					target),
 				Evidence:    evidence,
 				Remediation: e.rule.Remediation,
 				TargetURL:   target,
@@ -307,10 +307,10 @@ func (e *PushSSRFExecutor) Execute(ctx context.Context, target string, opts atta
 			Severity:   "info",
 			Confidence: attack.RiskIndicator,
 			Title:      "A2A push callback registered; delivery unverified",
-			Description: fmt.Sprintf("Task submitted with pushNotificationConfig.url=%q (binding: %s). "+
-				"Check your OOB server at %s for delivery. A public webhook callback alone does not establish SSRF.",
-				callbackURL, acceptedBinding, opts.OOBListenerURL),
-			Evidence:    fmt.Sprintf("Task accepted via %s. Callback URL: %s", acceptedBinding, callbackURL),
+			Description: fmt.Sprintf("Task submitted with a push callback (binding: %s). "+
+				"Check your configured OOB server for marker %s. A public webhook callback alone does not establish SSRF.",
+				acceptedBinding, token),
+			Evidence:    fmt.Sprintf("Task accepted via %s. Callback marker: %s; URL omitted", acceptedBinding, token),
 			Remediation: e.rule.Remediation,
 			TargetURL:   target,
 		})

@@ -111,10 +111,10 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 			Severity:   "info",
 			Confidence: attack.RiskIndicator,
 			Title:      "MCP OAuth DCR accepted metadata URLs (check your OOB server for a fetch)",
-			Description: fmt.Sprintf("The registration endpoint at %s accepted a client registration whose URL "+
-				"metadata fields pointed at %s. Check your OOB server for inbound requests to the marker paths to "+
-				"confirm a server-side fetch. A callback alone does not prove access to private addresses.", registrationEndpoint, listenerURL),
-			Evidence:    fmt.Sprintf("Registration endpoint: %s\nMarker base: %s\nFields seeded: %v\n%s", registrationEndpoint, listenerURL, urlMetadataFields, cleanup.evidenceLine()),
+			Description: fmt.Sprintf("The registration endpoint at %s accepted URL metadata fields pointing at the configured OOB server. "+
+				"Check for requests under marker /batesian-%s/ to confirm a server-side fetch. "+
+				"A callback alone does not prove access to private addresses.", registrationEndpoint, vars.RandID),
+			Evidence:    fmt.Sprintf("Registration endpoint: %s\nCallback marker: /batesian-%s/\nOOB URL omitted\nFields seeded: %v\n%s", registrationEndpoint, vars.RandID, urlMetadataFields, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   registrationEndpoint,
 		}}, nil
@@ -148,7 +148,9 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 	confidence := attack.RiskIndicator
 	title := "MCP OAuth server fetched a registrant-supplied metadata URL"
 	impact := "The callback confirms a metadata fetch, not access to private addresses or response contents."
+	destination := "public"
 	if privateCallbackDestination(listenerURL) {
+		destination = "private"
 		severity = "high"
 		confidence = attack.ConfirmedExploit
 		title = "MCP OAuth server fetched a registrant-supplied private metadata URL"
@@ -162,8 +164,8 @@ func (e *OAuthMetadataSSRFExecutor) Execute(ctx context.Context, target string, 
 		Title:      title,
 		Description: fmt.Sprintf("The OAuth server at %s fetched the registrant-supplied %s URL during dynamic "+
 			"client registration. %s", registrationEndpoint, field, impact),
-		Evidence: fmt.Sprintf("Registration endpoint: %s\nRegistration status: HTTP %d\nCallback destination: %s\nOOB callback: %s %s\nFetched field: %s\n%s",
-			registrationEndpoint, resp.StatusCode, listenerURL, cb.Method, cb.URL, field, cleanup.evidenceLine()),
+		Evidence: fmt.Sprintf("Registration endpoint: %s\nRegistration status: HTTP %d\nCallback destination: %s (URL omitted)\nOOB callback: %s (matched marker; URL omitted)\nFetched field: %s\n%s",
+			registrationEndpoint, resp.StatusCode, destination, cb.Method, field, cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
 	}}, nil

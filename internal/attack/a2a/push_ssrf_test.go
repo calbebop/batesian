@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,7 @@ import (
 )
 
 // pushSSRFServer optionally sends a callback to the registered URL.
-func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
+func pushSSRFServer(t *testing.T, callBack bool, callbackQuery ...string) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	var registeredURL, registeredID string
@@ -46,6 +47,9 @@ func pushSSRFServer(t *testing.T, callBack bool) *httptest.Server {
 				if url, _ := params["url"].(string); url != "" {
 					token, _ := params["token"].(string)
 					hc := &http.Client{Timeout: 3 * time.Second}
+					if len(callbackQuery) > 0 {
+						url += "?" + callbackQuery[0]
+					}
 					if cbReq, err := http.NewRequest(http.MethodPost, url, nil); err == nil {
 						cbReq.Header.Set("X-A2A-Notification-Token", token)
 						if resp, err := hc.Do(cbReq); err == nil {
@@ -104,6 +108,22 @@ func TestPushSSRF_PrivateCallbackConfirmed(t *testing.T) {
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupCompleted ||
 		!strings.Contains(findings[0].Evidence, "deleted after probe") {
 		t.Fatalf("cleanup state = %+v, evidence = %q", objects, findings[0].Evidence)
+	}
+}
+
+func TestPushSSRF_CallbackRequestURLOmitted(t *testing.T) {
+	ts := pushSSRFServer(t, true, "private-canary=1")
+	defer ts.Close()
+	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") {
+		t.Fatalf("callback request URL leaked into finding: %s", report)
 	}
 }
 
@@ -401,7 +421,7 @@ func TestPushSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 	defer ts.Close()
 
 	opts := testOpts()
-	opts.OOBListenerURL = "http://oob.batesian.invalid"
+	opts.OOBListenerURL = "http://oob.batesian.invalid/private-canary"
 	state := &attack.TargetState{}
 	opts.TargetState = state
 	findings, err := a2a.NewPushSSRFExecutor(testRuleCtx()).Execute(t.Context(), ts.URL, opts)
@@ -410,6 +430,13 @@ func TestPushSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 	}
 	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") || !strings.Contains(findings[0].Evidence, "Callback marker: batesian-") {
+		t.Fatalf("OOB URL leaked or callback marker missing: %s", report)
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||

@@ -70,7 +70,8 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	reached := false
 
 	// Keep the callback marker, optional token, and Bearer credential distinct.
-	callbackURL := listenerURL + "/batesian-oob-" + vars.RandID
+	callbackMarker := "batesian-oob-" + vars.RandID
+	callbackURL := listenerURL + "/" + callbackMarker
 	token := "batesian-token-" + vars.RandID
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
@@ -278,9 +279,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			Title:      "A2A push config accepted with webhook authentication; manual verification required",
 			Description: fmt.Sprintf(
 				"The agent accepted a push config via %s. Check your OOB collector for a task %s "+
-					"notification to %s. Compare the SHA-256 of its Bearer credential with the fingerprint in evidence.",
-				acceptedBinding, acceptedTaskID, callbackURL),
-			Evidence:    fmt.Sprintf("registration binding: %s\ncallback url: %s\ntask id: %s\nexpected bearer credential SHA-256: %x", acceptedBinding, callbackURL, acceptedTaskID, credentialHash),
+					"notification with marker %s. Compare the SHA-256 of its Bearer credential with the fingerprint in evidence.",
+				acceptedBinding, acceptedTaskID, callbackMarker),
+			Evidence:    fmt.Sprintf("registration binding: %s\ncallback marker: %s\ncallback URL omitted\ntask id: %s\nexpected bearer credential SHA-256: %x", acceptedBinding, callbackMarker, acceptedTaskID, credentialHash),
 			Remediation: e.rule.Remediation,
 			TargetURL:   target,
 		}}, nil
@@ -308,9 +309,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	}
 
 	evidence := fmt.Sprintf(
-		"registration binding: %s\ntask id: %s\ncallback received: %s %s\n"+
+		"registration binding: %s\ntask id: %s\ncallback received: %s (matched marker; URL omitted)\n"+
 			"Authorization header present: %s\nconfigured Bearer credential matched: no",
-		acceptedBinding, acceptedTaskID, cb.Method, cb.URL, yesNo(authz != ""))
+		acceptedBinding, acceptedTaskID, cb.Method, yesNo(authz != ""))
 
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
