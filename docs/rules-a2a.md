@@ -475,15 +475,15 @@ checks:
 
 - **Canonicalization / multi-path consistency.** The card is fetched from both
   `/.well-known/agent-card.json` and the legacy `/.well-known/agent.json`. If one
-  path serves a **signed** card and the other an **unsigned** one, an attacker can
-  steer verification to the unsigned path to strip the signature requirement -
-  reported **indicator (high)**. Otherwise, comparable preferred interfaces
+  path advertises signatures and the other does not, and both cards declare the
+  same name and preferred interface, this is an **indicator (high)** of a
+  possible unsigned-card path. Otherwise, comparable preferred interfaces
   with different endpoint URLs (`supportedInterfaces[0].url` in v1, top-level
   `url` in v0.3)
   produce a **medium indicator** (routing ambiguity). Different card shapes or
   preferred interface bindings, versions, or tenants are not compared. Missing
   preferred endpoint fields on either served card also produce a **medium
-  indicator**.
+  indicator**. Cross-path findings require matching card names.
 - **Stale-cache trust.** A long `max-age`, applicable `s-maxage`, or `Expires`
   lifetime (>= 1h) without unqualified `no-store`/`no-cache` can keep the trust
   anchor cached after key rotation or compromise (**indicator, medium**).
@@ -501,6 +501,9 @@ checks:
   Unqualified `private` disables shared caching. `must-revalidate` applies only
   after a cached response becomes stale, so it does not cancel a long freshness
   lifetime.
+
+Findings identify the affected path, missing fields, or freshness lifetime
+without copying card-declared URLs or response header values.
 
 The A2A JWS protected header does not require `exp`. Card signatures without it
 are not reported; key expiry and revocation depend on the verifier's key source.
