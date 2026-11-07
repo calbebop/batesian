@@ -26,9 +26,8 @@ func NewVulnerableVersionExecutor(r attack.RuleContext) *VulnerableVersionExecut
 
 // vvAdvisory maps a component identity to a published vulnerability.
 type vvAdvisory struct {
-	// key matches serverInfo.name as a substring unless exact is set.
-	key   string
-	exact bool
+	// key matches serverInfo.name exactly, ignoring case.
+	key string
 	// affected joins version bounds with spaces.
 	affected string
 	// severity for this finding (never above the rule YAML declares).
@@ -43,34 +42,9 @@ type vvAdvisory struct {
 // advisories when bumping.
 var vvTable = []vvAdvisory{
 	{
-		key: "mcp-server-git", affected: "<2025.12.18", severity: "high",
-		title: "mcp-server-git argument injection and path escape chain",
-		refs:  "CVE-2025-68143, CVE-2025-68144, CVE-2025-68145",
-	},
-	{
-		key: "mcp-git", exact: true, affected: ">=2026.10.10 <2026.10.28", severity: "medium",
+		key: "mcp-git", affected: ">=2026.10.10 <2026.10.28", severity: "medium",
 		title: "reference git server repository confinement bypass",
 		refs:  "GHSA-w766-5x43-whvw", fixed: "2026.10.28", pkg: "mcp-server-git",
-	},
-	{
-		key: "mcp-remote", affected: "<0.1.16", severity: "high",
-		title: "mcp-remote OAuth flow command injection",
-		refs:  "CVE-2025-6514",
-	},
-	{
-		key: "mcp-atlassian", affected: "<0.17.0", severity: "high",
-		title: "mcp-atlassian attachment path traversal to RCE",
-		refs:  "CVE-2026-27825, CVE-2026-27826",
-	},
-	{
-		key: "mcp-atlassian", affected: "<0.22.0", severity: "medium",
-		title: "mcp-atlassian SSRF DNS-rebinding TOCTOU bypass of the 27826 fix",
-		refs:  "GHSA-489g-7rxv-6c8q",
-	},
-	{
-		key: "inspector", affected: "<0.14.1", severity: "high",
-		title: "MCP Inspector unauthenticated RCE via DNS rebinding",
-		refs:  "CVE-2025-49596",
 	},
 	{
 		key: "serena", affected: "<1.5.2", severity: "high",
@@ -78,48 +52,43 @@ var vvTable = []vvAdvisory{
 		refs:  "CVE-2026-49471",
 	},
 	{
-		key: "mcpjam", affected: "<=1.4.2", severity: "high",
-		title: "MCPJam inspector exposed control endpoint RCE",
-		refs:  "CVE-2026-23744",
-	},
-	{
-		key: "secure-filesystem-server", exact: true,
+		key:      "secure-filesystem-server",
 		affected: ">=1.0.0 <2.0.1", severity: "medium",
 		title: "reference filesystem server path validation mismatch",
 		refs:  "GHSA-7rgq-gccq-qphx", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
-		key: "secure-filesystem-server", exact: true,
+		key:      "secure-filesystem-server",
 		affected: ">=1.0.0 <2.0.1", severity: "low",
 		title: "reference filesystem server symlink metadata disclosure",
 		refs:  "GHSA-hhwq-wxfx-cj7g", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
-		key: "secure-filesystem-server", exact: true,
+		key:      "secure-filesystem-server",
 		affected: ">=1.0.0 <2.0.1", severity: "medium",
 		title: "reference filesystem server case-variant symlink write escape",
 		refs:  "GHSA-4gxg-m5jx-9j57", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
-		key: "secure-filesystem-server", exact: true,
+		key:      "secure-filesystem-server",
 		affected: ">=1.0.0 <2.0.1", severity: "low",
 		title: "reference filesystem server parent-directory write race",
 		refs:  "GHSA-53mr-w429-c597", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
-		key: "mcp-fetch", exact: true,
+		key:      "mcp-fetch",
 		affected: ">=2026.10.10 <=2026.10.19", severity: "medium",
 		title: "reference fetch server IDNA private-address guard bypass",
 		refs:  "GHSA-v38p-wf49-hx2j", fixed: "2026.10.24", pkg: "mcp-server-fetch",
 	},
 	{
-		key: "mcp-fetch", exact: true,
+		key:      "mcp-fetch",
 		affected: ">=2026.10.10 <=2026.10.19", severity: "low",
 		title: "reference fetch server robots.txt redirect bypass",
 		refs:  "GHSA-3jqg-r5pp-rmp2", fixed: "2026.10.24", pkg: "mcp-server-fetch",
 	},
 	{
-		key: "mcp-fetch", exact: true,
+		key:      "mcp-fetch",
 		affected: ">=2026.10.10 <=2026.10.19", severity: "low",
 		title: "reference fetch server NAT64 private-address guard bypass",
 		refs:  "GHSA-66qx-2266-pmj6", fixed: "2026.10.24", pkg: "mcp-server-fetch",
@@ -180,32 +149,31 @@ const metaServerInfoKey = "io.modelcontextprotocol/serverInfo"
 // advisory; a product matching several entries yields several findings, which
 // is the honest shape when the ranges differ.
 func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version string) []attack.Finding {
-	lower := strings.ToLower(name)
 	parsed := vvParseVersion(version)
 
 	var findings []attack.Finding
 	for _, adv := range vvTable {
-		if adv.exact && lower != adv.key || !adv.exact && !strings.Contains(lower, adv.key) {
+		if !strings.EqualFold(name, adv.key) {
 			continue
 		}
 		if parsed == nil {
-			findings = append(findings, e.unverifiableFinding(endpoint, name, version, adv))
+			findings = append(findings, e.unverifiableFinding(endpoint, adv))
 			continue
 		}
 		inRange, valid := vvMatchesAffected(parsed, adv.affected)
 		if !valid {
-			findings = append(findings, e.unverifiableFinding(endpoint, name, version, adv))
+			findings = append(findings, e.unverifiableFinding(endpoint, adv))
 			continue
 		}
 		if !inRange {
 			continue
 		}
-		findings = append(findings, e.finding(endpoint, name, version, adv))
+		findings = append(findings, e.finding(endpoint, vvPublicVersion(parsed), adv))
 	}
 	return findings
 }
 
-func (e *VulnerableVersionExecutor) finding(endpoint, name, version string, adv vvAdvisory) attack.Finding {
+func (e *VulnerableVersionExecutor) finding(endpoint, version string, adv vvAdvisory) attack.Finding {
 	remediation := e.rule.Remediation
 	if adv.fixed != "" {
 		remediation = fmt.Sprintf("Upgrade %s to %s or later. Verify the installed package and review %s; serverInfo is self-reported.",
@@ -216,15 +184,15 @@ func (e *VulnerableVersionExecutor) finding(endpoint, name, version string, adv 
 		RuleName:   e.rule.Name,
 		Severity:   adv.severity,
 		Confidence: attack.RiskIndicator,
-		Title:      fmt.Sprintf("MCP server identifies as %q %s (%s)", name, version, adv.title),
+		Title:      fmt.Sprintf("MCP server reports %s version %s (%s)", adv.key, version, adv.title),
 		Description: fmt.Sprintf(
-			"MCP server metadata at %s identifies this server as %q running version %s, which falls inside "+
+			"MCP server metadata at %s reports %q version %s, which falls inside "+
 				"the affected range %s for %s (%s). The version is self-reported and spoofable, and the "+
 				"match does not prove the vulnerable code path is reachable from this surface - verify "+
 				"against the advisory before acting.",
-			endpoint, name, version, adv.affected, adv.key, adv.refs),
-		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: %s\nserverInfo.version: %s\nmatched: %s %s\nadvisories: %s",
-			endpoint, name, version, adv.key, adv.affected, adv.refs),
+			endpoint, adv.key, version, adv.affected, adv.key, adv.refs),
+		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: matched %s\nserverInfo.version: %s (suffix omitted)\nmatched: %s %s\nadvisories: %s",
+			endpoint, adv.key, version, adv.key, adv.affected, adv.refs),
 		Remediation: remediation,
 		TargetURL:   endpoint,
 	}
@@ -233,20 +201,20 @@ func (e *VulnerableVersionExecutor) finding(endpoint, name, version string, adv 
 // unverifiableFinding covers the awkward middle: the name says this is a
 // product with a published advisory but the version string cannot be parsed,
 // so neither clean nor vulnerable can be claimed.
-func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, version string, adv vvAdvisory) attack.Finding {
+func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint string, adv vvAdvisory) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "low",
 		Confidence: attack.RiskIndicator,
-		Title:      fmt.Sprintf("MCP server identifies as %q but its version is unverifiable", name),
+		Title:      fmt.Sprintf("MCP server identifies as %s but its version is unverifiable", adv.key),
 		Description: fmt.Sprintf(
-			"MCP server metadata at %s identifies this server as %q reporting version %q, which is not a "+
-				"parseable version for range comparison against %s (%s). Whether this deployment is "+
+			"MCP server metadata at %s identifies this server as %s reporting a version that cannot "+
+				"be compared with the affected range for %s (%s). Whether this deployment is "+
 				"affected could not be determined from what the server publishes.",
-			endpoint, name, version, adv.key, adv.refs),
-		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: %s\nserverInfo.version: %s\nrelated advisories: %s",
-			endpoint, name, version, adv.refs),
+			endpoint, adv.key, adv.key, adv.refs),
+		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: matched %s\nserverInfo.version: unparseable (value omitted)\nrelated advisories: %s",
+			endpoint, adv.key, adv.refs),
 		Remediation: fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", adv.refs),
 		TargetURL:   endpoint,
 	}
@@ -255,6 +223,18 @@ func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, version 
 type vvVersion struct {
 	parts      []int
 	prerelease bool
+}
+
+func vvPublicVersion(version *vvVersion) string {
+	parts := make([]string, len(version.parts))
+	for i, part := range version.parts {
+		parts[i] = strconv.Itoa(part)
+	}
+	label := strings.Join(parts, ".")
+	if version.prerelease {
+		label += " (prerelease)"
+	}
+	return label
 }
 
 // vvParseVersion accepts dotted versions with optional semver suffixes.

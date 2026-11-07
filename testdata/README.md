@@ -493,14 +493,14 @@ was added or changed. `clean` is factual, unique and stable. Nothing beyond
 `vulnerable`:
 
 ```sh
-python testdata/mcp_vulnerable_version_server.py vulnerable  # high indicator
+python testdata/mcp_vulnerable_version_server.py vulnerable  # medium indicator
 python testdata/mcp_vulnerable_version_server.py patched     # silent
 python testdata/mcp_vulnerable_version_server.py unknown     # silent
 batesian scan --target http://127.0.0.1:7809 --rule-ids mcp-vulnerable-version-001 -v
 ```
 
-The three postures differ only in what `serverInfo` reports: one patch below
-the mcp-server-git fix, exactly at it, and an unrelated product identity. The
+The three postures differ only in what `serverInfo` reports: an affected
+`mcp-git` version, the fixed version, and an unrelated product identity. The
 patched posture pins the range boundary - the fix version itself must not
 fire - and `unknown` pins that the advisory table is closed rather than
 heuristic. Only `initialize` is served; this rule reads identity and nothing

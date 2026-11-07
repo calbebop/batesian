@@ -5,10 +5,9 @@ Deliberately vulnerable MCP test server for validating:
   with published advisories, reporting a version inside the affected range.
 
 Postures:
-  vulnerable (default) - identifies as mcp-server-git 2025.12.17, one patch
-                         before the fixed release. The rule MUST fire a high
-                         indicator citing CVE-2025-68143.
-  patched              - same product at 2025.12.18. The rule MUST stay
+  vulnerable (default) - identifies as mcp-git 2026.10.19. The rule MUST fire
+                         a medium indicator citing GHSA-w766-5x43-whvw.
+  patched              - same product at 2026.10.28. The rule MUST stay
                          silent: the range is exclusive of the fix.
   unknown              - an unrelated custom identity. Nothing in the table
                          matches; the rule MUST stay silent.
@@ -35,8 +34,8 @@ import uvicorn
 PORT = 7809
 
 SERVER_INFO = {
-    "vulnerable": {"name": "mcp-server-git", "version": "2025.12.17"},
-    "patched": {"name": "mcp-server-git", "version": "2025.12.18"},
+    "vulnerable": {"name": "mcp-git", "version": "2026.10.19"},
+    "patched": {"name": "mcp-git", "version": "2026.10.28"},
     "unknown": {"name": "acme-custom-mcp", "version": "1.0.0"},
 }
 

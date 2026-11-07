@@ -11,19 +11,14 @@ info:
     product servers state who they are, which is exactly what an attacker
     needs to pick the right exploit; it is also what a scanner can check.
 
-    The advisory table is deliberately short: only products whose patched
-    version is published and unambiguous carry an entry, each with citations.
+    The advisory table is deliberately short: serverInfo.name must match a
+    known server identity exactly, and its version must map to a package release.
+    Reported version suffixes and unparseable values are omitted from findings.
     Current entries:
 
-      - mcp-server-git <2025.12.18 (CVE-2025-68143/44/45)
       - mcp-git >=2026.10.10 <2026.10.28
                                     (GHSA-w766-5x43-whvw; fixed in 2026.10.28)
-      - mcp-remote <0.1.16          (CVE-2025-6514)
-      - mcp-atlassian <0.17.0       (CVE-2026-27825/26)
-      - mcp-atlassian <0.22.0       (GHSA-489g TOCTOU bypass)
-      - inspector <0.14.1           (CVE-2025-49596)
       - serena <1.5.2               (CVE-2026-49471)
-      - mcpjam <=1.4.2              (CVE-2026-23744)
       - secure-filesystem-server >=1.0.0 <2.0.1
                                     (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
       - secure-filesystem-server >=1.0.0 <2.0.1
@@ -50,15 +45,18 @@ info:
     version. Those values cannot identify the installed package release. The
     inventory entries start where the reference servers report package versions.
 
+    Client helpers and inspector control planes are outside serverInfo version
+    matching. The mcp-atlassian handshake does not reliably report its package
+    release. Verify these components through installed-package inventory.
+
     A name that matches a table entry but reports an unparseable version is a
     low indicator: neither clean nor vulnerable can be claimed from what the
-    server publishes. A server whose identity matches nothing reports clean -
-    the table is closed and reviewed, not a heuristic net.
+    server publishes. Other identities yield no finding under this rule; they
+    are not evidence that the installed components are unaffected.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
-    - https://nvd.nist.gov/vuln/detail/CVE-2025-49596
-    - https://nvd.nist.gov/vuln/detail/CVE-2026-49471
+    - https://github.com/advisories/GHSA-37h2-6p4f-mp3q
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7rgq-gccq-qphx
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-hhwq-wxfx-cj7g
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-w766-5x43-whvw
