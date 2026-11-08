@@ -108,6 +108,27 @@ func TestValidateOAuthOriginsErrorsHideCredentials(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthEndpointErrorsHideCredentials(t *testing.T) {
+	const secret = "private-canary"
+	c := attack.NewHTTPClient(attack.Options{}, attack.NewVars("https://api.example.com/mcp", ""))
+	for _, raw := range []string{
+		"https://other.example.com/" + secret + "?code=" + secret,
+		"https://user:" + secret + "@api.example.com/register",
+		"https://api.example.com/register#" + secret,
+		"https://api.example.com/%zz?code=" + secret,
+		secret + "://example.com/register",
+	} {
+		err := c.ValidateOAuthEndpoint(raw)
+		if !errors.Is(err, attack.ErrInconclusive) || strings.Contains(err.Error(), secret) {
+			t.Fatalf("OAuth endpoint error disclosed credentials for %q: %v", raw, err)
+		}
+	}
+	err := c.ValidateOAuthEndpoint("https://other.example.com/register")
+	if err == nil || !strings.Contains(err.Error(), "authorize https://other.example.com:443 explicitly with --oauth-origin") {
+		t.Fatalf("authorized-origin guidance missing: %v", err)
+	}
+}
+
 func TestHTTPClient_OAuthDestinationPolicy(t *testing.T) {
 	c := attack.NewHTTPClient(attack.Options{
 		OAuthOrigins: []string{"https://login.example.com"},

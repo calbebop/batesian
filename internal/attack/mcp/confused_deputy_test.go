@@ -96,7 +96,11 @@ func confusedDeputyServer(mode string) *httptest.Server {
 			}
 			if mode == "vulnerable" {
 				// No exact-match: redirect to whatever was supplied.
-				http.Redirect(w, r, redirectURI+"?code=fake", http.StatusFound)
+				http.Redirect(w, r, redirectURI+"?code=private-canary", http.StatusFound)
+				return
+			}
+			if mode == "login-redirect" {
+				http.Redirect(w, r, base+"/login?session=private-canary", http.StatusFound)
 				return
 			}
 			// exact-match / dcr-restricted: the probe's redirect_uri was never
@@ -142,6 +146,31 @@ func TestConfusedDeputy_Vulnerable(t *testing.T) {
 	}
 	if !strings.Contains(f.Title, "confused deputy") {
 		t.Errorf("unexpected title: %q", f.Title)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") ||
+		!strings.Contains(f.Evidence, "Location: matched unregistered host (value omitted)") {
+		t.Fatalf("authorization redirect leaked or match evidence missing: %s", report)
+	}
+}
+
+func TestConfusedDeputy_OtherRedirectOmitted(t *testing.T) {
+	ts := confusedDeputyServer("login-redirect")
+	defer ts.Close()
+	findings := runConfusedDeputy(t, ts)
+	if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+		t.Fatalf("findings=%+v", findings)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") ||
+		!strings.Contains(findings[0].Evidence, "Location: present (value omitted)") {
+		t.Fatalf("authorization redirect leaked or status missing: %s", report)
 	}
 }
 
