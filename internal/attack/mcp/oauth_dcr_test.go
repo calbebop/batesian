@@ -177,7 +177,7 @@ func TestOAuthDCR_VulnerableScopeEscalation(t *testing.T) {
 	if strings.Contains(f.Evidence, "secret-") || strings.Contains(f.Evidence, "client_secret") {
 		t.Fatalf("registration credential in evidence: %s", f.Evidence)
 	}
-	if !strings.Contains(f.Evidence, "Registration response omitted") || !strings.Contains(f.Evidence, "Granted:") {
+	if !strings.Contains(f.Evidence, "Registration response omitted") || !strings.Contains(f.Evidence, "Privileged scopes granted:") {
 		t.Fatalf("registration evidence lost its scope verdict: %s", f.Evidence)
 	}
 }

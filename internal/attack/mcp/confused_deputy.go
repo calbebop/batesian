@@ -74,9 +74,9 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 		}
 		// Registration could not be completed for an unrelated reason, so
 		// /authorize was never probed and its redirect validation is unknown.
-		return nil, fmt.Errorf("%w: dynamic client registration at %s issued no client_id (%s), "+
+		return nil, fmt.Errorf("%w: dynamic client registration issued no client_id (%s), "+
 			"so the authorize endpoint's redirect_uri validation was never probed",
-			attack.ErrInconclusive, regEP, dcrResult.detail)
+			attack.ErrInconclusive, dcrResult.detail)
 	}
 
 	// Authorize with a DIFFERENT, unregistered off-origin redirect.
@@ -165,7 +165,7 @@ func registerDCRClient(ctx context.Context, client *attack.HTTPClient, registrat
 		"response_types": []string{"code"},
 	})
 	if err != nil {
-		return "", false, dcrOutcome{unavailable: true, detail: "the registration request failed: " + err.Error()}, nil
+		return "", false, dcrOutcome{unavailable: true, detail: "the registration request did not complete"}, nil
 	}
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:

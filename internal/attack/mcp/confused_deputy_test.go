@@ -44,13 +44,24 @@ func confusedDeputyServer(mode string) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
+			registrationEndpoint := base + "/register"
+			if mode == "dcr-disconnect" {
+				registrationEndpoint += "?key=registration-secret"
+			}
 			writeJSON(http.StatusOK, map[string]interface{}{
 				"issuer":                 base,
-				"registration_endpoint":  base + "/register",
+				"registration_endpoint":  registrationEndpoint,
 				"authorization_endpoint": base + "/authorize",
 				"token_endpoint":         base + "/token",
 			})
 		case r.URL.Path == "/register" && r.Method == http.MethodPost:
+			if mode == "dcr-disconnect" {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			redirects, _ := body["redirect_uris"].([]interface{})
@@ -212,6 +223,18 @@ func TestConfusedDeputy_UnrelatedRegistrationErrorsAreIncomplete(t *testing.T) {
 				t.Fatalf("registration did not test the redirect policy: findings=%+v err=%v", findings, err)
 			}
 		})
+	}
+}
+
+func TestConfusedDeputy_RegistrationErrorOmitsEndpointQuery(t *testing.T) {
+	ts := confusedDeputyServer("dcr-disconnect")
+	defer ts.Close()
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("registration did not complete: findings=%+v err=%v", findings, err)
+	}
+	if strings.Contains(err.Error(), "registration-secret") {
+		t.Fatalf("registration endpoint query in error: %v", err)
 	}
 }
 

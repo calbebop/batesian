@@ -222,6 +222,8 @@ still contain a privileged token, compared per whitespace-delimited scope token
 scope policy is permissive, but whether a privileged token is actually issued
 depends on the grant/consent step, so manual verification is recommended. A server
 that rejects the registration or reduces the grant to read-only produces no finding.
+Findings list only recognized privileged scopes; the raw registration response is
+omitted.
 
 ---
 

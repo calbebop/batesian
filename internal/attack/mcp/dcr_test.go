@@ -14,19 +14,7 @@ import (
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// Three rules register an OAuth client on the target and none of them removed it, so
-// a scan against a server with open dynamic client registration left three behind
-// permanently: one with an off-origin redirect_uri, one holding whatever privileged
-// scopes the server would grant an anonymous registrant, and one whose metadata URLs
-// point at an OOB listener that stops existing when the scan ends.
-//
-// RFC 7592 is the way back: a registration response may carry a
-// registration_client_uri and a registration_access_token, and a DELETE to that URI
-// with that token deregisters the client. These tests drive a server that implements
-// it, and the ways a server can fail to.
-
-// dcrServer is an authorization server with open registration. It records which
-// clients exist so a test can assert the scan removed what it created.
+// dcrServer tracks registered clients and simulates RFC 7592 cleanup responses.
 type dcrServer struct {
 	*httptest.Server
 	mu sync.Mutex
@@ -52,6 +40,8 @@ const (
 	dcrUserinfoURI                   // a URI with userinfo, which must not be followed
 	dcrRefuseDel                     // full advertisement, but DELETE is refused
 	dcrAcceptedDel                   // DELETE is queued but not confirmed
+	dcrMalformedURI
+	dcrDeleteError
 )
 
 func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrServer {
@@ -101,6 +91,12 @@ func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrSer
 		case dcrUserinfoURI:
 			out["registration_client_uri"] = "http://attacker@" + r.Host + "/register/" + id
 			out["registration_access_token"] = "rat-" + id
+		case dcrMalformedURI:
+			out["registration_client_uri"] = "http://%zz-cleanup-secret"
+			out["registration_access_token"] = "rat-" + id
+		case dcrDeleteError:
+			out["registration_client_uri"] = base + "/register/" + id + "?key=cleanup-secret"
+			out["registration_access_token"] = "rat-" + id
 		case dcrNoneAtAll:
 			// Advertise nothing: an RFC 7591 server without the management protocol.
 		}
@@ -125,6 +121,16 @@ func newDCRServer(t *testing.T, support dcrSupport, grantedScope string) *dcrSer
 		if d.support == dcrAcceptedDel {
 			d.mu.Unlock()
 			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if d.support == dcrDeleteError {
+			d.mu.Unlock()
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack delete response: %v", err)
+				return
+			}
+			_ = conn.Close()
 			return
 		}
 		delete(d.live, id)
@@ -291,6 +297,44 @@ func TestDCRCleanup_RejectsSchemeChangesAndUserinfo(t *testing.T) {
 		if !strings.Contains(findings[0].Evidence, "another origin is not followed") {
 			t.Fatalf("support %d: rejected management URI was not explained:\n%s", support, findings[0].Evidence)
 		}
+	}
+}
+
+func TestDCRCleanup_OmitsServerSuppliedSecrets(t *testing.T) {
+	for _, support := range []dcrSupport{dcrMalformedURI, dcrDeleteError} {
+		srv := newDCRServer(t, support, "tools:write")
+		state := &attack.TargetState{}
+		findings, err := mcpattack.NewOAuthDCRExecutor(attack.RuleContext{
+			ID: "mcp-oauth-dcr-001", Severity: "high",
+		}).Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5, TargetState: state})
+		srv.Close()
+		if err != nil || len(findings) != 1 {
+			t.Fatalf("support %d: findings=%+v err=%v", support, findings, err)
+		}
+		objects := state.Snapshot()
+		if len(objects) != 1 || objects[0].Cleanup == attack.CleanupCompleted {
+			t.Fatalf("support %d: cleanup state = %+v", support, objects)
+		}
+		for _, output := range []string{findings[0].Evidence, objects[0].CleanupDetail} {
+			if strings.Contains(output, "cleanup-secret") {
+				t.Fatalf("support %d: cleanup secret in output: %s", support, output)
+			}
+		}
+	}
+}
+
+func TestDCRFinding_OmitsUnrelatedGrantedScope(t *testing.T) {
+	srv := newDCRServer(t, dcrFull, "tools:write private-scope-canary")
+	defer srv.Close()
+	findings, err := mcpattack.NewOAuthDCRExecutor(attack.RuleContext{
+		ID: "mcp-oauth-dcr-001", Severity: "high",
+	}).Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	if strings.Contains(findings[0].Evidence, "private-scope-canary") ||
+		!strings.Contains(findings[0].Evidence, "Privileged scopes granted: [tools:write]") {
+		t.Fatalf("scope evidence = %s", findings[0].Evidence)
 	}
 }
 

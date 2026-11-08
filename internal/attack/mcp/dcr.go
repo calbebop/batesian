@@ -11,27 +11,10 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// Three rules register an OAuth client on the target, and none of them removed it.
-// A scan against an authorization server with open dynamic client registration
-// therefore left three clients behind, permanently:
-//
-//	mcp-confused-deputy-001     a client whose redirect_uri points off-origin, which
-//	                            is the attacker-shaped value the rule exists to see
-//	                            accepted
-//	mcp-oauth-dcr-001           a client holding whatever privileged scopes the
-//	                            server was willing to grant an anonymous registrant
-//	mcp-oauth-metadata-ssrf-001 a client whose metadata URL fields point at the
-//	                            scan's OOB listener, a host that stops existing when
-//	                            the scan ends
-//
-// That is a scanner changing the state of the system it was pointed at and not
-// changing it back. RFC 7592 is the way back: a registration response MAY carry a
-// registration_client_uri and a registration_access_token, and a DELETE to that URI
-// with that token deregisters the client.
+// DCR probes may register clients on the target. RFC 7592 cleanup is attempted
+// when the server returns a management URI and access token.
 
-// dcrCleanup is what happened to a client this scan registered. It is reported in
-// the finding's evidence, because an operator who authorized a scan needs to know
-// whether it left anything behind, and if so what to look for.
+// dcrCleanup records whether a registered client was removed.
 type dcrCleanup struct {
 	clientName string
 	status     attack.CleanupStatus
@@ -39,9 +22,7 @@ type dcrCleanup struct {
 	reason string
 }
 
-// evidenceLine renders the outcome for a finding's evidence. It names the client
-// either way: on success so the record is complete, and on failure so the operator
-// has the string to search their authorization server for.
+// evidenceLine names the client so an operator can find it if cleanup failed.
 func (c dcrCleanup) evidenceLine() string {
 	if c.clientName == "" {
 		return ""
@@ -119,7 +100,7 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 	if !sameOrigin(clientURI, registrationEndpoint) {
 		out.reason = fmt.Sprintf("its registration_client_uri points at %s while registration "+
 			"happened at %s, and a target-chosen URI on another origin is not followed",
-			hostOrRaw(clientURI), hostOrRaw(registrationEndpoint))
+			hostOrInvalid(clientURI), hostOrInvalid(registrationEndpoint))
 		return out
 	}
 
@@ -130,7 +111,7 @@ func deregisterDCRClient(ctx context.Context, client *attack.HTTPClient,
 		"Authorization": "Bearer " + accessToken,
 	})
 	if err != nil {
-		out.reason = "the delete request failed: " + err.Error()
+		out.reason = "the delete request did not complete"
 		return out
 	}
 	if resp.StatusCode == http.StatusNoContent {
@@ -173,12 +154,10 @@ func effectivePort(u *url.URL) string {
 	}
 }
 
-// hostOrRaw returns a URL's host for use in a message, falling back to the raw
-// string so an unparseable value is still shown rather than dropped.
-func hostOrRaw(raw string) string {
+func hostOrInvalid(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return raw
+		return "<invalid URI>"
 	}
 	return u.Host
 }
