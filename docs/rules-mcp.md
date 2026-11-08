@@ -883,6 +883,8 @@ local listener's private address confirms a request to that address and is
 **high/confirmed**, but does not establish access to other hosts or response
 contents. With external `--oob-url`, acceptance without an observed callback
 remains a manual-verification indicator.
+Findings include the generated marker and fetched field but omit collector and
+callback request URLs.
 
 ---
 

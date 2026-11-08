@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +22,7 @@ func omRuleCtx() attack.RuleContext {
 // metadataSSRFServer models an OAuth authorization server with a DCR endpoint.
 // mode controls behaviour on registration:
 //   - "fetch":   fetches the registrant-supplied jwks_uri
+//   - "fetch-canary": fetches jwks_uri with a private query marker
 //   - "fetch-reject": fetches jwks_uri, then rejects registration
 //   - "nofetch": stores metadata without fetching (safe)
 //   - "no-oauth": serves no authorization-server metadata
@@ -63,8 +62,11 @@ func metadataSSRFServerManaged(mode string, deleted *[]string) *httptest.Server 
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 
-		if mode == "fetch" || mode == "fetch-managed" || mode == "fetch-reject" {
+		if mode == "fetch" || mode == "fetch-canary" || mode == "fetch-managed" || mode == "fetch-reject" {
 			if u, _ := body["jwks_uri"].(string); u != "" {
+				if mode == "fetch-canary" {
+					u += "?private-canary=1"
+				}
 				// VULNERABLE: fetch the registrant-supplied URL server-side.
 				c := &http.Client{Timeout: 3 * time.Second}
 				if req, err := http.NewRequest(http.MethodGet, u, nil); err == nil {
@@ -108,26 +110,26 @@ func runMetadataSSRF(t *testing.T, ts *httptest.Server) []attack.Finding {
 
 func assertMetadataCallbackGrade(t *testing.T, finding attack.Finding) {
 	t.Helper()
-	const prefix = "Callback destination: "
-	_, destination, ok := strings.Cut(finding.Evidence, prefix)
-	if !ok {
-		t.Fatalf("callback destination missing: %+v", finding)
+	if finding.Severity != "high" || finding.Confidence != attack.ConfirmedExploit ||
+		!strings.Contains(finding.Description, "this private address") ||
+		!strings.Contains(finding.Evidence, "Callback destination: private (URL omitted)") {
+		t.Fatalf("private callback undergraded: %+v", finding)
 	}
-	destination, _, _ = strings.Cut(destination, "\n")
-	u, err := url.Parse(destination)
+}
+
+func TestMetadataSSRF_CallbackRequestURLOmitted(t *testing.T) {
+	ts := metadataSSRFServer("fetch-canary")
+	defer ts.Close()
+	findings := runMetadataSSRF(t, ts)
+	if len(findings) != 1 {
+		t.Fatalf("findings=%+v", findings)
+	}
+	report, err := json.Marshal(findings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ip := net.ParseIP(u.Hostname())
-	private := ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
-	if private {
-		if finding.Severity != "high" || finding.Confidence != attack.ConfirmedExploit ||
-			!strings.Contains(finding.Description, "this private address") {
-			t.Fatalf("private callback undergraded: %+v", finding)
-		}
-	} else if finding.Severity != "info" || finding.Confidence != attack.RiskIndicator ||
-		strings.Contains(finding.Title, "private") {
-		t.Fatalf("public callback overstated: %+v", finding)
+	if strings.Contains(string(report), "private-canary") {
+		t.Fatalf("callback request URL leaked into finding: %s", report)
 	}
 }
 
@@ -188,7 +190,7 @@ func TestMetadataSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 
 	findings, err := mcpattack.NewOAuthMetadataSSRFExecutor(omRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{
 		TimeoutSeconds: 5,
-		OOBListenerURL: "http://oob.batesian.invalid",
+		OOBListenerURL: "http://oob.batesian.invalid/private-canary",
 		TargetState:    state,
 	})
 	if err != nil || len(findings) != 1 {
@@ -196,6 +198,13 @@ func TestMetadataSSRF_ExternalOOBNeedsVerification(t *testing.T) {
 	}
 	if findings[0].Severity != "info" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("external OOB should remain an unverified indicator: %+v", findings[0])
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") || !strings.Contains(findings[0].Evidence, "Callback marker: /batesian-") {
+		t.Fatalf("OOB URL leaked or callback marker missing: %s", report)
 	}
 	objects := state.Snapshot()
 	if len(objects) != 1 || objects[0].Cleanup != attack.CleanupNotAttempted ||

@@ -179,7 +179,8 @@ reports a **medium indicator** when the target actually calls back to its privat
 address. This proves delivery, not access to another internal service or a policy
 violation. Merely accepting a push-notification config is not reported.
 Supplying `--oob-url` points the callback at an external collector and emits
-operator guidance for manual confirmation.
+operator guidance for manual confirmation. Findings include the generated
+callback marker, not the collector URL or observed request URL.
 
 The [A2A Java SDK push SSRF advisory](https://github.com/a2aproject/a2a-java/security/advisories/GHSA-q78c-5jjq-57g8)
 describes a related failure. A callback does not identify the SDK or prove
@@ -740,7 +741,8 @@ registration paths as `a2a-push-ssrf-001`, including v1.0 inline configuration.
 With an external `--oob-url`, registration is informational and delivery needs
 manual verification. Compare the SHA-256 of the observed Bearer credential with
 the fingerprint in the finding; the credential itself is omitted. The rule
-attempts to delete confirmed configs with
-returned IDs after readback confirms the callback URL. Inline or unidentified
+reports the generated callback marker but omits the collector and request URLs.
+It attempts to delete confirmed configs with returned IDs after readback
+confirms the callback URL. Inline or unidentified
 configs may remain. External OOB probes retain configs for manual verification.
 A refused task creation is not tested.

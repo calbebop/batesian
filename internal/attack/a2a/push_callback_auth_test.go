@@ -38,6 +38,7 @@ type cbAuthServer struct {
 	preflight            bool
 	wrongTaskFirst       bool
 	callOut              bool
+	callbackQuery        string
 }
 
 func (s *cbAuthServer) handler() http.HandlerFunc {
@@ -104,7 +105,11 @@ func (s *cbAuthServer) handler() http.HandlerFunc {
 							},
 						}
 						b, _ := json.Marshal(body)
-						callback, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(b)))
+						callbackURL := url
+						if s.callbackQuery != "" {
+							callbackURL += "?" + s.callbackQuery
+						}
+						callback, err := http.NewRequest(http.MethodPost, callbackURL, strings.NewReader(string(b)))
 						if err != nil {
 							return
 						}
@@ -202,6 +207,22 @@ func TestCbAuth_TokenOnlyCallbackFires(t *testing.T) {
 	findings, err := runCbAuth(t, target.URL)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
 		t.Fatalf("want high finding when only the optional token is echoed, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestCbAuth_CallbackRequestURLOmitted(t *testing.T) {
+	target := httptest.NewServer((&cbAuthServer{callOut: true, callbackQuery: "private-canary=1"}).handler())
+	defer target.Close()
+	findings, err := runCbAuth(t, target.URL)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") {
+		t.Fatalf("callback request URL leaked into finding: %s", report)
 	}
 }
 
@@ -396,7 +417,7 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 
 	state := &attack.TargetState{}
 	findings, err := a2a.NewPushCallbackAuthExecutor(cbAuthRC()).Execute(t.Context(), target.URL,
-		attack.Options{TimeoutSeconds: 10, OOBListenerURL: "http://127.0.0.1:9/oob", TargetState: state})
+		attack.Options{TimeoutSeconds: 10, OOBListenerURL: "http://127.0.0.1:9/private-canary", TargetState: state})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,6 +440,13 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 	}
 	if strings.Contains(findings[0].Evidence+findings[0].Description, credential) {
 		t.Error("finding contains the raw callback credential")
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), "private-canary") || !strings.Contains(findings[0].Evidence, "callback marker: batesian-oob-") {
+		t.Fatalf("OOB URL leaked or callback marker missing: %s", report)
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||
