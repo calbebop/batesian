@@ -923,7 +923,8 @@ redirect_uri matching and per-client consent, and RFC 6749 Section 4.1.2.1
 requires the server to reject a mismatching redirect_uri and not redirect to it.
 The check registers a client via DCR with an off-origin redirect, then requests
 `/authorize` with a different, unregistered off-origin redirect (both on the
-reserved `.invalid` TLD, so they never resolve and no code is ever harvested). A
+reserved `.invalid` TLD, so no callback is delivered). Batesian never follows
+the redirect or redeems a code, and omits the Location value from findings. A
 **confirmed** finding is raised only when the server answers with a 3xx whose
 Location host is the unregistered redirect - a direct exact-match violation. If
 DCR instead accepted the arbitrary off-origin redirect but the authorize-time

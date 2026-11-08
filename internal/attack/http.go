@@ -185,16 +185,13 @@ func (c *HTTPClient) ValidateOAuthEndpoint(rawURL string) error {
 	rawURL = c.vars.Expand(rawURL)
 	u, err := url.Parse(rawURL)
 	if err != nil || !u.IsAbs() || u.Hostname() == "" {
-		return fmt.Errorf("%w: target advertised an invalid OAuth endpoint %q",
-			ErrInconclusive, rawURL)
+		return fmt.Errorf("%w: target advertised an invalid OAuth endpoint URL", ErrInconclusive)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("%w: target advertised OAuth endpoint %q with unsupported scheme %q",
-			ErrInconclusive, rawURL, u.Scheme)
+		return fmt.Errorf("%w: target advertised OAuth endpoint with unsupported scheme", ErrInconclusive)
 	}
 	if u.User != nil || u.Fragment != "" {
-		return fmt.Errorf("%w: target advertised unsafe OAuth endpoint %q (userinfo and fragments are not allowed)",
-			ErrInconclusive, rawURL)
+		return fmt.Errorf("%w: target advertised OAuth endpoint with userinfo or fragment", ErrInconclusive)
 	}
 	origin := originOf(rawURL)
 	if origin == c.targetOrigin {
@@ -203,9 +200,9 @@ func (c *HTTPClient) ValidateOAuthEndpoint(rawURL string) error {
 	if _, ok := c.oauthOrigins[origin]; ok {
 		return nil
 	}
-	return fmt.Errorf("%w: target advertised OAuth endpoint %q outside the authorized origin %s; "+
+	return fmt.Errorf("%w: target advertised OAuth endpoint on %s outside the authorized origin %s; "+
 		"authorize %s explicitly with --oauth-origin to test it",
-		ErrInconclusive, rawURL, c.targetOrigin, origin)
+		ErrInconclusive, origin, c.targetOrigin, origin)
 }
 
 // NewUnauthHTTPClient creates an attack HTTP client with no bearer token.

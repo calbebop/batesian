@@ -33,8 +33,9 @@ info:
          an INDICATOR is raised (confused deputy precondition).
 
     Redirect targets use the reserved .invalid TLD (RFC 6761) with a per-run
-    marker, so they never resolve and the flow is never completed: the probe only
-    reads the server's redirect decision and never harvests a code.
+    marker, so they never resolve and the flow is never completed. The probe
+    never follows the redirect or redeems a code; Location values are omitted
+    from findings.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices

@@ -110,14 +110,18 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 				"takeover primitive.",
 			Evidence: fmt.Sprintf(
 				"authorization_endpoint: %s\nregistered redirect_uri: %s\nunregistered redirect_uri sent: %s\n"+
-					"server response: HTTP %d, Location: %s\n%s",
-				authEP, registeredRedirect, attackerRedirect, status, loc, cleanup.evidenceLine()),
+					"server response: HTTP %d, Location: matched unregistered host (value omitted)\n%s",
+				authEP, registeredRedirect, attackerRedirect, status, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   authEP,
 		}}, nil
 	}
 
 	if dcrEchoedRedirect {
+		locationStatus := "absent"
+		if loc != "" {
+			locationStatus = "present (value omitted)"
+		}
 		return []attack.Finding{{
 			RuleID:     e.rule.ID,
 			RuleName:   e.rule.Name,
@@ -133,7 +137,7 @@ func (e *ConfusedDeputyExecutor) Execute(ctx context.Context, target string, opt
 			Evidence: fmt.Sprintf(
 				"registration_endpoint: %s\naccepted off-origin redirect_uri: %s\nauthorize probe: HTTP %d, "+
 					"Location: %s\n%s",
-				regEP, registeredRedirect, status, loc, cleanup.evidenceLine()),
+				regEP, registeredRedirect, status, locationStatus, cleanup.evidenceLine()),
 			Remediation: e.rule.Remediation,
 			TargetURL:   regEP,
 		}}, nil
