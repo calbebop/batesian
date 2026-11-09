@@ -169,9 +169,9 @@ func (e *TaskEnumerationExecutor) probeListing(endpoint, taskID string, a, b att
 	if !containsTaskID(ownList.ids, taskID) {
 		// The owner cannot see their own task, so this listing does not enumerate what
 		// the rule assumes it enumerates and B seeing nothing would prove nothing.
-		return finish(nil, fmt.Errorf("%w: ListTasks at %s did not return principal %s's own task %s, "+
+		return finish(nil, fmt.Errorf("%w: ListTasks at %s did not return principal %s's own task, "+
 			"so the listing does not enumerate the tasks this rule compares against",
-			attack.ErrInconclusive, endpoint, a.Name, taskID))
+			attack.ErrInconclusive, endpoint, a.Name))
 	}
 
 	anonList := list(unauthClient, nil, "anonymous")
@@ -198,7 +198,7 @@ func (e *TaskEnumerationExecutor) probeListing(endpoint, taskID string, a, b att
 		return finish(nil, nil)
 	}
 
-	return finish([]attack.Finding{e.finding(endpoint, a, b, taskID, otherList.ids)}, nil)
+	return finish([]attack.Finding{e.finding(endpoint, a, b, len(otherList.ids))}, nil)
 }
 
 // listOutcome distinguishes complete, absent, refused, and incomplete listings.
@@ -436,8 +436,7 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 	return taskID, obs
 }
 
-func (e *TaskEnumerationExecutor) finding(endpoint string, a, b attack.Principal,
-	taskID string, otherList []string) attack.Finding {
+func (e *TaskEnumerationExecutor) finding(endpoint string, a, b attack.Principal, returnedCount int) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -452,10 +451,10 @@ func (e *TaskEnumerationExecutor) finding(endpoint string, a, b attack.Principal
 				"agent's access policy.", endpoint, a.Name, b.Name, b.Name),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\ntask creator: %s (configured tenant %s)\nlisting principal: %s (configured tenant %s)\n"+
-				"task created by %s: %s\ntask ids returned to %s: %v\n"+
+				"owner task: matched in listing\ntask IDs returned to %s: %d (values omitted)\n"+
 				"unauthenticated ListTasks: did not return the task\n"+
 				"authorization policy for the two principals: not verified",
-			endpoint, a.Name, a.Tenant, b.Name, b.Tenant, a.Name, taskID, b.Name, otherList),
+			endpoint, a.Name, a.Tenant, b.Name, b.Tenant, b.Name, returnedCount),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}

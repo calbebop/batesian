@@ -88,12 +88,12 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 	readURL = u.String()
 	ownerRead, err := owner.GET(ctx, readURL, headers)
 	if err != nil || ownerRead == nil || !ownerRead.IsSuccess() {
-		return nil, fmt.Errorf("%w: the owner could not read REST task %s at %s",
-			attack.ErrInconclusive, taskID, readURL), false
+		return nil, fmt.Errorf("%w: the owner could not read the REST task at %s",
+			attack.ErrInconclusive, tasksURL), false
 	}
 	if location, _ := taskMarkerLocation(ownerRead.Body, taskID, marker); location == "" {
-		return nil, fmt.Errorf("%w: the owner read of REST task %s omitted its probe content",
-			attack.ErrInconclusive, taskID), false
+		return nil, fmt.Errorf("%w: the owner read of the REST task omitted its probe content",
+			attack.ErrInconclusive), false
 	}
 	anonResp, err := anon.POST(ctx, sendURL, sendHeaders,
 		restTaskSendRequest(randID+"-anon-"+version, "batesian anonymous probe "+randID, version))
@@ -112,27 +112,27 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 	read, err := anon.GET(ctx, readURL, headers)
 	if err != nil || read == nil {
 		return nil, fmt.Errorf("%w: anonymous REST task read at %s did not answer",
-			attack.ErrInconclusive, readURL), true
+			attack.ErrInconclusive, tasksURL), true
 	}
 	if read.StatusCode == 401 || read.StatusCode == 403 || read.StatusCode == 404 {
 		return nil, nil, true
 	}
 	if !read.IsSuccess() {
 		return nil, fmt.Errorf("%w: anonymous REST task read at %s returned HTTP %d",
-			attack.ErrInconclusive, readURL, read.StatusCode), true
+			attack.ErrInconclusive, tasksURL, read.StatusCode), true
 	}
 	if !read.IsJSON() || isJSONRPCError(read.Body) {
 		return nil, fmt.Errorf("%w: anonymous REST task read at %s returned no task JSON",
-			attack.ErrInconclusive, readURL), true
+			attack.ErrInconclusive, tasksURL), true
 	}
 	location, matched := taskMarkerLocation(read.Body, taskID, marker)
 	if location == "" {
 		if matched {
-			return nil, fmt.Errorf("%w: anonymous REST task %s omitted its owner probe content",
-				attack.ErrInconclusive, taskID), true
+			return nil, fmt.Errorf("%w: anonymous REST task omitted its owner probe content",
+				attack.ErrInconclusive), true
 		}
-		return nil, fmt.Errorf("%w: anonymous REST task read returned no matching task %s",
-			attack.ErrInconclusive, taskID), true
+		return nil, fmt.Errorf("%w: anonymous REST task read returned no matching task",
+			attack.ErrInconclusive), true
 	}
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,
@@ -140,12 +140,12 @@ func (e *TaskIDORExecutor) probeRESTTaskRead(ctx context.Context, owner, anon *a
 		Severity:   "medium",
 		Confidence: attack.RiskIndicator,
 		Title:      "A2A task content visible without owner credentials",
-		Description: fmt.Sprintf("An anonymous REST task read returned the owner's unique probe text in task %s's %s, "+
-			"despite the same task-creation endpoint rejecting anonymous callers. The observation alone does not establish whether the task is private.", taskID, location),
-		Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous GET: HTTP %d\nmatched task content omitted",
-			taskID, marker, location, read.StatusCode),
+		Description: fmt.Sprintf("An anonymous REST task read returned the owner's unique probe text from a task's %s, "+
+			"despite the same task-creation endpoint rejecting anonymous callers. The observation alone does not establish whether the task is private.", location),
+		Evidence: fmt.Sprintf("owner task: matched\nprobe text: matched\nlocation: %s\nanonymous GET: HTTP %d\nmatched task content omitted",
+			location, read.StatusCode),
 		Remediation: e.rule.Remediation,
-		TargetURL:   readURL,
+		TargetURL:   tasksURL,
 		Access:      &attack.AccessObservation{Operation: attack.A2ATasksGet, Caller: "anonymous", Owner: "default"},
 	}}, nil, true
 }

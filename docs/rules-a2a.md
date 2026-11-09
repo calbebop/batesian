@@ -236,8 +236,9 @@ owner's task ID in a correlated response. Both bindings follow `nextPageToken`
 for up to ten pages; incomplete scans are inconclusive. When JSON-RPC already
 shows the owner's task, the REST list probe is skipped to avoid duplicate
 findings.
-Findings record the matching method and content location without copying task
-responses or list pages into the report.
+Findings record the matching method and content location, plus the page number
+when applicable, without copying task IDs, page tokens, probe text, responses,
+or list pages into the report.
 
 **Precondition:** supply `--token` so there is an authenticated owner identity to
 test against. Without a token the owner-task read is skipped; the unauthenticated
@@ -729,6 +730,8 @@ The rule probes v1.0 JSON-RPC `ListTasks` and the HTTP+JSON task list at each
 advertised REST base: `/tasks` for v1.0 and `/v1/tasks` for v0.3. It creates a
 task through the same binding before checking its listing. REST prefixes come
 from the agent card and are pinned to the target origin, not guessed.
+Findings report the matched owner task and number of returned IDs without
+copying those IDs or the list pages.
 
 ---
 
