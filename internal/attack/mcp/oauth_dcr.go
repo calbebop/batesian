@@ -10,28 +10,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// OAuthDCRExecutor tests whether an MCP server's OAuth 2.1 dynamic client
-// registration (DCR) endpoint lets an UNAUTHENTICATED party register a client
-// authorized for high-privilege scopes (rule mcp-oauth-dcr-001).
-//
-// Scope is deliberately narrow. Open/anonymous DCR is permitted by RFC 7591 and
-// supported by the MCP authorization spec, so it is NOT reported on its own.
-// Redirect-URI shape is also not judged at registration time: loopback redirects
-// are endorsed by RFC 8252 and a client's own external callback cannot be deemed
-// malicious by the server. The single high-value, protocol-specific failure is
-// an authorization server that hands an anonymous registrant admin/write scopes.
-//
-// Attack sequence:
-//  1. Discover the DCR endpoint via /.well-known/oauth-authorization-server.
-//  2. Send an UNAUTHENTICATED registration requesting admin/write scopes.
-//  3. Fire only when the server returns a granted `scope` containing a
-//     privileged scope token - i.e. it registered an anonymous client as
-//     authorized for those scopes.
-//
-// This is registration-time evidence only: a permissive granted `scope` shows
-// the server did not restrict the requested scopes, but whether a privileged
-// token is actually issued depends on the grant/consent step. The finding is
-// therefore a RiskIndicator, not a demonstrated escalation.
+// OAuthDCRExecutor checks whether anonymous registration grants privileged
+// scopes. Open DCR is allowed; token issuance and consent are not tested.
 type OAuthDCRExecutor struct {
 	rule attack.RuleContext
 }
@@ -145,8 +125,8 @@ func (e *OAuthDCRExecutor) Execute(ctx context.Context, target string, opts atta
 			"actually issued depends on the grant/consent step, so manually verify whether the authorization "+
 			"server issues a token with these scopes to the anonymous client.",
 			registrationEndpoint, granted),
-		Evidence: fmt.Sprintf("Requested: %q\nGranted: %q\nPrivileged tokens granted: %v\nHTTP %d from %s\nRegistration response omitted (may contain credentials)\n%s",
-			escalatedScope, grantedScope, granted, escalatedResp.StatusCode, registrationEndpoint,
+		Evidence: fmt.Sprintf("Requested: %q\nPrivileged scopes granted: %v\nHTTP %d from %s\nRegistration response omitted (may contain credentials)\n%s",
+			escalatedScope, granted, escalatedResp.StatusCode, registrationEndpoint,
 			cleanup.evidenceLine()),
 		Remediation: e.rule.Remediation,
 		TargetURL:   registrationEndpoint,
