@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -290,6 +291,21 @@ func TestDelegation_Vulnerable(t *testing.T) {
 	}
 	if len(f.Chain) != 2 || f.Chain[1].Principal != "tenant-b" {
 		t.Errorf("expected 2-hop chain with tenant-b continuing, got %+v", f.Chain)
+	}
+	report, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"task-A-", "ctx-A"} {
+		if strings.Contains(string(report), value) {
+			t.Errorf("finding contains a task handle or probe value %q: %s", value, report)
+		}
+	}
+	if regexp.MustCompile(`cross-[a-f0-9]{6,12}`).Match(report) {
+		t.Errorf("finding contains the generated continuation marker: %s", report)
+	}
+	if !strings.Contains(f.Evidence, "probe message in owner task history: matched") {
+		t.Errorf("finding lost the verified continuation evidence: %s", f.Evidence)
 	}
 }
 
@@ -693,8 +709,20 @@ func TestDelegation_ConsumesBlackboardTaskID(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding consuming the blackboard task-id, got %d: %+v", len(findings), findings)
 	}
-	if c := findings[0].Chain; len(c) != 2 || !strings.Contains(c[0].Action, preTask) || !strings.Contains(c[0].Action, "consumed from blackboard") {
-		t.Errorf("expected hop 1 to cite the consumed blackboard task, got %+v", c)
+	if c := findings[0].Chain; len(c) != 2 || !strings.Contains(c[0].Action, "consumed from blackboard") {
+		t.Errorf("expected hop 1 to cite blackboard provenance, got %+v", c)
+	}
+	report, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{preTask, "ctx-upstream"} {
+		if strings.Contains(string(report), value) {
+			t.Errorf("blackboard finding contains a task handle or probe value %q: %s", value, report)
+		}
+	}
+	if regexp.MustCompile(`cross-[a-f0-9]{6,12}`).Match(report) {
+		t.Errorf("blackboard finding contains the generated continuation marker: %s", report)
 	}
 }
 

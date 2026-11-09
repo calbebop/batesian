@@ -436,6 +436,8 @@ is inconclusive. If the unauthenticated message is stored, the rule leaves the
 case to the unauthenticated task-access checks. The finding proves stored
 cross-principal input, not downstream execution or absence of a valid delegation
 grant. Its provenance records whether A's task came from an upstream rule.
+Findings retain the verified owner, caller, and task origin without copying
+task or context IDs or the probe message.
 
 ---
 
@@ -464,6 +466,8 @@ A's own marker in that history; missing history is inconclusive. Distinct from
 (object-level read by task id) and `a2a-delegation-integrity-001` (continuing
 another principal's task): here the vector is the client-controlled context
 identifier itself.
+Findings retain the context and readback outcomes without copying the
+client-chosen context ID, task IDs, or probe text.
 
 ---
 
@@ -755,6 +759,7 @@ With an external `--oob-url`, registration is informational and delivery needs
 manual verification. Compare the SHA-256 of the observed Bearer credential with
 the fingerprint in the finding; the credential itself is omitted. The rule
 reports the generated callback marker but omits the collector and request URLs.
+Task IDs are omitted from findings and inconclusive errors.
 It attempts to delete confirmed configs with returned IDs after readback
 confirms the callback URL. Inline or unidentified
 configs may remain. External OOB probes retain configs for manual verification.

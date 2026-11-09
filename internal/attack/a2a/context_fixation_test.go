@@ -2,9 +2,11 @@ package a2a_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -300,6 +302,19 @@ func TestContextFixation_Vulnerable(t *testing.T) {
 	if len(f.Chain) != 3 || f.Chain[2].Principal != "tenant-a" {
 		t.Errorf("expected a 3-hop chain ending with the attacker reading, got %+v", f.Chain)
 	}
+	report, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"batesian-fixctx-", "batesian-secret-", "task-A-", "task-B-"} {
+		if strings.Contains(string(report), value) {
+			t.Errorf("finding contains a task handle or probe value %q: %s", value, report)
+		}
+	}
+	if !strings.Contains(f.Evidence, "client-supplied and honored") ||
+		!strings.Contains(f.Evidence, "probe message visible") {
+		t.Errorf("finding lost the verified context and readback evidence: %s", f.Evidence)
+	}
 }
 
 func TestContextFixation_PartialWireOutcomes(t *testing.T) {
@@ -442,6 +457,9 @@ func TestContextFixation_ReadbackEvidence(t *testing.T) {
 			}
 			if len(findings) != want {
 				t.Fatalf("findings=%+v; want %d", findings, want)
+			}
+			if tc.mode == "wrong-task" && strings.Contains(err.Error(), "task-A-") {
+				t.Fatalf("inconclusive reason contains the task handle: %v", err)
 			}
 		})
 	}

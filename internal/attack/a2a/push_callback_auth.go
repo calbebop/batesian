@@ -278,10 +278,10 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 			Confidence: attack.RiskIndicator,
 			Title:      "A2A push config accepted with webhook authentication; manual verification required",
 			Description: fmt.Sprintf(
-				"The agent accepted a push config via %s. Check your OOB collector for a task %s "+
+				"The agent accepted a push config via %s. Check your OOB collector for a task "+
 					"notification with marker %s. Compare the SHA-256 of its Bearer credential with the fingerprint in evidence.",
-				acceptedBinding, acceptedTaskID, callbackMarker),
-			Evidence:    fmt.Sprintf("registration binding: %s\ncallback marker: %s\ncallback URL omitted\ntask id: %s\nexpected bearer credential SHA-256: %x", acceptedBinding, callbackMarker, acceptedTaskID, credentialHash),
+				acceptedBinding, callbackMarker),
+			Evidence:    fmt.Sprintf("registration binding: %s\ncallback marker: %s\ncallback URL and task ID omitted\nexpected bearer credential SHA-256: %x", acceptedBinding, callbackMarker, credentialHash),
 			Remediation: e.rule.Remediation,
 			TargetURL:   target,
 		}}, nil
@@ -300,7 +300,7 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 		}
 	}
 	if cb == nil {
-		return nil, fmt.Errorf("%w: no task notification for %s reached the listener within 10s", attack.ErrInconclusive, acceptedTaskID)
+		return nil, fmt.Errorf("%w: no matching task notification reached the listener within 10s", attack.ErrInconclusive)
 	}
 
 	authz := callbackHeader(cb, "Authorization")
@@ -309,9 +309,9 @@ func (e *PushCallbackAuthExecutor) Execute(ctx context.Context, target string, o
 	}
 
 	evidence := fmt.Sprintf(
-		"registration binding: %s\ntask id: %s\ncallback received: %s (matched marker; URL omitted)\n"+
+		"registration binding: %s\ntask ID omitted\ncallback received: %s (matched task and marker; URL omitted)\n"+
 			"Authorization header present: %s\nconfigured Bearer credential matched: no",
-		acceptedBinding, acceptedTaskID, cb.Method, yesNo(authz != ""))
+		acceptedBinding, cb.Method, yesNo(authz != ""))
 
 	return []attack.Finding{{
 		RuleID:     e.rule.ID,

@@ -193,6 +193,9 @@ func TestCbAuth_UnsignedCallbackFires(t *testing.T) {
 	if !strings.Contains(f.Evidence, "configured Bearer credential matched: no") {
 		t.Errorf("evidence should record the missing credential, got: %q", f.Evidence)
 	}
+	if strings.Contains(f.Evidence+f.Description, "task-cbauth-1") {
+		t.Errorf("finding contains the task handle: %+v", f)
+	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupCompleted ||
 		!strings.Contains(f.Evidence, "deleted after probe") {
@@ -401,8 +404,11 @@ func TestCbAuth_NoCallbackNotTested(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an inconclusive error when no callback arrived")
 	}
-	if !strings.Contains(err.Error(), "no task notification") {
+	if !strings.Contains(err.Error(), "no matching task notification") {
 		t.Errorf("expected the reason to name the missing notification, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "task-cbauth-1") {
+		t.Errorf("inconclusive reason contains the task handle: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings alongside the inconclusive result, got %d", len(findings))
@@ -445,8 +451,9 @@ func TestCbAuth_ExternalOOBInfoIndicator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(report), "private-canary") || !strings.Contains(findings[0].Evidence, "callback marker: batesian-oob-") {
-		t.Fatalf("OOB URL leaked or callback marker missing: %s", report)
+	if strings.Contains(string(report), "private-canary") || strings.Contains(string(report), "task-cbauth-1") ||
+		!strings.Contains(findings[0].Evidence, "callback marker: batesian-oob-") {
+		t.Fatalf("OOB URL or task handle leaked, or callback marker missing: %s", report)
 	}
 	objects := state.Snapshot()
 	if len(objects) != 2 || objects[1].Cleanup != attack.CleanupNotAttempted ||
