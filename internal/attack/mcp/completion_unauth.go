@@ -334,7 +334,7 @@ func promptRefs(ctx context.Context, client *attack.HTTPClient, session mcpSessi
 				params:  map[string]interface{}{"type": "ref/prompt", "name": name},
 				argName: an,
 				real:    true,
-				label:   fmt.Sprintf("prompt %q argument %q", name, an),
+				label:   fmt.Sprintf("prompt reference %d", len(refs)+1),
 			})
 		}
 	}
@@ -372,7 +372,7 @@ func resourceTemplateRefs(ctx context.Context, client *attack.HTTPClient, sessio
 			params:  map[string]interface{}{"type": "ref/resource", "uri": ut},
 			argName: m[1],
 			real:    true,
-			label:   fmt.Sprintf("resource template %q variable %q", ut, m[1]),
+			label:   fmt.Sprintf("resource template reference %d", len(refs)+1),
 		})
 	}
 	if !complete {

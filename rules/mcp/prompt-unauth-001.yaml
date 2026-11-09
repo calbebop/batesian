@@ -4,8 +4,9 @@ info:
   author: batesian
   severity: medium
   description: |
-    Reports prompt names returned by anonymous prompts/list and content returned
-    by anonymous prompts/get. Public prompts are valid. Name visibility is an
+    Checks whether anonymous prompts/list returns names and prompts/get returns
+    content. Findings report the list count and tested position, while omitting
+    prompt names and content. Public prompts are valid. Name visibility is an
     informational indicator; readable content is a medium indicator until the
     deployment's intended access policy is known.
 

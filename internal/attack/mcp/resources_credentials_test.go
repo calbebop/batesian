@@ -191,9 +191,7 @@ func perURIResourceServer(t *testing.T, uris []string, contents map[string]strin
 	return srv, &reads
 }
 
-// A credential in a later resource must still escalate, and the finding must
-// name that resource rather than the benign one that happened to be listed
-// first.
+// A credential in a later resource must still escalate and identify its list position.
 func TestResourcesUnauth_CredentialInALaterResource(t *testing.T) {
 	uris := []string{"config://readme", "config://app", "config://database"}
 	contents := map[string]string{
@@ -218,8 +216,9 @@ func TestResourcesUnauth_CredentialInALaterResource(t *testing.T) {
 	if read.Severity != "high" {
 		t.Errorf("severity = %q, want high: the third resource exposes a credential pattern", read.Severity)
 	}
-	if !strings.Contains(read.Title, "config://database") {
-		t.Errorf("title should name the leaking resource, got %q", read.Title)
+	if !strings.Contains(read.Evidence, "listed resource: 3 of 3 (URI omitted)") ||
+		strings.Contains(read.Title+read.Description+read.Evidence, "config://database") {
+		t.Errorf("finding should identify the third resource without exposing its URI: %+v", read)
 	}
 	if !strings.Contains(read.Description, "Credential pattern detected") {
 		t.Errorf("description should cite the matched pattern, got %q", read.Description)
@@ -271,8 +270,8 @@ func TestResourcesUnauth_NoCredentialAnywhereReportsFirst(t *testing.T) {
 	if findings[1].Severity != "info" {
 		t.Errorf("severity = %q, want info with no credential present", findings[1].Severity)
 	}
-	if !strings.Contains(findings[1].Title, "config://readme") {
-		t.Errorf("title should name the first readable resource, got %q", findings[1].Title)
+	if !strings.Contains(findings[1].Evidence, "listed resource: 1 of 2 (URI omitted)") {
+		t.Errorf("finding should identify the first readable resource: %s", findings[1].Evidence)
 	}
 }
 
@@ -333,8 +332,8 @@ func TestResourcesUnauth_SkipsUnreadableResources(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
-	if findings[1].Severity != "high" || !strings.Contains(findings[1].Title, "config://database") {
-		t.Errorf("want high indicator for config://database, got %q at %q", findings[1].Title, findings[1].Severity)
+	if findings[1].Severity != "high" || !strings.Contains(findings[1].Evidence, "listed resource: 2 of 2 (URI omitted)") {
+		t.Errorf("want high indicator for the second resource, got %+v", findings[1])
 	}
 	if !strings.Contains(findings[0].Evidence, "1: incomplete (JSON-RPC error)") ||
 		!strings.Contains(findings[0].Evidence, "2: content returned") {

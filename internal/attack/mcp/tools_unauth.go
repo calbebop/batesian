@@ -109,19 +109,18 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 		return nil, complete
 	}
 
-	// Collect tool names for evidence.
-	var names []string
+	validTools := 0
 	for _, t := range toolsRaw {
 		if tm, ok := t.(map[string]interface{}); ok {
 			if name, ok := tm["name"].(string); ok && strings.TrimSpace(name) != "" {
-				names = append(names, name)
+				validTools++
 			}
 		}
 	}
-	if len(names) == 0 {
+	if validTools == 0 {
 		return nil, false
 	}
-	evidence := fmt.Sprintf("HTTP %d from %s\ntools (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names)
+	evidence := fmt.Sprintf("HTTP %d from %s\ntools listed: %d (names omitted)", listResp.StatusCode, session.Endpoint, validTools)
 	if !complete {
 		evidence += "\nlisting incomplete: pagination stopped before the final page"
 	}
@@ -131,11 +130,11 @@ func (e *ToolsUnauthExecutor) probeSession(ctx context.Context, client *attack.H
 		RuleName:   e.rule.Name,
 		Severity:   "info",
 		Confidence: attack.RiskIndicator,
-		Title:      fmt.Sprintf("MCP tools/list returned %d tool(s) without authentication", len(names)),
+		Title:      fmt.Sprintf("MCP tools/list returned %d tool(s) without authentication", validTools),
 		Description: fmt.Sprintf(
 			"tools/list at %s returned %d tool definitions to an anonymous caller. MCP authorization "+
 				"is optional, so this may be intentional. The rule does not call a tool or establish whether "+
-				"any listed operation requires authentication.", session.Endpoint, len(names)),
+				"any listed operation requires authentication.", session.Endpoint, validTools),
 		Evidence:    evidence,
 		Remediation: e.rule.Remediation,
 		TargetURL:   session.Endpoint,
