@@ -134,7 +134,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		return nil, complete
 	}
 
-	// Build a display list of resource URIs
+	// Keep the URIs for read requests, not for report evidence.
 	var uris []string
 	invalidEntries := false
 	for _, r := range resourcesRaw {
@@ -149,7 +149,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 	if len(uris) == 0 {
 		return nil, false
 	}
-	evidence := fmt.Sprintf("HTTP %d from %s\nresources (%d): %v", listResp.StatusCode, session.Endpoint, len(uris), uris)
+	evidence := fmt.Sprintf("HTTP %d from %s\nresources listed: %d (URIs omitted)", listResp.StatusCode, session.Endpoint, len(uris))
 	if !complete {
 		evidence += "\nlisting incomplete: pagination stopped before the final page"
 	}
@@ -190,14 +190,14 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 		sev = "high"
 	}
 
-	evidenceLines := fmt.Sprintf("HTTP %d from %s\nresource URI: %s\nresources examined: %d of %d listed\ncontent: %d bytes returned (omitted)",
-		read.statusCode, session.Endpoint, read.uri, examined, len(uris), read.contentLength)
-	title := fmt.Sprintf("MCP resource %q content readable without authentication", read.uri)
-	description := fmt.Sprintf("resources/read for %s returned content without authentication. "+
-		"This may be intentional if the resource is public; review its intended audience.", read.uri)
+	evidenceLines := fmt.Sprintf("HTTP %d from %s\nlisted resource: %d of %d (URI omitted)\nresources examined: %d of %d listed\ncontent: %d bytes returned (omitted)",
+		read.statusCode, session.Endpoint, read.ordinal, len(uris), examined, len(uris), read.contentLength)
+	title := "MCP resource read returned content without authentication"
+	description := fmt.Sprintf("resources/read for listed resource %d at %s returned content without authentication. "+
+		"This may be intentional if the resource is public; review its intended audience.", read.ordinal, session.Endpoint)
 
 	if read.credEvidence != "" {
-		title = fmt.Sprintf("MCP resource %q contains potential credentials and is readable without authentication", read.uri)
+		title = "MCP resource read returned potential credentials without authentication"
 		description += "\n\nCredential pattern detected in content: " + read.credEvidence
 		evidenceLines += "\n" + read.credEvidence
 	}
@@ -219,7 +219,7 @@ func (e *ResourcesUnauthExecutor) probeSession(ctx context.Context, client *atta
 
 // resourceRead is one successfully read resource.
 type resourceRead struct {
-	uri           string
+	ordinal       int
 	statusCode    int
 	contentLength int
 	credEvidence  string
@@ -246,6 +246,7 @@ func (e *ResourcesUnauthExecutor) readResources(ctx context.Context, client *att
 		if read == nil {
 			continue
 		}
+		read.ordinal = i + 1
 		// A credential is the strongest evidence available, so stop as soon as
 		// one turns up rather than spending the remaining budget.
 		if read.credEvidence != "" {
@@ -306,7 +307,7 @@ func (e *ResourcesUnauthExecutor) readResource(ctx context.Context, client *atta
 	if body.Result.Contents == nil {
 		return nil, "incomplete (missing resource contents)"
 	}
-	read := &resourceRead{uri: uri, statusCode: resp.StatusCode}
+	read := &resourceRead{statusCode: resp.StatusCode}
 	invalidContent := false
 	for _, item := range *body.Result.Contents {
 		if item.URI == "" {

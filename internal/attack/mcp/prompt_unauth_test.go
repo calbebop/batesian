@@ -47,7 +47,7 @@ func promptGetResultServer(t *testing.T, getResult map[string]interface{}, wrong
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "prompts/list":
-			reply(map[string]interface{}{"prompts": []map[string]string{{"name": "review"}}})
+			reply(map[string]interface{}{"prompts": []map[string]string{{"name": "private-prompt-canary"}}})
 		case "prompts/get":
 			reply(getResult)
 		default:
@@ -149,6 +149,14 @@ func TestPromptUnauth_GetEvidenceExcludesMetadataAndSecrets(t *testing.T) {
 				tc.metaSecret != "" && strings.Contains(findings[1].Evidence, tc.metaSecret) {
 				t.Fatalf("unexpected prompt evidence: %q", findings[1].Evidence)
 			}
+			encoded, err := json.Marshal(findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "private-prompt-canary") ||
+				!strings.Contains(findings[1].Evidence, "listed prompt: 1 of 1 (name omitted)") {
+				t.Fatalf("prompt name in finding: %s", encoded)
+			}
 		})
 	}
 }
@@ -233,7 +241,7 @@ func TestPromptUnauth_TriesLaterPrompts(t *testing.T) {
 			if errors.Is(err, attack.ErrInconclusive) != wantIncomplete || len(findings) != 2 {
 				t.Fatalf("expected list and later content findings, got %+v (err=%v)", findings, err)
 			}
-			if !strings.Contains(findings[1].Title, `"second"`) ||
+			if !strings.Contains(findings[1].Evidence, "listed prompt: 2 of 2 (name omitted)") ||
 				!strings.Contains(findings[1].Evidence, "content returned (omitted)") ||
 				strings.Contains(findings[1].Evidence, "later content") {
 				t.Fatalf("expected second prompt content, got %+v", findings[1])

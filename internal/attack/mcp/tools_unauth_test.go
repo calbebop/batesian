@@ -101,6 +101,26 @@ func TestToolsUnauth_ToolsExposed(t *testing.T) {
 	}
 }
 
+func TestToolsUnauth_OmitsListedNames(t *testing.T) {
+	srv := toolsUnauthServer(true, 0, []interface{}{
+		map[string]interface{}{"name": "private-tool-canary", "description": "private-description-canary"},
+	}, nil)
+	defer srv.Close()
+	findings := runToolsUnauth(t, srv)
+	if len(findings) != 1 {
+		t.Fatalf("findings=%+v", findings)
+	}
+	encoded, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private-tool-canary") ||
+		strings.Contains(string(encoded), "private-description-canary") ||
+		!strings.Contains(findings[0].Evidence, "tools listed: 1 (names omitted)") {
+		t.Fatalf("tool inventory in finding: %s", encoded)
+	}
+}
+
 func TestToolsUnauth_IgnoresUnmatchedResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

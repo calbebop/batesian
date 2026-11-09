@@ -105,7 +105,7 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 	if len(names) == 0 {
 		return nil, false
 	}
-	evidence := fmt.Sprintf("HTTP %d from %s\nprompts (%d): %v", listResp.StatusCode, session.Endpoint, len(names), names)
+	evidence := fmt.Sprintf("HTTP %d from %s\nprompts listed: %d (names omitted)", listResp.StatusCode, session.Endpoint, len(names))
 	if !complete {
 		evidence += "\nlisting incomplete: pagination stopped before the final page"
 	}
@@ -150,13 +150,12 @@ func (e *PromptUnauthExecutor) probeSession(ctx context.Context, client *attack.
 			RuleName:   e.rule.Name,
 			Severity:   "medium",
 			Confidence: attack.RiskIndicator,
-			Title: fmt.Sprintf(
-				"MCP prompt %q full content readable without authentication", name),
+			Title:      "MCP prompt content readable without authentication",
 			Description: fmt.Sprintf(
-				"prompts/get for %q at %s returned full template content without authentication. "+
+				"prompts/get for listed prompt %d at %s returned full template content without authentication. "+
 					"The content is readable by unauthenticated callers; whether that violates policy depends on the deployment.",
-				name, session.Endpoint),
-			Evidence:    fmt.Sprintf("HTTP %d from %s\nprompt: %q\ncontent returned (omitted)", getResp.StatusCode, session.Endpoint, name),
+				i+1, session.Endpoint),
+			Evidence:    fmt.Sprintf("HTTP %d from %s\nlisted prompt: %d of %d (name omitted)\ncontent returned (omitted)", getResp.StatusCode, session.Endpoint, i+1, len(names)),
 			Remediation: e.rule.Remediation,
 			TargetURL:   session.Endpoint,
 			Access:      &attack.AccessObservation{Operation: attack.MCPPromptsGet, Caller: "anonymous"},

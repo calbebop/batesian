@@ -77,7 +77,7 @@ func completionServer(mode string) *httptest.Server {
 				name, argument := "code_review", "language"
 				result := map[string]interface{}{}
 				if paged {
-					name, argument = "secret_query", "path"
+					name, argument = "secret_query", "private-argument-canary"
 				} else {
 					result["nextCursor"] = "next"
 				}
@@ -150,7 +150,7 @@ func completionServer(mode string) *httptest.Server {
 				template := "file:///project/{path}"
 				result := map[string]interface{}{}
 				if paged {
-					template = "file:///secrets/{path}"
+					template = "file:///private-template-canary/{path}"
 					if mode == "resource-paged-loop" {
 						result["nextCursor"] = "next"
 					}
@@ -239,7 +239,7 @@ func completionServer(mode string) *httptest.Server {
 				}
 			case "resource-paged":
 				uri, _ := ref["uri"].(string)
-				if uri == "file:///secrets/{path}" {
+				if uri == "file:///private-template-canary/{path}" {
 					completion([]interface{}{"prod.env"})
 				} else {
 					completion([]interface{}{})
@@ -303,7 +303,7 @@ func TestCompletionUnauth_Oracle(t *testing.T) {
 }
 
 // TestCompletionUnauth_ResourceOracle: the prompt arg discloses nothing but the
-// resource-template variable returns values; the indicator names the template.
+// resource-template variable returns values; the indicator identifies the reference type.
 func TestCompletionUnauth_ResourceOracle(t *testing.T) {
 	srv := completionServer("resource-oracle")
 	defer srv.Close()
@@ -337,6 +337,14 @@ func TestCompletionUnauth_ResourceTemplatePagination(t *testing.T) {
 		!strings.Contains(findings[0].Evidence, "resources/templates/list: complete") {
 		t.Fatalf("second-page disclosure not reported: %+v", findings)
 	}
+	encoded, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private-template-canary") ||
+		!strings.Contains(findings[1].Evidence, "resource template reference 2") {
+		t.Fatalf("resource template exposed in findings: %s", encoded)
+	}
 }
 
 func TestCompletionUnauth_ResourceTemplatePaginationProtected(t *testing.T) {
@@ -351,11 +359,19 @@ func TestCompletionUnauth_PromptPagination(t *testing.T) {
 	srv := completionServer("prompt-paged")
 	defer srv.Close()
 	findings := runCompletionUnauth(t, srv)
-	if len(findings) != 2 || !strings.Contains(findings[1].Title, "secret_query") ||
+	if len(findings) != 2 || !strings.Contains(findings[1].Title, "prompt reference 2") ||
 		!strings.Contains(findings[1].Evidence, "values returned: 1 (omitted)") ||
 		strings.Contains(findings[1].Evidence, "prod.env") ||
 		!strings.Contains(findings[0].Evidence, "prompts/list: complete") {
 		t.Fatalf("second-page prompt disclosure not reported: %+v", findings)
+	}
+	encoded, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret_query") ||
+		strings.Contains(string(encoded), "private-argument-canary") {
+		t.Fatalf("prompt reference exposed in findings: %s", encoded)
 	}
 }
 

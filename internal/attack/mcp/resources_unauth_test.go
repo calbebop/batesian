@@ -222,6 +222,7 @@ func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
 		{name: "JSON-RPC error", rpcError: true, findings: 1, wantOutcome: "incomplete (JSON-RPC error)"},
 		{name: "malformed response", badJSON: true, findings: 1, wantOutcome: "incomplete (invalid JSON-RPC response)"},
 		{name: "text content", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, findings: 2, wantOutcome: "content returned"},
+		{name: "directory content", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one/child", "text": "data"}}}, findings: 2, wantOutcome: "content returned"},
 		{name: "complete result", result: map[string]interface{}{"resultType": "complete", "contents": []map[string]string{{"uri": "config://one", "text": "data"}}}, findings: 2, wantOutcome: "content returned"},
 		{name: "blob content", result: map[string]interface{}{"contents": []map[string]string{{"uri": "config://one", "blob": "ZGF0YQ=="}}}, findings: 2, wantOutcome: "content returned"},
 	}
@@ -293,6 +294,25 @@ func TestResourcesUnauth_ReadRequiresContents(t *testing.T) {
 				t.Errorf("missing unconfirmed read status: %s", findings[0].Evidence)
 			}
 		})
+	}
+}
+
+func TestResourcesUnauth_OmitsListedURIs(t *testing.T) {
+	const uri = "config://private-owner/private-resource-canary?key=private-value"
+	srv := mcpResourcesServer(t, []map[string]interface{}{{"uri": uri, "name": "private"}}, "public content")
+	defer srv.Close()
+	findings, err := mcpattack.NewResourcesUnauthExecutor(resourcesRC()).Execute(t.Context(), srv.URL, testOpts())
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+	encoded, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private-resource-canary") ||
+		strings.Contains(string(encoded), "private-value") ||
+		!strings.Contains(findings[1].Evidence, "listed resource: 1 of 1 (URI omitted)") {
+		t.Fatalf("resource evidence = %s", encoded)
 	}
 }
 

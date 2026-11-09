@@ -355,11 +355,11 @@ JWTs, password assignments, bearer headers, and URI userinfo credentials. The
 matched pattern is cited without copying resource content into the finding.
 
 Up to five resources are read, stopping at the first one that matches, and the
-finding reports that resource. Reading only the first would leave the severity to
-the server's list order, so a deployment that lists a public README ahead of its
-database credentials could hide the concerning content. The evidence states how many
-resources were examined against how many were listed, so a run that stopped at the bound is
-distinguishable from one that saw everything.
+finding reports its position in the list. Resource URIs and content are omitted.
+Reading only the first would leave the severity to the server's list order, so
+a public README listed ahead of database credentials could hide a concerning
+read. The evidence states how many resources were examined and listed, so a
+bounded run is distinguishable from one that examined every resource.
 
 ---
 
@@ -381,7 +381,7 @@ known. An exact `expected_denials` entry for `mcp.prompts.list` or
 auth, or does not implement `prompts/list`, produces no finding.
 Pagination follows at most ten pages. A malformed cursor, non-authorization
 JSON-RPC error or interrupted read leaves the verdict incomplete; observed
-content access remains in the findings, but prompt text is omitted.
+content access remains in the findings, but prompt text and names are omitted.
 
 ---
 
@@ -389,9 +389,10 @@ content access remains in the findings, but prompt text is omitted.
 
 **Tools Listed Without Authentication** | Severity: Info | indicator
 
-The rule reports tool names and metadata returned by anonymous `tools/list` as
-**informational**. Public catalogs can be intentional. It never sends
-`tools/call`, so invocation authorization remains untested. Normally the tools
+The rule reports the count of tools returned by anonymous `tools/list` as
+**informational**. Tool names and metadata are omitted from findings. Public
+catalogs can be intentional. It never sends `tools/call`, so invocation
+authorization remains untested. Normally the tools
 capability is confirmed from `initialize` or `server/discover`; when anonymous
 modern discovery is denied, a modern-shaped direct list response can establish
 the wire instead. A modern server with no advertised tools is also checked by
@@ -413,7 +414,8 @@ non-authentication JSON-RPC error is also an indicator because validation
 middleware may have produced it before method dispatch. Real suggestion values
 for a discovered prompt or resource template produce a **medium indicator**.
 
-Findings include the number of returned suggestions, not their values.
+Findings include the number of returned suggestions, not their values. Discovered
+prompt names, argument names, and resource URI templates are also omitted.
 
 An exact `expected_denials` entry for `mcp.completion.complete` can confirm a
 result or value disclosure, but not an error response.
