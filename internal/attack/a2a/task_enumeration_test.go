@@ -51,6 +51,7 @@ type enumAgentConfig struct {
 	v1CreateStatus   int
 	v1CreateAbsent   bool
 	listReplyMode    string
+	seedPrivateTask  bool
 }
 
 func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
@@ -61,6 +62,9 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 	}
 	type task struct{ id, ctxID, owner string }
 	tasks := map[string]*task{}
+	if config.seedPrivateTask {
+		tasks["server-private-canary-task"] = &task{id: "server-private-canary-task", ctxID: "ctx", owner: "a"}
+	}
 	n := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +261,7 @@ func runEnum(t *testing.T, srv *httptest.Server, opts attack.Options) ([]attack.
 
 // Different credentials do not prove different task visibility.
 func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
-	srv := enumAgent(t, enumUnscoped)
+	srv := enumAgent(t, enumUnscoped, enumAgentConfig{seedPrivateTask: true})
 	defer srv.Close()
 
 	findings, err := runEnum(t, srv, enumOpts())
@@ -271,13 +275,18 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
 		t.Errorf("want medium/RiskIndicator, got %s/%s", f.Severity, f.Confidence)
 	}
-	for _, want := range []string{"task creator: a", "listing principal: b", "task ids returned to b", "authorization policy for the two principals: not verified"} {
+	for _, want := range []string{"task creator: a", "listing principal: b", "owner task: matched in listing", "task IDs returned to b:", "authorization policy for the two principals: not verified"} {
 		if !strings.Contains(f.Evidence, want) {
 			t.Errorf("evidence missing %q; got:\n%s", want, f.Evidence)
 		}
 	}
 	if strings.Contains(f.Description, "no claim") || strings.Contains(f.Description, "every task") {
 		t.Errorf("finding overstates the observed access: %s", f.Description)
+	}
+	for _, id := range []string{"task-1", "server-private-canary-task"} {
+		if strings.Contains(f.Description+f.Evidence+f.TargetURL, id) {
+			t.Errorf("task ID %q leaked into finding: %+v", id, f)
+		}
 	}
 }
 
@@ -434,8 +443,9 @@ func TestTaskEnumeration_PaginatedUnscopedFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "task-1") {
-		t.Fatalf("expected the second-page task in a finding, got %+v", findings)
+	if len(findings) != 1 || !strings.Contains(findings[0].Evidence, "owner task: matched in listing") ||
+		strings.Contains(findings[0].Description+findings[0].Evidence, "task-1") {
+		t.Fatalf("expected a redacted second-page match, got %+v", findings)
 	}
 }
 

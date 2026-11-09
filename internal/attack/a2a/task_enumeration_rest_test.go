@@ -238,8 +238,9 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 					t.Fatalf("unexpected list query: %+v", hit)
 				}
 			}
-			if tc.finding && !strings.Contains(findings[0].Evidence, "rest-owner-task") {
-				t.Fatalf("finding omitted owner task: %s", findings[0].Evidence)
+			if tc.finding && (!strings.Contains(findings[0].Evidence, "owner task: matched in listing") ||
+				strings.Contains(findings[0].Description+findings[0].Evidence+findings[0].TargetURL, "rest-owner-task")) {
+				t.Fatalf("finding did not redact the matched owner task: %+v", findings[0])
 			}
 		})
 	}

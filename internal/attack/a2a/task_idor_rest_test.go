@@ -248,8 +248,15 @@ func TestTaskIDOR_RESTTaskRead(t *testing.T) {
 					t.Fatalf("task visibility must be a medium indicator: %+v", findings[0])
 				}
 				if !strings.Contains(findings[0].TargetURL, "/agent/") ||
-					!strings.Contains(findings[0].Evidence, "batesian idor probe") {
+					!strings.Contains(findings[0].Evidence, "probe text: matched") {
 					t.Fatalf("finding lacks REST task evidence: %+v", findings[0])
+				}
+				if strings.Contains(findings[0].Description+findings[0].Evidence+findings[0].TargetURL, "rest-owner-task") ||
+					strings.Contains(findings[0].Description+findings[0].Evidence+findings[0].TargetURL, "batesian idor probe") {
+					t.Fatalf("finding leaked a task handle or probe text: %+v", findings[0])
+				}
+				if tc.mode == "escaped-id" && strings.Contains(findings[0].TargetURL, "task%2Fa%3Fb") {
+					t.Fatalf("finding URL includes the escaped task handle: %q", findings[0].TargetURL)
 				}
 				if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
 					!strings.Contains(findings[0].Evidence, "matched task content omitted") {

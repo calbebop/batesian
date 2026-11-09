@@ -262,9 +262,9 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 			Confidence: attack.RiskIndicator,
 			Title:      "A2A task content visible without owner credentials",
 			Description: fmt.Sprintf(
-				"An anonymous %s request returned the owner's unique probe text in task %s's %s, despite the same task-creation method rejecting anonymous callers. The observation alone does not establish whether the task is private.", read.method, taskID, read.location),
-			Evidence: fmt.Sprintf("taskId: %s\nowner marker: %s\nlocation: %s\nanonymous %s: HTTP %d\nmatched task content omitted",
-				taskID, marker, read.location, read.method, read.response.StatusCode),
+				"An anonymous %s request returned the owner's unique probe text from a task's %s, despite the same task-creation method rejecting anonymous callers. The observation alone does not establish whether the task is private.", read.method, read.location),
+			Evidence: fmt.Sprintf("owner task: matched\nprobe text: matched\nlocation: %s\nanonymous %s: HTTP %d\nmatched task content omitted",
+				read.location, read.method, read.response.StatusCode),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
 			Access:      &attack.AccessObservation{Operation: attack.A2ATasksGet, Caller: "anonymous", Owner: "default"},
@@ -286,8 +286,8 @@ func (e *TaskIDORExecutor) probeJSONRPC(ctx context.Context, target string, opts
 		}
 	}
 	if ownerProtected && (read.unknown || !read.denied) && read.location == "" {
-		return findings, errors.Join(partial, fmt.Errorf("%w: the anonymous task read did not establish a denial of task %s",
-			attack.ErrInconclusive, taskID))
+		return findings, errors.Join(partial, fmt.Errorf("%w: the anonymous task read did not establish a denial of the owner task",
+			attack.ErrInconclusive))
 	}
 	if !ownerProtected {
 		switch {
@@ -321,10 +321,10 @@ func (e *TaskIDORExecutor) probeAnonymousRPCList(ctx context.Context, client *at
 		Confidence: attack.RiskIndicator,
 		Title:      "A2A ListTasks exposes an authenticated owner's task to anonymous callers",
 		Description: fmt.Sprintf(
-			"Anonymous JSON-RPC ListTasks at %s returned task %q, created with the owner's credential. "+
-				"The server rejected anonymous task creation, but public task visibility may still be intentional.", endpoint, ownerTaskID),
-		Evidence: fmt.Sprintf("endpoint: %s\nowner task: %s\nanonymous SendMessage: rejected\n"+
-			"anonymous ListTasks: returned owner task ID\nauthorization policy: not verified", endpoint, ownerTaskID),
+			"Anonymous JSON-RPC ListTasks at %s returned a task created with the owner's credential. "+
+				"The server rejected anonymous task creation, but public task visibility may still be intentional.", endpoint),
+		Evidence: fmt.Sprintf("endpoint: %s\nowner task: matched in anonymous listing (ID omitted)\nanonymous SendMessage: rejected\n"+
+			"anonymous ListTasks: returned owner task ID\nauthorization policy: not verified", endpoint),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Access:      &attack.AccessObservation{Operation: attack.A2ATasksList, Caller: "anonymous", Owner: "default"},
@@ -495,11 +495,11 @@ func (e *TaskIDORExecutor) probeTaskList(ctx context.Context, unauthClient, card
 						Confidence: attack.RiskIndicator,
 						Title:      "A2A task list includes an authenticated owner's task for an anonymous caller",
 						Description: fmt.Sprintf(
-							"GET %s returned task %q, created with the owner's credential, to an anonymous caller. The server rejected anonymous task creation; public task visibility may still be intentional.", pageURL, ownerTaskID),
-						Evidence: fmt.Sprintf("HTTP %d from %s\nowner task: %s\nanonymous list: owner task matched; list content omitted",
-							listResp.StatusCode, pageURL, ownerTaskID),
+							"GET %s returned a task created with the owner's credential to an anonymous caller. The server rejected anonymous task creation; public task visibility may still be intentional.", le.url),
+						Evidence: fmt.Sprintf("HTTP %d from %s\npage: %d\nanonymous list: owner task matched; task IDs, page token, and list content omitted",
+							listResp.StatusCode, le.url, page+1),
 						Remediation: e.rule.Remediation,
-						TargetURL:   pageURL,
+						TargetURL:   le.url,
 						Access:      &attack.AccessObservation{Operation: attack.A2ATasksList, Caller: "anonymous", Owner: "default"},
 					}}
 					return probe

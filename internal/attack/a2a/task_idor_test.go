@@ -150,6 +150,9 @@ func TestTaskIDOR_Vulnerable(t *testing.T) {
 		!strings.Contains(f.Evidence, "matched task content omitted") {
 		t.Errorf("task response leaked into finding: %+v", f)
 	}
+	if strings.Contains(fmt.Sprint(f), taskID) || strings.Contains(fmt.Sprint(f), "batesian idor probe") {
+		t.Errorf("task handle or probe text leaked into finding: %+v", f)
+	}
 }
 
 func TestTaskIDOR_AnonymousJSONRPCList(t *testing.T) {
@@ -260,7 +263,8 @@ func TestTaskIDOR_AnonymousJSONRPCList(t *testing.T) {
 			if tc.wantFinding {
 				f := findings[0]
 				if f.Confidence != attack.RiskIndicator || f.Access == nil ||
-					f.Access.Operation != attack.A2ATasksList || !strings.Contains(f.Evidence, "owner-task") {
+					f.Access.Operation != attack.A2ATasksList || !strings.Contains(f.Evidence, "owner task: matched") ||
+					strings.Contains(fmt.Sprint(f), "owner-task") {
 					t.Fatalf("unexpected list finding: %+v", f)
 				}
 			}
@@ -868,8 +872,9 @@ func TestTaskIDOR_TaskListRequiresOwnerEvidence(t *testing.T) {
 				if findings[0].Severity != "medium" || findings[0].Confidence != attack.RiskIndicator {
 					t.Fatalf("want medium/indicator, got %s/%s", findings[0].Severity, findings[0].Confidence)
 				}
-				if !strings.Contains(findings[0].Evidence, "task-owner") {
-					t.Fatalf("finding must identify the disclosed owner task: %s", findings[0].Evidence)
+				if !strings.Contains(findings[0].Evidence, "owner task matched") ||
+					strings.Contains(fmt.Sprint(findings[0]), "task-owner") {
+					t.Fatalf("finding must report the match without the owner task ID: %s", findings[0].Evidence)
 				}
 				if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
 					!strings.Contains(findings[0].Evidence, "list content omitted") {
@@ -1004,8 +1009,11 @@ func TestTaskIDOR_PaginatedRESTList(t *testing.T) {
 					t.Fatalf("second page token = %q, want %q", gotTokens[1], escapedCursor)
 				}
 				u, parseErr := url.Parse(findings[0].TargetURL)
-				if parseErr != nil || u.Query().Get("pageToken") != escapedCursor {
-					t.Fatalf("finding target does not identify the leaking page: %q", findings[0].TargetURL)
+				if parseErr != nil || u.Query().Get("pageToken") != "" ||
+					!strings.Contains(findings[0].Evidence, "page: 2") ||
+					strings.Contains(fmt.Sprint(findings[0]), escapedCursor) ||
+					strings.Contains(fmt.Sprint(findings[0]), "task-owner") {
+					t.Fatalf("finding leaked the page token or task ID: %+v", findings[0])
 				}
 			}
 		})
@@ -1052,7 +1060,8 @@ func TestTaskIDOR_CreateProbesUseDistinctMessageIDs(t *testing.T) {
 	defer ts.Close()
 
 	findings, err := a2a.NewTaskIDORExecutor(testRuleCtx()).Execute(context.Background(), ts.URL, idorOpts())
-	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "task-owner") {
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Evidence, "owner task matched") ||
+		strings.Contains(fmt.Sprint(findings[0]), "task-owner") {
 		t.Fatalf("distinct create probes should reveal the owner task in the list; findings=%+v err=%v", findings, err)
 	}
 }
