@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -190,6 +191,16 @@ func tenantPrincipals() []attack.Principal {
 	}
 }
 
+func assertOpaqueTaskFinding(t *testing.T, finding attack.Finding, values ...string) {
+	t.Helper()
+	report := fmt.Sprint(finding)
+	for _, value := range values {
+		if value != "" && strings.Contains(report, value) {
+			t.Fatalf("finding includes task data %q: %+v", value, finding)
+		}
+	}
+}
+
 func mtOpts(principals ...attack.Principal) attack.Options {
 	return attack.Options{TimeoutSeconds: 5, Principals: principals}
 }
@@ -219,11 +230,12 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 		if len(f.Chain) != 3 || f.Chain[2].Outcome == "" {
 			t.Errorf("expected a 3-hop provenance chain, got %+v", f.Chain)
 		}
-		if !strings.Contains(f.Evidence, "owner marker: batesian mt probe ") ||
+		if !strings.Contains(f.Evidence, "owner task and probe text: matched") ||
 			!strings.Contains(f.Evidence, "matched task content omitted") ||
 			strings.Contains(f.Description+f.Evidence, "server-private-canary") {
 			t.Errorf("task response leaked into finding: %+v", f)
 		}
+		assertOpaqueTaskFinding(t, f, "task-A-1", "task-B-1", "batesian mt probe")
 	}
 }
 
@@ -367,9 +379,10 @@ func TestMultiTenant_AnonymousDisclosureSuppressesOnlyThatTask(t *testing.T) {
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("want one cross-tenant finding, got %d findings, err=%v", len(findings), err)
 	}
-	if !strings.Contains(findings[0].Evidence, "task: task-B-1") {
+	if !strings.Contains(findings[0].Evidence, "owner: tenant-b (tenant B)") {
 		t.Errorf("expected only B's task: %s", findings[0].Evidence)
 	}
+	assertOpaqueTaskFinding(t, findings[0], "task-A-1", "task-B-1", "batesian mt probe")
 }
 
 // TestMultiTenant_Secure: GetTask is tenant-bound (cross reads rejected -32001).

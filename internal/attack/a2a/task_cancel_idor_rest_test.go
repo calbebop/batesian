@@ -276,6 +276,10 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 			if !tc.inconclusive && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+			if err != nil && (strings.Contains(err.Error(), "rest-owner-task") ||
+				strings.Contains(err.Error(), "task%2Fa%3Fb") || strings.Contains(err.Error(), "task/a?b")) {
+				t.Fatalf("error includes a task handle: %v", err)
+			}
 			want := 0
 			if tc.title != "" {
 				want = 1
@@ -288,6 +292,9 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 			}
 			if want != 0 && findings[0].Confidence != attack.RiskIndicator {
 				t.Fatalf("cancellation without a policy oracle must be an indicator: %+v", findings[0])
+			}
+			if want != 0 {
+				assertOpaqueTaskFinding(t, findings[0], "rest-owner-task", "task%2Fa%3Fb", "task/a?b")
 			}
 			mu.Lock()
 			gotHits := append([]string(nil), (*hits)...)

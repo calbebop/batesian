@@ -375,6 +375,8 @@ advertises `tenant`, both principals need distinct routes at the same URL that
 match their configured labels. A missing or ambiguous match is not tested. REST
 reads request up to ten history messages. JSON-RPC tasks can feed chained rules;
 REST tasks are tested separately for same-binding reads.
+Findings keep the matched access and content location while omitting task IDs
+and probe text. Created task IDs remain in target objects for follow-up.
 
 For a card that advertises both unscoped v1.0 JSON-RPC and HTTP+JSON, the rule
 also tests the same task across the first compatible interface pair in both
@@ -385,6 +387,7 @@ explicit denial for the other principal on the source, an anonymous denial on
 the destination, and the other principal's destination read to return the
 owner's task ID and text. Tenant-scoped or ambiguous interface pairs, missing
 cross-binding owner reads, and unsupported routes are reported as not tested.
+Cross-binding findings omit task IDs and probe text.
 
 ---
 
@@ -408,6 +411,7 @@ does not discard a finding from the other direction. Public tasks and
 unverified owner reads cannot produce confirmed findings. Direct `Message`
 replies, unsupported calls, and tenant-scoped card interfaces are not tested.
 The rule does not test streaming, v0.3 gRPC, or other gRPC operations.
+Findings report the matched content location without copying task IDs or probe text.
 
 ---
 
@@ -658,6 +662,8 @@ cancel method on either wire is not applicable. The rule creates and cancels its
 own throwaway task; it never cancels a pre-existing one. Against a server that
 completes tasks almost immediately, the probe task may be terminal before it can
 be canceled, in which case the rule reports not tested.
+Findings retain the owner state change and caller relationship but omit the
+task ID. Created task IDs remain in target objects for follow-up.
 
 ---
 

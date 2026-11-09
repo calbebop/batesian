@@ -195,6 +195,7 @@ func TestMultiTenantCrossBindingTaskReads(t *testing.T) {
 					strings.Contains(finding.Description+finding.Evidence, "server-private-canary") {
 					t.Fatalf("finding lacked cross-binding controls: %+v", finding)
 				}
+				assertOpaqueTaskFinding(t, finding, "task-rpc-", "task-rest-", "batesian cross-binding")
 			}
 		})
 	}

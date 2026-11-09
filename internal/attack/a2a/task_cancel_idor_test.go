@@ -399,6 +399,7 @@ func TestTaskCancelIDOR_ObservedWireVariants(t *testing.T) {
 				!strings.Contains(findings[0].Evidence, "owner state: submitted -> canceled") {
 				t.Errorf("unexpected finding: %+v", findings[0])
 			}
+			assertOpaqueTaskFinding(t, findings[0], "task-1")
 		})
 	}
 }
@@ -411,6 +412,9 @@ func TestTaskCancelIDOR_AmbiguousResponsesAreInconclusive(t *testing.T) {
 			findings, err := runTaskCancel(t, srv)
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("want no finding and inconclusive result, got %d findings, err=%v", len(findings), err)
+			}
+			if strings.Contains(err.Error(), "task-1") {
+				t.Fatalf("error includes a task handle: %v", err)
 			}
 		})
 	}
@@ -490,7 +494,7 @@ func TestTaskCancelIDOR_NotCancelable(t *testing.T) {
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "cancellation of task") {
+	if !strings.Contains(err.Error(), "cancellation of the owner task") {
 		t.Errorf("reason should name the untested operation: %v", err)
 	}
 }
