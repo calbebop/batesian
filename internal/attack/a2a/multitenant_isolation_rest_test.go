@@ -143,6 +143,7 @@ func TestMultiTenantREST(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			for _, finding := range findings {
+				assertOpaqueTaskFinding(t, finding, "task-A", "task-B", "batesian mt probe")
 				if finding.Confidence != attack.ConfirmedExploit ||
 					!strings.Contains(finding.Evidence, "method: GET ") ||
 					!strings.Contains(finding.TargetURL, "/agent/") {

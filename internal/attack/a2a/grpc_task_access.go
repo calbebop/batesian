@@ -140,8 +140,7 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 		}
 		cross := grpcReadTask(ctx, client, requestTimeout, direction.readerHeaders, direction.taskID, direction.marker)
 		if cross.location != "" {
-			findings = append(findings, e.finding(opts.A2AGRPCTarget, direction.owner, direction.reader,
-				direction.taskID, direction.marker, cross))
+			findings = append(findings, e.finding(opts.A2AGRPCTarget, direction.owner, direction.reader, cross))
 			continue
 		}
 		if !cross.denied || cross.unknown {
@@ -305,14 +304,14 @@ func grpcReadTask(ctx context.Context, client a2apb.A2AServiceClient, timeout ti
 }
 
 func (e *GRPCTaskAccessExecutor) finding(target string, owner, reader attack.Principal,
-	taskID, marker string, read tenantRead) attack.Finding {
+	read tenantRead) attack.Finding {
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
 		Title: "A2A gRPC disclosed another tenant's task content",
-		Description: fmt.Sprintf("Principal %q (tenant %q) read principal %q's (tenant %q) task %s over gRPC. Both principals could read their own tasks, while the anonymous control was denied.",
-			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID),
-		Evidence: fmt.Sprintf("target: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\ntask: %s\nprobe: %s\nlocation: %s\nanonymous: denied",
-			target, owner.Name, owner.Tenant, reader.Name, reader.Tenant, taskID, marker, read.location),
+		Description: fmt.Sprintf("Principal %q (tenant %q) read principal %q's (tenant %q) task over gRPC. Both principals could read their own tasks, while the anonymous control was denied.",
+			reader.Name, reader.Tenant, owner.Name, owner.Tenant),
+		Evidence: fmt.Sprintf("target: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\nowner task and probe text: matched (values omitted)\nlocation: %s\nanonymous: denied",
+			target, owner.Name, owner.Tenant, reader.Name, reader.Tenant, read.location),
 		Remediation: e.rule.Remediation, TargetURL: target,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create and read gRPC task", Outcome: "read probe text"},

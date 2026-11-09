@@ -88,8 +88,8 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 	cancelURL := endpoint.AppendPath(tasksURL, "/"+url.PathEscape(taskID)+":cancel")
 	baseline, seen := readRESTTaskState(ctx, owner, readURL, headers, taskID)
 	if !seen || !activeTaskState(baseline) {
-		return nil, fmt.Errorf("%w: owner task %s was not confirmed in a cancelable state at %s",
-			attack.ErrInconclusive, taskID, readURL), true
+		return nil, fmt.Errorf("%w: owner task was not confirmed in a cancelable state at %s",
+			attack.ErrInconclusive, tasksURL), true
 	}
 	method := "POST /tasks/{id}:cancel"
 	if version != "1.0" {
@@ -102,16 +102,16 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 	}
 	switch anonOutcome {
 	case cancelCanceled:
-		return []attack.Finding{e.unauthFinding(cancelURL, a, taskID, baseline, method)}, nil, true
+		return []attack.Finding{e.unauthFinding(tasksURL, a, baseline, method)}, nil, true
 	case cancelDenied:
 	default:
-		return nil, fmt.Errorf("%w: anonymous REST cancellation of task %s was not conclusively denied",
-			attack.ErrInconclusive, taskID), true
+		return nil, fmt.Errorf("%w: anonymous REST cancellation of the owner task was not conclusively denied",
+			attack.ErrInconclusive), true
 	}
 	preBState, seen := readRESTTaskState(ctx, owner, readURL, headers, taskID)
 	if !seen || !activeTaskState(preBState) {
-		return nil, fmt.Errorf("%w: owner task %s was no longer live before the cross-principal REST cancel",
-			attack.ErrInconclusive, taskID), true
+		return nil, fmt.Errorf("%w: owner task was no longer live before the cross-principal REST cancel",
+			attack.ErrInconclusive), true
 	}
 	otherOutcome, err := cancelRESTTask(ctx, other, owner, cancelURL, readURL, version, b.Headers,
 		headers, taskID)
@@ -119,7 +119,7 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 		return nil, err, true
 	}
 	if otherOutcome == cancelCanceled {
-		return []attack.Finding{e.idorFinding(cancelURL, a, b, taskID, preBState, method)}, nil, true
+		return []attack.Finding{e.idorFinding(tasksURL, a, b, preBState, method)}, nil, true
 	}
 	return nil, nil, true
 }
@@ -137,8 +137,8 @@ func cancelRESTTask(ctx context.Context, caller, owner *attack.HTTPClient, cance
 	resp, err := caller.POST(ctx, cancelURL, headers, body)
 	state, seen := readRESTTaskState(ctx, owner, readURL, ownerHeaders, taskID)
 	if !seen {
-		return cancelOther, fmt.Errorf("%w: owner could not read REST task %s after a cancellation attempt",
-			attack.ErrInconclusive, taskID)
+		return cancelOther, fmt.Errorf("%w: owner could not read the REST task after a cancellation attempt",
+			attack.ErrInconclusive)
 	}
 	if isCanceledState(state) {
 		if err == nil && resp != nil && resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
@@ -147,27 +147,27 @@ func cancelRESTTask(ctx context.Context, caller, owner *attack.HTTPClient, cance
 				return cancelCanceled, nil
 			}
 		}
-		return cancelOther, fmt.Errorf("%w: REST task %s was canceled without a matching success reply at %s",
-			attack.ErrInconclusive, taskID, cancelURL)
+		return cancelOther, fmt.Errorf("%w: REST task was canceled without a matching success reply",
+			attack.ErrInconclusive)
 	}
 	if !activeTaskState(state) {
-		return cancelOther, fmt.Errorf("%w: REST task %s left its cancelable state without a confirmed cancellation",
-			attack.ErrInconclusive, taskID)
+		return cancelOther, fmt.Errorf("%w: REST task left its cancelable state without a confirmed cancellation",
+			attack.ErrInconclusive)
 	}
 	if err != nil || resp == nil {
-		return cancelOther, fmt.Errorf("%w: REST cancellation at %s did not answer",
-			attack.ErrInconclusive, cancelURL)
+		return cancelOther, fmt.Errorf("%w: REST cancellation did not answer",
+			attack.ErrInconclusive)
 	}
 	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
 		resp.StatusCode >= http.StatusInternalServerError {
-		return cancelOther, fmt.Errorf("%w: REST cancellation at %s returned HTTP %d",
-			attack.ErrInconclusive, cancelURL, resp.StatusCode)
+		return cancelOther, fmt.Errorf("%w: REST cancellation returned HTTP %d",
+			attack.ErrInconclusive, resp.StatusCode)
 	}
 	if isA2AAuthRejection(resp) || resp.StatusCode == 404 {
 		return cancelDenied, nil
 	}
-	return cancelOther, fmt.Errorf("%w: REST cancellation of task %s at %s was not conclusively denied",
-		attack.ErrInconclusive, taskID, cancelURL)
+	return cancelOther, fmt.Errorf("%w: REST cancellation of the owner task was not conclusively denied",
+		attack.ErrInconclusive)
 }
 
 func readRESTTaskState(ctx context.Context, owner *attack.HTTPClient, readURL string,

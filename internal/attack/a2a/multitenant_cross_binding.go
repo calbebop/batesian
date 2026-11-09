@@ -97,24 +97,24 @@ func (e *MultiTenantIsolationExecutor) probeCrossBinding(ctx context.Context, va
 		destOther := read(direction.readDest, readerClient, reader, "destination-other")
 		destAnon := read(direction.readDest, anonClient, attack.Principal{}, "destination-anonymous")
 		if readerControl.location == "" || sourceOwner.location == "" || destOwner.location == "" {
-			incomplete = errors.Join(incomplete, fmt.Errorf("%w: task %s lacked a reader control or owner reads on both bindings",
-				attack.ErrInconclusive, taskID))
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: task lacked a reader control or owner reads on both bindings",
+				attack.ErrInconclusive))
 			continue
 		}
 		if sourceOther.location != "" || destAnon.location != "" {
 			continue
 		}
 		if !sourceOther.denied || sourceOther.unknown || !destAnon.denied || destAnon.unknown {
-			incomplete = errors.Join(incomplete, fmt.Errorf("%w: task %s lacked a reliable source denial or anonymous destination control",
-				attack.ErrInconclusive, taskID))
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: task lacked a reliable source denial or anonymous destination control",
+				attack.ErrInconclusive))
 			continue
 		}
 		if destOther.location != "" {
 			findings = append(findings, e.crossBindingFinding(direction.name, direction.source, direction.destination,
-				owner, reader, taskID, marker, destOther))
+				owner, reader, destOther))
 		} else if !destOther.denied || destOther.unknown {
-			incomplete = errors.Join(incomplete, fmt.Errorf("%w: cross-binding read of task %s was not judged",
-				attack.ErrInconclusive, taskID))
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: cross-binding task read was not judged",
+				attack.ErrInconclusive))
 		}
 	}
 	return findings, incomplete
@@ -227,15 +227,14 @@ func readCrossREST(ctx context.Context, client *attack.HTTPClient, base string, 
 }
 
 func (e *MultiTenantIsolationExecutor) crossBindingFinding(direction, source, destination string,
-	owner, reader attack.Principal, taskID, marker string, read tenantRead) attack.Finding {
+	owner, reader attack.Principal, read tenantRead) attack.Finding {
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
 		Title: "A2A task content crosses a tenant boundary on another advertised binding",
-		Description: fmt.Sprintf("Principal %q (tenant %q) received principal %q's (tenant %q) probe text from task %s through %s. The same principal was denied on the creation binding; the owner read the content on both bindings, and an anonymous destination read was denied.",
-			reader.Name, reader.Tenant, owner.Name, owner.Tenant, taskID, read.method),
-		Evidence: fmt.Sprintf("direction: %s\nsource: %s\ndestination: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\ntask: %s\nowner marker: %s\nsource reader: denied\ndestination anonymous: denied\nmatched task content omitted",
-			direction, source, destination, owner.Name, owner.Tenant, reader.Name, reader.Tenant,
-			taskID, marker),
+		Description: fmt.Sprintf("Principal %q (tenant %q) received principal %q's (tenant %q) probe text from a task through %s. The same principal was denied on the creation binding; the owner read the content on both bindings, and an anonymous destination read was denied.",
+			reader.Name, reader.Tenant, owner.Name, owner.Tenant, read.method),
+		Evidence: fmt.Sprintf("direction: %s\nsource: %s\ndestination: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\nowner task and probe text: matched (values omitted)\nsource reader: denied\ndestination anonymous: denied\nmatched task content omitted",
+			direction, source, destination, owner.Name, owner.Tenant, reader.Name, reader.Tenant),
 		Remediation: e.rule.Remediation, TargetURL: destination,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task on " + source, Outcome: "owner read probe text on both bindings"},

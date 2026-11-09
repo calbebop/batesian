@@ -215,7 +215,14 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
+			fixture.mu.Lock()
+			var taskIDs []string
+			for id := range fixture.tasks {
+				taskIDs = append(taskIDs, string(id))
+			}
+			fixture.mu.Unlock()
 			for _, finding := range findings {
+				assertOpaqueTaskFinding(t, finding, append(taskIDs, "batesian grpc ")...)
 				if finding.Confidence != attack.ConfirmedExploit ||
 					!strings.Contains(finding.Evidence, "anonymous: denied") {
 					t.Fatalf("finding lacked controls: %+v", finding)
