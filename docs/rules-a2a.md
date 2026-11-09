@@ -323,7 +323,8 @@ shows that the token passed the endpoint's gate, not which claim was accepted or
 whether peer-specific privileges were granted. If both requests succeed, the
 rule reports anonymous access as an **indicator** because public access may be
 intentional.
-Findings record the wire and HTTP outcomes without copying the send reply.
+Findings record the issuer source, wire, and HTTP outcomes without copying the
+card-derived claim values, forged JWT, or send reply.
 
 ---
 
@@ -697,6 +698,8 @@ case, but only when the card promised authentication, making it an attributable
 contract violation (CWE-287 / CWE-306). It is distinct from `a2a-extcard-unauth-001`
 (the extended-card endpoint) and `a2a-card-trust-001` / `a2a-jws-algconf-001` (card
 signatures).
+Findings retain whether a Task or direct Message was returned without copying
+its ID or card-declared scheme names.
 
 ---
 
