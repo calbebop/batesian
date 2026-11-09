@@ -39,6 +39,7 @@ func TestPushLifecycle(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			objects := pushConfigObjects(state.Snapshot())
+			assertPushFindingsOmitObjectIDs(t, findings, objects)
 			if len(objects) != 1 || objects[0].Cleanup != attack.CleanupCompleted ||
 				!strings.HasPrefix(objects[0].ID, "lifecycle-") {
 				t.Fatalf("cleanup=%+v", objects)

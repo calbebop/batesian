@@ -60,6 +60,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive)
 	}
 	configURL := endpoint.AppendPath(base, route.configPath(taskID))
+	reportURL := endpoint.AppendPath(base, route.taskPath)
 	markerURL := "https://batesian-lifecycle-" + randID + ".example/cb"
 	configRequest := restPushConfigRequest(taskID, markerURL, "lifecycle-"+randID, "", randID, route.version)
 	resp, requestErr = clientA.POST(ctx, configURL, ownerHeaders, configRequest)
@@ -84,7 +85,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 		line := ""
 		if deleted {
 			recordPushConfig(opts.TargetState, configURL, taskID, configID, attack.CleanupCompleted, deletionDetail)
-			line = fmt.Sprintf("scanner-created push config %q on task %q: %s", configID, taskID, deletionDetail)
+			line = "scanner-created push config: " + deletionDetail
 		} else {
 			line = registration.finish(ctx, clientA, opts.TargetState, false)
 		}
@@ -109,7 +110,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	if ownerList.found {
 		otherList := e.listRESTConfigs(ctx, clientB, configURL, otherHeaders, taskID, configID, markerURL, route.version)
 		if otherList.found {
-			findings = append(findings, e.finding(configURL, owner, other, taskID, configID, markerURL, "list", "GET task"))
+			findings = append(findings, e.finding(reportURL, owner, other, "list", "GET task"))
 		} else if !otherList.complete && !otherList.denied {
 			err = errors.Join(err, fmt.Errorf("%w: cross-principal REST push-config list was unjudged", attack.ErrInconclusive))
 		}
@@ -124,7 +125,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	if readback == configAbsent && e.readRESTTask(ctx, clientA, taskURL, ownerHeaders, taskID) == taskPresent {
 		deleted = true
 		if deleteReply == deleteAccepted {
-			findings = append(findings, e.finding(configURL, owner, other, taskID, configID, markerURL, "delete", "GET task"))
+			findings = append(findings, e.finding(reportURL, owner, other, "delete", "GET task"))
 		} else {
 			deletionDetail = "absent after probe; deletion source unconfirmed"
 			err = errors.Join(err, fmt.Errorf("%w: REST marker disappeared without a confirmed delete response", attack.ErrInconclusive))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -440,6 +441,23 @@ func pushConfigObjects(objects []attack.TargetObject) []attack.TargetObject {
 	return configs
 }
 
+func assertPushFindingsOmitObjectIDs(t *testing.T, findings []attack.Finding, objects []attack.TargetObject) {
+	t.Helper()
+	for _, finding := range findings {
+		report := fmt.Sprint(finding)
+		if strings.Contains(report, ".example/cb") {
+			t.Fatalf("finding includes callback URL: %+v", finding)
+		}
+		for _, object := range objects {
+			for _, id := range []string{object.ID, object.ParentID} {
+				if id != "" && strings.Contains(report, id) {
+					t.Fatalf("finding includes target object ID %q: %+v", id, finding)
+				}
+			}
+		}
+	}
+}
+
 func TestPushBindingCleansVerifiedMarkers(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -459,6 +477,7 @@ func TestPushBindingCleansVerifiedMarkers(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			objects := pushConfigObjects(state.Snapshot())
+			assertPushFindingsOmitObjectIDs(t, findings, objects)
 			if len(objects) != tc.want {
 				t.Fatalf("target objects = %+v", objects)
 			}

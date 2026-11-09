@@ -66,6 +66,7 @@ func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, r
 		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive)
 	}
 	configURL := endpoint.AppendPath(base, route.configPath(taskID))
+	reportURL := endpoint.AppendPath(base, route.taskPath)
 	if !principalCredentialPresent(clientA, configURL, owner.Headers) {
 		return nil, fmt.Errorf("%w: owner REST push registration used no owner credential", attack.ErrInconclusive)
 	}
@@ -122,7 +123,7 @@ func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, r
 				itemURL := endpoint.AppendPath(configURL, "/"+url.PathEscape(openReg.configID))
 				if reader.readRESTConfig(ctx, clientA, itemURL, ownerHeaders, taskID, openReg.configID,
 					openURL, route.version) == configPresent {
-					finding := e.anonymousWriteFinding(configURL, owner, taskID, openURL, false, "GET task")
+					finding := e.anonymousWriteFinding(reportURL, owner, false, "GET task")
 					finding.Evidence += "\nbinding: HTTP+JSON/" + route.version
 					findings = append(findings, finding)
 				} else {
@@ -160,7 +161,7 @@ func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, r
 	otherRead, readJudged := restBindingRead(ctx, clientB, ownerItemURL, otherHeaders, taskID,
 		ownerReg.configID, markerURL, route.version)
 	if otherRead {
-		finding := e.readFinding(configURL, owner, other, taskID, markerURL, false, "GET task")
+		finding := e.readFinding(reportURL, owner, other, false, "GET task")
 		finding.Evidence += "\nbinding: HTTP+JSON/" + route.version
 		findings = append(findings, finding)
 	} else if !readJudged {
@@ -176,7 +177,7 @@ func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, r
 			itemURL := endpoint.AppendPath(configURL, "/"+url.PathEscape(attackerReg.configID))
 			if reader.readRESTConfig(ctx, clientA, itemURL, ownerHeaders, taskID, attackerReg.configID,
 				attackerURL, route.version) == configPresent {
-				finding := e.writeFinding(configURL, owner, other, taskID, attackerURL, false, "GET task")
+				finding := e.writeFinding(reportURL, owner, other, false, "GET task")
 				finding.Evidence += "\nbinding: HTTP+JSON/" + route.version
 				findings = append(findings, finding)
 			} else {

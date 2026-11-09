@@ -135,7 +135,7 @@ func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint
 		incomplete = errors.Join(incomplete, openSet.partialErr("anonymous push configuration"))
 		matched, judged := e.getPushOutcome(ctx, clientA, endpoint, a.Headers, taskID, openSet, openURL, vars.RandID+"-open")
 		if matched {
-			return []attack.Finding{e.anonymousWriteFinding(endpoint, a, taskID, openURL, consumed, "GetTask")}, nil
+			return []attack.Finding{e.anonymousWriteFinding(endpoint, a, consumed, "GetTask")}, nil
 		}
 		if !judged {
 			incomplete = errors.Join(incomplete, fmt.Errorf("%w: anonymous push-config write readback was unjudged", attack.ErrInconclusive))
@@ -160,7 +160,7 @@ func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint
 	crossRead, crossReadJudged := e.getPushOutcome(ctx, clientB, endpoint, b.Headers, taskID,
 		ownerSet, markerURL, vars.RandID+"-cross-read")
 	if crossRead {
-		findings = append(findings, e.readFinding(endpoint, a, b, taskID, markerURL, consumed, "GetTask"))
+		findings = append(findings, e.readFinding(endpoint, a, b, consumed, "GetTask"))
 	}
 	attackerURL := "https://batesian-attacker-" + vars.RandID + ".example/cb"
 	attackerSet := e.setPush(ctx, clientB, endpoint, b.Headers, "configuring a push-notification webhook as principal "+b.Name,
@@ -171,22 +171,22 @@ func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint
 	}
 	attackerWriteVerified := attackerSet.accepted && e.getPush(ctx, clientA, endpoint, a.Headers, taskID, attackerSet, attackerURL, vars.RandID+"-cross-write")
 	if attackerWriteVerified {
-		findings = append(findings, e.writeFinding(endpoint, a, b, taskID, attackerURL, consumed, "GetTask"))
+		findings = append(findings, e.writeFinding(endpoint, a, b, consumed, "GetTask"))
 	}
 	if attackerSet.accepted && !attackerWriteVerified {
 		return findings, attack.ErrInconclusive
 	}
 	if !openSet.accepted && !openSet.judged {
-		return findings, fmt.Errorf("%w: anonymous push-config write did not establish whether task %s was writable",
-			attack.ErrInconclusive, taskID)
+		return findings, fmt.Errorf("%w: anonymous push-config write did not establish whether the task was writable",
+			attack.ErrInconclusive)
 	}
 	if !attackerSet.accepted && !attackerSet.judged {
-		return findings, fmt.Errorf("%w: principal %s's push-config write did not establish whether task %s was writable",
-			attack.ErrInconclusive, b.Name, taskID)
+		return findings, fmt.Errorf("%w: principal %s's push-config write did not establish whether the task was writable",
+			attack.ErrInconclusive, b.Name)
 	}
 	if !crossReadJudged {
-		return findings, fmt.Errorf("%w: principal %s's push-config read did not establish whether task %s was accessible",
-			attack.ErrInconclusive, b.Name, taskID)
+		return findings, fmt.Errorf("%w: principal %s's push-config read did not establish whether the task was accessible",
+			attack.ErrInconclusive, b.Name)
 	}
 	return findings, nil
 }
@@ -436,7 +436,7 @@ func pushBindingHeaders(extra map[string]string, v1 bool) map[string]string {
 	return headers
 }
 
-func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attack.Principal, taskID, callbackURL string, consumed bool, taskControl string) attack.Finding {
+func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attack.Principal, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -444,21 +444,20 @@ func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attac
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A push-notification config writable without authentication",
 		Description: fmt.Sprintf(
-			"An unauthenticated request attached a push-notification callback (%s) to task %s, owned by %q. "+
-				"The owner read back the stored config. Notification delivery was not tested.",
-			callbackURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\n%s control: denied anonymously",
-			owner.Name, taskID, callbackURL, taskOrigin(consumed), taskControl),
+			"An unauthenticated request attached a push-notification callback to a task owned by %q. "+
+				"The owner read back the stored config. Notification delivery was not tested.", owner.Name),
+		Evidence: fmt.Sprintf("owner: %s\nowner readback: callback matched\ntask origin: %s\n%s control: denied anonymously",
+			owner.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
-			{Hop: 1, Principal: owner.Name, Action: "own task " + taskID + " with a configured webhook", Outcome: "task owned by " + owner.Name},
-			{Hop: 2, Principal: "anonymous", Action: "set push config on " + taskID, Outcome: "GRANTED - anonymous callback stored"},
+			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "task owned by " + owner.Name},
+			{Hop: 2, Principal: "anonymous", Action: "set push config on owner task", Outcome: "GRANTED - anonymous callback stored"},
 		},
 	}
 }
 
-func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, taskID, attackerURL string, consumed bool, taskControl string) attack.Finding {
+func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker attack.Principal, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -466,22 +465,22 @@ func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker atta
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A push-notification config writable across principals",
 		Description: fmt.Sprintf(
-			"Principal %q attached a push-notification callback (%s) to task %s, which is owned by "+
+			"Principal %q attached a push-notification callback to a task owned by "+
 				"principal %q, using only its own valid credentials. The push control plane is "+
 				"authenticated but not bound to the task owner. Notification delivery was not tested.",
-			attacker.Name, attackerURL, taskID, owner.Name),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nowner readback URL: %s\ntask origin: %s\n%s control: denied for other principal",
-			owner.Name, attacker.Name, taskID, attackerURL, taskOrigin(consumed), taskControl),
+			attacker.Name, owner.Name),
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\nowner readback: callback matched\ntask origin: %s\n%s control: denied for other principal",
+			owner.Name, attacker.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
-			{Hop: 1, Principal: owner.Name, Action: "own task " + taskID + " with a configured webhook", Outcome: "task owned by " + owner.Name},
-			{Hop: 2, Principal: attacker.Name, Action: "set push config on " + taskID + " (cross-principal)", Outcome: "GRANTED - attacker callback attached"},
+			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "task owned by " + owner.Name},
+			{Hop: 2, Principal: attacker.Name, Action: "set push config on owner task (cross-principal)", Outcome: "GRANTED - attacker callback attached"},
 		},
 	}
 }
 
-func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attack.Principal, taskID, markerURL string, consumed bool, taskControl string) attack.Finding {
+func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attack.Principal, consumed bool, taskControl string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -489,16 +488,16 @@ func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attac
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A push-notification config readable across principals",
 		Description: fmt.Sprintf(
-			"Principal %q read the push-notification config of task %s, owned by principal %q, and "+
-				"the response disclosed %q's configured callback URL (%s). The callback token was not verified.",
-			attacker.Name, taskID, owner.Name, owner.Name, markerURL),
-		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ntask: %s\nleaked callback URL: %s\ntask origin: %s\n%s control: denied for other principal",
-			owner.Name, attacker.Name, taskID, markerURL, taskOrigin(consumed), taskControl),
+			"Principal %q read the push-notification config of a task owned by principal %q, and "+
+				"the response disclosed the configured callback URL. The callback token was not verified.",
+			attacker.Name, owner.Name),
+		Evidence: fmt.Sprintf("owner: %s\nattacker: %s\ncallback disclosure: configured URL matched\ntask origin: %s\n%s control: denied for other principal",
+			owner.Name, attacker.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
-			{Hop: 1, Principal: owner.Name, Action: "own task " + taskID + " with a configured webhook", Outcome: "callback URL configured (secret)"},
-			{Hop: 2, Principal: attacker.Name, Action: "get push config of " + taskID + " (cross-principal)", Outcome: "GRANTED - owner's callback URL disclosed"},
+			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "callback URL configured"},
+			{Hop: 2, Principal: attacker.Name, Action: "get owner push config (cross-principal)", Outcome: "GRANTED - owner's callback URL disclosed"},
 		},
 	}
 }

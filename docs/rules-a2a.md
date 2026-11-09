@@ -557,6 +557,8 @@ It attempts to delete each accepted marker after the task owner's readback
 confirms its callback URL. Unconfirmed markers or refused deletions remain in
 the scan report. On single-config servers, a marker can replace an existing
 callback on a reused task; use test tasks for this rule.
+Findings omit callback URLs and task and config IDs. The target-object list keeps
+IDs needed to verify or clean up any remaining config.
 
 ---
 
@@ -572,6 +574,8 @@ response. A Delete finding requires a correlated success and owner readback
 showing the marker is gone while the task still exists. The rule follows up to
 eight v1.0 list pages and detects repeated page tokens. It never deletes a
 pre-existing config and records cleanup of the scanner-created one.
+Findings omit callback URLs and task and config IDs; the target-object list
+keeps IDs needed for cleanup.
 
 The rule supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings,
 including `GET /tasks/{id}/pushNotificationConfigs` and
