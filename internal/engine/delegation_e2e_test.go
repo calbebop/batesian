@@ -163,8 +163,8 @@ func TestE2E_DelegationConsumesMultiTenantTaskID(t *testing.T) {
 	if !contains(f.Chain[0].Action, "consumed from blackboard") {
 		t.Errorf("expected the consumer to reuse the producer's task-id, got hop-1 %q", f.Chain[0].Action)
 	}
-	if !contains(f.Chain[0].Action, "task-A") {
-		t.Errorf("expected the consumed task to be tenant A's, got hop-1 %q", f.Chain[0].Action)
+	if f.Chain[0].Principal != "tenant-a" || contains(f.Chain[0].Action, "task-A") {
+		t.Errorf("expected tenant A's consumed task without its handle in the report, got hop-1 %+v", f.Chain[0])
 	}
 }
 

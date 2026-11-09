@@ -126,7 +126,7 @@ func (e *DelegationIntegrityExecutor) ExecuteChained(ctx context.Context, target
 	case continuationUnsupported:
 		anonymousEvidence = "unsupported; no stored message observed"
 	}
-	return []attack.Finding{e.finding(endpoint, a, b, taskID, contextID, marker, anonymousEvidence, consumed)}, nil
+	return []attack.Finding{e.finding(endpoint, a, b, anonymousEvidence, consumed)}, nil
 }
 
 // consumeOwnedTask finds an upstream task owned by A.
@@ -391,12 +391,12 @@ func taskHistoryHasMarker(body []byte, requestID, taskID, marker string) (readab
 }
 
 // finding reports a continuation verified in the owner's task history.
-func (e *DelegationIntegrityExecutor) finding(endpoint string, owner, attacker attack.Principal, taskID, contextID, marker, anonymousOutcome string, consumed bool) attack.Finding {
+func (e *DelegationIntegrityExecutor) finding(endpoint string, owner, attacker attack.Principal, anonymousOutcome string, consumed bool) attack.Finding {
 	origin := "created during this scan as the delegator"
-	hop1Action := "create/own delegated task " + taskID
+	hop1Action := "create and own a delegated task"
 	if consumed {
 		origin = "reused from an upstream rule's blackboard artifact (cross-rule chain)"
-		hop1Action = "own delegated task " + taskID + " (consumed from blackboard)"
+		hop1Action = "own a delegated task consumed from blackboard"
 	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
@@ -405,22 +405,22 @@ func (e *DelegationIntegrityExecutor) finding(endpoint string, owner, attacker a
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A task stores another principal's continuation",
 		Description: fmt.Sprintf(
-			"Principal %q sent a follow-up to task %s (contextId %s), owned by principal %q. "+
-				"The unique message appeared in the owner's task history. Unauthenticated "+
+			"Principal %q sent a follow-up to a task owned by principal %q. "+
+				"The unique probe message appeared in the owner's task history. Unauthenticated "+
 				"control: %s. This confirms cross-principal input to the task; downstream "+
 				"execution was not verified. Confirm whether the caller was an intended delegate. "+
 				"Owner task origin: %s.",
-			attacker.Name, taskID, contextID, owner.Name, anonymousOutcome, origin),
+			attacker.Name, owner.Name, anonymousOutcome, origin),
 		Evidence: fmt.Sprintf(
-			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\ntask: %s\ncontextId: %s\n"+
+			"owner: %s (tenant %s)\nattacker: %s (tenant %s)\nowner task and contextId: matched (values omitted)\n"+
 				"task origin: %s\nunauthenticated continuation: %s\n"+
-				"cross-principal marker in owner task history: %s",
-			owner.Name, owner.Tenant, attacker.Name, attacker.Tenant, taskID, contextID, origin, anonymousOutcome, marker),
+				"cross-principal probe message in owner task history: matched (text omitted)",
+			owner.Name, owner.Tenant, attacker.Name, attacker.Tenant, origin, anonymousOutcome),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: hop1Action, Outcome: "task owned by " + owner.Name + ", awaiting continuation"},
-			{Hop: 2, Principal: attacker.Name, Action: "continue task " + taskID + " as a different principal", Outcome: "GRANTED - message stored in owner task history"},
+			{Hop: 2, Principal: attacker.Name, Action: "continue the task as a different principal", Outcome: "GRANTED - message stored in owner task history"},
 		},
 	}
 }

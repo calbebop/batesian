@@ -159,7 +159,7 @@ func (e *ContextFixationExecutor) ExecuteChained(ctx context.Context, target str
 		return nil, nil // the history was read; the victim's marker was not merged into A's view
 	}
 
-	return []attack.Finding{e.finding(endpoint, a, b, fixedCtx, ownerSend.taskID, victimSend.taskID)}, nil
+	return []attack.Finding{e.finding(endpoint, a, b)}, nil
 }
 
 type contextSendResult struct {
@@ -294,7 +294,7 @@ func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *at
 			if !readable {
 				partial = true
 				obs.observe(setupObservation{setupOtherRefusal,
-					fmt.Sprintf("%s at %s did not return task %s with a usable history", what, endpoint, taskID)})
+					fmt.Sprintf("%s at %s did not return the requested task with a usable history", what, endpoint)})
 			}
 			continue
 		}
@@ -343,7 +343,7 @@ func contextTaskHistoryHasText(body []byte, requestID, taskID, marker string) (r
 }
 
 // finding builds the confirmed context-fixation cross-principal disclosure.
-func (e *ContextFixationExecutor) finding(endpoint string, attacker, victim attack.Principal, fixedCtx, taskA, taskB string) attack.Finding {
+func (e *ContextFixationExecutor) finding(endpoint string, attacker, victim attack.Principal) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -351,23 +351,21 @@ func (e *ContextFixationExecutor) finding(endpoint string, attacker, victim atta
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A server merges principals under a client-supplied contextId (context fixation)",
 		Description: fmt.Sprintf(
-			"The server accepted a client-chosen contextId (%q) and exposed principal %q's "+
-				"message to principal %q under that shared context: "+
-				"%q read back the context (task %s) and saw %q's secret marker (task %s). An "+
-				"attacker can fix a contextId, steer a victim onto it, and capture the victim's "+
-				"messages and embedded context (CWE-384). An unauthenticated message under the "+
-				"same context was rejected, so this is a cross-principal fixation, not an open "+
-				"server.", fixedCtx, victim.Name, attacker.Name, attacker.Name, taskA, victim.Name, taskB),
+			"The server honored a client-chosen contextId and exposed principal %q's message "+
+				"to principal %q under that shared context. The reader's task history contained "+
+				"the other principal's probe message. An unauthenticated message under the same "+
+				"context was rejected. Scope contexts to their authorized participants (CWE-384).",
+			victim.Name, attacker.Name),
 		Evidence: fmt.Sprintf(
-			"fixed contextId: %s (client-supplied, honored by server)\nattacker: %s (tenant %s)\n"+
-				"victim: %s (tenant %s)\nattacker task: %s\nvictim task: %s\n"+
+			"contextId: client-supplied and honored (value omitted)\nattacker: %s (tenant %s)\n"+
+				"victim: %s (tenant %s)\nattacker and victim tasks: correlated (IDs omitted)\n"+
 				"unauthenticated message under context: rejected\n"+
-				"victim's marker visible to attacker via shared context: yes",
-			fixedCtx, attacker.Name, attacker.Tenant, victim.Name, victim.Tenant, taskA, taskB),
+				"victim's probe message visible to attacker via shared context: yes (text omitted)",
+			attacker.Name, attacker.Tenant, victim.Name, victim.Tenant),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 		Chain: []attack.ChainStep{
-			{Hop: 1, Principal: attacker.Name, Action: "send under a client-chosen contextId " + fixedCtx, Outcome: "server honored the client-supplied contextId"},
+			{Hop: 1, Principal: attacker.Name, Action: "send under a client-chosen contextId", Outcome: "server honored the client-supplied contextId"},
 			{Hop: 2, Principal: victim.Name, Action: "send a secret message under the same contextId", Outcome: "victim's message stored in the fixed context"},
 			{Hop: 3, Principal: attacker.Name, Action: "read the fixed context back", Outcome: "GRANTED - read the victim's message via the shared context"},
 		},
