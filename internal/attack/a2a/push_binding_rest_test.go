@@ -164,6 +164,7 @@ func TestPushBindingREST(t *testing.T) {
 				t.Fatalf("finding=%+v", findings[0])
 			}
 			objects := pushConfigObjects(state.Snapshot())
+			assertPushFindingsOmitObjectIDs(t, findings, objects)
 			want := 1
 			if tc.mode == "anonymous-write" || tc.mode == "cross-write" || tc.mode == "cross-write-noop" {
 				want = 2

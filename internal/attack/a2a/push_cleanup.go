@@ -41,7 +41,7 @@ func (p *pushRegistration) finish(ctx context.Context, client *attack.HTTPClient
 	if manualVerification {
 		detail := "external OOB delivery pending; remove after manual verification"
 		recordPushConfig(state, p.endpoint, p.taskID, p.configID, attack.CleanupNotAttempted, detail)
-		return fmt.Sprintf("scanner-created push config %q on task %q: %s", p.configID, p.taskID, detail)
+		return "scanner-created push config: " + detail
 	}
 	status := attack.CleanupUnavailable
 	detail := "registration did not return a configuration ID"
@@ -60,10 +60,9 @@ func (p *pushRegistration) finish(ctx context.Context, client *attack.HTTPClient
 	}
 	recordPushConfig(state, p.endpoint, p.taskID, p.configID, status, detail)
 	if status == attack.CleanupCompleted {
-		return fmt.Sprintf("scanner-created push config %q on task %q: deleted after probe", p.configID, p.taskID)
+		return "scanner-created push config: deleted after probe"
 	}
-	return fmt.Sprintf("scanner-created push config %q on task %q: cleanup %s (%s); verify on target",
-		p.configID, p.taskID, status, detail)
+	return fmt.Sprintf("scanner-created push config: cleanup %s (%s); verify on target", status, detail)
 }
 
 func (p *pushRegistration) readbackMatches(ctx context.Context, client *attack.HTTPClient) bool {
@@ -149,7 +148,7 @@ func (p *pushRegistration) delete(ctx context.Context, client *attack.HTTPClient
 	}
 	switch {
 	case err != nil:
-		return attack.CleanupAttempted, "delete request failed: " + err.Error()
+		return attack.CleanupAttempted, "delete request failed"
 	case resp == nil:
 		return attack.CleanupAttempted, "delete returned no response"
 	default:

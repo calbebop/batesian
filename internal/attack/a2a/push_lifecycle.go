@@ -88,7 +88,7 @@ func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint strin
 		line := ""
 		if deleted {
 			recordPushConfig(opts.TargetState, endpoint, taskID, set.id, attack.CleanupCompleted, deletionDetail)
-			line = fmt.Sprintf("scanner-created push config %q on task %q: %s", set.id, taskID, deletionDetail)
+			line = "scanner-created push config: " + deletionDetail
 		} else {
 			line = registration.finish(ctx, clientA, opts.TargetState, false)
 		}
@@ -107,14 +107,14 @@ func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint strin
 	}
 	otherTask := readTaskAccess(ctx, clientB, endpoint, b.Headers, taskID, set.v1, vars.RandID+"-other")
 	if otherTask != taskDenied {
-		return nil, fmt.Errorf("%w: principal %q was not confirmed outside task %s's access scope", attack.ErrInconclusive, b.Name, taskID)
+		return nil, fmt.Errorf("%w: principal %q was not confirmed outside the task's access scope", attack.ErrInconclusive, b.Name)
 	}
 
 	ownerList := e.listConfigs(ctx, clientA, endpoint, a.Headers, taskID, set, markerURL, vars.RandID+"-owner")
 	if ownerList.found {
 		otherList := e.listConfigs(ctx, clientB, endpoint, b.Headers, taskID, set, markerURL, vars.RandID+"-other")
 		if otherList.found {
-			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "list", "GetTask"))
+			findings = append(findings, e.finding(endpoint, a, b, "list", "GetTask"))
 		} else if !otherList.complete && !otherList.denied {
 			partial = errors.Join(partial, fmt.Errorf("%w: cross-principal push-config list was unjudged", attack.ErrInconclusive))
 		}
@@ -130,7 +130,7 @@ func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint strin
 	if readback == configAbsent && readTaskAccess(ctx, clientA, endpoint, a.Headers, taskID, set.v1, vars.RandID+"-after-delete") == taskPresent {
 		deleted = true
 		if deleteReply == deleteAccepted {
-			findings = append(findings, e.finding(endpoint, a, b, taskID, set.id, markerURL, "delete", "GetTask"))
+			findings = append(findings, e.finding(endpoint, a, b, "delete", "GetTask"))
 		} else {
 			deletionDetail = "absent after probe; deletion source unconfirmed"
 			partial = errors.Join(partial, fmt.Errorf("%w: marker disappeared without a confirmed delete response", attack.ErrInconclusive))
@@ -409,7 +409,7 @@ func (e *PushLifecycleExecutor) deleteConfig(ctx context.Context, c *attack.HTTP
 	return deleteUnknown
 }
 
-func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Principal, taskID, configID, markerURL, operation, readMethod string) attack.Finding {
+func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Principal, operation, readMethod string) attack.Finding {
 	title := "A2A push-notification configs listed outside task scope"
 	detail := "listed the owner's scanner-created push config, including its callback URL"
 	if operation == "delete" {
@@ -419,10 +419,10 @@ func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Pri
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
 		Title: title,
-		Description: fmt.Sprintf("Principal %q could not read principal %q's task %s, but %s using its own credentials.",
-			other.Name, owner.Name, taskID, detail),
-		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\ntask: %s\nconfig: %s\ncallback URL: %s\n%s control: denied for other principal\noperation: %s",
-			owner.Name, other.Name, taskID, configID, markerURL, readMethod, operation),
+		Description: fmt.Sprintf("Principal %q could not read principal %q's task, but %s using its own credentials.",
+			other.Name, owner.Name, detail),
+		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\nowner readback: callback matched\n%s control: denied for other principal\noperation: %s",
+			owner.Name, other.Name, readMethod, operation),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task and push config", Outcome: "owner readback confirmed marker"},
