@@ -79,7 +79,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 	}
 
 	// Only proceed when the card declares required auth with no anonymous option.
-	schemes, required := declaredAuthRequirement(card)
+	_, required := declaredAuthRequirement(card)
 	if !required {
 		return nil, withCardReadReason(nil)
 	}
@@ -95,7 +95,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 			if sent.taskID != "" {
 				readBackOutcome, readBackErr = e.readTask(ctx, client, rpcEndpoint, sent.taskID, vars.RandID+"-created")
 			}
-			finding := e.finding(rpcEndpoint, schemes, sent, readOutcome != probeAuthRejected,
+			finding := e.finding(rpcEndpoint, sent, readOutcome != probeAuthRejected,
 				readBackOutcome == probeProcessedResult, "SendMessage/message/send", "GetTask/tasks/get")
 			if cardReadReason != "" {
 				finding.Evidence += "\nunobserved card read: " + cardReadReason
@@ -126,7 +126,7 @@ func (e *CardSecurityUnenforcedExecutor) Execute(ctx context.Context, target str
 				createdURL := endpoint.AppendPath(base, route.taskPath+"/"+url.PathEscape(sent.taskID))
 				readBackOutcome, readBackErr = e.readRESTTask(ctx, client, createdURL, sent.taskID, route.version)
 			}
-			finding := e.finding(sendURL, schemes, sent, readOutcome != probeAuthRejected,
+			finding := e.finding(sendURL, sent, readOutcome != probeAuthRejected,
 				readBackOutcome == probeProcessedResult, "POST "+route.sendPath, "GET "+route.taskPath+"/{id}")
 			if cardReadReason != "" {
 				finding.Evidence += "\nunobserved card read: " + cardReadReason
@@ -171,7 +171,7 @@ func (e *CardSecurityUnenforcedExecutor) readRESTTask(ctx context.Context, c *at
 	readURL, taskID, version string) (probeOutcome, error) {
 	resp, err := c.GET(ctx, readURL, restVersionHeaders(version, nil))
 	if err != nil || resp == nil {
-		return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read at %s did not answer", attack.ErrInconclusive, readURL)
+		return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read did not answer", attack.ErrInconclusive)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
 		resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
@@ -182,8 +182,8 @@ func (e *CardSecurityUnenforcedExecutor) readRESTTask(ctx context.Context, c *at
 			return probeProcessedResult, nil
 		}
 	}
-	return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read at %s returned no matching Task (HTTP %d)",
-		attack.ErrInconclusive, readURL, resp.StatusCode)
+	return probeAuthRejected, fmt.Errorf("%w: anonymous REST task read returned no matching Task (HTTP %d)",
+		attack.ErrInconclusive, resp.StatusCode)
 }
 
 // readTask issues an unauthenticated tasks/get for taskID (v1.0 GetTask then v0.3
@@ -467,9 +467,8 @@ func validCardMessagePart(raw json.RawMessage, version string, wrapped bool) boo
 	}
 }
 
-func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []string, sent cardSendResult,
+func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, sent cardSendResult,
 	readReachable, readBack bool, sendOperation, readOperation string) attack.Finding {
-	schemeList := strings.Join(schemes, ", ")
 	readLine := "unauthenticated read (" + readOperation + ") of the created task: not confirmed"
 	if sent.messageID != "" {
 		readLine = "task readback: not applicable to a direct Message response"
@@ -478,11 +477,11 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 	} else if readReachable {
 		readLine = "unauthenticated read (" + readOperation + ") path: reachable (not rejected at the auth layer)"
 	}
-	accepted := fmt.Sprintf("created task %s", sent.taskID)
-	evidence := fmt.Sprintf("accepted (created task %s)", sent.taskID)
+	accepted := "created a Task (ID omitted)"
+	evidence := "accepted (Task; ID omitted)"
 	if sent.messageID != "" {
-		accepted = fmt.Sprintf("returned agent Message %s", sent.messageID)
-		evidence = fmt.Sprintf("accepted (agent Message %s)", sent.messageID)
+		accepted = "returned an agent Message (ID omitted)"
+		evidence = "accepted (agent Message; ID omitted)"
 	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,
@@ -491,14 +490,14 @@ func (e *CardSecurityUnenforcedExecutor) finding(endpoint string, schemes []stri
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A agent card declares required authentication but the endpoint serves unauthenticated requests",
 		Description: fmt.Sprintf(
-			"The agent card declares a security requirement (scheme(s): %s) that a caller MUST satisfy, "+
+			"The agent card declares an authentication requirement that a caller MUST satisfy, "+
 				"yet an unauthenticated %s at %s %s with no "+
 				"credentials presented. The card is the agent's published security contract; the server does "+
 				"not enforce it, so any anonymous caller has the access the card says requires "+
-				"authentication.", schemeList, sendOperation, endpoint, accepted),
+				"authentication.", sendOperation, endpoint, accepted),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ncard-declared security scheme(s): %s\nunauthenticated %s: %s\n%s",
-			endpoint, schemeList, sendOperation, evidence, readLine),
+			"endpoint: %s\ncard-declared authentication: required (scheme names omitted)\nunauthenticated %s: %s\n%s",
+			endpoint, sendOperation, evidence, readLine),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}

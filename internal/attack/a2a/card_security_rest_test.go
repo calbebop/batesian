@@ -98,6 +98,10 @@ func cardSecurityRESTServer(mode string) *httptest.Server {
 				"content": []interface{}{map[string]string{"text": "pong"}},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/rest/tasks/rest-task-1":
+			if mode == "readback-malformed" {
+				writeJSON(w, map[string]bool{"ok": true})
+				return
+			}
 			writeJSON(w, map[string]interface{}{
 				"id": "rest-task-1", "contextId": "rest-context-1",
 				"status": map[string]string{"state": "TASK_STATE_SUBMITTED"}})
@@ -117,6 +121,7 @@ func TestCardSecurityRESTOnly(t *testing.T) {
 		{"secure", false, false},
 		{"rpc-down", false, true},
 		{"malformed", false, true},
+		{"readback-malformed", true, true},
 		{"message", true, false},
 		{"message-v03", true, false},
 		{"message-echo", false, true},
@@ -141,11 +146,25 @@ func TestCardSecurityRESTOnly(t *testing.T) {
 					t.Fatalf("REST binding missing from evidence: %s", findings[0].Evidence)
 				}
 			}
-			if tc.mode == "message" && !strings.Contains(findings[0].Evidence, "agent Message rest-reply-1") {
+			if tc.mode == "message" && !strings.Contains(findings[0].Evidence, "agent Message; ID omitted") {
 				t.Fatalf("REST Message missing from evidence: %s", findings[0].Evidence)
 			}
-			if tc.mode == "message-v03" && !strings.Contains(findings[0].Evidence, "agent Message rest-v03-reply") {
+			if tc.mode == "message-v03" && !strings.Contains(findings[0].Evidence, "agent Message; ID omitted") {
 				t.Fatalf("legacy REST Message missing from evidence: %s", findings[0].Evidence)
+			}
+			if tc.wantFinding {
+				report, marshalErr := json.Marshal(findings)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				for _, value := range []string{"bearerAuth", "rest-task-1", "rest-reply-1", "rest-v03-reply"} {
+					if strings.Contains(string(report), value) {
+						t.Errorf("finding contains a card scheme or returned handle %q: %s", value, report)
+					}
+				}
+			}
+			if tc.mode == "readback-malformed" && strings.Contains(err.Error(), "rest-task-1") {
+				t.Errorf("inconclusive reason contains the task handle: %v", err)
 			}
 		})
 	}
