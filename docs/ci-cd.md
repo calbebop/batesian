@@ -50,7 +50,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
 
       - name: Install Batesian
         run: go install github.com/calbebop/batesian/cmd/batesian@v1.8.1
@@ -302,7 +302,7 @@ pre-configured, externally reachable listener instead.
 ```yaml
 # .gitlab-ci.yml
 batesian-scan:
-  image: golang:1.26.10-bookworm
+  image: golang:1.26.11-bookworm
   stage: test
   script:
     - apt-get update && apt-get install -y --no-install-recommends jq
@@ -361,4 +361,4 @@ stage('Agent Security Scan') {
 }
 ```
 
-The Jenkins agent needs Go 1.26.10 or newer and `jq` installed.
+The Jenkins agent needs Go 1.26.11 or newer and `jq` installed.
