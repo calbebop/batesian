@@ -37,7 +37,7 @@ func (ts *taskStore) get(id string) (string, bool) {
 
 func storedArtifact(text string) []interface{} {
 	return []interface{}{map[string]interface{}{
-		"artifactId": "stored-output",
+		"artifactId": "private-artifact-id-marker",
 		"parts":      []interface{}{map[string]interface{}{"text": text}},
 	}}
 }
@@ -53,7 +53,7 @@ func vulnerableA2AServer(t *testing.T) *httptest.Server {
 		switch method {
 		case "tasks/send":
 			params, _ := req["params"].(map[string]interface{})
-			taskID, _ := params["id"].(string)
+			taskID := "private-task-id-marker"
 			msg, _ := params["message"].(map[string]interface{})
 			parts, _ := msg["parts"].([]interface{})
 			var text string
@@ -109,8 +109,10 @@ func TestArtifactTamper_OverwriteAllowed(t *testing.T) {
 	for _, f := range findings {
 		if f.Confidence == attack.ConfirmedExploit {
 			hasConfirmed = true
-			if strings.Contains(f.Title+f.Description+f.Evidence, "private-artifact-payload-marker") {
-				t.Error("finding copied stored task content")
+			for _, marker := range []string{"private-artifact-payload-marker", "private-artifact-id-marker", "private-task-id-marker"} {
+				if strings.Contains(f.Title+f.Description+f.Evidence, marker) {
+					t.Errorf("finding copied private task data: %s", marker)
+				}
 			}
 			if !strings.Contains(f.Evidence, "replacement marker present; original marker absent") {
 				t.Errorf("finding omitted overwrite evidence: %q", f.Evidence)
@@ -264,7 +266,7 @@ func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
 						id = 2
 					}
 					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-						"result": map[string]interface{}{"task": map[string]interface{}{"id": "task-1", "status": map[string]string{"state": "completed"}}}})
+						"result": map[string]interface{}{"task": map[string]interface{}{"id": "private-task-id-marker", "status": map[string]string{"state": "completed"}}}})
 				case "GetTask", "tasks/get":
 					if original == "" {
 						rpcErr(w, id, -32001, "Task not found")
@@ -274,7 +276,7 @@ func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
 						id = "other-request"
 					}
 					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": id,
-						"result": map[string]interface{}{"id": "task-1", "status": map[string]string{"state": "completed"},
+						"result": map[string]interface{}{"id": "private-task-id-marker", "status": map[string]string{"state": "completed"},
 							"artifacts": storedArtifact(original)}})
 				default:
 					rpcErr(w, id, -32601, "Method not found")
@@ -286,6 +288,9 @@ func TestArtifactTamper_WrongReplyIDIsIncomplete(t *testing.T) {
 				Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("unmatched %s reply must not report clean: findings=%+v err=%v", mode, findings, err)
+			}
+			if strings.Contains(err.Error(), "private-task-id-marker") {
+				t.Fatalf("inconclusive result copied the task ID: %v", err)
 			}
 		})
 	}
@@ -742,8 +747,9 @@ func TestArtifactTamper_ChecksEveryOriginalArtifact(t *testing.T) {
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("expected one finding for the replaced artifact, got findings=%+v err=%v", findings, err)
 	}
-	if !strings.Contains(findings[0].Evidence, "artifact:replaced") {
-		t.Fatalf("finding must identify the changed artifact: %s", findings[0].Evidence)
+	if !strings.Contains(findings[0].Evidence, "Matched artifact: 2 of 2") ||
+		strings.Contains(findings[0].Evidence, "artifact:replaced") {
+		t.Fatalf("finding must locate the changed artifact without its ID: %s", findings[0].Evidence)
 	}
 }
 
