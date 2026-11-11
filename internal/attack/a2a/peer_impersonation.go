@@ -128,16 +128,15 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			Confidence: attack.ConfirmedExploit,
 			Title:      "A2A SendMessage accepted a randomly signed JWT but rejected anonymous access",
 			Description: fmt.Sprintf(
-				"A randomly signed HS256 JWT (sub=%q, iss=%q) was accepted (HTTP %d), while "+
+				"A randomly signed HS256 JWT was accepted (HTTP %d), while "+
 					"the same request without a token was rejected (HTTP %d). This demonstrates "+
 					"that this token passed the endpoint's authentication gate. It does not establish "+
 					"which claim was honored or that peer-specific privileges were granted.",
-				agentName, claims.iss,
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Evidence: fmt.Sprintf(
-				"Forged JWT (redacted): %s...[signature omitted]\niss: %s\nissuer source: %s\naud: %s\n"+
+				"token: randomly signed HS256 JWT (value omitted)\nissuer source: %s\nissuer and audience values omitted\n"+
 					"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
-				jwtHeader(forgedToken), claims.iss, claims.source, claims.aud, wire,
+				claims.source, wire,
 				forgedResp.StatusCode, baselineResp.StatusCode),
 			Remediation: e.rule.Remediation,
 			TargetURL:   endpoint,
@@ -367,14 +366,7 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	if card == nil {
 		return out
 	}
-	// Sorted, not map order. Go randomizes map iteration, and both the forged
-	// token's iss and this evidence string come from whichever scheme is seen
-	// first, so a card declaring two issuer-bearing schemes (an openIdConnect and
-	// an oauth2 at different IdPs, normal during a migration) produced a different
-	// issuer per run. Measured on such a card: two distinct issuers across 30 runs,
-	// 25 to 5. Against an issuer-filtering server that decides whether the rule
-	// fires at all. oauthFlowEndpoints below was already sorted for this reason;
-	// the walk enclosing it was not.
+	// Use a stable scheme order so the same issuer is probed on every run.
 	names := make([]string, 0, len(card.SecuritySchemes))
 	for name := range card.SecuritySchemes {
 		names = append(names, name)
@@ -383,7 +375,7 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	for _, name := range names {
 		if iss := issuerFromScheme(card.SecuritySchemes[name]); iss != "" {
 			out.iss = iss
-			out.source = fmt.Sprintf("agent card securityScheme %q", name)
+			out.source = "agent card security scheme"
 			return out
 		}
 	}
@@ -485,14 +477,4 @@ func buildForgedJWT(sub, iss, aud string) (string, error) {
 	sig := mac.Sum(nil)
 
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
-}
-
-// jwtHeader returns the header.payload portion of a JWT (the first two segments)
-// for safe inclusion in evidence without leaking the signature or full token value.
-func jwtHeader(token string) string {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) >= 2 {
-		return parts[0] + "." + parts[1]
-	}
-	return "[invalid-token]"
 }
