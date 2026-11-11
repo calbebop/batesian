@@ -207,6 +207,10 @@ func TestPeerImpersonation_ForgedJWTAccepted(t *testing.T) {
 		!strings.Contains(findings[0].Evidence, "reply content omitted") {
 		t.Errorf("forged send reply leaked into finding: %+v", findings[0])
 	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, "test-agent") ||
+		strings.Contains(findings[0].Evidence, "eyJ") {
+		t.Errorf("card name or forged JWT leaked into finding: %+v", findings[0])
+	}
 }
 
 func TestPeerImpersonation_FindingRetainsEarlierIncompleteVersion(t *testing.T) {
@@ -417,13 +421,13 @@ func TestPeerImpersonation_IssuerAllowlistOnly(t *testing.T) {
 	if findings[0].Severity != "high" {
 		t.Errorf("expected high severity, got %q", findings[0].Severity)
 	}
-	// The evidence must show the issuer was taken from the target, not invented,
-	// because that is what makes the acceptance meaningful.
-	if !strings.Contains(findings[0].Evidence, testIssuer) {
-		t.Errorf("evidence should record the discovered issuer, got: %s", findings[0].Evidence)
-	}
-	if !strings.Contains(findings[0].Evidence, "securityScheme") {
+	if !strings.Contains(findings[0].Evidence, "issuer source: agent card security scheme") {
 		t.Errorf("evidence should name where the issuer came from, got: %s", findings[0].Evidence)
+	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, testIssuer) ||
+		strings.Contains(findings[0].Description+findings[0].Evidence, "billing-orchestrator") ||
+		strings.Contains(findings[0].Evidence, "eyJ") {
+		t.Errorf("finding contains card-derived claims or forged JWT: %+v", findings[0])
 	}
 }
 
@@ -939,11 +943,9 @@ func TestPeerImpersonation_AcceptsWrappedV1SendResult(t *testing.T) {
 	}
 }
 
-// Both the forged token's issuer and the finding's evidence come from a walk over
-// the card's securitySchemes map, and Go randomizes map order. A card declaring two
-// issuer-bearing schemes is normal during an IdP migration. Measured before the
-// fix: two distinct issuers across 30 runs.
+// The forged issuer must be stable when the card declares multiple schemes.
 func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
+	observedIssuers := make(chan string, 30)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
 			writeJSON(w, map[string]interface{}{
@@ -970,30 +972,38 @@ func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+		if len(parts) != 3 {
+			observedIssuers <- "invalid token"
+		} else if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err != nil {
+			observedIssuers <- "invalid payload"
+		} else {
+			var claims struct {
+				Issuer string `json:"iss"`
+			}
+			if json.Unmarshal(payload, &claims) != nil {
+				observedIssuers <- "invalid claims"
+			} else {
+				observedIssuers <- claims.Issuer
+			}
+		}
 		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": readBody(r)["id"],
 			"result": map[string]interface{}{"id": "t", "status": map[string]interface{}{"state": "completed"}}})
 	}))
 	defer srv.Close()
 
-	first := ""
 	for i := 0; i < 30; i++ {
 		exec := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC())
 		f, err := exec.Execute(context.Background(), srv.URL, testOpts())
 		if err != nil || len(f) == 0 {
 			t.Fatalf("run %d: expected a finding, got %d findings err=%v", i, len(f), err)
 		}
-		var iss string
-		for _, line := range strings.Split(f[0].Evidence, "\n") {
-			if strings.HasPrefix(line, "iss: ") {
-				iss = line
-			}
+		iss := <-observedIssuers
+		if iss != "https://old-idp.example.test" {
+			t.Fatalf("run %d forged an unexpected issuer %q", i, iss)
 		}
-		if i == 0 {
-			first = iss
-			continue
-		}
-		if iss != first {
-			t.Fatalf("run %d derived %q but run 0 derived %q; the issuer must not depend on map order", i, iss, first)
+		if strings.Contains(f[0].Evidence, iss) {
+			t.Fatalf("run %d copied the issuer into the finding: %s", i, f[0].Evidence)
 		}
 	}
 }
