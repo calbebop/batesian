@@ -275,15 +275,13 @@ func TestCardSecurity_VulnV1(t *testing.T) {
 	if !strings.Contains(f.Title, "declares required authentication") {
 		t.Errorf("unexpected title %q", f.Title)
 	}
-	// The scheme name is the actionable part of the finding: it tells an operator
-	// which scheme their server failed to enforce. On the real v1.0 shape the
-	// names sit under "schemes", and reading the entry's own keys reported the
-	// literal "schemes" on every v1.0 card in existence.
-	if !strings.Contains(f.Evidence, "bearerAuth") {
-		t.Errorf("evidence must name the declared scheme, got:\n%s", f.Evidence)
+	if !strings.Contains(f.Evidence, "card-declared authentication: required") {
+		t.Errorf("evidence omitted the declared requirement: %s", f.Evidence)
 	}
-	if strings.Contains(f.Evidence, "scheme(s): schemes") {
-		t.Errorf("evidence named the proto field instead of the scheme:\n%s", f.Evidence)
+	for _, value := range []string{"bearerAuth", "task-1"} {
+		if strings.Contains(f.Description+f.Evidence, value) {
+			t.Errorf("finding contains card scheme or returned handle %q: %+v", value, f)
+		}
 	}
 }
 
@@ -301,8 +299,11 @@ func TestCardSecurity_VulnV1FlatShape(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
-	if !strings.Contains(findings[0].Evidence, "bearerAuth") {
-		t.Errorf("evidence must name the declared scheme, got:\n%s", findings[0].Evidence)
+	if !strings.Contains(findings[0].Evidence, "card-declared authentication: required") {
+		t.Errorf("evidence omitted the flat declared requirement: %s", findings[0].Evidence)
+	}
+	if strings.Contains(findings[0].Description+findings[0].Evidence, "bearerAuth") {
+		t.Errorf("finding contains the card scheme name: %+v", findings[0])
 	}
 }
 
@@ -342,6 +343,11 @@ func TestCardSecurity_DirectMessages(t *testing.T) {
 				if err != nil || !strings.Contains(findings[0].Evidence, "agent Message") ||
 					!strings.Contains(findings[0].Evidence, "readback: not applicable") {
 					t.Fatalf("direct Message finding=%+v err=%v", findings, err)
+				}
+				for _, value := range []string{"reply-v1", "reply-v03", "bearerAuth"} {
+					if strings.Contains(findings[0].Description+findings[0].Evidence, value) {
+						t.Errorf("finding contains card scheme or Message ID %q: %+v", value, findings[0])
+					}
 				}
 			} else if !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("invalid Message must be inconclusive: %v", err)
