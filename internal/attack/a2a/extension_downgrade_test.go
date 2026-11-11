@@ -253,6 +253,13 @@ func TestExtDowngrade_FailOpen(t *testing.T) {
 	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
 		t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
 	}
+	report, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(report), reqExtURI) || !strings.Contains(f.Evidence, "URI omitted") {
+		t.Errorf("card extension URI leaked into finding: %s", report)
+	}
 }
 
 func TestExtDowngrade_StrictV03Fallback(t *testing.T) {
@@ -348,6 +355,9 @@ func TestExtDowngrade_IncompleteOmission(t *testing.T) {
 				context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("expected an incomplete result, got %d findings, err=%v", len(findings), err)
+			}
+			if strings.Contains(err.Error(), reqExtURI) {
+				t.Fatalf("card extension URI leaked into error: %v", err)
 			}
 		})
 	}

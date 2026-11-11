@@ -266,6 +266,8 @@ and carries no MUST or SHOULD requiring a server to validate or reject a
 client-supplied role. A client-authored turn
 *persisted* under the agent role is the failure, because anything reading that
 history back cannot tell it from a genuine agent turn.
+Findings record the confirmed role relationship without task IDs, probe markers,
+or returned task content.
 
 A server that rejects the role (`-32602`), normalizes it to `user`, or does not
 persist the message is **clean**. When the history cannot be read back, or the reply
@@ -542,6 +544,7 @@ its own required extension, so its policy/capability guarantees can be bypassed
 by omitting both headers. A server that rejects the un-activated request fails
 closed (no finding). Malformed `capabilities.extensions` entries cannot establish the
 card's required-extension policy and make this check inconclusive.
+Findings identify the extension by its position in the card without copying its URI.
 
 ---
 

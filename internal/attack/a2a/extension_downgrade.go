@@ -100,7 +100,7 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 		// Test: omit the extension header and reuse the shape that worked.
 		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, requestScope+"-omitted", shape)
 		if omitted {
-			finding := e.finding(endpoint, uri, shape)
+			finding := e.finding(endpoint, i+1, len(required), shape)
 			if cardReadReason != "" {
 				finding.Evidence += "\nunobserved Agent Card read: " + cardReadReason
 			}
@@ -115,7 +115,7 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 			continue
 		}
 		observed.observe(setupObservation{setupOtherRefusal, fmt.Sprintf(
-			"request omitting required extension %q at %s did not confirm an extension-policy rejection", uri, endpoint)})
+			"request omitting required extension %d of %d at %s did not confirm an extension-policy rejection", i+1, len(required), endpoint)})
 	}
 	if tested && observed.rank == setupFeatureAbsent {
 		return nil, withCardReadReason(fmt.Errorf("%w: not every required extension could be tested at %s",
@@ -225,7 +225,7 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 	return false, "", obs, false
 }
 
-func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack.Finding {
+func (e *ExtensionDowngradeExecutor) finding(endpoint string, position, total int, shape string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -233,14 +233,14 @@ func (e *ExtensionDowngradeExecutor) finding(endpoint, uri, shape string) attack
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A server does not enforce its own required extension (negotiation downgrade)",
 		Description: fmt.Sprintf(
-			"The agent card marks extension %q as required, but the server accepted a SendMessage that "+
+			"The agent card marks extension %d of %d as required, but the server accepted a SendMessage that "+
 				"OMITTED the A2A-Extensions activation header. A request that activates the extension and an "+
 				"otherwise equivalent request that does not are both processed, so the required extension's policy or "+
 				"capability guarantees can be bypassed simply by not sending the header. The A2A spec requires "+
-				"a server to reject a request that does not activate a required extension (ExtensionSupportRequiredError).", uri),
+				"a server to reject a request that does not activate a required extension (ExtensionSupportRequiredError).", position, total),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s (shape %s)\nrequired extension: %s\nwith A2A-Extensions activation: accepted\nwithout activation header: accepted (spec requires rejection: ExtensionSupportRequiredError)",
-			endpoint, shape, uri),
+			"endpoint: %s (shape %s)\nrequired extension: %d of %d (URI omitted)\nwith A2A-Extensions activation: accepted\nwithout activation header: accepted (spec requires rejection: ExtensionSupportRequiredError)",
+			endpoint, shape, position, total),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
