@@ -164,6 +164,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.A2AGRPCTarget != "" && target != cfg.Target && !cmd.Flags().Changed("a2a-grpc-target") {
 		return errors.New("a2a_grpc_target cannot be used with a different --target")
 	}
+	if cfg.A2ABatchProbe != nil && target != cfg.Target {
+		return errors.New("a2a_batch_probe cannot be used with a different --target")
+	}
 	redactor := newOutputRedactor(target)
 	for _, raw := range []string{authURL, tokenURL, oauthIssuer, proxy, cfg.Proxy, oobURL, cfg.OOBURL} {
 		redactor.addURL(raw)
@@ -175,6 +178,10 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		redactor.addURL(raw)
 	}
 	redactor.addSecret(clientSecret)
+	if cfg.A2ABatchProbe != nil {
+		redactor.addSecret(cfg.A2ABatchProbe.TaskID)
+		redactor.addSecret(cfg.A2ABatchProbe.PrivateMarker)
+	}
 	if token == "" {
 		token = firstNonEmpty(cfg.Token, os.Getenv("BATESIAN_TOKEN"))
 	}
@@ -311,6 +318,10 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 			OutsidePath: p.OutsidePath, OutsideSizeBytes: p.OutsideSizeBytes,
 		}
 	}
+	var a2aBatchProbe *attackpkg.A2ABatchProbe
+	if p := cfg.A2ABatchProbe; p != nil {
+		a2aBatchProbe = &attackpkg.A2ABatchProbe{TaskID: p.TaskID, PrivateMarker: p.PrivateMarker}
+	}
 
 	loaded, err := loadRules(batesian.RulesFS(), rulesDir)
 	if err != nil {
@@ -390,6 +401,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		SkipTLS:                   skipTLS,
 		Proxy:                     proxy,
 		A2AGRPCTarget:             a2aGRPCTarget,
+		A2ABatchProbe:             a2aBatchProbe,
 		OAuthOrigins:              oauthOrigins,
 		MCPScopeTools:             mcpScopeTools,
 		MCPInvokeTools:            mcpInvokeTools,

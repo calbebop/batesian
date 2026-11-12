@@ -2,18 +2,22 @@ id: a2a-jsonrpc-batch-bypass-001
 info:
   name: A2A JSON-RPC Batch Authentication Bypass
   author: batesian
-  severity: medium
+  severity: high
   description: |
     Compares an unauthenticated GetTask request with the same request wrapped in
     a one-element JSON-RPC batch. The control must return HTTP 401/403 or a
     correlated JSON-RPC authentication error. The batch reply must match the
     request ID and contain exactly one response.
 
-    A returned task object confirms access despite the control's auth refusal
-    (CWE-288). TaskNotFound is a risk indicator only: A2A also uses it when a
-    task is inaccessible. Rejected batches produce no finding.
+    A task object or TaskNotFound returned for a random ID is a risk indicator
+    only. A2A also uses TaskNotFound when a task is inaccessible. Rejected
+    batches produce no finding.
 
-    The probe reads a random, non-existent task ID and does not mutate state.
+    For a confirmed finding, configure a2a_batch_probe with a disposable owner
+    task ID and unique private text marker, and provide owner credentials. The
+    rule verifies the marker in the owner's task read, denies an anonymous
+    single read of that same task, then requires the anonymous batch reply to
+    contain the same task and marker. Both modes are read-only.
     JSON-RPC 2.0 permits batches. If a server accepts them, it must apply the
     same authentication and authorization checks as for single requests.
 

@@ -6,12 +6,12 @@ Deliberately vulnerable A2A server for validating:
 
 A single unauthenticated JSON-RPC request is rejected with HTTP 401. A batch array
 is dispatched without any auth check: the gate keys on the top-level request, and
-a JSON-RPC batch array has none. A2A does not define batching, so a correct server
-should reject the array rather than dispatch it unauthenticated.
+a JSON-RPC batch array has none. A server may reject unsupported batches, but
+must enforce authorization when it dispatches them.
 
 The dispatched GetTask / tasks/get returns a TaskNotFound (-32001) application
-error for the probe's non-existent id, which is what proves the dispatcher ran
-past the auth gate.
+error for the probe's non-existent id. This indicates inconsistent
+authorization, not proven access to private task content.
 
 Validate against it:
   python testdata/a2a_batch_bypass_server.py
