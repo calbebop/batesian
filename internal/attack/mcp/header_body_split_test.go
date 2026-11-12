@@ -219,6 +219,15 @@ func TestSplit_VersionHeaderUnsupportedErrorIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestSplit_FindingSurvivesOtherInconclusiveChecks(t *testing.T) {
+	ts := modernSplitServer(t, "accept", "unsupported")
+	defer ts.Close()
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+		t.Fatalf("method finding was lost to inconclusive version check: findings=%+v err=%v", findings, err)
+	}
+}
+
 // modernSplitServer advertises only 2026-07-28 and varies header validation.
 func modernSplitServer(t *testing.T, methodMode, versionMode string) *httptest.Server {
 	t.Helper()

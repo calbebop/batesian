@@ -58,11 +58,11 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 	if !modernSeen {
 		return nil, errors.Join(sessionErr, fmt.Errorf("%w: header validation requires the %s wire", attack.ErrInconclusive, headerValidationVersion))
 	}
+	if len(findings) > 0 {
+		return findings, nil
+	}
 	if len(blocked) > 0 {
 		return findings, errors.Join(sessionErr, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(blocked, "; ")))
-	}
-	if len(findings) > 0 {
-		return findings, sessionErr
 	}
 	if sessionErr != nil {
 		return nil, sessionErr
