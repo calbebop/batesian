@@ -70,7 +70,7 @@ fixtures only.
 | `mcp_oauth_audience_server.py` | 7785 | `mcp-oauth-audience-002` (four sub-paths, one per bug class; target each, not the root) |
 | `mcp_new_rules_server.py` | 3100 | `mcp-prompt-unauth-001`, `mcp-tools-unauth-001`; `mcp-init-downgrade-001` needs the `downgrade` posture, see below |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
-| `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` |
+| `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` (modern wire, medium indicator) |
 | `mcp_sse_resume_replay_server.py` | 7790 | `mcp-sse-resume-replay-001` |
 | `mcp_oauth_metadata_ssrf_server.py` | 7791 | `mcp-oauth-metadata-ssrf-001` |
 | `mcp_secret_canary_server.py` | 7792 | `mcp-secret-canary-001` |

@@ -14,19 +14,13 @@ import (
 )
 
 func hbsRuleCtx() attack.RuleContext {
-	return attack.RuleContext{ID: "mcp-header-body-split-001", Name: "MCP Header/Body Split", Severity: "high", Remediation: "Validate Mcp-Method."}
+	return attack.RuleContext{ID: "mcp-header-body-split-001", Name: "MCP Modern Header/Body Mismatch", Severity: "medium", Remediation: "Validate MCP routing headers against the body."}
 }
 
-// splitServer models a Streamable HTTP MCP server. mode selects header handling
-// for tools/list (initialize always succeeds):
-//   - "split":     requires Mcp-Method presence but ignores its VALUE (vulnerable)
-//   - "strict":    rejects missing OR mismatched Mcp-Method with 400/-32020
-//   - "unaware":   ignores Mcp-Method entirely (not SEP-2243-aware)
+// splitServer models a legacy wire with varying header handling.
 func splitServer(mode string) *httptest.Server { return splitServerAt(mode, "2025-06-18") }
 
-// splitServerAt advertises the given protocol revision, which decides whether
-// "ignores Mcp-Method" is expected for that wire or a gap on a wire that requires
-// the header.
+// splitServerAt can report a modern version without advertising a modern wire.
 func splitServerAt(mode, version string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
@@ -72,22 +66,6 @@ func splitServerAt(mode, version string) *httptest.Server {
 					return
 				}
 				writeTools()
-			case "gateway":
-				if hdr == "" {
-					w.WriteHeader(http.StatusBadGateway)
-					return
-				}
-				writeTools()
-			case "generic-error":
-				if hdr == "" {
-					w.WriteHeader(http.StatusBadRequest)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"jsonrpc": "2.0", "id": id,
-						"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
-					})
-					return
-				}
-				writeTools()
 			default: // split: enforce presence, ignore value
 				if hdr == "" {
 					reject()
@@ -110,70 +88,16 @@ func runSplit(t *testing.T, ts *httptest.Server) []attack.Finding {
 	return findings
 }
 
-// TestSplit_Vulnerable: presence enforced, value ignored => confirmed.
-func TestSplit_Vulnerable(t *testing.T) {
-	ts := splitServer("split")
-	defer ts.Close()
-
-	findings := runSplit(t, ts)
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
-	}
-	if findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
-	}
-	if !strings.Contains(findings[0].Title, "SEP-2243") {
-		t.Errorf("expected SEP-2243 in title, got %q", findings[0].Title)
-	}
-}
-
-// TestSplit_Strict: rejects mismatch => secure, no finding.
-func TestSplit_Strict(t *testing.T) {
-	ts := splitServer("strict")
-	defer ts.Close()
-
-	if findings := runSplit(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings against a strict server, got %d: %+v", len(findings), findings)
-	}
-}
-
-func TestSplit_MethodPresenceWithoutHeaderVerdictIsIncomplete(t *testing.T) {
-	for _, mode := range []string{"gateway", "generic-error"} {
+func TestSplit_LegacyWireCannotEstablishModernHeaderVerdict(t *testing.T) {
+	for _, mode := range []string{"split", "strict", "unaware"} {
 		t.Run(mode, func(t *testing.T) {
-			ts := splitServerAt(mode, "2026-07-28")
+			ts := splitServer(mode)
 			defer ts.Close()
-
-			findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
-				Execute(context.Background(), ts.URL, testOpts())
+			findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
-				t.Fatalf("no header verdict: findings=%+v err=%v", findings, err)
+				t.Fatalf("legacy wire: findings=%+v err=%v", findings, err)
 			}
 		})
-	}
-}
-
-// TestSplit_UnawareOnALegacyWireIsNotTested: a server that ignores Mcp-Method on a
-// pre-2026-07-28 wire has no requirement to violate, so the rule stops at its
-// first probe having tested nothing.
-//
-// This used to report clean, which asserted header/body consistency about a
-// server that was never asked, on every scan of every legacy target. Since
-// SEP-2243 arrived in 2026-07-28 and these rules negotiate an earlier revision,
-// that was the outcome for every server in practice.
-func TestSplit_UnawareOnALegacyWireIsNotTested(t *testing.T) {
-	ts := splitServer("unaware")
-	defer ts.Close()
-
-	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
-		Execute(context.Background(), ts.URL, testOpts())
-	if !errors.Is(err, attack.ErrInconclusive) {
-		t.Fatalf("expected ErrInconclusive on a legacy wire, got err=%v", err)
-	}
-	if len(findings) != 0 {
-		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
-	}
-	if !strings.Contains(err.Error(), "2026-07-28") {
-		t.Errorf("skip reason should name the revision that introduced the requirement, got %q", err)
 	}
 }
 
@@ -188,17 +112,14 @@ func TestSplit_InitializeVersionDoesNotEstablishModernWire(t *testing.T) {
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
 				t.Fatalf("initialize-only wire must be untested: findings=%+v err=%v", findings, err)
 			}
-			if !strings.Contains(err.Error(), version) {
-				t.Fatalf("skip reason omits reported version %q: %v", version, err)
+			if !strings.Contains(err.Error(), "2026-07-28") {
+				t.Fatalf("skip reason omits required wire: %v", err)
 			}
 		})
 	}
 }
 
-// On a wire that does carry the requirement, a server ignoring the header is a
-// real observation rather than an untested one. It is still not this rule's
-// subject, which is the mismatch, so the result is clean and not a finding.
-func TestSplit_UnawareOnAModernWireIsClean(t *testing.T) {
+func TestSplit_UnawareOnAModernWireReportsIndicators(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -223,8 +144,14 @@ func TestSplit_UnawareOnAModernWireIsClean(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	if findings := runSplit(t, ts); len(findings) != 0 {
-		t.Errorf("expected zero findings, got %d: %+v", len(findings), findings)
+	findings := runSplit(t, ts)
+	if len(findings) != 2 {
+		t.Fatalf("expected method and version indicators, got %d: %+v", len(findings), findings)
+	}
+	for _, finding := range findings {
+		if finding.Confidence != attack.RiskIndicator || finding.Severity != "medium" {
+			t.Fatalf("unexpected risk rating: %+v", finding)
+		}
 	}
 }
 
@@ -236,12 +163,8 @@ func TestSplit_NotMCP(t *testing.T) {
 	assertInconclusive(t, mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()), ts.URL, attack.Options{TimeoutSeconds: 5})
 }
 
-// The case this rule was written for and could never reach until the modern
-// transport existed: a server whose 2026-07-28 wire enforces Mcp-Method presence
-// but not its value. Until now the rule opened a 2025-era session, where the
-// requirement does not exist, and stopped at its first probe.
-func TestSplit_VulnerableOnTheModernWire(t *testing.T) {
-	ts := modernSplitServer(t, false)
+func TestSplit_MethodMismatchOnModernWireIsIndicator(t *testing.T) {
+	ts := modernSplitServer(t, "accept", "reject")
 	defer ts.Close()
 
 	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
@@ -252,17 +175,16 @@ func TestSplit_VulnerableOnTheModernWire(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding on the modern wire, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Confidence != attack.RiskIndicator || findings[0].Severity != "medium" {
+		t.Errorf("want medium/RiskIndicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 	if !strings.Contains(findings[0].Title, "2026-07-28 wire") {
 		t.Errorf("a modern-wire finding should say so: %q", findings[0].Title)
 	}
 }
 
-// A modern wire that validates the value is secure, and must stay silent.
 func TestSplit_StrictOnTheModernWire(t *testing.T) {
-	ts := modernSplitServer(t, true)
+	ts := modernSplitServer(t, "reject", "reject")
 	defer ts.Close()
 
 	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
@@ -275,10 +197,30 @@ func TestSplit_StrictOnTheModernWire(t *testing.T) {
 	}
 }
 
-// modernSplitServer serves only the 2026-07-28 wire. It always rejects a missing
-// Mcp-Method, as the SDK does; strict decides whether it also rejects a mismatched
-// one, which is the difference between secure and the split-brain.
-func modernSplitServer(t *testing.T, strict bool) *httptest.Server {
+func TestSplit_VersionHeaderMismatchIsIndicator(t *testing.T) {
+	ts := modernSplitServer(t, "reject", "accept")
+	defer ts.Close()
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("version mismatch: findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Title, "protocol-version") ||
+		findings[0].Confidence != attack.RiskIndicator || findings[0].Severity != "medium" {
+		t.Fatalf("version mismatch must be an indicator: %+v", findings[0])
+	}
+}
+
+func TestSplit_VersionHeaderUnsupportedErrorIsIncomplete(t *testing.T) {
+	ts := modernSplitServer(t, "reject", "unsupported")
+	defer ts.Close()
+	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("unsupported version is not a header-mismatch verdict: findings=%+v err=%v", findings, err)
+	}
+}
+
+// modernSplitServer advertises only 2026-07-28 and varies header validation.
+func modernSplitServer(t *testing.T, methodMode, versionMode string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
@@ -289,7 +231,38 @@ func modernSplitServer(t *testing.T, strict bool) *httptest.Server {
 
 		// No legacy wire here: the handshake is refused, so the rule can only
 		// reach this server through server/discover.
-		if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" {
+		if method == "initialize" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": id,
+				"error": map[string]interface{}{"code": -32022, "message": "UnsupportedProtocolVersion"},
+			})
+			return
+		}
+		params, _ := body["params"].(map[string]interface{})
+		meta, _ := params["_meta"].(map[string]interface{})
+		version, _ := meta["io.modelcontextprotocol/protocolVersion"].(string)
+		if r.Header.Get("MCP-Protocol-Version") != version {
+			switch versionMode {
+			case "accept":
+				// Continue to expose the version mismatch.
+			case "unsupported":
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32022, "message": "UnsupportedProtocolVersion"},
+				})
+				return
+			default:
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
+				})
+				return
+			}
+		}
+		if version != "2026-07-28" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
@@ -298,12 +271,16 @@ func modernSplitServer(t *testing.T, strict bool) *httptest.Server {
 			return
 		}
 		hdr := r.Header.Get("Mcp-Method")
-		if hdr == "" || (strict && hdr != method) {
+		if hdr == "" || (methodMode == "reject" && hdr != method) {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
 				"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
 			})
+			return
+		}
+		if methodMode == "unanswered" && method == "tools/list" && hdr != method {
+			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
 		result := map[string]interface{}{"cacheScope": "private", "resultType": "complete"}

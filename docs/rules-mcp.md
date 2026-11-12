@@ -5,7 +5,7 @@ Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
 SSRF, protocol-version negotiation, tools/prompts/resources access control,
-session-id handling, SEP-2243 Streamable HTTP header/body routing, SSE resumption,
+session-id handling, modern Streamable HTTP header/body validation, SSE resumption,
 credential leakage into responses) rather than generic web hygiene.
 
 Each finding carries a **confidence**:
@@ -183,7 +183,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-init-downgrade-001` | [Protocol Version Downgrade Auth Bypass](#mcp-init-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
-| `mcp-header-body-split-001` | [Header/Body Routing Split-Brain (SEP-2243)](#mcp-header-body-split-001) | High | confirmed | CWE-444 |
+| `mcp-header-body-split-001` | [Modern Header/Body Mismatch](#mcp-header-body-split-001) | Medium | indicator | CWE-436 |
 | `mcp-param-header-mismatch-001` | [Annotated Parameter Header/Body Mismatch](#mcp-param-header-mismatch-001) | Medium | indicator | CWE-436 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
 | `mcp-oauth-metadata-ssrf-001` | [OAuth DCR Metadata Fetch](#mcp-oauth-metadata-ssrf-001) | Info / High | indicator / confirmed | CWE-918 |
@@ -786,55 +786,27 @@ principal. The A2A counterpart is `a2a-context-fixation-001`.
 
 ### mcp-header-body-split-001
 
-**Header/Body Routing Split-Brain (SEP-2243)** | Severity: High | CWE-444
+**Modern Header/Body Mismatch** | Severity: Medium | indicator | CWE-436
 
-SEP-2243 mirrors the JSON-RPC `method` into an `Mcp-Method` HTTP header so
-intermediaries can route/police Streamable HTTP traffic without parsing the body,
-and requires servers to reject a header/body mismatch with `400` and JSON-RPC
-error `-32020` (`HeaderMismatch`). This rule confirms a "policy on headers, execute on body"
-split-brain with a participation discriminator (so it never flags servers that
-simply don't implement SEP-2243), all with body `method = tools/list`:
+The [2026-07-28 Streamable HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
+requires `MCP-Protocol-Version` and `Mcp-Method` to match the request body.
+`Mcp-Name` must match for named methods. A mismatch requires HTTP `400` with
+JSON-RPC `-32020` (`HeaderMismatch`).
 
-1. Omit `Mcp-Method`. If `tools/list` still executes, the server does not enforce
-   header presence (not SEP-2243-aware) - no finding.
-2. `Mcp-Method: tools/list` (matching) must execute (sanity).
-3. `Mcp-Method: tools/call` (mismatched). A **confirmed** finding is raised only
-   when the server still executes the body's `tools/list` instead of rejecting -
-   it enforces header *presence* but not header/body *consistency*, so a gateway
-   that routes or rate-limits on `Mcp-Method` can be bypassed.
+On a server that advertises the modern wire, Batesian first sends a matching
+`tools/list` request and checks for a listing. It then keeps the body fixed and
+changes `Mcp-Method` or `MCP-Protocol-Version` separately. If the ordinary method
+mismatch is rejected, it also tests a case-folded method value. For advertised
+resources and prompts, it compares matching and mismatched `Mcp-Name` values on
+a nonexistent read-only subject. It never invokes a tool.
 
-**Currency.** SEP-2243 arrived in **2026-07-28**, so the check is driven on every
-wire a server serves and is only meaningful on that one. A server whose modern wire
-enforces presence is tested on its merits there, and a legacy wire that ignores the
-header contributes nothing.
-
-**Not tested** is reported only when no wire exercised the check and the reason was
-the revision: a legacy-only server has no such requirement to violate, and calling
-that clean would assert header/body consistency about a server never asked. A
-server that enforces header presence is tested whatever version it advertises. A
-discovered modern wire that ignores the header reports clean, since this rule's
-subject is the mismatch rather than the absence. An `initialize` response alone
-does not establish that modern wire, even if it reports `2026-07-28`.
-
-**Two more dimensions of the same requirement.** `Mcp-Name` is a second REQUIRED
-header, sourced from `params.name` or `params.uri` on `tools/call`, `resources/read`
-and `prompts/get`, carrying the same MUST and the same `-32020`. A server can validate
-`Mcp-Method` and ignore it, and this is the higher-impact instance: an intermediary
-blocklisting a dangerous **tool or resource** inspects the name, not the method. It is
-probed as its own dimension, with the same precondition logic (omission establishes
-whether presence is enforced; it is not itself reported, for consistency with the
-`Mcp-Method` path).
-
-The subject asked for deliberately does not exist, which keeps that dimension
-**read-only**: the oracle is which error comes back, and a server that does not
-validate the header is precisely one that would otherwise act on the body. `tools/call`
-is never used for this check. Annotated tool parameters are tested separately by
+An accepted mismatch is a **protocol indicator**. The scan does not establish
+that a gateway uses the header for authorization or routing. A generic error,
+including `-32022` for an unsupported version, leaves that dimension untested;
+only `400/-32020` establishes the expected rejection. Legacy handshake wires
+are not graded against the 2026 requirement, even if `initialize` reports a
+modern version. Annotated tool parameters are covered separately by
 `mcp-param-header-mismatch-001` with explicit tool approval.
-
-A fourth probe runs only when the plain mismatch was correctly rejected: header names
-are case-insensitive but **values are not**, so `Mcp-Method: TOOLS/LIST` against a body
-of `tools/list` must also be refused. A server that executes it validates the value but
-folds case, and an exact-match intermediary is walked past.
 
 ---
 

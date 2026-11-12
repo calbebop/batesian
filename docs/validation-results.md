@@ -154,7 +154,7 @@ logging/setLevel with an invalid level → -32603
 
 ### What correctly stayed silent
 
-This is the more informative half. Seventeen MCP rules ran against a server
+This is the more informative half. Several MCP rules ran against a server
 with **no authentication whatsoever** and reported nothing, because each
 carries an explicit precondition or discriminator that a naive implementation
 would lack:
@@ -167,18 +167,17 @@ would lack:
 | `mcp-jsonrpc-batch-bypass-001` | Requires the single-request control to be rejected while the batch succeeds. Nothing is rejected, so there is no bypass to demonstrate. |
 | `mcp-oauth-dcr-001`, `mcp-oauth-audience-002`, `mcp-oauth-metadata-ssrf-001`, `mcp-confused-deputy-001`, `mcp-vulnerable-version-001`'s non-matching path, and `mcp-secret-canary-001` | No OAuth registration, authorization, metadata, or recognizable vulnerable-component identity exists; the canary credential was not echoed in any response. |
 | `mcp-sse-resume-replay-001` | Requires distinct server-minted sessions and a later session-labeled event to compare. |
-| `mcp-header-body-split-001` | The server does not enforce `Mcp-Method` presence, so it is not SEP-2243-aware and there is no split-brain to demonstrate. |
 | `mcp-tool-param-traversal-001`, `mcp-tool-poisoning-001`, `mcp-task-id-entropy-001` | Every post-April content-integrity rule: the manifest is factual and unique across two consecutive reads, its annotated read-only tools expose no path parameter to traverse, and task-augmented calls return uuid-shaped handles over a full hex alphabet. A reference implementation with clean descriptions staying clean is exactly what the byte-level oracles are supposed to permit. |
 
-Five MCP rules were skipped as not applicable on this surface rather than run:
+Other MCP rules were skipped as not applicable on this surface rather than run:
 `mcp-task-idor-001` (the core-wire tasks capability is not advertised),
 `mcp-scope-confusion-001` (needs a limited second credential against an OAuth
 boundary), `mcp-session-as-credential-001` (needs a session id to strip),
-`mcp-log-optin-001` (extension-era wire only), `mcp-header-body-split-001`
-overlap accounted above.
+`mcp-log-optin-001` (extension-era wire only), and
+`mcp-header-body-split-001` (no advertised 2026-07-28 wire).
 
 A scanner pointed at a completely open server is under maximum pressure to
-over-report. That seventeen rules declined, each for a specific documented
+over-report. Those rules declined, each for a specific documented
 reason - including every content-integrity rule added this cycle - is the
 strongest available evidence that the `confirmed` tier means what it claims.
 

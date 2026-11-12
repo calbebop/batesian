@@ -875,12 +875,12 @@ func TestEraDowngrade_ModernDiscoveryTransientIsIncomplete(t *testing.T) {
 	}
 }
 
-func TestHeaderBodySplit_PartialDiscoveryKeepsLegacyFinding(t *testing.T) {
+func TestHeaderBodySplit_PartialDiscoveryDoesNotGradeLegacyWire(t *testing.T) {
 	srv := discoveryStatusServer(t, http.StatusServiceUnavailable, true)
 	defer srv.Close()
 	findings, err := NewHeaderBodySplitExecutor(attack.RuleContext{ID: "mcp-header-body-split-001"}).
 		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
-	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) {
-		t.Fatalf("want legacy finding and incomplete modern wire, got findings=%+v err=%v", findings, err)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("want no legacy finding and incomplete modern wire, got findings=%+v err=%v", findings, err)
 	}
 }
