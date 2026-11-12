@@ -324,7 +324,8 @@ when the random-key token succeeds but the anonymous request is rejected. This
 shows that the token passed the endpoint's gate, not which claim was accepted or
 whether peer-specific privileges were granted. If both requests succeed, the
 rule reports anonymous access as an **indicator** because public access may be
-intentional.
+intentional. A direct `Message` counts as processing only when it has an agent
+role, valid parts, and a message ID distinct from the sent Message.
 Findings record the issuer source, wire, and HTTP outcomes without copying the
 card-derived claim values, forged JWT, or send reply.
 
@@ -529,21 +530,20 @@ are not reported; key expiry and revocation depend on the verifier's key source.
 **Required-Extension Downgrade / Fail-Open** | Severity: High | CWE-636
 
 A2A agent cards advertise protocol extensions under `capabilities.extensions[]`,
-each with a `uri` and a `required` flag; clients activate one via the
+each with a `uri` and a `required` flag; clients activate them via the
 `A2A-Extensions` request header (the legacy `X-A2A-Extensions` name, used through
 v0.3.0, is also sent for older servers). A required extension is a capability the
 server states clients must activate, so the spec requires the server to reject
 requests that do not (`ExtensionSupportRequiredError`). This rule is card-driven
-and confirms a fail-open downgrade only with a control/test pair: it reads the
-card, and for each `required: true` extension it (1) sends a message that
-**activates** the extension (control - must be accepted or the rule can't test),
-then (2) sends the same wire shape with both extension headers **omitted**. The
-v0.3 fallback uses `message/send` without a v1 version header. A **confirmed**
-finding requires the omission to be accepted too - the server does not enforce
-its own required extension, so its policy/capability guarantees can be bypassed
-by omitting both headers. A server that rejects the un-activated request fails
-closed (no finding). Malformed `capabilities.extensions` entries cannot establish the
-card's required-extension policy and make this check inconclusive.
+and confirms a fail-open downgrade only after a control activates **all**
+required extensions. Each test omits one required URI while retaining the
+others. The v0.3 fallback uses `message/send` without a v1 version header. A
+**confirmed** finding requires a processed Task or distinct agent Message when
+one URI is missing. A correlated `ExtensionSupportRequiredError` is a clean
+rejection. The rule tests at most four omissions and caps the two activation
+headers at 4 KiB combined. Untested extensions and oversized headers produce
+an explicit incomplete result. Malformed `capabilities.extensions` entries also
+make the check inconclusive.
 Findings identify the extension by its position in the card without copying its URI.
 
 ---

@@ -11,18 +11,7 @@ import (
 	protocola2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
-// ExtensionDowngradeExecutor tests whether an A2A server fails OPEN on an
-// extension its own agent card marks as required (rule
-// a2a-extension-downgrade-001).
-//
-// A2A cards advertise capabilities.extensions[] with a `uri` and `required`
-// flag; clients activate an extension via the A2A-Extensions request header
-// (pre-1.0 servers, through v0.3.0, used X-A2A-Extensions; both are sent so the
-// activation control works across server versions).
-// A server that processes requests which omit its own required extension has
-// silently downgraded the negotiated capability set. The executor only reports a
-// CONFIRMED downgrade when an extension-activating control request is accepted
-// AND a fresh request with the header omitted is also accepted.
+// ExtensionDowngradeExecutor checks enforcement of card-required extensions.
 type ExtensionDowngradeExecutor struct {
 	rule attack.RuleContext
 }
@@ -44,15 +33,19 @@ const (
 	a2aExtensionsHeader       = "A2A-Extensions"
 	a2aExtensionsHeaderLegacy = "X-A2A-Extensions"
 	extensionSupportRequired  = -32008
+	maxExtensionOmissions     = 4
+	maxExtensionHeaderBytes   = 4096
 )
 
-// activationHeaders returns the activation header set for the given extension
-// URI: both the v1.0 and legacy header names so the control works regardless of
-// which A2A version the target implements.
-func activationHeaders(uri string) map[string]string {
+// activationHeaders covers both supported header names.
+func activationHeaders(uris []string) map[string]string {
+	if len(uris) == 0 {
+		return nil
+	}
+	value := strings.Join(uris, ",")
 	return map[string]string{
-		a2aExtensionsHeader:       uri,
-		a2aExtensionsHeaderLegacy: uri,
+		a2aExtensionsHeader:       value,
+		a2aExtensionsHeaderLegacy: value,
 	}
 }
 
@@ -83,48 +76,67 @@ func (e *ExtensionDowngradeExecutor) Execute(ctx context.Context, target string,
 		return nil, withCardReadReason(attack.ErrInconclusive)
 	}
 
-	var observed setupObservation
-	tested := false
-	for i, uri := range required {
-		requestScope := fmt.Sprintf("%s-%d", vars.RandID, i)
-		// Control: activate the required extension. If even this is rejected we
-		// cannot exercise the rule (e.g. messaging needs creds we lack).
-		accepted, shape, ctrlObs, _ := e.sendMessage(ctx, client, endpoint, activationHeaders(uri), vars.RandID, requestScope+"-control", "")
-		if !accepted {
-			observed.observe(ctrlObs)
-			continue
+	required = distinctExtensions(required)
+	for _, uri := range required {
+		if strings.ContainsAny(uri, ",\r\n") {
+			return nil, withCardReadReason(fmt.Errorf("%w: a required extension URI cannot be represented in the activation header", attack.ErrInconclusive))
 		}
-		if ctrlObs.rank >= setupOtherRefusal {
-			observed.observe(ctrlObs)
-		}
-		// Test: omit the extension header and reuse the shape that worked.
-		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint, nil, vars.RandID, requestScope+"-omitted", shape)
+	}
+	valueBytes := len(strings.Join(required, ","))
+	if 2*valueBytes+len(a2aExtensionsHeader)+len(a2aExtensionsHeaderLegacy) > maxExtensionHeaderBytes {
+		return nil, withCardReadReason(fmt.Errorf("%w: required extension activation headers exceed the %d-byte probe limit", attack.ErrInconclusive, maxExtensionHeaderBytes))
+	}
+	accepted, shape, ctrlObs, _ := e.sendMessage(ctx, client, endpoint, activationHeaders(required), vars.RandID, vars.RandID+"-control", "")
+	if !accepted {
+		return nil, withCardReadReason(ctrlObs.err())
+	}
+	var incomplete []string
+	if ctrlObs.rank >= setupOtherRefusal {
+		incomplete = append(incomplete, ctrlObs.reason)
+	}
+	limit := min(len(required), maxExtensionOmissions)
+	for i := 0; i < limit; i++ {
+		remaining := append([]string(nil), required[:i]...)
+		remaining = append(remaining, required[i+1:]...)
+		omitted, _, _, rejectedRequired := e.sendMessage(ctx, client, endpoint,
+			activationHeaders(remaining), vars.RandID, fmt.Sprintf("%s-omitted-%d", vars.RandID, i), shape)
 		if omitted {
 			finding := e.finding(endpoint, i+1, len(required), shape)
 			if cardReadReason != "" {
 				finding.Evidence += "\nunobserved Agent Card read: " + cardReadReason
 			}
-			var incomplete error
-			if observed.rank >= setupOtherRefusal {
-				incomplete = observed.err()
+			if i+1 < len(required) {
+				incomplete = append(incomplete, fmt.Sprintf("%d of %d required extensions not tested after the finding", len(required)-i-1, len(required)))
 			}
-			return []attack.Finding{finding}, withCardReadReason(incomplete)
+			return []attack.Finding{finding}, withCardReadReason(extensionCoverageError(incomplete))
 		}
-		if rejectedRequired {
-			tested = true
-			continue
+		if !rejectedRequired {
+			incomplete = append(incomplete, fmt.Sprintf("omitting required extension %d of %d did not produce a correlated extension-policy rejection", i+1, len(required)))
 		}
-		observed.observe(setupObservation{setupOtherRefusal, fmt.Sprintf(
-			"request omitting required extension %d of %d at %s did not confirm an extension-policy rejection", i+1, len(required), endpoint)})
 	}
-	if tested && observed.rank == setupFeatureAbsent {
-		return nil, withCardReadReason(fmt.Errorf("%w: not every required extension could be tested at %s",
-			attack.ErrInconclusive, endpoint))
+	if limit < len(required) {
+		incomplete = append(incomplete, fmt.Sprintf("tested %d of %d required extensions; probe limit reached", limit, len(required)))
 	}
-	if tested && observed.rank == setupNothing {
-		return nil, withCardReadReason(nil)
+	return nil, withCardReadReason(extensionCoverageError(incomplete))
+}
+
+func distinctExtensions(uris []string) []string {
+	seen := make(map[string]bool, len(uris))
+	var distinct []string
+	for _, uri := range uris {
+		if !seen[uri] {
+			seen[uri] = true
+			distinct = append(distinct, uri)
+		}
 	}
-	return nil, withCardReadReason(observed.err())
+	return distinct
+}
+
+func extensionCoverageError(reasons []string) error {
+	if len(reasons) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(reasons, "; "))
 }
 
 // requiredExtensions keeps unreadable card paths separate from absent ones.
@@ -209,7 +221,11 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 			"method":  v.method,
 			"params":  params,
 		})
-		if err == nil && taskSetupReplyAccepted(resp, requestID) {
+		version := "0.3.0"
+		if v.name == "v1.0" {
+			version = "1.0"
+		}
+		if err == nil && sendResultProcessed(resp, requestID, requestID+"-message", version) {
 			return true, v.name, obs, false
 		}
 		if forceShape != "" && err == nil && resp != nil {
@@ -233,13 +249,11 @@ func (e *ExtensionDowngradeExecutor) finding(endpoint string, position, total in
 		Confidence: attack.ConfirmedExploit,
 		Title:      "A2A server does not enforce its own required extension (negotiation downgrade)",
 		Description: fmt.Sprintf(
-			"The agent card marks extension %d of %d as required, but the server accepted a SendMessage that "+
-				"OMITTED the A2A-Extensions activation header. A request that activates the extension and an "+
-				"otherwise equivalent request that does not are both processed, so the required extension's policy or "+
-				"capability guarantees can be bypassed simply by not sending the header. The A2A spec requires "+
-				"a server to reject a request that does not activate a required extension (ExtensionSupportRequiredError).", position, total),
+			"The agent card marks extension %d of %d as required. A control activated all required extensions, "+
+				"but the server also processed a SendMessage that omitted this one while retaining the others. "+
+				"Reject requests missing any required extension with ExtensionSupportRequiredError.", position, total),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s (shape %s)\nrequired extension: %d of %d (URI omitted)\nwith A2A-Extensions activation: accepted\nwithout activation header: accepted (spec requires rejection: ExtensionSupportRequiredError)",
+			"endpoint: %s (shape %s)\nrequired extension: %d of %d (URI omitted)\nall required extensions activated: accepted\nselected required extension omitted: accepted",
 			endpoint, shape, position, total),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
