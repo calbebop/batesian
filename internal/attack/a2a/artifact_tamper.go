@@ -53,18 +53,18 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	baselineBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars, "baseline")
 	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
-		return nil, fmt.Errorf("%w: task %s was created, but its original content could not be read back",
-			attack.ErrInconclusive, taskID)
+		return nil, fmt.Errorf("%w: the created task's original content could not be read back",
+			attack.ErrInconclusive)
 	}
 	baseline, ok := storedTaskContent(baselineBody, taskID)
 	if !ok || !baseline.completed() {
-		return nil, fmt.Errorf("%w: task %s did not expose a completed task with stored content",
-			attack.ErrInconclusive, taskID)
+		return nil, fmt.Errorf("%w: the created task did not expose a completed task with stored content",
+			attack.ErrInconclusive)
 	}
 	contentKeys := baseline.fieldsContaining(originalText)
 	if len(contentKeys) == 0 {
-		return nil, fmt.Errorf("%w: task %s did not expose the original marker in stored content",
-			attack.ErrInconclusive, taskID)
+		return nil, fmt.Errorf("%w: the created task did not expose the original marker in stored content",
+			attack.ErrInconclusive)
 	}
 
 	// Step 2: re-submit against the SAME task ID with different content, on the
@@ -76,8 +76,8 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	accepted := sendErr == nil && correlated && tamperResp.IsAccepted()
 	rejected := sendErr == nil && correlated && continuationRejected(tamperResp)
 	if sendErr == nil && tamperResp != nil && tamperResp.IsSuccess() && !correlated {
-		incomplete = errors.Join(incomplete, fmt.Errorf("%w: task %s continuation reply did not match its request ID",
-			attack.ErrInconclusive, taskID))
+		incomplete = errors.Join(incomplete, fmt.Errorf("%w: task continuation reply did not match its request ID",
+			attack.ErrInconclusive))
 	}
 	var continuation taskContent
 	var hasTask bool
@@ -89,18 +89,18 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 	getBody, ok, readErr := readTaskHistory(ctx, client, endpoint, wire.headers, taskID, vars, "after")
 	incomplete = errors.Join(incomplete, readErr)
 	if !ok {
-		return nil, fmt.Errorf("%w: task %s was re-submitted, but reading it back "+
+		return nil, fmt.Errorf("%w: the task was re-submitted, but reading it back "+
 			"returned no task content, so whether the stored artifact changed could not be "+
-			"established", attack.ErrInconclusive, taskID)
+			"established", attack.ErrInconclusive)
 	}
 
 	current, ok := storedTaskContent(getBody, taskID)
 	if !ok {
-		return nil, fmt.Errorf("%w: task %s did not return a usable task after re-submission",
-			attack.ErrInconclusive, taskID)
+		return nil, fmt.Errorf("%w: the task did not return a usable result after re-submission",
+			attack.ErrInconclusive)
 	}
 	allPreserved := current.completed()
-	for _, contentKey := range contentKeys {
+	for index, contentKey := range contentKeys {
 		stored, visible := current.fields[contentKey]
 		if !visible {
 			allPreserved = false
@@ -114,15 +114,13 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 				RuleName:   e.rule.Name,
 				Severity:   "critical",
 				Confidence: attack.ConfirmedExploit,
-				Title:      fmt.Sprintf("A2A task %q stored content overwritten", taskID),
-				Description: fmt.Sprintf(
-					"The completed task %q stored the original probe marker in %s. After a continuation, "+
-						"the same field contained the replacement marker without the original. A reader of that "+
-						"task receives altered content.", taskID, contentKey),
+				Title:      "A2A completed task stored content overwritten",
+				Description: "A completed task stored the original probe marker in an artifact. After a continuation, " +
+					"the same artifact contained the replacement marker without the original. A reader of that task receives altered content.",
 				Evidence: fmt.Sprintf(
-					"Task ID: %q\nWire: %s\nContent field: %s\nBefore: original marker present\n"+
+					"Task and artifact IDs: omitted\nWire: %s\nMatched artifact: %d of %d\nBefore: original marker present\n"+
 						"After: replacement marker present; original marker absent\nStored content omitted",
-					taskID, wire.name, contentKey),
+					wire.name, index+1, len(contentKeys)),
 				Remediation: e.rule.Remediation,
 				TargetURL:   endpoint,
 			}}, nil
@@ -135,18 +133,18 @@ func (e *ArtifactTamperExecutor) Execute(ctx context.Context, target string, opt
 		return nil, nil
 	}
 	if sendErr != nil {
-		return nil, fmt.Errorf("%w: task %s continuation received no answer: %v",
-			attack.ErrInconclusive, taskID, sendErr)
+		return nil, fmt.Errorf("%w: task continuation received no answer: %v",
+			attack.ErrInconclusive, sendErr)
 	}
 	if tamperResp == nil {
-		return nil, fmt.Errorf("%w: task %s continuation returned no response", attack.ErrInconclusive, taskID)
+		return nil, fmt.Errorf("%w: task continuation returned no response", attack.ErrInconclusive)
 	}
 	if !accepted {
-		return nil, fmt.Errorf("%w: task %s continuation returned an unjudged response (HTTP %d)",
-			attack.ErrInconclusive, taskID, tamperResp.StatusCode)
+		return nil, fmt.Errorf("%w: task continuation returned an unjudged response (HTTP %d)",
+			attack.ErrInconclusive, tamperResp.StatusCode)
 	}
-	return nil, fmt.Errorf("%w: task %s did not show a completed replacement in its original artifacts",
-		attack.ErrInconclusive, taskID)
+	return nil, fmt.Errorf("%w: task did not show a completed replacement in its original artifacts",
+		attack.ErrInconclusive)
 }
 
 func continuationRejected(resp *attack.Response) bool {

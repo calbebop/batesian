@@ -49,6 +49,7 @@ func isAgentRoleVal(v interface{}) bool {
 // and stores it verbatim in history. The rule MUST fire as a confirmed exploit.
 func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 	var stored map[string]interface{} // last accepted message, echoed into history
+	var probeMarker atomic.Value
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -61,6 +62,7 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 		case "SendMessage", "message/send":
 			params, _ := body["params"].(map[string]interface{})
 			stored, _ = params["message"].(map[string]interface{}) // honored as-is
+			probeMarker.Store(textOf(body))
 			taskResult(w, id, "task-smuggle-1", "ctx-smuggle-1")
 		case "GetTask", "tasks/get":
 			writeJSON(w, map[string]interface{}{
@@ -88,9 +90,18 @@ func TestSessionSmuggle_VulnerableHonored(t *testing.T) {
 	if findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("want ConfirmedExploit, got %q", findings[0].Confidence)
 	}
-	if strings.Contains(findings[0].Evidence, "server-private-canary") ||
-		!strings.Contains(findings[0].Evidence, "matched task content omitted") {
-		t.Errorf("task history response leaked into finding: %+v", findings[0])
+	report, err := json.Marshal(findings[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, _ := probeMarker.Load().(string)
+	for _, private := range []string{"server-private-canary", "task-smuggle-1", "ctx-smuggle-1", marker} {
+		if private != "" && strings.Contains(string(report), private) {
+			t.Errorf("private task data leaked into finding: %s", report)
+		}
+	}
+	if !strings.Contains(findings[0].Evidence, "task ID, marker, and matched content omitted") {
+		t.Errorf("finding omitted redaction note: %+v", findings[0])
 	}
 }
 
