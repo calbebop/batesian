@@ -501,7 +501,7 @@ func TestBatchBypass_CorrelatedJSONRPCAuthControl(t *testing.T) {
 	}
 }
 
-func TestBatchBypass_TaskResultConfirmsBypass(t *testing.T) {
+func TestBatchBypass_UnknownTaskResultIsIndicator(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			writeJSON(w, map[string]interface{}{"name": "secure", "version": "1.0"})
@@ -526,12 +526,147 @@ func TestBatchBypass_TaskResultConfirmsBypass(t *testing.T) {
 	defer srv.Close()
 
 	findings := runBatchBypass(t, srv)
-	if len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit || findings[0].Severity != "high" {
-		t.Fatalf("task result should confirm bypass: findings=%+v", findings)
+	if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator || findings[0].Severity != "medium" {
+		t.Fatalf("unverified task result must be an indicator: findings=%+v", findings)
 	}
 	if strings.Contains(findings[0].Description+findings[0].Evidence, "server-private-canary") ||
 		!strings.Contains(findings[0].Evidence, "reply content omitted") {
 		t.Errorf("batch task response leaked into finding: %+v", findings[0])
+	}
+}
+
+func TestBatchBypass_KnownPrivateTask(t *testing.T) {
+	const taskID = "disposable-owner-task"
+	const marker = "private-batch-probe-marker-5892"
+	for _, tc := range []struct {
+		name          string
+		batchMarker   string
+		batchTaskID   string
+		anonymousOpen bool
+		metadataEcho  bool
+		wrongReplyID  bool
+		wrappedTask   bool
+		singleMissing bool
+		batchMissing  bool
+		want          attack.Confidence
+	}{
+		{name: "confirmed", batchMarker: marker, batchTaskID: taskID, want: attack.ConfirmedExploit},
+		{name: "confirmed wrapped", batchMarker: marker, batchTaskID: taskID, wrappedTask: true, want: attack.ConfirmedExploit},
+		{name: "single TaskNotFound", batchMarker: marker, batchTaskID: taskID, singleMissing: true, want: attack.ConfirmedExploit},
+		{name: "both TaskNotFound", batchTaskID: taskID, singleMissing: true, batchMissing: true},
+		{name: "redacted batch", batchTaskID: taskID, want: attack.RiskIndicator},
+		{name: "metadata echo", batchTaskID: taskID, metadataEcho: true, want: attack.RiskIndicator},
+		{name: "unrelated task", batchMarker: marker, batchTaskID: "other-task"},
+		{name: "wrong reply ID", batchMarker: marker, batchTaskID: taskID, wrongReplyID: true},
+		{name: "public task", batchMarker: marker, batchTaskID: taskID, anonymousOpen: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var batchCalls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(w, map[string]interface{}{"name": "batch-agent", "version": "1.0"})
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				isBatch := bytes.HasPrefix(bytes.TrimSpace(raw), []byte("["))
+				var request map[string]interface{}
+				if isBatch {
+					batchCalls.Add(1)
+					var batch []map[string]interface{}
+					_ = json.Unmarshal(raw, &batch)
+					request = batch[0]
+				} else {
+					_ = json.Unmarshal(raw, &request)
+				}
+				if request["method"] == "tasks/get" {
+					writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"],
+						"error": map[string]interface{}{"code": -32601, "message": "Method not found"}})
+					return
+				}
+				if r.Header.Get("Authorization") == "" && !isBatch && !tc.anonymousOpen {
+					if tc.singleMissing {
+						writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"],
+							"error": map[string]interface{}{"code": -32001, "message": "Task not found"}})
+						return
+					}
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if isBatch && tc.batchMissing {
+					writeJSON(w, []interface{}{map[string]interface{}{"jsonrpc": "2.0", "id": request["id"],
+						"error": map[string]interface{}{"code": -32001, "message": "Task not found"}}})
+					return
+				}
+				id, content := taskID, marker
+				if isBatch {
+					id, content = tc.batchTaskID, tc.batchMarker
+				}
+				replyID := request["id"]
+				if isBatch && tc.wrongReplyID {
+					replyID = "stale-reply"
+				}
+				task := map[string]interface{}{"id": id, "contextId": "owner-context",
+					"status":  map[string]interface{}{"state": "TASK_STATE_COMPLETED"},
+					"history": []interface{}{map[string]interface{}{"parts": []interface{}{map[string]string{"text": content}}}}}
+				var result interface{} = task
+				if tc.wrappedTask {
+					result = map[string]interface{}{"task": task}
+				}
+				reply := map[string]interface{}{"jsonrpc": "2.0", "id": replyID, "result": result}
+				if isBatch && tc.metadataEcho {
+					reply["marker"] = marker
+				}
+				if isBatch {
+					writeJSON(w, []interface{}{reply})
+				} else {
+					writeJSON(w, reply)
+				}
+			}))
+			defer srv.Close()
+			exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+			findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{
+				TimeoutSeconds: 5, Token: "owner-token",
+				A2ABatchProbe: &attack.A2ABatchProbe{TaskID: taskID, PrivateMarker: marker},
+			})
+			if tc.want == "" {
+				if len(findings) != 0 {
+					t.Fatalf("unexpected finding: %+v", findings)
+				}
+			} else if len(findings) != 1 || findings[0].Confidence != tc.want {
+				t.Fatalf("findings=%+v, err=%v", findings, err)
+			}
+			if tc.name == "public task" && batchCalls.Load() != 0 {
+				t.Fatalf("public task should not be batched")
+			}
+			for _, finding := range findings {
+				if strings.Contains(finding.Description+finding.Evidence, marker) ||
+					strings.Contains(finding.Description+finding.Evidence, taskID) {
+					t.Fatalf("finding leaked task details: %+v", finding)
+				}
+			}
+		})
+	}
+}
+
+func TestBatchBypass_KnownTaskNeedsOwnerCredential(t *testing.T) {
+	var reads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, map[string]interface{}{"name": "batch-agent", "version": "1.0"})
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if bytes.Contains(raw, []byte("known-task")) {
+			reads.Add(1)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	exec := a2aattack.NewBatchBypassExecutor(attack.RuleContext{ID: "a2a-jsonrpc-batch-bypass-001"})
+	findings, err := exec.Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5,
+		A2ABatchProbe: &attack.A2ABatchProbe{TaskID: "known-task", PrivateMarker: "private-marker-93745"}})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || reads.Load() != 0 {
+		t.Fatalf("missing owner credential: findings=%+v err=%v reads=%d", findings, err, reads.Load())
 	}
 }
 

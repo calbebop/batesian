@@ -482,6 +482,35 @@ func TestLoad_A2AGRPCTarget(t *testing.T) {
 	}
 }
 
+func TestLoad_A2ABatchProbe(t *testing.T) {
+	const valid = "target: https://agent.example.com\na2a_batch_probe:\n  task_id: disposable-task\n  private_marker: private-marker-93745\n"
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", valid, true},
+		{"missing target", strings.Replace(valid, "target: https://agent.example.com\n", "", 1), false},
+		{"missing task", strings.Replace(valid, "disposable-task", "", 1), false},
+		{"short marker", strings.Replace(valid, "private-marker-93745", "short", 1), false},
+		{"task newline", strings.Replace(valid, "disposable-task", "\"task\\nother\"", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tc.valid {
+				if err != nil || cfg.A2ABatchProbe == nil || cfg.A2ABatchProbe.TaskID != "disposable-task" {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "a2a_batch_probe") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_PrincipalMissingName(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "batesian.yaml")

@@ -57,6 +57,9 @@ type Options struct {
 	// A2AGRPCTarget is an explicit, card-matched gRPC endpoint for the opt-in task check.
 	A2AGRPCTarget string
 
+	// A2ABatchProbe supplies a disposable owner task for a read-only batch check.
+	A2ABatchProbe *A2ABatchProbe
+
 	// OAuthOrigins are exact additional origins the operator has authorized for
 	// target-advertised OAuth endpoints. The scan target's own origin is always
 	// allowed. Everything else is denied unless it appears here.
@@ -115,6 +118,12 @@ type Options struct {
 
 	// TargetState records objects created on the target during a rule run.
 	TargetState *TargetState
+}
+
+// A2ABatchProbe identifies an owner-readable task and unique text in its content.
+type A2ABatchProbe struct {
+	TaskID        string
+	PrivateMarker string
 }
 
 // MCPSubscriptionProbe supplies the resource and update call for an opt-in check.

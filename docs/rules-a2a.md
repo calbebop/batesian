@@ -138,7 +138,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
 | `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | confirmed | CWE-639 |
 | `a2a-subscription-scope-001` | [Subscription and Task-Read Scope Mismatch](#a2a-subscription-scope-001) | High | indicator | CWE-639 |
-| `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium | indicator or confirmed | CWE-288 |
+| `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium / High | indicator or confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | indicator / policy-confirmed | CWE-639 / CWE-862 |
 | `a2a-task-enumeration-001` | [Cross-Credential Task Listing](#a2a-task-enumeration-001) | Medium | indicator | CWE-639 / CWE-200 |
 | `a2a-card-security-unenforced-001` | [Agent Card Declares Unenforced Authentication](#a2a-card-security-unenforced-001) | High | confirmed | CWE-287 / CWE-306 |
@@ -624,13 +624,33 @@ target.
 
 **JSON-RPC Batch Authentication Bypass** | Severity: Medium baseline, High when confirmed | CWE-288
 
+The rule descriptor declares High so `--severity high` includes the optional
+confirmed check. Routine findings remain Medium.
+
 The rule sends the same unauthenticated `GetTask` request as a single object and
 as a one-element batch. It probes v1.0 `GetTask` and then v0.3 `tasks/get`, using
 distinct IDs for each shape. The control must return HTTP 401/403 or a correlated
-JSON-RPC auth error. A batch reply with a correlated task object confirms access
-despite that refusal. A correlated `TaskNotFound` is only a risk indicator because
-A2A also uses it for inaccessible tasks. The probe uses a random, non-existent
-task ID and does not mutate state. [JSON-RPC 2.0 permits batches](https://www.jsonrpc.org/specification#batch);
+JSON-RPC auth error. With a random, non-existent task ID, a correlated task
+object or `TaskNotFound` is a risk indicator only. A2A also uses `TaskNotFound`
+for inaccessible tasks. To confirm exposure, create a disposable owner task
+containing a unique private text marker, then configure the read-only probe:
+
+```yaml
+target: https://agent.example.com
+a2a_batch_probe:
+  task_id: disposable-task-id
+  private_marker: "${A2A_PRIVATE_MARKER}"
+```
+
+Supply the task owner's credentials with `--token` or `BATESIAN_TOKEN`. Put the
+marker in task history, an artifact, or a status message returned by `GetTask`
+with `historyLength: 10`. The rule first verifies that the owner can read the
+marker. It then requires an anonymous single read of the same task to be denied
+(HTTP 401/403, an auth error, or `TaskNotFound`) and the anonymous batch read to
+return the same task and marker in task content. The configured probe is bound to the
+config file's target. Neither mode mutates target state.
+
+[JSON-RPC 2.0 permits batches](https://www.jsonrpc.org/specification#batch);
 servers that accept them must apply the same authentication and authorization
 checks as for single requests.
 Findings record the matched result category without copying the batch reply.

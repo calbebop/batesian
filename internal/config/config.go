@@ -58,6 +58,9 @@ type Config struct {
 	// A2AGRPCTarget permits the opt-in A2A gRPC task check at this exact address.
 	A2AGRPCTarget string `yaml:"a2a_grpc_target"`
 
+	// A2ABatchProbe names a disposable task for the read-only confirmed batch check.
+	A2ABatchProbe *A2ABatchProbeConfig `yaml:"a2a_batch_probe"`
+
 	// OAuthOrigins are exact additional origins that target-advertised OAuth
 	// endpoints may use. The target origin itself is always allowed.
 	OAuthOrigins []string `yaml:"oauth_origins"`
@@ -132,6 +135,12 @@ type PrincipalConfig struct {
 	Tenant string `yaml:"tenant"`
 	// Headers are extra request headers used for tenant routing/scoping.
 	Headers map[string]string `yaml:"headers"`
+}
+
+// A2ABatchProbeConfig supplies the owner task and a unique private text marker.
+type A2ABatchProbeConfig struct {
+	TaskID        string `yaml:"task_id"`
+	PrivateMarker string `yaml:"private_marker"`
 }
 
 // MCPSubscriptionProbeConfig supplies an owner-only update and its resource.
@@ -234,6 +243,20 @@ func (c *Config) validate(path string) error {
 		}
 		if _, err := attack.ParseA2AGRPCTarget(c.A2AGRPCTarget); err != nil {
 			return fmt.Errorf("config %s: invalid a2a_grpc_target: %w", path, err)
+		}
+	}
+	if probe := c.A2ABatchProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" {
+			return fmt.Errorf("config %s: a2a_batch_probe requires a target in the same config file", path)
+		}
+		if probe.TaskID == "" || strings.TrimSpace(probe.TaskID) != probe.TaskID ||
+			len(probe.TaskID) > 256 || strings.ContainsAny(probe.TaskID, "\r\n\t") {
+			return fmt.Errorf("config %s: a2a_batch_probe requires a task_id of at most 256 bytes", path)
+		}
+		if len(probe.PrivateMarker) < 16 || len(probe.PrivateMarker) > 256 ||
+			strings.TrimSpace(probe.PrivateMarker) != probe.PrivateMarker ||
+			strings.ContainsAny(probe.PrivateMarker, "\r\n") {
+			return fmt.Errorf("config %s: a2a_batch_probe requires a unique private_marker of 16 to 256 bytes", path)
 		}
 	}
 
@@ -438,6 +461,13 @@ func Example() string {
 # interface and be paired with two principals below. Plaintext is loopback-only.
 # The prototype does not support the explicit proxy setting above.
 # a2a_grpc_target: grpcs://agent.example.com:50051
+
+# Read-only batch authorization check against a disposable owner task. Create
+# the task first with a unique private text marker. Supply its owner token via
+# --token or BATESIAN_TOKEN. This config is bound to target above.
+# a2a_batch_probe:
+#   task_id: disposable-task-id
+#   private_marker: "${A2A_PRIVATE_MARKER}"
 
 # Exact additional origins allowed for target-advertised OAuth endpoints.
 # The target origin is always allowed. Add external authorization servers only

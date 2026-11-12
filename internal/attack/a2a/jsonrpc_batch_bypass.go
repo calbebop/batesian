@@ -9,9 +9,7 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// BatchBypassExecutor compares unauthenticated GetTask requests with the same
-// requests wrapped in a batch. A finding requires an auth refusal followed by a
-// correlated task response. The probes only read a nonexistent task ID.
+// BatchBypassExecutor compares single and batched task reads.
 type BatchBypassExecutor struct {
 	rule attack.RuleContext
 }
@@ -29,43 +27,21 @@ func NewBatchBypassExecutor(r attack.RuleContext) *BatchBypassExecutor {
 func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	ctx = withTenantRouting(ctx)
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	// Deliberately unauthenticated: the rule tests whether a batch slips past the
-	// server's auth gate. Injecting opts.Token would mask the bypass.
+	// The batch caller is always anonymous, even when an owner token is configured.
 	client := attack.NewUnauthHTTPClient(opts, vars)
 	endpoint, ok := resolveA2AEndpoint(ctx, client, vars.BaseURL)
+	if !ok && opts.A2ABatchProbe != nil {
+		endpoint, ok = resolveA2AEndpoint(ctx, attack.NewHTTPClient(opts, vars), vars.BaseURL)
+	}
 	if !ok {
 		return nil, attack.ErrInconclusive
 	}
+	if opts.A2ABatchProbe != nil {
+		return e.probeKnownTask(ctx, endpoint, opts, vars.RandID, client)
+	}
 
 	bogusTask := "batesian-nonexistent-" + vars.RandID
-
-	// Each control and batch test use the same request ID and method.
-	shapes := []struct {
-		label   string
-		headers map[string]string
-		obj     map[string]interface{}
-	}{
-		{
-			label:   "v1.0 GetTask",
-			headers: map[string]string{"A2A-Version": "1.0"},
-			obj: map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "batesian-batch-" + vars.RandID + "-v1",
-				"method":  "GetTask",
-				"params":  map[string]interface{}{"id": bogusTask, "historyLength": 1},
-			},
-		},
-		{
-			label:   "v0.3 tasks/get",
-			headers: nil,
-			obj: map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      "batesian-batch-" + vars.RandID + "-v03",
-				"method":  "tasks/get",
-				"params":  map[string]interface{}{"id": bogusTask, "historyLength": 1},
-			},
-		},
-	}
+	shapes := batchGetShapes(bogusTask, vars.RandID, 1)
 
 	var incomplete []string
 	for _, s := range shapes {
@@ -100,9 +76,9 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 		}
 		if evidence != batchNoDispatch {
 			if len(incomplete) != 0 {
-				return e.finding(endpoint, s.label, ctrl, test, evidence), fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+				return e.finding(endpoint, s.label, ctrl, test, evidence, false), fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 			}
-			return e.finding(endpoint, s.label, ctrl, test, evidence), nil
+			return e.finding(endpoint, s.label, ctrl, test, evidence, false), nil
 		}
 		if ambiguousBatchResponse(test, requestID, true) {
 			incomplete = append(incomplete, s.label+" batch response was not judged")
@@ -112,6 +88,146 @@ func (e *BatchBypassExecutor) Execute(ctx context.Context, target string, opts a
 		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
 	}
 	return nil, nil
+}
+
+type batchProbeShape struct {
+	label   string
+	headers map[string]string
+	obj     map[string]interface{}
+}
+
+// batchGetShapes keeps each single request identical to its batch element.
+func batchGetShapes(taskID, randID string, historyLength int) []batchProbeShape {
+	return []batchProbeShape{
+		{
+			label:   "v1.0 GetTask",
+			headers: map[string]string{"A2A-Version": "1.0"},
+			obj: map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "batesian-batch-" + randID + "-v1",
+				"method":  "GetTask",
+				"params":  map[string]interface{}{"id": taskID, "historyLength": historyLength},
+			},
+		},
+		{
+			label:   "v0.3 tasks/get",
+			headers: nil,
+			obj: map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      "batesian-batch-" + randID + "-v03",
+				"method":  "tasks/get",
+				"params":  map[string]interface{}{"id": taskID, "historyLength": historyLength},
+			},
+		},
+	}
+}
+
+func (e *BatchBypassExecutor) probeKnownTask(ctx context.Context, endpoint string, opts attack.Options,
+	randID string, anon *attack.HTTPClient) ([]attack.Finding, error) {
+	probe := opts.A2ABatchProbe
+	if probe.TaskID == "" || len(probe.PrivateMarker) < 16 {
+		return nil, fmt.Errorf("%w: a2a_batch_probe needs a task ID and private marker", attack.ErrInconclusive)
+	}
+	owner := attack.NewHTTPClient(opts, attack.NewVars(endpoint, opts.OOBListenerURL))
+	if !owner.PresentsCredential(endpoint) {
+		return nil, fmt.Errorf("%w: a2a_batch_probe needs owner credentials", attack.ErrInconclusive)
+	}
+	var incomplete []string
+	var indicator []attack.Finding
+	for _, s := range batchGetShapes(probe.TaskID, randID, 10) {
+		requestID, _ := s.obj["id"].(string)
+		ownerRequest := make(map[string]interface{}, len(s.obj))
+		for key, value := range s.obj {
+			ownerRequest[key] = value
+		}
+		ownerRequest["id"] = requestID + "-owner"
+		baseline, err := owner.POST(ctx, endpoint, s.headers, ownerRequest)
+		if err != nil || baseline == nil || !baseline.IsSuccess() {
+			incomplete = append(incomplete, s.label+" owner task read failed")
+			continue
+		}
+		result, _, hasError, valid := discoveryResponse(baseline.Body, requestID+"-owner")
+		if !valid || hasError {
+			incomplete = append(incomplete, s.label+" owner task read was not verified")
+			continue
+		}
+		location, matched := taskMarkerLocation(result, probe.TaskID, probe.PrivateMarker)
+		if location == "" || !matched {
+			incomplete = append(incomplete, s.label+" owner task did not contain the private marker")
+			continue
+		}
+		control, err := anon.POST(ctx, endpoint, s.headers, s.obj)
+		if err != nil || control == nil || control.StatusCode == 408 || control.StatusCode == 429 || control.StatusCode >= 500 {
+			incomplete = append(incomplete, s.label+" anonymous single request failed")
+			continue
+		}
+		denied := control.StatusCode == 401 || control.StatusCode == 403
+		singleNotFound := false
+		if control.IsSuccess() {
+			_, code, hasError, valid := discoveryResponse(control.Body, requestID)
+			if !valid {
+				incomplete = append(incomplete, s.label+" anonymous single response was not correlated")
+				continue
+			}
+			singleNotFound = hasError && code == -32001 && !errMessageIsAuth(control.Body)
+			denied = singleNotFound || hasError && errMessageIsAuth(control.Body)
+		}
+		if !denied {
+			continue
+		}
+		batch, err := anon.POST(ctx, endpoint, s.headers, []interface{}{s.obj})
+		if err != nil || batch == nil {
+			incomplete = append(incomplete, s.label+" batch request failed")
+			continue
+		}
+		if !batch.IsSuccess() {
+			if ambiguousBatchResponse(batch, requestID, true) {
+				incomplete = append(incomplete, s.label+" batch response was not judged")
+			}
+			continue
+		}
+		batchLocation, taskMatched := batchTaskMarkerLocation(batch.Body, requestID, probe.TaskID, probe.PrivateMarker)
+		if batchLocation != "" && taskMatched {
+			finding := e.confirmedFinding(endpoint, s.label, batchLocation, control, batch)
+			if len(incomplete) != 0 {
+				return finding, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+			}
+			return finding, nil
+		}
+		evidence := a2aBatchDispatched(batch.Body, requestID)
+		if evidence == batchTaskNotFound && singleNotFound {
+			continue
+		}
+		if evidence == batchTaskReturned && !taskMatched {
+			incomplete = append(incomplete, s.label+" batch returned an unrelated task")
+			continue
+		}
+		if evidence != batchNoDispatch {
+			if len(indicator) == 0 {
+				indicator = e.finding(endpoint, s.label, control, batch, evidence, true)
+			}
+			continue
+		}
+		if ambiguousBatchResponse(batch, requestID, true) {
+			incomplete = append(incomplete, s.label+" batch response was not judged")
+		}
+	}
+	if len(incomplete) != 0 {
+		return indicator, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(incomplete, "; "))
+	}
+	return indicator, nil
+}
+
+func batchTaskMarkerLocation(body []byte, requestID, taskID, marker string) (string, bool) {
+	var replies []json.RawMessage
+	if json.Unmarshal(body, &replies) != nil || len(replies) != 1 {
+		return "", false
+	}
+	result, _, hasError, valid := discoveryResponse(replies[0], requestID)
+	if !valid || hasError {
+		return "", false
+	}
+	return taskMarkerLocation(result, taskID, marker)
 }
 
 func ambiguousBatchResponse(resp *attack.Response, requestID string, batch bool) bool {
@@ -171,13 +287,13 @@ func a2aRejectedError(version string, rawID, rawError json.RawMessage, requestID
 }
 
 func (e *BatchBypassExecutor) finding(endpoint, shape string, ctrl, test *attack.Response,
-	evidence batchDispatchEvidence) []attack.Finding {
+	evidence batchDispatchEvidence, knownTask bool) []attack.Finding {
 	refusal := "HTTP authentication refusal"
-	if ctrl.IsSuccess() {
+	if ctrl.IsSuccess() && errMessageIsAuth(ctrl.Body) {
 		refusal = "correlated JSON-RPC authentication error"
+	} else if ctrl.IsSuccess() {
+		refusal = "correlated TaskNotFound"
 	}
-	severity := "medium"
-	confidence := attack.RiskIndicator
 	title := "A2A batch changed the authentication outcome"
 	description := fmt.Sprintf(
 		"At %s, a single unauthenticated GetTask request was refused, while the same request in a "+
@@ -185,25 +301,41 @@ func (e *BatchBypassExecutor) finding(endpoint, shape string, ctrl, test *attack
 			"so this difference does not prove unauthorized access. Check that single and batch "+
 			"requests receive the same authentication and authorization checks.", endpoint)
 	if evidence == batchTaskReturned {
-		severity = "high"
-		confidence = attack.ConfirmedExploit
-		title = "A2A authentication bypassed by JSON-RPC batch wrapping"
+		title = "A2A batch returned a task after single-request denial"
 		description = fmt.Sprintf(
 			"At %s, a single unauthenticated GetTask request was refused, but the same request "+
-				"in a one-element batch returned a task object. Apply the same authentication and "+
-				"authorization checks to single and batch requests (CWE-288).", endpoint)
+				"in a one-element batch returned a task object. The response alone does not establish "+
+				"private access. Check authorization on each batch element (CWE-288).", endpoint)
+	}
+	if knownTask && evidence == batchTaskNotFound {
+		description = fmt.Sprintf("At %s, the owner could read a task containing the private marker, but an anonymous single request was denied while the batch returned TaskNotFound. This difference does not establish private content disclosure. Check authorization on each batch element.", endpoint)
 	}
 	return []attack.Finding{{
 		RuleID:      e.rule.ID,
 		RuleName:    e.rule.Name,
-		Severity:    severity,
-		Confidence:  confidence,
+		Severity:    "medium",
+		Confidence:  attack.RiskIndicator,
 		Title:       title,
 		Description: description,
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nshape: %s\nsingle request: HTTP %d (%s)\n"+
 				"batch [request]: HTTP %d (%s)\nreply content omitted",
 			endpoint, shape, ctrl.StatusCode, refusal, test.StatusCode, evidence),
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+	}}
+}
+
+func (e *BatchBypassExecutor) confirmedFinding(endpoint, shape, location string,
+	ctrl, batch *attack.Response) []attack.Finding {
+	return []attack.Finding{{
+		RuleID:      e.rule.ID,
+		RuleName:    e.rule.Name,
+		Severity:    "high",
+		Confidence:  attack.ConfirmedExploit,
+		Title:       "A2A task content exposed through JSON-RPC batch",
+		Description: fmt.Sprintf("At %s, the owner read a known task containing a private marker. An anonymous single request for that task was denied, but the same request in a one-element batch returned the task and marker in its %s. Apply authorization to each batch element (CWE-288).", endpoint, location),
+		Evidence:    fmt.Sprintf("endpoint: %s\nshape: %s\nowner task and private marker: verified\nsingle request: HTTP %d (denied)\nbatch request: HTTP %d (task and marker matched)\nreply content omitted", endpoint, shape, ctrl.StatusCode, batch.StatusCode),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}}
@@ -242,14 +374,7 @@ func a2aBatchDispatched(body []byte, expectedID string) batchDispatchEvidence {
 			continue
 		}
 		if len(el.Result) != 0 && string(el.Result) != "null" && len(el.Error) == 0 {
-			var task struct {
-				ID        string `json:"id"`
-				ContextID string `json:"contextId"`
-				Status    struct {
-					State string `json:"state"`
-				} `json:"status"`
-			}
-			if json.Unmarshal(el.Result, &task) == nil && task.ID != "" && task.ContextID != "" && task.Status.State != "" {
+			if _, taskID, _ := validatedTaskResult(el.Result); taskID != "" {
 				return batchTaskReturned
 			}
 		}
