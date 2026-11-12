@@ -139,9 +139,7 @@ func (s mcpSession) post(ctx context.Context, client *attack.HTTPClient, id inte
 }
 
 // postShaping is post for a rule that must send a deliberately malformed request.
-// shape receives the headers this era would have sent and may change or delete
-// any of them, which is how the SEP-2243 rule omits or mismatches Mcp-Method
-// without also having to rebuild the _meta block the era requires.
+// shape changes headers without rebuilding the request body's era-specific fields.
 func (s mcpSession) postShaping(ctx context.Context, client *attack.HTTPClient, id interface{}, method string,
 	params map[string]interface{}, shape func(map[string]string)) (*attack.Response, error) {
 	headers, body := s.request(id, method, params)

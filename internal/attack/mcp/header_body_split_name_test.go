@@ -13,25 +13,11 @@ import (
 	mcpattack "github.com/calbebop/batesian/internal/attack/mcp"
 )
 
-// The Mcp-Name and case-sensitivity dimensions of mcp-header-body-split-001.
-//
-// The rule covered Mcp-Method only, so a server that validated the method and ignored
-// the name passed. The binding makes Mcp-Name REQUIRED for tools/call, resources/read
-// and prompts/get, requires its value to match params.name or params.uri, and requires
-// a mismatch to earn 400 with -32020. An intermediary gating a dangerous tool or
-// resource by name inspects Mcp-Name, so that is the header worth spoofing.
-//
-// Every probe here asks for a subject that does not exist, which is what keeps the
-// dimension read-only: a server that does not validate the header is precisely one
-// that would otherwise act on the body, and the rule must never let that be a tool
-// call.
-
-// nameSplitServer serves ONLY the 2026-07-28 wire and validates Mcp-Method fully, so
-// the method dimension is clean and these tests measure the name dimension alone.
+// nameSplitServer validates Mcp-Method so tests can isolate Mcp-Name behavior.
 //
 //	"validates" reject a missing or mismatched Mcp-Name with -32020
-//	"ignores"   enforce presence but not value: the split this dimension catches
-//	"absent"    enforce neither, so the dimension has no precondition
+//	"ignores"   enforce presence but not value
+//	"absent"    enforce neither header presence nor value
 //	"nomethod"  answer -32601, so the method is not a surface here
 func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 	t.Helper()
@@ -51,8 +37,17 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 			})
 		}
 
-		// Modern wire only: refuse the handshake so the rule arrives via discovery.
-		if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" {
+		if method == "initialize" {
+			rpcErr(http.StatusBadRequest, -32022, "UnsupportedProtocolVersion")
+			return
+		}
+		meta, _ := params["_meta"].(map[string]interface{})
+		version, _ := meta["io.modelcontextprotocol/protocolVersion"].(string)
+		if r.Header.Get("MCP-Protocol-Version") != version {
+			rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: MCP-Protocol-Version")
+			return
+		}
+		if version != "2026-07-28" {
 			rpcErr(http.StatusBadRequest, -32022, "UnsupportedProtocolVersion")
 			return
 		}
@@ -106,10 +101,12 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 					return
 				}
 			case "ignores", "stale-control", "stale-error", "stale-result", "auth-mismatch", "generic-error":
+				if nameMode == "stale-control" && hdr == subject {
+					id = 99
+					rpcErr(http.StatusOK, -32002, "Resource not found: "+subject)
+					return
+				}
 				if hdr == "" { // presence enforced, value ignored
-					if nameMode == "stale-control" {
-						id = 99
-					}
 					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name missing")
 					return
 				}
@@ -161,8 +158,8 @@ func TestSplit_McpNameValueNotValidated(t *testing.T) {
 		t.Fatalf("expected exactly the Mcp-Name finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Severity != "high" || f.Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %s/%s", f.Severity, f.Confidence)
+	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
+		t.Errorf("want medium/RiskIndicator, got %s/%s", f.Severity, f.Confidence)
 	}
 	if !strings.Contains(f.Title, "Mcp-Name") {
 		t.Errorf("the finding should name the header it is about, got %q", f.Title)
@@ -170,9 +167,8 @@ func TestSplit_McpNameValueNotValidated(t *testing.T) {
 	if !strings.Contains(f.Title, "2026-07-28 wire") {
 		t.Errorf("a modern-wire finding should be labelled as such, got %q", f.Title)
 	}
-	// The evidence has to record that the probe was read-only.
-	if !strings.Contains(f.Evidence, "deliberately absent, so nothing was executed") {
-		t.Errorf("evidence should record that no subject was executed; got:\n%s", f.Evidence)
+	if !strings.Contains(f.Evidence, "subject: nonexistent control") {
+		t.Errorf("evidence should record the read-only control; got:\n%s", f.Evidence)
 	}
 }
 
@@ -221,11 +217,7 @@ func TestSplit_McpNameLaterProbeIsNotMasked(t *testing.T) {
 	}
 }
 
-// Presence is not enforced, so a mismatch would prove nothing about value validation.
-// Deliberately not a finding: omission is the precondition detector for both
-// dimensions, and reporting it here while the Mcp-Method path calls the identical
-// observation "not SEP-2243-aware" would be incoherent.
-func TestSplit_McpNamePresenceNotEnforcedIsNotAFinding(t *testing.T) {
+func TestSplit_McpNameMismatchWithoutPresenceEnforcementIsIndicator(t *testing.T) {
 	ts := nameSplitServer(t, "absent")
 	defer ts.Close()
 
@@ -233,8 +225,8 @@ func TestSplit_McpNamePresenceNotEnforcedIsNotAFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("omission is the precondition, not the subject; got %d: %+v", len(findings), findings)
+	if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("accepted mismatch must be an indicator; got %d: %+v", len(findings), findings)
 	}
 }
 
@@ -275,7 +267,18 @@ func caseFoldServer(t *testing.T, failFold bool) *httptest.Server {
 			})
 		}
 
-		if r.Header.Get("MCP-Protocol-Version") != "2026-07-28" {
+		if method == "initialize" {
+			rpcErr(http.StatusBadRequest, -32022, "UnsupportedProtocolVersion")
+			return
+		}
+		params, _ := body["params"].(map[string]interface{})
+		meta, _ := params["_meta"].(map[string]interface{})
+		version, _ := meta["io.modelcontextprotocol/protocolVersion"].(string)
+		if r.Header.Get("MCP-Protocol-Version") != version {
+			rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: MCP-Protocol-Version")
+			return
+		}
+		if version != "2026-07-28" {
 			rpcErr(http.StatusBadRequest, -32022, "UnsupportedProtocolVersion")
 			return
 		}
@@ -318,6 +321,9 @@ func TestSplit_CaseFoldedMethodValueIsAFinding(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Title, "case-insensitively") {
 		t.Errorf("the finding should say the comparison folded case, got %q", findings[0].Title)
+	}
+	if findings[0].Confidence != attack.RiskIndicator || findings[0].Severity != "medium" {
+		t.Errorf("case-folded mismatch must be a medium indicator: %+v", findings[0])
 	}
 }
 

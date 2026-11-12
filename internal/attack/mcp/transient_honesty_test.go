@@ -143,61 +143,8 @@ func TestTransient_InitDowngradeStillFiresOnARealRefusal(t *testing.T) {
 	}
 }
 
-// mcp-header-body-split-001: the MISMATCH probe is the rule's own subject. When it
-// returned no verdict the rule folded it into "the value IS validated" and reported
-// the SEP-2243 surface clean.
 func TestTransient_HeaderBodySplitUndeterminedMismatchProbe(t *testing.T) {
-	// Probe order on a legacy wire: omit (refused), match (granted), mismatch.
-	calls := 0
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		method, _ := body["method"].(string)
-		id := body["id"]
-
-		if strings.HasPrefix(method, "notifications/") {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if method == "initialize" {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{
-					"protocolVersion": "2025-11-25",
-					"serverInfo":      map[string]interface{}{"name": "split", "version": "1.0"},
-					"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-				},
-			})
-			return
-		}
-		if method != "tools/list" {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": id,
-				"error": map[string]interface{}{"code": -32601, "message": "Method not found"},
-			})
-			return
-		}
-		switch hdr := r.Header.Get("Mcp-Method"); hdr {
-		case "":
-			// Presence enforced: the rule's precondition.
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": id,
-				"error": map[string]interface{}{"code": -32020, "message": "HeaderMismatch"},
-			})
-		case "tools/list":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": id,
-				"result": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"name": "echo"}}},
-			})
-		default:
-			// The mismatch probe, and anything after it: no verdict at all.
-			calls++
-			w.WriteHeader(http.StatusBadGateway)
-		}
-	}))
+	ts := modernSplitServer(t, "unanswered", "reject")
 	defer ts.Close()
 
 	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).
@@ -206,10 +153,10 @@ func TestTransient_HeaderBodySplitUndeterminedMismatchProbe(t *testing.T) {
 		t.Fatalf("nothing was observed about the header value; got %d: %+v", len(findings), findings)
 	}
 	if !errors.Is(err, attack.ErrInconclusive) {
-		t.Fatalf("an unobserved mismatch probe is not a clean SEP-2243 result; got %v", err)
+		t.Fatalf("an unobserved mismatch probe is incomplete; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "header") {
-		t.Errorf("the reason should name the header probe; got %v", err)
+	if !strings.Contains(err.Error(), "Mcp-Method") {
+		t.Errorf("the reason should name the method probe; got %v", err)
 	}
 }
 
