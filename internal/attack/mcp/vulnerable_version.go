@@ -36,6 +36,7 @@ type vvAdvisory struct {
 	refs     string
 	fixed    string
 	pkg      string
+	note     string
 }
 
 // vvTable entries carry their own citations; keep them in step with upstream
@@ -45,6 +46,17 @@ var vvTable = []vvAdvisory{
 		key: "mcp-git", affected: ">=2026.10.10 <2026.10.28", severity: "medium",
 		title: "reference git server repository confinement bypass",
 		refs:  "GHSA-w766-5x43-whvw", fixed: "2026.10.28", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.11", severity: "medium",
+		title: "reference git server repository configuration command execution",
+		refs:  "GHSA-6hqx-gqrx-c5r2", fixed: "2026.11.11", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.28 <2026.11.11", severity: "medium",
+		title: "reference git server repository confinement bypass",
+		refs:  "GHSA-q74p-4wrc-q7w6", fixed: "2026.11.11", pkg: "mcp-server-git",
+		note: "On Windows, check the advisory's remaining junction limitation before relying on repository confinement.",
 	},
 	{
 		key: "serena", affected: "<1.5.2", severity: "high",
@@ -76,6 +88,18 @@ var vvTable = []vvAdvisory{
 		refs:  "GHSA-53mr-w429-c597", fixed: "2.0.1", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
+		key:      "secure-filesystem-server",
+		affected: ">=1.0.0 <2.3.0", severity: "low",
+		title: "reference filesystem server read path race",
+		refs:  "GHSA-p9cv-8g75-4xcg", fixed: "2.3.0", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key:      "secure-filesystem-server",
+		affected: ">=1.0.0 <2.3.0", severity: "low",
+		title: "reference filesystem server move source race",
+		refs:  "GHSA-7m4x-rv66-mxhh", fixed: "2.3.0", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
 		key:      "mcp-fetch",
 		affected: ">=2026.10.10 <=2026.10.19", severity: "medium",
 		title: "reference fetch server IDNA private-address guard bypass",
@@ -92,6 +116,18 @@ var vvTable = []vvAdvisory{
 		affected: ">=2026.10.10 <=2026.10.19", severity: "low",
 		title: "reference fetch server NAT64 private-address guard bypass",
 		refs:  "GHSA-66qx-2266-pmj6", fixed: "2026.10.24", pkg: "mcp-server-fetch",
+	},
+	{
+		key:      "mcp-fetch",
+		affected: ">=2026.10.10 <2026.11.11", severity: "low",
+		title: "reference fetch server IPv6 site-local guard gap",
+		refs:  "GHSA-3rxj-6jhw-qfv7", fixed: "2026.11.11", pkg: "mcp-server-fetch",
+	},
+	{
+		key:      "mcp-fetch",
+		affected: ">=2026.10.10 <2026.11.11", severity: "low",
+		title: "reference fetch server robots path canonicalization bypass",
+		refs:  "GHSA-f9hh-cmx9-2f23", fixed: "2026.11.11", pkg: "mcp-server-fetch",
 	},
 }
 
@@ -178,6 +214,9 @@ func (e *VulnerableVersionExecutor) finding(endpoint, version string, adv vvAdvi
 	if adv.fixed != "" {
 		remediation = fmt.Sprintf("Upgrade %s to %s or later. Verify the installed package and review %s; serverInfo is self-reported.",
 			adv.pkg, adv.fixed, adv.refs)
+	}
+	if adv.note != "" {
+		remediation += " " + adv.note
 	}
 	return attack.Finding{
 		RuleID:     e.rule.ID,

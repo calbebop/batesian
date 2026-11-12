@@ -36,10 +36,8 @@ is a difference the gate catches:
                                   the drift check fires; clean silent. The split
                                   keeps drift from firing where content was the
                                   defect, and vice versa (#229).
-  mcp_vulnerable_version_*        one patch below the fix fires citing advisories;
-                                  exactly at the fix is silent (exclusive bound);
-                                  unknown identity matches nothing because the
-                                  table is closed, not heuristic (#230).
+  mcp_vulnerable_version_*        affected and intermediate releases fire;
+                                  2026.11.11 and unknown identities stay silent.
 
 Run by .github/workflows/validation.yml.
 """
@@ -423,12 +421,11 @@ def tool_poisoning():
 
 
 def vulnerable_version():
-    """One patch below the fix fires citing the advisory; exactly at the fix is
-    silent (exclusive bound); an unrelated identity matches nothing because the
-    table is closed rather than heuristic."""
+    """Affected releases fire; the current fix and unrelated names stay silent."""
     ok_all = True
     rid = "mcp-vulnerable-version-001"
-    for posture, expect_fire in [("vulnerable", True), ("patched", False), ("unknown", False)]:
+    for posture, expect_fire in [("vulnerable", True), ("intermediate", True),
+                                 ("patched", False), ("unknown", False)]:
         p, l = start("mcp_vulnerable_version_server.py", 7809, posture)
         try:
             fired, _, doc = scan(7809)
