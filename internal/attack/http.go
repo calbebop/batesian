@@ -39,8 +39,9 @@ var Version = "dev"
 
 // HTTPClient is a thin wrapper around net/http.Client with helpers for attack requests.
 type HTTPClient struct {
-	inner *http.Client
-	state *TargetState
+	inner     *http.Client
+	state     *TargetState
+	bodyLimit int64
 	// discovery is the scan-scoped endpoint cache; nil disables reuse.
 	discovery *DiscoveryCache
 	vars      Vars
@@ -419,6 +420,14 @@ func (c *HTTPClient) POST(ctx context.Context, urlTpl string, headers map[string
 	return c.post(ctx, urlTpl, headers, body, false)
 }
 
+// POSTLimited caps the response body for one request.
+func (c *HTTPClient) POSTLimited(ctx context.Context, urlTpl string, headers map[string]string,
+	body interface{}, limit int64) (*Response, error) {
+	bounded := *c
+	bounded.bodyLimit = limit
+	return bounded.POST(ctx, urlTpl, headers, body)
+}
+
 // POSTFirstSSE captures the first data event from an SSE response.
 func (c *HTTPClient) POSTFirstSSE(ctx context.Context, urlTpl string, headers map[string]string, body interface{}) (*Response, error) {
 	return c.post(ctx, urlTpl, headers, body, true)
@@ -457,6 +466,10 @@ func (c *HTTPClient) do(ctx context.Context, method, url string, body io.Reader,
 }
 
 func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.Reader, headers map[string]string, firstSSE bool) (*Response, error) {
+	limit := int64(maxBody)
+	if c.bodyLimit > 0 && c.bodyLimit < limit {
+		limit = c.bodyLimit
+	}
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("building %s %s: %w", method, url, err)
@@ -493,12 +506,12 @@ func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.
 	if strings.Contains(ct, "text/event-stream") {
 		// SSE streams never close; read only up to the response event then stop.
 		if firstSSE {
-			respBody, err = sse.FirstData(resp.Body, maxBody)
+			respBody, err = sse.FirstData(resp.Body, limit)
 			if err == nil && respBody == nil {
 				err = errors.New("stream carried no data event")
 			}
 		} else {
-			respBody, err = readSSEResponse(resp.Body)
+			respBody, err = readSSEResponse(resp.Body, limit)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("reading SSE response from %s: %w", url, err)
@@ -508,12 +521,12 @@ func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.
 		// LimitReader at maxBody returns a truncated body and no error, which
 		// reads downstream as malformed JSON from the server rather than as a
 		// body this scanner declined to finish reading.
-		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, limit+1))
 		if err != nil {
 			return nil, fmt.Errorf("reading response from %s: %w", url, err)
 		}
-		if len(respBody) > maxBody {
-			return nil, fmt.Errorf("response body from %s exceeds the %d byte read limit", url, maxBody)
+		if int64(len(respBody)) > limit {
+			return nil, fmt.Errorf("response body from %s exceeds the %d byte read limit", url, limit)
 		}
 	}
 
@@ -529,8 +542,8 @@ func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.
 // readSSEResponse returns the first response candidate, joining multiline data
 // fields and skipping notifications. Malformed JSON remains a candidate so the
 // caller surfaces it. Reading errors or no candidate within the limits are errors.
-func readSSEResponse(r io.Reader) ([]byte, error) {
-	payload, found, err := sse.FirstMatching(r, maxBody, sse.IsJSONRPCResponse)
+func readSSEResponse(r io.Reader, limit int64) ([]byte, error) {
+	payload, found, err := sse.FirstMatching(r, limit, sse.IsJSONRPCResponse)
 	if err != nil {
 		return nil, err
 	}

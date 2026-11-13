@@ -1,13 +1,18 @@
 import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { loadSkills } from '@modelcontextprotocol/server/ext/skills/node';
 import {
   localhostHostValidation,
   localhostOriginValidation,
   toNodeHandler,
 } from '@modelcontextprotocol/node';
 
+const skills = await loadSkills(fileURLToPath(new URL('./skills', import.meta.url)), { strict: true });
+
 const handler = createMcpHandler(() => {
   const server = new McpServer({ name: 'batesian-ts-fixture', version: '1.0.0' });
+  skills.attach(server);
   server.registerTool('fixture_ping', { description: 'Return a fixed test value' }, async () => ({
     content: [{ type: 'text', text: 'fixture-pong' }],
   }));

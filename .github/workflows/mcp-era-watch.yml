@@ -120,7 +120,7 @@ jobs:
         run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
         working-directory: testdata/mcp_ts_sdk
 
-      - name: Check both protocol eras and a named tool
+      - name: Check both protocol eras, a named tool, and Skills
         run: |
           node testdata/mcp_ts_sdk/server.mjs > "$RUNNER_TEMP/mcp-ts-sdk.log" 2>&1 &
           server_pid=$!
@@ -146,7 +146,7 @@ jobs:
           fi
 
           go test -tags=integration \
-            -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live|TestNamedTool_LiveTypeScriptSDK' \
+            -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live|TestNamedTool_LiveTypeScriptSDK|TestSkillsIntegrity_LiveTypeScriptSDK' \
             -v ./internal/attack/mcp/
         env:
           BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7798/mcp

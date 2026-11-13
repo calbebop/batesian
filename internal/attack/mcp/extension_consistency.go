@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -19,6 +21,11 @@ const (
 	appsMIME          = "text/html;profile=mcp-app"
 	maxExtensionPages = 2
 	maxExtensionItems = 3
+	maxSkillResources = 8
+	maxSkillReadBytes = 1 << 20
+	maxSkillWireBytes = 2 << 20
+	maxSkillFiles     = 512
+	maxSkillSize      = 16 << 20
 )
 
 type ExtensionConsistencyExecutor struct{ rule attack.RuleContext }
@@ -112,13 +119,24 @@ func appsClientCapabilities() map[string]interface{} {
 
 func extensionCall(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, method string,
 	params map[string]interface{}, appsClient bool) (map[string]interface{}, error) {
+	return extensionCallWithLimit(ctx, client, session, id, method, params, appsClient, 0)
+}
+
+func extensionCallWithLimit(ctx context.Context, client *attack.HTTPClient, session mcpSession, id int, method string,
+	params map[string]interface{}, appsClient bool, limit int64) (map[string]interface{}, error) {
 	headers, body := session.request(id, method, params)
 	if appsClient {
 		requestParams := body["params"].(map[string]interface{})
 		meta := requestParams["_meta"].(map[string]interface{})
 		meta[metaClientCapabilities] = appsClientCapabilities()
 	}
-	resp, err := client.POST(ctx, session.Endpoint, headers, body)
+	var resp *attack.Response
+	var err error
+	if limit > 0 {
+		resp, err = client.POSTLimited(ctx, session.Endpoint, headers, body, limit)
+	} else {
+		resp, err = client.POST(ctx, session.Endpoint, headers, body)
+	}
 	verdict, envelope := classifyProbe(resp, err, id)
 	if verdict != probeAnswered || !validRPCResult(envelope) {
 		return nil, fmt.Errorf("%w: %s did not return a successful result", attack.ErrInconclusive, method)
@@ -153,11 +171,17 @@ func appsRead(ctx context.Context, client *attack.HTTPClient, session mcpSession
 	return appsReadValid(result, uri), true
 }
 
-type skillEntry struct {
+type skillResource struct {
 	uri, digest string
 	size        int64
-	dynamic     bool
-	valid       bool
+}
+
+type skillEntry struct {
+	uri       string
+	resources []skillResource
+	manifest  string
+	dynamic   bool
+	valid     bool
 }
 
 func parseSkill(value interface{}) skillEntry {
@@ -182,14 +206,23 @@ func parseSkill(value interface{}) skillEntry {
 		return skillEntry{uri: uri, dynamic: true, valid: true}
 	}
 	resources, ok := entry["resources"].([]interface{})
-	if !ok {
+	if !ok || len(resources) == 0 || len(resources) > maxSkillFiles {
 		return skillEntry{}
 	}
+	root := strings.TrimSuffix(uri, "SKILL.md")
+	seen := make(map[string]bool, len(resources))
+	files := make([]skillResource, 0, len(resources))
+	var totalSize int64
 	for _, item := range resources {
 		resource, ok := item.(map[string]interface{})
-		if !ok || resource["uri"] != uri {
-			continue
+		if !ok {
+			return skillEntry{}
 		}
+		fileURI, _ := resource["uri"].(string)
+		if fileURI == "" || seen[fileURI] || fileURI != uri && !strings.HasPrefix(fileURI, root) {
+			return skillEntry{}
+		}
+		seen[fileURI] = true
 		digest, _ := resource["digest"].(string)
 		if len(digest) != len("sha256:")+64 || !strings.HasPrefix(digest, "sha256:") {
 			return skillEntry{}
@@ -202,40 +235,71 @@ func parseSkill(value interface{}) skillEntry {
 			return skillEntry{}
 		}
 		size, err := sizeNumber.Int64()
-		if err != nil || size < 0 {
+		if err != nil || size < 0 || size > maxSkillSize-totalSize {
 			return skillEntry{}
 		}
-		return skillEntry{uri: uri, digest: digest, size: size, valid: true}
+		totalSize += size
+		files = append(files, skillResource{uri: fileURI, digest: digest, size: size})
 	}
-	return skillEntry{}
+	if !seen[uri] {
+		return skillEntry{}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].uri == uri {
+			return true
+		}
+		if files[j].uri == uri {
+			return false
+		}
+		return files[i].uri < files[j].uri
+	})
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return skillEntry{}
+	}
+	return skillEntry{uri: uri, resources: files, manifest: string(raw), valid: true}
 }
 
-func skillReadMatches(result map[string]interface{}, entry skillEntry) bool {
+func sameSkillManifest(a, b skillEntry) bool {
+	return a.valid && b.valid && !a.dynamic && !b.dynamic && a.manifest == b.manifest && slices.Equal(a.resources, b.resources)
+}
+
+func skillReadMatches(result map[string]interface{}, resource skillResource, remaining int64) (bool, int64, error) {
 	contents, ok := result["contents"].([]interface{})
 	if !ok {
-		return false
+		return false, 0, fmt.Errorf("%w: skill resource read omitted contents", attack.ErrInconclusive)
 	}
 	for _, value := range contents {
 		item, ok := value.(map[string]interface{})
-		if !ok || item["uri"] != entry.uri {
+		if !ok || item["uri"] != resource.uri {
 			continue
 		}
 		var content []byte
 		if text, ok := item["text"].(string); ok {
+			if int64(len(text)) > remaining {
+				return false, 0, fmt.Errorf("%w: skill resource exceeded the read budget", attack.ErrInconclusive)
+			}
 			content = []byte(text)
 		} else if blob, ok := item["blob"].(string); ok {
+			if int64(base64.StdEncoding.DecodedLen(len(blob))) > remaining+2 {
+				return false, 0, fmt.Errorf("%w: skill resource exceeded the read budget", attack.ErrInconclusive)
+			}
 			var err error
 			content, err = base64.StdEncoding.DecodeString(blob)
 			if err != nil {
-				return false
+				return false, 0, fmt.Errorf("%w: skill resource returned invalid base64", attack.ErrInconclusive)
 			}
 		} else {
-			return false
+			return false, 0, fmt.Errorf("%w: skill resource omitted content", attack.ErrInconclusive)
+		}
+		if int64(len(content)) > remaining {
+			return false, 0, fmt.Errorf("%w: skill resource exceeded the read budget", attack.ErrInconclusive)
 		}
 		digest := sha256.Sum256(content)
-		return int64(len(content)) == entry.size && "sha256:"+hex.EncodeToString(digest[:]) == entry.digest
+		return int64(len(content)) == resource.size && "sha256:"+hex.EncodeToString(digest[:]) == resource.digest,
+			int64(len(content)), nil
 	}
-	return false
+	return false, 0, fmt.Errorf("%w: skill resource read omitted the requested URI", attack.ErrInconclusive)
 }
 
 func (e *ExtensionConsistencyExecutor) checkSkills(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]attack.Finding, int, error) {
@@ -245,7 +309,7 @@ func (e *ExtensionConsistencyExecutor) checkSkills(ctx context.Context, client *
 	seenCursors := map[string]bool{}
 	cursor := ""
 	tested := 0
-	for page := 0; page < maxExtensionPages && tested < maxExtensionItems; page++ {
+	for page := 0; page < maxExtensionPages; page++ {
 		params := map[string]interface{}{}
 		if cursor != "" {
 			params["cursor"] = cursor
@@ -260,10 +324,19 @@ func (e *ExtensionConsistencyExecutor) checkSkills(ctx context.Context, client *
 		}
 		for _, value := range items {
 			if tested == maxExtensionItems {
-				break
+				incomplete = append(incomplete, fmt.Errorf("%w: Skills listing exceeded the entry cap", attack.ErrInconclusive))
+				return findings, tested, errors.Join(incomplete...)
 			}
 			entry := parseSkill(value)
-			if !entry.valid || entry.dynamic || seen[entry.uri] {
+			if !entry.valid {
+				incomplete = append(incomplete, fmt.Errorf("%w: Skills listing contained an invalid entry", attack.ErrInconclusive))
+				continue
+			}
+			if entry.dynamic {
+				incomplete = append(incomplete, fmt.Errorf("%w: dynamic Skills content cannot be verified", attack.ErrInconclusive))
+				continue
+			}
+			if seen[entry.uri] {
 				continue
 			}
 			seen[entry.uri] = true
@@ -279,43 +352,77 @@ func (e *ExtensionConsistencyExecutor) checkSkills(ctx context.Context, client *
 				continue
 			}
 			entry = current
-			read, readErr := extensionCall(ctx, client, session, 120+tested, "resources/read", map[string]interface{}{"uri": entry.uri}, false)
-			if readErr != nil {
-				incomplete = append(incomplete, readErr)
-				continue
+			limit := min(len(entry.resources), maxSkillResources)
+			if len(entry.resources) > limit {
+				incomplete = append(incomplete, fmt.Errorf("%w: Skills manifest exceeded the resource entry cap", attack.ErrInconclusive))
 			}
-			if skillReadMatches(read, entry) {
-				continue
-			}
-			fresh, getErr = extensionCall(ctx, client, session, 140+tested, "skills/get", map[string]interface{}{"uri": entry.uri}, false)
-			if getErr != nil {
-				incomplete = append(incomplete, getErr)
-				continue
-			}
-			current = parseSkill(fresh["skill"])
-			if !current.valid || current.dynamic || current != entry {
-				incomplete = append(incomplete, fmt.Errorf("%w: Skills manifest changed during verification", attack.ErrInconclusive))
-				continue
-			}
-			readAgain, againErr := extensionCall(ctx, client, session, 160+tested, "resources/read", map[string]interface{}{"uri": entry.uri}, false)
-			if againErr != nil {
-				incomplete = append(incomplete, againErr)
-				continue
-			}
-			if !skillReadMatches(readAgain, entry) {
-				findings = append(findings, e.finding(session.Endpoint, "medium", "MCP Skills content differs from its manifest",
-					"A listed SKILL.md did not match its declared size or SHA-256 digest on repeated reads after skills/get returned the same manifest.",
-					fmt.Sprintf("skills/list page %d, sampled entry %d; URI and content omitted", page+1, tested)))
+			remaining := int64(maxSkillReadBytes)
+			for fileIndex, resource := range entry.resources[:limit] {
+				if resource.size > remaining {
+					incomplete = append(incomplete, fmt.Errorf("%w: Skills manifest exceeded the read budget", attack.ErrInconclusive))
+					continue
+				}
+				id := 300 + (tested-1)*maxSkillResources*3 + fileIndex*3
+				finding, used, checkErr := e.checkSkillResource(ctx, client, session, entry, resource, id, remaining, page+1, tested, fileIndex+1)
+				remaining -= used
+				if finding != nil {
+					findings = append(findings, *finding)
+				}
+				if checkErr != nil {
+					incomplete = append(incomplete, checkErr)
+				}
 			}
 		}
 		next, _ := list["nextCursor"].(string)
-		if next == "" || seenCursors[next] {
+		if next == "" {
+			break
+		}
+		if seenCursors[next] || page+1 == maxExtensionPages || tested == maxExtensionItems {
+			incomplete = append(incomplete, fmt.Errorf("%w: Skills listing walk did not finish", attack.ErrInconclusive))
 			break
 		}
 		seenCursors[next] = true
 		cursor = next
 	}
 	return findings, tested, errors.Join(incomplete...)
+}
+
+func (e *ExtensionConsistencyExecutor) checkSkillResource(ctx context.Context, client *attack.HTTPClient,
+	session mcpSession, entry skillEntry, resource skillResource, id int, remaining int64,
+	page, skillIndex, resourceIndex int) (*attack.Finding, int64, error) {
+	read, err := extensionCallWithLimit(ctx, client, session, id, "resources/read",
+		map[string]interface{}{"uri": resource.uri}, false, maxSkillWireBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	matches, used, err := skillReadMatches(read, resource, remaining)
+	if err != nil || matches {
+		return nil, used, err
+	}
+	if resource.size > remaining-used {
+		return nil, used, fmt.Errorf("%w: Skills repeat read exceeded the read budget", attack.ErrInconclusive)
+	}
+	fresh, err := extensionCall(ctx, client, session, id+1, "skills/get", map[string]interface{}{"uri": entry.uri}, false)
+	if err != nil {
+		return nil, used, err
+	}
+	if !sameSkillManifest(parseSkill(fresh["skill"]), entry) {
+		return nil, used, fmt.Errorf("%w: Skills manifest changed during verification", attack.ErrInconclusive)
+	}
+	readAgain, err := extensionCallWithLimit(ctx, client, session, id+2, "resources/read",
+		map[string]interface{}{"uri": resource.uri}, false, maxSkillWireBytes)
+	if err != nil {
+		return nil, used, err
+	}
+	matches, repeatedBytes, err := skillReadMatches(readAgain, resource, remaining-used)
+	used += repeatedBytes
+	if err != nil || matches {
+		return nil, used, err
+	}
+	finding := e.finding(session.Endpoint, "medium", "MCP Skills content differs from its manifest",
+		"A sampled skill resource repeatedly differed from its declared size or SHA-256 digest while the manifest remained stable.",
+		fmt.Sprintf("skills/list page %d, sampled skill %d, resource %d; URI and content omitted", page, skillIndex, resourceIndex))
+	return &finding, used, nil
 }
 
 func (e *ExtensionConsistencyExecutor) checkApps(ctx context.Context, client *attack.HTTPClient, session mcpSession) ([]attack.Finding, int, error) {

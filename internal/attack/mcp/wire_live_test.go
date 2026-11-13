@@ -79,3 +79,30 @@ func TestNamedTool_LiveTypeScriptSDK(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillsIntegrity_LiveTypeScriptSDK(t *testing.T) {
+	if os.Getenv("BATESIAN_LIVE_MCP_SDK") != "typescript" {
+		t.Skip("requires the TypeScript SDK fixture")
+	}
+
+	endpoint := liveEndpoint(t)
+	client := liveClient()
+	session, ok, err := discoverModernWithCaps(context.Background(), client, endpoint, appsClientCapabilities())
+	if err != nil || !ok {
+		t.Fatalf("modern discovery: %v", err)
+	}
+	list, err := extensionCall(context.Background(), client, session, 101, "skills/list", nil, false)
+	if err != nil {
+		t.Fatalf("skills/list: %v", err)
+	}
+	entries, ok := list["skills"].([]interface{})
+	if !ok || len(entries) == 0 || len(parseSkill(entries[0]).resources) < 2 {
+		t.Fatal("TypeScript SDK did not publish a skill with a supporting resource")
+	}
+
+	executor := NewExtensionConsistencyExecutor(attack.RuleContext{ID: "mcp-extension-consistency-001"})
+	findings, err := executor.Execute(context.Background(), endpoint, attack.Options{TimeoutSeconds: 20})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("Skills integrity: findings=%v, err=%v", findings, err)
+	}
+}
