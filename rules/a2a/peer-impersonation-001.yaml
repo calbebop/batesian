@@ -11,9 +11,11 @@ info:
 
     If both requests succeed, the rule reports anonymous access as an indicator.
     Public access may be intentional, so review the deployment policy.
+    A direct Message counts as processing only when it is a distinct agent reply
+    with valid parts, not an echo of the sent user Message.
 
   references:
-    - https://a2aprotocol.ai/docs/specification#authentication
+    - https://a2a-protocol.org/v1.0.1/specification/
     - https://owasp.org/www-project-top-ten/2021/A07_2021-Identification_and_Authentication_Failures
     - https://datatracker.ietf.org/doc/html/rfc7519
     - https://cwe.mitre.org/data/definitions/290.html

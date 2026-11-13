@@ -872,7 +872,7 @@ func TestPeerImpersonation_RequiresSendResult(t *testing.T) {
 			"id": "task-1", "status": map[string]interface{}{"state": "completed"},
 		}, true},
 		{"v0.3 message after generic v1 reply", map[string]interface{}{
-			"messageId": "reply-1", "role": "agent", "parts": []interface{}{map[string]string{"kind": "text", "text": "ok"}},
+			"kind": "message", "messageId": "reply-1", "role": "agent", "parts": []interface{}{map[string]string{"kind": "text", "text": "ok"}},
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -908,6 +908,71 @@ func TestPeerImpersonation_RequiresSendResult(t *testing.T) {
 			}
 			if tc.wantFinding && !strings.Contains(findings[0].Evidence, "v0.3 message/send") {
 				t.Fatalf("expected v0.3 evidence, got %s", findings[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestPeerImpersonation_DirectMessageMustBeAnAgentReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, method   string
+		echo, userRole bool
+		wantFinding    bool
+	}{
+		{name: "v1 agent", method: "SendMessage", wantFinding: true},
+		{name: "v1 echo", method: "SendMessage", echo: true},
+		{name: "v1 user role", method: "SendMessage", userRole: true},
+		{name: "v0.3 agent", method: "message/send", wantFinding: true},
+		{name: "v0.3 echo", method: "message/send", echo: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("peer-agent"))
+					return
+				}
+				req := readBody(r)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				if req["method"] != tc.method {
+					rpcErr(w, req["id"], -32601, "Method not found")
+					return
+				}
+				if r.Header.Get("Authorization") == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				params, _ := req["params"].(map[string]interface{})
+				sent, _ := params["message"].(map[string]interface{})
+				messageID := "agent-reply"
+				if tc.echo {
+					messageID, _ = sent["messageId"].(string)
+				}
+				role := "ROLE_AGENT"
+				message := map[string]interface{}{"messageId": messageID, "contextId": "ctx-1",
+					"role": role, "parts": []interface{}{map[string]string{"text": "ok"}}}
+				var result interface{} = map[string]interface{}{"message": message}
+				if tc.method == "message/send" {
+					message["kind"] = "message"
+					message["role"] = "agent"
+					message["parts"] = []interface{}{map[string]string{"kind": "text", "text": "ok"}}
+					result = message
+				} else if tc.userRole {
+					message["role"] = "ROLE_USER"
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result})
+			}))
+			defer srv.Close()
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), srv.URL, testOpts())
+			if tc.wantFinding {
+				if len(findings) != 1 || err != nil || findings[0].Confidence != attack.ConfirmedExploit {
+					t.Fatalf("valid agent Message: findings=%+v err=%v", findings, err)
+				}
+			} else if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("invalid Message: findings=%+v err=%v", findings, err)
 			}
 		})
 	}

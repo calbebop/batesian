@@ -80,7 +80,7 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 	// Steps 3 and 4: on each revision the agent might speak, send the forged probe
 	// and the unauthenticated baseline, and keep the first pair where the send
 	// method exists. The baseline uses unauthClient so opts.Token is not injected.
-	forgedResp, baselineResp, wire, incomplete, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
+	forgedResp, baselineResp, wire, forgedOK, baselineOK, incomplete, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
 	if cardReadReason != "" {
 		incomplete = append(incomplete, "Agent Card prerequisite: "+cardReadReason)
 	}
@@ -94,8 +94,6 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			attack.ErrInconclusive, endpoint)
 	}
 
-	forgedOK := sendReplyHasResult(forgedResp)
-	baselineOK := sendReplyHasResult(baselineResp)
 	forgedDenied := peerAuthDenied(forgedResp)
 	baselineDenied := peerAuthDenied(baselineResp)
 
@@ -232,7 +230,8 @@ func (w impersonationWire) request(requestID, messageID string) map[string]inter
 
 // probeWires skips unsupported methods and records unobserved comparisons.
 func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
-	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string, incomplete []string, ok bool) {
+	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string,
+	forgedOK, baselineOK bool, incomplete []string, ok bool) {
 	for i, w := range impersonationWires() {
 		requestID := fmt.Sprintf("batesian-peer-%s-%d", randID, i)
 		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
@@ -264,17 +263,23 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 			incomplete = append(incomplete, w.name+" method availability differed between probes")
 			continue
 		}
-		if !sendReplyHasResult(fResp) && !peerAuthDenied(fResp) {
+		version := "0.3.0"
+		if w.method == "SendMessage" {
+			version = "1.0"
+		}
+		forgedProcessed := sendResultProcessed(fResp, forgedID, forgedID+"-message", version)
+		baselineProcessed := sendResultProcessed(bResp, baselineID, baselineID+"-message", version)
+		if !forgedProcessed && !peerAuthDenied(fResp) {
 			incomplete = append(incomplete, w.name+" forged response did not establish a send result or authentication rejection")
 			continue
 		}
-		if !sendReplyHasResult(bResp) && !peerAuthDenied(bResp) {
+		if !baselineProcessed && !peerAuthDenied(bResp) {
 			incomplete = append(incomplete, w.name+" anonymous response did not establish a send result or authentication rejection")
 			continue
 		}
-		return fResp, bResp, w.name, incomplete, true
+		return fResp, bResp, w.name, forgedProcessed, baselineProcessed, incomplete, true
 	}
-	return nil, nil, "", incomplete, false
+	return nil, nil, "", false, false, incomplete, false
 }
 
 func peerReplyCorrelated(resp *attack.Response, requestID string) bool {

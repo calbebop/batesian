@@ -19,19 +19,19 @@ info:
       1. Fetch the agent card and collect extensions with `required: true`. If
          the card declares no required extension, there is nothing to downgrade
          (no finding).
-      2. Control: send a SendMessage that ACTIVATES the required extension
-         (A2A-Extensions: <uri>). If this is rejected too (e.g. messaging
+      2. Control: send a SendMessage that activates every required extension.
+         If this is rejected too (e.g. messaging
          needs credentials we do not hold), the rule cannot test and emits no
          finding.
-      3. Test: send the same SendMessage but OMIT the A2A-Extensions header.
-         If the control succeeded and this request is also accepted, the server
-         does not enforce its own required extension - reported CONFIRMED. If the
-         omission is rejected with a required-extension error, the server fails
-         closed (secure) - no finding.
+      3. Test: omit one required URI at a time while retaining the others.
+         Acceptance of a valid Task or distinct agent Message is confirmed.
+         A correlated required-extension error is clean. At most four omissions
+         are tested; the combined activation headers are capped at 4 KiB.
+         Uncovered extensions are reported as incomplete.
 
   references:
-    - https://a2a-protocol.org/latest/specification/
-    - https://a2a-protocol.org/latest/topics/extensions/
+    - https://a2a-protocol.org/v1.0.1/specification/
+    - https://a2a-protocol.org/v1.0.1/topics/extensions/
     - https://cwe.mitre.org/data/definitions/636.html
     - https://cwe.mitre.org/data/definitions/757.html
 

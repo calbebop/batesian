@@ -128,7 +128,20 @@ func extensionServer(mode string, required bool) *httptest.Server {
 			return
 		case "message-open":
 			writeRPC(map[string]interface{}{"message": map[string]interface{}{
-				"messageId": "reply-1", "role": "ROLE_AGENT", "parts": []interface{}{map[string]string{"text": "ok"}},
+				"messageId": "reply-1", "contextId": "ctx-1", "role": "ROLE_AGENT", "parts": []interface{}{map[string]string{"text": "ok"}},
+			}})
+			return
+		case "message-echo", "omitted-message-echo":
+			if mode == "message-echo" || !activated {
+				params, _ := request["params"].(map[string]interface{})
+				message, _ := params["message"].(map[string]interface{})
+				message["role"] = "ROLE_AGENT"
+				message["contextId"] = "ctx-1"
+				writeRPC(map[string]interface{}{"message": message})
+				return
+			}
+			writeRPC(map[string]interface{}{"message": map[string]interface{}{
+				"messageId": "reply-1", "contextId": "ctx-1", "role": "ROLE_AGENT", "parts": []interface{}{map[string]string{"text": "ok"}},
 			}})
 			return
 		case "control-wrong-id":
@@ -340,6 +353,20 @@ func TestExtDowngrade_AcceptsTaskAndMessageResults(t *testing.T) {
 			defer ts.Close()
 			if findings := runExtDowngrade(t, ts); len(findings) != 1 {
 				t.Fatalf("valid send result should establish a downgrade: findings=%+v", findings)
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_RejectsEchoedMessage(t *testing.T) {
+	for _, mode := range []string{"message-echo", "omitted-message-echo"} {
+		t.Run(mode, func(t *testing.T) {
+			ts := extensionServer(mode, true)
+			defer ts.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("echoed Message must not prove processing: findings=%+v err=%v", findings, err)
 			}
 		})
 	}
@@ -571,5 +598,114 @@ func TestExtDowngrade_SendsModernHeader(t *testing.T) {
 	}
 	if !gotLegacy.Load() {
 		t.Error("activation control did not send the legacy X-A2A-Extensions header")
+	}
+}
+
+func TestExtDowngrade_MultipleRequiredExtensions(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		requiredCount int
+		failOpen      bool
+		failOpenFirst bool
+		wantFinding   bool
+		wantPartial   bool
+		wantSends     int32
+	}{
+		{"all enforced", 2, false, false, false, false, 3},
+		{"second missing accepted", 2, true, false, true, false, 3},
+		{"first missing accepted", 2, false, true, true, true, 2},
+		{"probe limit", 5, false, false, false, true, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sends atomic.Int32
+			var fullControl atomic.Bool
+			var uris []string
+			var extensions []interface{}
+			for i := 0; i < tc.requiredCount; i++ {
+				uri := "https://ext.example/required/" + strconv.Itoa(i)
+				uris = append(uris, uri)
+				extensions = append(extensions, map[string]interface{}{"uri": uri, "required": true})
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, map[string]interface{}{"name": "multi-ext", "capabilities": map[string]interface{}{"extensions": extensions}})
+					return
+				}
+				var req map[string]interface{}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+					rpcErr(w, req["id"], -32001, "Task not found")
+					return
+				}
+				if req["method"] != "SendMessage" && req["method"] != "message/send" {
+					rpcErr(w, req["id"], -32601, "Method not found")
+					return
+				}
+				sends.Add(1)
+				active := strings.Split(r.Header.Get("A2A-Extensions"), ",")
+				set := make(map[string]bool, len(active))
+				for _, uri := range active {
+					set[uri] = true
+				}
+				full := true
+				for _, uri := range uris {
+					full = full && set[uri]
+				}
+				if full {
+					fullControl.Store(true)
+				}
+				acceptMissing := tc.failOpen && set[uris[0]] && !set[uris[1]] ||
+					tc.failOpenFirst && !set[uris[0]] && set[uris[1]]
+				if !full && !acceptMissing {
+					rpcErr(w, req["id"], -32008, "Extension support required")
+					return
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+					"result": map[string]interface{}{"id": "task-1", "status": map[string]interface{}{"state": "working"}}})
+			}))
+			defer srv.Close()
+			findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+				t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+			if (len(findings) == 1) != tc.wantFinding || errors.Is(err, attack.ErrInconclusive) != tc.wantPartial ||
+				!fullControl.Load() || sends.Load() != tc.wantSends {
+				t.Fatalf("findings=%+v err=%v fullControl=%t sends=%d", findings, err, fullControl.Load(), sends.Load())
+			}
+			if tc.wantPartial && !strings.Contains(err.Error(), "not tested") &&
+				!strings.Contains(err.Error(), "probe limit reached") {
+				t.Fatalf("missing partial-coverage reason: %v", err)
+			}
+			if tc.failOpen && !strings.Contains(findings[0].Evidence, "2 of 2") {
+				t.Fatalf("wrong omitted extension: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestExtDowngrade_HeaderLimitIsIncomplete(t *testing.T) {
+	uri := "https://ext.example/" + strings.Repeat("a", 2100)
+	var sends atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+			writeJSON(w, map[string]interface{}{"name": "large-ext", "capabilities": map[string]interface{}{
+				"extensions": []interface{}{map[string]interface{}{"uri": uri, "required": true}},
+			}})
+			return
+		}
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["method"] == "GetTask" || req["method"] == "tasks/get" {
+			rpcErr(w, req["id"], -32001, "Task not found")
+			return
+		}
+		if req["method"] == "SendMessage" || req["method"] == "message/send" {
+			sends.Add(1)
+		}
+	}))
+	defer srv.Close()
+	findings, err := a2a.NewExtensionDowngradeExecutor(testRuleCtx()).Execute(
+		t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "header") || sends.Load() != 0 || strings.Contains(err.Error(), uri) {
+		t.Fatalf("oversized header: findings=%+v err=%v sends=%d", findings, err, sends.Load())
 	}
 }

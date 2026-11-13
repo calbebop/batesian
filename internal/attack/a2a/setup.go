@@ -77,6 +77,21 @@ func taskSetupReplyAccepted(resp *attack.Response, requestID string) bool {
 	return valid && !hasError && sendReplyHasResult(resp)
 }
 
+// sendResultProcessed accepts a Task or an agent Message distinct from the request.
+func sendResultProcessed(resp *attack.Response, requestID, sentMessageID, version string) bool {
+	if resp == nil || !resp.IsSuccess() {
+		return false
+	}
+	result, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	if !valid || hasError {
+		return false
+	}
+	if _, taskID, _ := validatedTaskResult(result); taskID != "" {
+		return true
+	}
+	return cardMessageID(result, version == "1.0", version, sentMessageID) != ""
+}
+
 func sendReplyHasResult(resp *attack.Response) bool {
 	if resp == nil || !resp.IsAccepted() {
 		return false
