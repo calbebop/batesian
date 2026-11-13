@@ -16,6 +16,9 @@ import (
 // a2aDiscoveryCard parses only the agent-card fields needed to locate the
 // JSON-RPC endpoint, across both the v1.0 and v0.3 card shapes.
 type a2aDiscoveryCard struct {
+	Capabilities struct {
+		Streaming bool `json:"streaming"`
+	} `json:"capabilities"`
 	// v1.0: each entry carries a protocolBinding ("JSONRPC" | "GRPC" | "HTTP+JSON").
 	SupportedInterfaces []a2aDiscoveryInterface `json:"supportedInterfaces"`
 	// v0.3: each entry carries a transport with the same vocabulary.

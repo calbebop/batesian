@@ -130,7 +130,7 @@ report them not tested against a secured agent, and say so.
 | `a2a-peer-impersonation-001` | [Forged JWT Acceptance](#a2a-peer-impersonation-001) | High / Medium | confirmed / indicator | CWE-290 |
 | `a2a-artifact-tamper-001` | [Task Artifact Tampering via Task ID Reuse](#a2a-artifact-tamper-001) | Critical | confirmed | CWE-284 |
 | `a2a-multitenant-isolation-001` | [Multi-Tenant Task Isolation Breach](#a2a-multitenant-isolation-001) | High | confirmed | CWE-639 |
-| `a2a-grpc-task-access-001` | [gRPC Cross-Tenant Task Disclosure](#a2a-grpc-task-access-001) | High | confirmed | CWE-639 |
+| `a2a-grpc-task-access-001` | [gRPC Cross-Tenant Task Disclosure](#a2a-grpc-task-access-001) | High / Medium | confirmed / indicator | CWE-639 |
 | `a2a-delegation-integrity-001` | [Delegation Chain-of-Custody Break](#a2a-delegation-integrity-001) | High | confirmed | CWE-863 |
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
@@ -415,8 +415,21 @@ cross-tenant read can produce a confirmed finding. An inconclusive direction
 does not discard a finding from the other direction. Public tasks and
 unverified owner reads cannot produce confirmed findings. Direct `Message`
 replies, unsupported calls, and tenant-scoped card interfaces are not tested.
-The rule does not test streaming, v0.3 gRPC, or other gRPC operations.
-Findings report the matched content location without copying task IDs or probe text.
+After a denied cross-principal `GetTask`, the rule walks up to three `ListTasks`
+pages per caller with a maximum page size of 100. It requires the owner's
+exact task ID and private marker in the list, then checks that anonymous
+listing does not expose the marker. A cross-principal list match is a medium
+severity indicator. An exact `expected_denials` entry for `a2a.tasks.list`
+with the named caller and owner promotes it to a confirmed finding. Incomplete
+pagination and timeouts are not tested.
+
+When the card advertises streaming, the rule also samples the first
+`SubscribeToTask` event with a request timeout. It requires the owner's marked
+task as the initial event, anonymous denial, and a denied cross-principal
+`GetTask` before a matching cross-principal event becomes a confirmed finding.
+Terminal tasks, unsupported subscriptions, and missing initial events are not
+treated as proof of access. The rule does not test v0.3 gRPC or tenant-scoped
+interfaces. Findings omit task IDs and probe text.
 
 ---
 

@@ -59,6 +59,9 @@ func TestLoadExpectedDenials(t *testing.T) {
 	}{
 		{"MCP anonymous operation", "expected_denials:\n  - operation: mcp.prompts.get\n    caller: anonymous\n", ""},
 		{"A2A tenant relationship", "expected_denials:\n  - operation: a2a.tasks.cancel\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
+		{"A2A private task list", "expected_denials:\n  - operation: a2a.tasks.list\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
+		{"A2A anonymous task list", "expected_denials:\n  - operation: a2a.tasks.list\n    caller: anonymous\n    owner: default\n", ""},
+		{"A2A task list needs distinct principals", "expected_denials:\n  - operation: a2a.tasks.list\n    caller: tenant-a\n    owner: tenant-a\n", "distinct named caller and owner"},
 		{"MCP task relationship", "expected_denials:\n  - operation: mcp.tasks.update\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
 		{"MCP resource relationship", "expected_denials:\n  - operation: mcp.resources.read\n    caller: tenant-b\n    caller_tenant: B\n    owner: tenant-a\n    owner_tenant: A\n", ""},
 		{"MCP session relationship", "expected_denials:\n  - operation: mcp.sessions.use\n    caller: tenant-b\n    owner: tenant-a\n", ""},

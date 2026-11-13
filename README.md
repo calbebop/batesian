@@ -206,6 +206,11 @@ expected_denials:
     caller_tenant: B
     owner: tenant-a
     owner_tenant: A
+  - operation: a2a.tasks.list
+    caller: tenant-b
+    caller_tenant: B
+    owner: tenant-a
+    owner_tenant: A
   - operation: mcp.prompts.get
     caller: anonymous
   - operation: mcp.tasks.get
@@ -222,7 +227,7 @@ expected_denials:
 
 An observed access matching the operation and caller/owner names is marked `confirmed`; tenant fields, when supplied, must also match. No policy means the finding remains an `indicator`. This changes verdicts, not scan traffic or severity. A policy requires a target in the same config file and cannot be reused with a different `--target`. Each entry covers the entire operation, so do not use it when only selected prompts or tasks are private.
 
-Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, `mcp.prompts.list`, `mcp.prompts.get`, `mcp.completion.complete`, `mcp.tasks.get`, `mcp.tasks.update`, `mcp.tasks.cancel`, and `mcp.resources.read`. The A2A names cover both JSON-RPC and HTTP+JSON. A2A task reads use `owner: default` for the identity supplied with `--token`; task cancellation and modern MCP cross-principal checks use configured principal names. Error responses and unverified access are never promoted. A completed access subcheck may still be reported when another subcheck is incomplete.
+Supported operations are `a2a.tasks.get`, `a2a.tasks.list`, `a2a.tasks.cancel`, `mcp.prompts.list`, `mcp.prompts.get`, `mcp.completion.complete`, `mcp.tasks.get`, `mcp.tasks.update`, `mcp.tasks.cancel`, and `mcp.resources.read`. The A2A names cover JSON-RPC and HTTP+JSON; `a2a.tasks.list` also covers the opt-in gRPC task-list check. Anonymous A2A task reads and lists use `owner: default` for the identity supplied with `--token`. For private gRPC lists, use distinct configured principal names as `caller` and `owner`. Task cancellation and modern MCP cross-principal checks also use configured principal names. Error responses and unverified access are never promoted. A completed access subcheck may still be reported when another subcheck is incomplete.
 
 ## Safe operation
 

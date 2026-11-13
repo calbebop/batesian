@@ -74,7 +74,11 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 		_, _ = principalClient(opts, vars, owner).GET(ctx,
 			endpoint.AppendPath(vars.BaseURL, cardPathPrimary), cardHeaders)
 		if opts.Recorder != nil {
-			for _, method := range []string{"SendMessage", "SendMessage", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask"} {
+			for _, method := range []string{
+				"SendMessage", "SendMessage", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask", "GetTask",
+				"ListTasks", "ListTasks", "ListTasks", "ListTasks", "ListTasks", "ListTasks",
+				"SubscribeToTask", "SubscribeToTask", "SubscribeToTask", "SubscribeToTask", "SubscribeToTask", "SubscribeToTask",
+			} {
 				opts.Recorder.RecordGRPC(opts.A2AGRPCTarget, method)
 			}
 		}
@@ -120,12 +124,12 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 	var findings []attack.Finding
 	var incomplete error
 	for _, direction := range []struct {
-		owner, reader  attack.Principal
-		readerHeaders  map[string]string
-		taskID, marker string
+		owner, reader               attack.Principal
+		ownerHeaders, readerHeaders map[string]string
+		taskID, marker              string
 	}{
-		{owner, reader, readerHeaders, ownerTask, ownerMarker},
-		{reader, owner, ownerHeaders, readerTask, readerMarker},
+		{owner, reader, ownerHeaders, readerHeaders, ownerTask, ownerMarker},
+		{reader, owner, readerHeaders, ownerHeaders, readerTask, readerMarker},
 	} {
 		anonymous := grpcReadTask(ctx, client, requestTimeout, nil, direction.taskID, direction.marker)
 		if anonymous.location != "" {
@@ -146,6 +150,17 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 		if !cross.denied || cross.unknown {
 			incomplete = errors.Join(incomplete, fmt.Errorf("%w: %s's gRPC read of %s's task was not judged",
 				attack.ErrInconclusive, direction.reader.Name, direction.owner.Name))
+			continue
+		}
+		listFindings, listErr := e.checkGRPCListScope(ctx, client, requestTimeout, opts.A2AGRPCTarget,
+			direction.owner, direction.reader, direction.ownerHeaders, direction.readerHeaders, direction.taskID, direction.marker, opts.ExpectedDenials)
+		findings = append(findings, listFindings...)
+		incomplete = errors.Join(incomplete, listErr)
+		if card.Capabilities.Streaming {
+			streamFindings, streamErr := e.checkGRPCSubscribeScope(ctx, client, requestTimeout, opts.A2AGRPCTarget,
+				direction.owner, direction.reader, direction.ownerHeaders, direction.readerHeaders, direction.taskID, direction.marker)
+			findings = append(findings, streamFindings...)
+			incomplete = errors.Join(incomplete, streamErr)
 		}
 	}
 	return findings, incomplete
