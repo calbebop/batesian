@@ -141,9 +141,6 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 					incomplete = errors.Join(incomplete, fmt.Errorf("%w: the target token could not establish a legacy MCP control", attack.ErrInconclusive))
 				}
 			}
-			if gate.gate == gateAfterInit {
-				closeLegacySessions(ctx, client, []mcpSession{gate.session})
-			}
 		}
 		if !modernDone {
 			gate := probeModernAuthGate(ctx, client, endpoint)
@@ -179,6 +176,7 @@ func (e *OAuthAudienceExecutor) probeCrossAudience(ctx context.Context, target s
 func crossLegacyBearer(ctx context.Context, client *attack.HTTPClient, endpoint string, gate gateProbe, token string) accessVerdict {
 	headers := map[string]string{"Authorization": "Bearer " + token}
 	resp, err := client.POST(ctx, endpoint, headers, json.RawMessage(mcpInitBody))
+	defer closeProbeSession(ctx, client, endpoint, resp, token, latestStable)
 	verdict := classifyAuthAccess(resp, err, 1)
 	if verdict != accessGranted || !initializeSucceeded(resp.Body) {
 		if verdict == accessGranted {
@@ -190,9 +188,6 @@ func crossLegacyBearer(ctx context.Context, client *attack.HTTPClient, endpoint 
 		Endpoint: endpoint, SessionID: resp.Headers.Get("Mcp-Session-Id"),
 		ProtocolVersion: negotiatedVersion(resp.Body), RawInit: resp.Body, Era: EraLegacy,
 	}
-	defer closeLegacySessionsWith(ctx, client, []mcpSession{session}, func(h map[string]string) {
-		h["Authorization"] = "Bearer " + token
-	})
 	if gate.gate == gateOnInit {
 		return accessGranted
 	}

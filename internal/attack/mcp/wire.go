@@ -368,6 +368,26 @@ func closeLegacySessions(ctx context.Context, client *attack.HTTPClient, session
 	closeLegacySessionsWith(ctx, client, sessions, nil)
 }
 
+// closeProbeSession releases a session even when initialize was not judgeable.
+func closeProbeSession(ctx context.Context, client *attack.HTTPClient, endpoint string,
+	resp *attack.Response, token, offeredVersion string) {
+	if resp == nil || resp.Headers.Get("Mcp-Session-Id") == "" {
+		return
+	}
+	session := mcpSession{
+		Endpoint: endpoint, Era: EraLegacy,
+		SessionID:       resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersionOr(resp.Body, offeredVersion),
+	}
+	if token == "" {
+		closeLegacySessions(ctx, client, []mcpSession{session})
+		return
+	}
+	closeLegacySessionsWith(ctx, client, []mcpSession{session}, func(h map[string]string) {
+		h["Authorization"] = "Bearer " + token
+	})
+}
+
 func closeLegacySessionsWith(ctx context.Context, client *attack.HTTPClient, sessions []mcpSession,
 	attach func(map[string]string)) {
 	for _, session := range sessions {

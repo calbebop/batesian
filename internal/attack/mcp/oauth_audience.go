@@ -521,6 +521,7 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 				"Authorization": "Bearer " + tok,
 				"Content-Type":  "application/json",
 			}, json.RawMessage(mcpInitBody))
+			defer closeProbeSession(ctx, client, ep, resp, tok, latestStable)
 			if err != nil {
 				outcomes = append(outcomes, probeOutcome{
 					probe:    p,

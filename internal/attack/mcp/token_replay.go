@@ -139,6 +139,7 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 		}
 		for _, ep := range endpointCandidates(vars.BaseURL) {
 			resp, err := client.POST(ctx, ep, headers, json.RawMessage(mcpInitBody))
+			defer closeProbeSession(ctx, client, ep, resp, p.token, latestStable)
 			if err != nil || resp == nil {
 				continue
 			}

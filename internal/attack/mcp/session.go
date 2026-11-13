@@ -225,6 +225,10 @@ func initializeSucceeded(initBody []byte) bool {
 // echo one. The negotiated value is sent in the Mcp-Protocol-Version header on
 // subsequent requests.
 func negotiatedVersion(initBody []byte) string {
+	return negotiatedVersionOr(initBody, latestStable)
+}
+
+func negotiatedVersionOr(initBody []byte, fallback string) string {
 	var body struct {
 		Result struct {
 			ProtocolVersion string `json:"protocolVersion"`
@@ -233,7 +237,7 @@ func negotiatedVersion(initBody []byte) string {
 	if json.Unmarshal(initBody, &body) == nil && body.Result.ProtocolVersion != "" {
 		return body.Result.ProtocolVersion
 	}
-	return latestStable
+	return fallback
 }
 
 // OpenSessionForTest resolves sessions for a caller-supplied Options, so the
