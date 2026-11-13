@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -812,17 +813,79 @@ func TestResolveA2AEndpoint_AuthGatedNonMCPIsStillACandidate(t *testing.T) {
 	}
 }
 
-// A2A's own error codes are strong evidence and need no disambiguation, because
-// only an A2A implementation emits them.
 func TestResolveA2AEndpoint_A2AErrorCodeIsStrongEvidence(t *testing.T) {
-	for _, code := range []int{-32001, -32004, -32006} {
-		srv := jsonRPCServer(func(_ string, id json.RawMessage) string {
-			return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":"A2A error"}}`, id, code)
+	for _, code := range []int{-32001, -32004, -32006, -32007, -32008, -32009} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			var mcpProbes atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r) // No agent card.
+					return
+				}
+				var req struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if req.Method == "initialize" || req.Method == "server/discover" {
+					mcpProbes.Add(1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if code <= -32007 {
+					w.WriteHeader(http.StatusBadRequest)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": code, "message": "A2A error"},
+				})
+			}))
+			defer srv.Close()
+			if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); !ok {
+				t.Fatalf("A2A error code %d was not accepted", code)
+			}
+			if got := mcpProbes.Load(); got != 0 {
+				t.Fatalf("strong A2A evidence triggered %d MCP probes", got)
+			}
 		})
-		if _, ok := resolveA2AEndpoint(context.Background(), newClient(srv.URL), srv.URL); !ok {
-			t.Errorf("error code %d is A2A-specific and must be accepted", code)
-		}
-		srv.Close()
+	}
+}
+
+func TestResolveA2AEndpoint_GenericErrorNeedsCorroboration(t *testing.T) {
+	for _, code := range []int{-32601, -32602, -32000, -32010} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/" {
+					http.NotFound(w, r) // No agent card or other candidate path.
+					return
+				}
+				var req struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				w.Header().Set("Content-Type", "application/json")
+				if req.Method == "initialize" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{"protocolVersion": "2025-11-25"},
+					})
+					return
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]interface{}{"code": code, "message": "JSON-RPC error"},
+				})
+			}))
+			defer srv.Close()
+			client := newClient(srv.URL)
+			if got := probeA2AEvidence(context.Background(), client, srv.URL+"/"); got != a2aEvidenceWeak {
+				t.Fatalf("generic code %d gave evidence %v, want weak", code, got)
+			}
+			if ep, ok := resolveA2AEndpoint(context.Background(), client, srv.URL); ok {
+				t.Fatalf("generic JSON-RPC code %d selected MCP endpoint %q", code, ep)
+			}
+		})
 	}
 }
 
@@ -840,6 +903,8 @@ func TestProbeA2AEvidence_RequiresMatchingResponse(t *testing.T) {
 		{"null result id", `{"jsonrpc":"2.0","id":null,"result":{"id":"task-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
 		{"missing result id", `{"jsonrpc":"2.0","result":{"id":"task-1","status":{"state":"submitted"}}}`, a2aEvidenceNone},
 		{"wrong error id", `{"jsonrpc":"2.0","id":"other","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
+		{"wrong new error id", `{"jsonrpc":"2.0","id":"other","error":{"code":-32009,"message":"Version not supported"}}`, a2aEvidenceNone},
+		{"new error missing message", `{"jsonrpc":"2.0","id":"batesian-a2a-discovery","error":{"code":-32009}}`, a2aEvidenceNone},
 		{"null error id", `{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
 		{"missing error id", `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
 		{"missing version", `{"id":"batesian-a2a-discovery","error":{"code":-32001,"message":"Task not found"}}`, a2aEvidenceNone},
