@@ -339,12 +339,10 @@ const (
 	a2aEvidenceStrong
 )
 
-// a2aErrorCodeMin and a2aErrorCodeMax bound A2A's own application error codes
-// (TaskNotFound -32001 through InvalidAgentResponse -32006). Standard JSON-RPC
-// codes are excluded on purpose: every JSON-RPC service emits those.
+// A2A v1.0.1 reserves -32001 through -32009 for protocol errors.
 const (
 	a2aErrorCodeMax = -32001
-	a2aErrorCodeMin = -32006
+	a2aErrorCodeMin = -32009
 	discoveryTaskID = "batesian-discovery-nonexistent"
 )
 
