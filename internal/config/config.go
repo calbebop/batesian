@@ -380,9 +380,17 @@ func validateExpectedDenial(d ExpectedDenialConfig) error {
 			d.Caller == "default" || d.Owner == "anonymous" || d.Owner == "default" {
 			return errors.New("MCP cross-principal policy requires distinct named caller and owner principals")
 		}
-	case attack.A2ATasksGet, attack.A2ATasksList:
+	case attack.A2ATasksGet:
 		if d.Caller != "anonymous" || d.Owner != "default" || d.CallerTenant != "" || d.OwnerTenant != "" {
 			return errors.New("A2A task-read policy requires caller: anonymous, owner: default, and no tenant")
+		}
+	case attack.A2ATasksList:
+		if d.Caller == "anonymous" && d.Owner == "default" && d.CallerTenant == "" && d.OwnerTenant == "" {
+			break
+		}
+		if d.Caller == "" || d.Owner == "" || d.Caller == d.Owner ||
+			d.Caller == "anonymous" || d.Caller == "default" || d.Owner == "anonymous" || d.Owner == "default" {
+			return errors.New("A2A cross-principal task-list policy requires distinct named caller and owner principals")
 		}
 	case attack.A2ATasksCancel:
 		if d.Caller == "" || d.Owner == "" || d.Caller == d.Owner ||
@@ -560,6 +568,7 @@ func Example() string {
 # Optional expected denials for observed access. Without these, public access
 # findings remain indicators. Names must match configured or CLI principals.
 # For A2A task reads, owner: default refers to --token.
+# For private gRPC task lists, name both configured principals.
 # Set target above; a different --target cannot reuse this policy.
 # expected_denials:
 #   - operation: a2a.tasks.cancel

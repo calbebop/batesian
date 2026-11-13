@@ -7,10 +7,12 @@ info:
     Opt-in A2A v1.0 gRPC task-access check. Requires an explicit gRPC target
     matching an unscoped Agent Card interface and two principals with distinct
     credentials and tenant labels. Each principal creates and reads its own
-    task. The rule confirms a disclosure only when the second principal reads
-    the owner's task ID and unique probe text while an anonymous read is denied.
-    Public tasks, unsupported calls, malformed replies, and tenant-scoped
-    interfaces are not tested by this rule.
+    task. A denied cross-principal GetTask is followed by bounded ListTasks
+    checks and, when streaming is advertised, SubscribeToTask. List exposure is
+    an indicator unless an exact expected-denial policy declares the list private.
+    A subscription finding requires the owner's marked initial task, anonymous
+    denial, and a marked cross-principal initial task. Public tasks, unsupported
+    calls, malformed replies, and tenant-scoped interfaces remain untested.
 
   references:
     - https://a2a-protocol.org/v1.0.1/specification/#grpc-protocol-binding
@@ -31,7 +33,7 @@ attack:
 
 remediation: |
   1. Bind each task ID to its authenticated owner or tenant at creation.
-  2. Enforce that binding on every gRPC GetTask call, regardless of whether
-     other advertised bindings already enforce it.
+  2. Enforce that binding on gRPC GetTask, ListTasks, and SubscribeToTask,
+     regardless of whether other advertised bindings already enforce it.
   3. Return a not-found or permission-denied gRPC status for inaccessible tasks
      without disclosing their content or existence.
