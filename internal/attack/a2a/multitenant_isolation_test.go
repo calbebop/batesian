@@ -37,11 +37,28 @@ func tenantOf(r *http.Request) string {
 //   - "secure":     GetTask returns a task only to its owning tenant
 //   - "open":       no authentication at all (anyone creates and reads)
 func tenantServer(mode string) *httptest.Server {
+	return tenantServerWithCard(mode, "")
+}
+
+func tenantServerWithCard(mode, cardMode string) *httptest.Server {
 	var mu sync.Mutex
 	owner := map[string]string{} // taskID -> owning tenant
 	probeText := map[string]string{}
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" && cardMode != "" {
+			interfaces := []map[string]string{{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}}
+			switch cardMode {
+			case "dual":
+				interfaces = append(interfaces, map[string]string{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"})
+			case "split":
+				interfaces = append(interfaces, map[string]string{"url": "http://" + r.Host + "/legacy", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"})
+			case "scoped":
+				interfaces = append(interfaces, map[string]string{"url": "http://" + r.Host + "/", "protocolBinding": "JSONRPC", "protocolVersion": "0.3", "tenant": "A"})
+			}
+			writeJSON(w, map[string]any{"name": "Tenant agent", "supportedInterfaces": interfaces})
+			return
+		}
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -51,6 +68,17 @@ func tenantServer(mode string) *httptest.Server {
 		id := req["id"]
 		params, _ := req["params"].(map[string]interface{})
 		tenant := tenantOf(r)
+		if strings.HasPrefix(mode, "version-") {
+			if method == "GetTask" || method == "SendMessage" {
+				if r.Header.Get("A2A-Version") != "1.0" {
+					rpcErr(w, id, -32601, "Method not found")
+					return
+				}
+			} else if r.Header.Get("A2A-Version") != "" {
+				rpcErr(w, id, -32601, "Method not found")
+				return
+			}
+		}
 
 		switch method {
 		case "SendMessage", "message/send":
@@ -87,6 +115,33 @@ func tenantServer(mode string) *httptest.Server {
 			mu.Unlock()
 			if own == "" {
 				rpcErr(w, id, -32001, "Task not found")
+				return
+			}
+			if strings.HasPrefix(mode, "version-") {
+				switch {
+				case tenant == "":
+					if mode == "version-public" && method == "tasks/get" {
+						taskWithHistory(w, id, taskID, "ctx-"+own, text)
+					} else if mode == "version-anon-redacted" && method == "tasks/get" {
+						taskResult(w, id, taskID, "ctx-"+own)
+					} else {
+						rpcErr(w, id, -32001, "Task not found")
+					}
+				case tenant == own && method == "GetTask" && mode == "version-owner-redacted":
+					taskResult(w, id, taskID, "ctx-"+own)
+				case tenant == own:
+					taskWithHistory(w, id, taskID, "ctx-"+own, text)
+				case method == "GetTask" && mode == "version-v1-redacted":
+					taskResult(w, id, taskID, "ctx-"+own)
+				case method == "GetTask" && mode == "version-v1-error":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case method == "GetTask":
+					rpcErr(w, id, -32001, "Task not found")
+				case mode == "version-wrong-task":
+					taskWithHistory(w, id, "other-task", "ctx-"+own, text)
+				default:
+					taskWithHistory(w, id, taskID, "ctx-"+own, text)
+				}
 				return
 			}
 			requestID, _ := id.(string)
@@ -358,6 +413,51 @@ func TestMultiTenant_LegacyReadAfterRedactedV1(t *testing.T) {
 		if !strings.Contains(finding.Evidence, "method: tasks/get") {
 			t.Errorf("expected legacy method in evidence: %s", finding.Evidence)
 		}
+	}
+}
+
+func TestMultiTenant_VersionAttribution(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, card string
+		wantVersion      bool
+		wantFindings     int
+		wantIncomplete   bool
+	}{
+		{"dual advertised versions", "version-denied", "dual", true, 2, false},
+		{"unadvertised legacy version", "version-denied", "single", false, 2, false},
+		{"versions on different URLs", "version-denied", "split", false, 2, false},
+		{"tenant scoped route", "version-denied", "scoped", false, 2, false},
+		{"v1 redacted rather than denied", "version-v1-redacted", "dual", false, 2, false},
+		{"v1 read unresolved", "version-v1-error", "dual", false, 2, true},
+		{"owner v1 read redacted", "version-owner-redacted", "dual", false, 2, false},
+		{"anonymous v0.3 read redacted", "version-anon-redacted", "dual", false, 2, false},
+		{"v0.3 returns another task", "version-wrong-task", "dual", false, 0, true},
+		{"legacy task public", "version-public", "dual", false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := tenantServerWithCard(tc.mode, tc.card)
+			defer ts.Close()
+			principals := tenantPrincipals()
+			principals[0].Headers = map[string]string{"A2A-Version": "9.9"}
+			principals[1].Headers = map[string]string{"a2a-version": "9.9"}
+			findings, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+				Execute(t.Context(), ts.URL, mtOpts(principals...))
+			if len(findings) != tc.wantFindings || errors.Is(err, attack.ErrInconclusive) != tc.wantIncomplete {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			for _, finding := range findings {
+				versioned := strings.Contains(finding.Title, "v0.3 task read bypasses v1")
+				if versioned != tc.wantVersion {
+					t.Errorf("version attribution=%v, want %v: %+v", versioned, tc.wantVersion, finding)
+				}
+				if versioned && (!strings.Contains(finding.Evidence, "reader v1.0 GetTask: denied") ||
+					!strings.Contains(finding.Evidence, "reader v0.3 tasks/get: granted") ||
+					!strings.Contains(finding.Evidence, "anonymous v0.3 tasks/get: denied")) {
+					t.Errorf("missing version controls: %+v", finding)
+				}
+				assertOpaqueTaskFinding(t, finding, "task-A-1", "task-B-1", "batesian mt probe")
+			}
+		})
 	}
 }
 

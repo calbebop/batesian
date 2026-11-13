@@ -142,6 +142,6 @@ func (e *MultiTenantIsolationExecutor) probeRESTRoute(ctxA, ctxB context.Context
 		}
 	}
 	findings, err := e.compareTaskReads(tasksURL, tasks[0], tasks[1], markers[0], markers[1], a, b,
-		clientA, clientB, unauthClient, read)
+		clientA, clientB, unauthClient, false, read)
 	return findings, err, true
 }
