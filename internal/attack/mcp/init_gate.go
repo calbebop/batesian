@@ -43,10 +43,6 @@ type gateProbe struct {
 	// method is the listing that refused the anonymous caller when
 	// gate == gateAfterInit.
 	method string
-	// session is the anonymous initialize handshake, reusable for follow-ups
-	// (its session id and negotiated protocol version, where the server
-	// supplied them).
-	session mcpSession
 	// reason is the not-tested sentence for gateUnknown and gateNowhere.
 	reason string
 }
@@ -57,6 +53,7 @@ type gateProbe struct {
 // for a caller who presents nothing.
 func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gateProbe {
 	resp, err := anon.POST(ctx, ep, nil, json.RawMessage(mcpInitBody))
+	defer closeProbeSession(ctx, anon, ep, resp, "", latestStable)
 	if err != nil || resp == nil {
 		return gateProbe{gate: gateUnknown, reason: fmt.Sprintf(
 			"the anonymous initialize control at %s did not answer, so acceptance of a forged token at initialize could not be attributed", ep)}
@@ -103,7 +100,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 	listResp, err := session.post(ctx, anon, 9, method, map[string]interface{}{})
 	switch classifyAuthAccess(listResp, err, 9) {
 	case accessRefused:
-		return gateProbe{gate: gateAfterInit, method: method, session: session}
+		return gateProbe{gate: gateAfterInit, method: method}
 	case accessGranted:
 		return gateProbe{gate: gateNowhere, reason: fmt.Sprintf(
 			"initialize and %s at %s both answer an anonymous caller, so the server presents no credential-gated surface for this rule (the unauth rules report the open surface)", method, ep)}
@@ -125,6 +122,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, method, token string) (*attack.Response, accessVerdict, string) {
 	authHeaders := map[string]string{"Authorization": "Bearer " + token}
 	initResp, err := anon.POST(ctx, ep, authHeaders, json.RawMessage(mcpInitBody))
+	defer closeProbeSession(ctx, anon, ep, initResp, token, latestStable)
 	if err != nil {
 		return nil, accessUndetermined, fmt.Sprintf("forged initialize at %s did not answer", ep)
 	}

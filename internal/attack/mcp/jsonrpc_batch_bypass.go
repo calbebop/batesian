@@ -65,6 +65,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 	}
 
 	ctrl, err := client.POST(ctx, ep, nil, initObj)
+	defer closeProbeSession(ctx, client, ep, ctrl, "", "2025-03-26")
 	if err != nil || ctrl == nil {
 		return nil, false, nil // endpoint unreachable
 	}
@@ -76,6 +77,18 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 	case isAuthRejection(ctrl):
 		// The server gates initialize itself. Does a one-element batch slip past?
 		test, err := client.POST(ctx, ep, nil, []interface{}{initObj})
+		version := "2025-03-26"
+		if test != nil {
+			if result, ok := batchResult(test.Body, 1); ok {
+				var init struct {
+					ProtocolVersion string `json:"protocolVersion"`
+				}
+				if json.Unmarshal(result, &init) == nil && init.ProtocolVersion != "" {
+					version = init.ProtocolVersion
+				}
+			}
+		}
+		defer closeProbeSession(ctx, client, ep, test, "", version)
 		if err != nil || test == nil {
 			return nil, true, fmt.Errorf("%w: initialize batch request failed", attack.ErrInconclusive)
 		}
