@@ -604,13 +604,15 @@ This read-only check uses the modern `2026-07-28` wire. If the server declares
 the [MCP Skills extension](https://skills.extensions.modelcontextprotocol.io/specification/beta/skills),
 it checks that the required Resources capability is present on repeated discovery.
 An absent capability is a low severity indicator. Otherwise,
-it samples up to three static `SKILL.md` entries across two `skills/list` pages,
-refreshes each entry with `skills/get`, and compares the returned bytes with
-the current manifest's size and SHA-256 digest.
-After a mismatch, it calls `skills/get` and reads again. It reports only when
-the manifest remains the same and the mismatch repeats. Dynamic entries,
-empty or partial listings, and changed manifests are not evidence of a clean
-catalog.
+it samples up to three static skills across two `skills/list` pages. It refreshes
+each entry with `skills/get`, then compares `SKILL.md` and up to seven supporting
+resources with their declared size and SHA-256 digest. Reads are capped at 1 MiB
+of decoded content per skill and 2 MiB per wire response. After a mismatch, it
+refreshes the complete manifest and reads the resource again. It reports only
+when the manifest remains stable and the mismatch repeats. Dynamic entries,
+unread resources, oversized content, incomplete listings, and changed manifests
+leave coverage inconclusive. This beta extension check is not a core MCP
+conformance claim.
 
 For [MCP Apps](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx),
 it advertises HTML UI support and samples up to three distinct tool UI references
