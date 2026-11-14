@@ -101,16 +101,18 @@ func (e *MultiTenantIsolationExecutor) probeJSONRPC(ctx context.Context, endpoin
 
 	markerA := "batesian mt probe " + a.Name + " " + vars.RandID
 	markerB := "batesian mt probe " + b.Name + " " + vars.RandID
+	dualVersion := advertisesDualJSONRPCVersions(ctx, unauthClient, vars.BaseURL, endpoint)
 	read := func(c *attack.HTTPClient, headers map[string]string, taskID, marker, phase string) tenantRead {
 		return e.readTask(ctx, c, endpoint, headers, taskID, marker, vars.RandID, phase)
 	}
 	findings, readErr := e.compareTaskReads(endpoint, taskA, taskB, markerA, markerB, a, b,
-		clientA, clientB, unauthClient, read)
+		clientA, clientB, unauthClient, dualVersion, read)
 	return findings, errors.Join(setupErr, readErr)
 }
 
 func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, markerA, markerB string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient,
+	dualVersion bool,
 	read func(*attack.HTTPClient, map[string]string, string, string, string) tenantRead) ([]attack.Finding, error) {
 	ownerA := read(clientA, a.Headers, taskA, markerA, "owner-a")
 	ownerB := read(clientB, b.Headers, taskB, markerB, "owner-b")
@@ -123,12 +125,12 @@ func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, 
 	readA := read(clientB, b.Headers, taskA, markerA, "cross-a")
 	if ownerA.location != "" && readA.location != "" && anonA.location == "" &&
 		!anonA.unknown && (anonA.denied || anonA.matched) {
-		findings = append(findings, e.finding(endpoint, b, a, readA))
+		findings = append(findings, e.versionedFinding(endpoint, b, a, readA, ownerA, anonA, dualVersion))
 	}
 	readB := read(clientA, a.Headers, taskB, markerB, "cross-b")
 	if ownerB.location != "" && readB.location != "" && anonB.location == "" &&
 		!anonB.unknown && (anonB.denied || anonB.matched) {
-		findings = append(findings, e.finding(endpoint, a, b, readB))
+		findings = append(findings, e.versionedFinding(endpoint, a, b, readB, ownerB, anonB, dualVersion))
 	}
 	var missing []string
 	if ownerA.location == "" {
@@ -160,10 +162,7 @@ func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, 
 // createTask tries v1 and v0.3 and keeps setup diagnostics from both.
 func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range p.Headers {
-		v1Headers[k] = v
-	}
+	v1Headers := tenantVersionHeaders(p.Headers, "1.0")
 	requestID := "batesian-mt-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -181,10 +180,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
 		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
-		slashHeaders := map[string]string{}
-		for k, v := range p.Headers {
-			slashHeaders[k] = v
-		}
+		slashHeaders := tenantVersionHeaders(p.Headers, "")
 		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, slashHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -218,22 +214,65 @@ type tenantRead struct {
 	matched  bool
 	denied   bool
 	unknown  bool
+	v1       tenantReadOutcome
+	v03      tenantReadOutcome
 }
 
-// readTask checks both method names until owner content is found.
+type tenantReadOutcome struct {
+	location string
+	matched  bool
+	denied   bool
+	unknown  bool
+}
+
+func tenantVersionHeaders(extra map[string]string, version string) map[string]string {
+	headers := make(map[string]string, len(extra)+1)
+	for key, value := range extra {
+		if !strings.EqualFold(key, "A2A-Version") {
+			headers[key] = value
+		}
+	}
+	if version != "" {
+		headers["A2A-Version"] = version
+	}
+	return headers
+}
+
+func advertisesDualJSONRPCVersions(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
+	card, found := fetchDiscoveryCard(ctx, client, baseURL)
+	if !found {
+		return false
+	}
+	interfaces := jsonRPCInterfaces(card)
+	if hasScopedJSONRPCAtURL(interfaces, endpoint, baseURL) {
+		return false
+	}
+	var v1, v03 bool
+	for _, iface := range interfaces {
+		if iface.Tenant != nil || pinToTargetOrigin(iface.URL, baseURL) != endpoint {
+			continue
+		}
+		switch iface.ProtocolVersion {
+		case "1.0":
+			v1 = true
+		case "0.3", "0.3.0":
+			v03 = true
+		}
+	}
+	return v1 && v03
+}
+
+// readTask keeps the outcome of each protocol version on the same task.
 func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID, phase string) tenantRead {
 	shapes := []struct {
 		method  string
 		headers map[string]string
 	}{
-		{"GetTask", map[string]string{"A2A-Version": "1.0"}},
-		{"tasks/get", extraHeaders},
-	}
-	for k, v := range extraHeaders {
-		shapes[0].headers[k] = v
+		{"GetTask", tenantVersionHeaders(extraHeaders, "1.0")},
+		{"tasks/get", tenantVersionHeaders(extraHeaders, "")},
 	}
 	var result tenantRead
-	for _, shape := range shapes {
+	for index, shape := range shapes {
 		requestID := "batesian-mt-get-" + randID + "-" + phase + "-" + shape.method
 		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -241,41 +280,57 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 			"method":  shape.method,
 			"params":  map[string]interface{}{"id": taskID, "historyLength": 10},
 		})
-		if err != nil || resp == nil {
-			result.unknown = true
-			continue
-		}
-		if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404 {
-			result.denied = true
-			continue
-		}
-		if !resp.IsSuccess() {
-			result.unknown = true
-			continue
-		}
-		_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
-		if !valid {
-			result.unknown = true
-			continue
-		}
-		if hasError {
-			if code == -32001 || errMessageIsAuth(resp.Body) {
-				result.denied = true
-			} else if code != jsonRPCMethodNotFound {
-				result.unknown = true
+		outcome := tenantReadOutcome{}
+		switch {
+		case err != nil || resp == nil:
+			outcome.unknown = true
+		case resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 404:
+			outcome.denied = true
+		case !resp.IsSuccess():
+			outcome.unknown = true
+		default:
+			_, code, hasError, valid := discoveryResponse(resp.Body, requestID)
+			switch {
+			case !valid:
+				outcome.unknown = true
+			case hasError && (code == -32001 || errMessageIsAuth(resp.Body)):
+				outcome.denied = true
+			case hasError && code != jsonRPCMethodNotFound:
+				outcome.unknown = true
+			case !hasError:
+				outcome.location, outcome.matched = taskReadMarkerLocation(resp.Body, taskID, marker)
+				outcome.unknown = !outcome.matched
 			}
-			continue
 		}
-		location, matched := taskReadMarkerLocation(resp.Body, taskID, marker)
-		result.matched = result.matched || matched
-		if location != "" {
-			return tenantRead{method: shape.method, location: location, matched: true, unknown: result.unknown}
+		if index == 0 {
+			result.v1 = outcome
+		} else {
+			result.v03 = outcome
 		}
-		if !matched {
-			result.unknown = true
+		result.matched = result.matched || outcome.matched
+		result.denied = result.denied || outcome.denied
+		result.unknown = result.unknown || outcome.unknown
+		if outcome.location != "" && result.location == "" {
+			result.method, result.location = shape.method, outcome.location
 		}
 	}
 	return result
+}
+
+func (e *MultiTenantIsolationExecutor) versionedFinding(endpoint string, reader, owner attack.Principal,
+	read, ownerRead, anonRead tenantRead, dualVersion bool) attack.Finding {
+	finding := e.finding(endpoint, reader, owner, read)
+	if !dualVersion || read.v1.unknown || !read.v1.denied || read.v03.location == "" ||
+		ownerRead.v1.location == "" || ownerRead.v03.location == "" ||
+		anonRead.v03.unknown || !anonRead.v03.denied {
+		return finding
+	}
+	finding.Title = "A2A v0.3 task read bypasses v1 tenant denial"
+	finding.Description += " The same advertised JSON-RPC endpoint denied the reader's v1.0 GetTask request but granted its v0.3 tasks/get request for this task."
+	finding.Evidence += "\nadvertised JSON-RPC versions: 1.0 and 0.3\nowner v1.0 and v0.3 reads: matched\nreader v1.0 GetTask: denied\nreader v0.3 tasks/get: granted\nanonymous v0.3 tasks/get: denied"
+	finding.Remediation += " Apply the same task ownership check to both advertised JSON-RPC protocol versions."
+	finding.Chain[2].Outcome = "v1.0 denied; v0.3 GRANTED - read owner's probe content"
+	return finding
 }
 
 // finding describes the owner's content observed by another tenant.

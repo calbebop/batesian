@@ -380,6 +380,11 @@ advertises `tenant`, both principals need distinct routes at the same URL that
 match their configured labels. A missing or ambiguous match is not tested. REST
 reads request up to ten history messages. JSON-RPC tasks can feed chained rules;
 REST tasks are tested separately for same-binding reads.
+When a card advertises v1.0 and v0.3 JSON-RPC at the same unscoped URL, a
+version-specific finding also requires the owner to read the same marked task
+through both versions, the other principal to be denied by v1.0 `GetTask` and
+granted by v0.3 `tasks/get`, and an anonymous v0.3 read to be denied. Without
+these controls, a confirmed cross-tenant read remains a general tenant finding.
 Findings keep the matched access and content location while omitting task IDs
 and probe text. Created task IDs remain in target objects for follow-up.
 
