@@ -2,7 +2,7 @@
 
 This page records what the live compatibility gates and endpoint rules actually
 exercise. The advisory matrix was reviewed on 2026-11-04; the modern protocol
-sections were updated on 2026-11-04. A rule finding describes observed behavior
+sections were updated on 2026-11-13. A rule finding describes observed behavior
 on the scanned surface; it does not establish that a particular package or CVE
 is present.
 
@@ -19,6 +19,7 @@ is present.
 | [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk/releases) | `server/discover`, initialization compatibility, session opening, and a clean two-principal cache-scope scan on PRs and weekly | The SDK server returns the same data to both test principals; the vulnerable cache-scope control is a Go fixture. |
 | [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) | Current [MCP TypeScript server SDK 2.x](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/packages/server) | `server/discover`, dual-era session opening, and a named tool call through Batesian's modern request headers on PRs and weekly | The fixture has no authentication or tenant policy; it checks protocol compatibility, not authorization findings. |
 | [MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) | Both dual-era SDK targets and bundled fixtures | Legacy `initialize` and session opening, plus rule controls | No official SDK in every supported language is exercised. |
+| [MCP conformance v0.1.16](https://github.com/modelcontextprotocol/conformance/tree/v0.1.16) | Current TypeScript SDK fixture | Pinned `server-initialize` and `tools-list` server scenarios on the dated HTTP wire | These two scenarios validate the fixture's protocol shape. They do not measure Batesian's security rules, the 2026-07-28 stateless wire, or full server conformance. |
 
 The 2024-11-05 HTTP+SSE transport is not covered. It uses a long-lived GET stream
 and a separate POST endpoint rather than the Streamable HTTP request path used by
@@ -27,6 +28,13 @@ Batesian. See the [official Go SDK transport guide](https://go.sdk.modelcontextp
 The Python and TypeScript SDK dependencies intentionally float within a major
 version. These gates catch changes in the current implementations; the fixtures
 and Go tests pin expected protocol behavior when a dependency changes.
+
+The [A2A TCK](https://github.com/a2aproject/a2a-tck) targets agent servers.
+Its current [Python 3.15 requirement](https://github.com/a2aproject/a2a-tck/blob/104a7b4ae0d83f65c075e3793e322953a830eaba/pyproject.toml)
+exceeds this repository's Python 3.12 A2A compatibility job. That job runs a
+small SDK smoke fixture, not a TCK-capable agent with the task lifecycle and
+transport controls needed for a meaningful TCK subset. A dedicated, pinned SUT
+would be needed before adding Agent Card and task-operation TCK scenarios.
 
 ## A2A gRPC assessment
 

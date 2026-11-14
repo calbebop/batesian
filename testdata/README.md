@@ -27,7 +27,7 @@ Two fixtures use the MCP Python SDK, `mcp_unauth_resources_server.py` and
 `mcp_modern_era_server.py`; the rest are plain Starlette. Both import
 `mcp.server.mcpserver.MCPServer`, so both need the v2 line: it renamed `FastMCP`
 to `MCPServer` with no compatibility alias and neither fixture runs on 1.x. The
-version is pinned above rather than left bare so a future major bump is a
+version is bounded to the v2 major above so a future major bump is a
 deliberate change here instead of a fixture that stops starting.
 
 If either fails to start with `ModuleNotFoundError: No module named

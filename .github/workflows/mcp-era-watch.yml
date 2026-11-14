@@ -120,7 +120,7 @@ jobs:
         run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
         working-directory: testdata/mcp_ts_sdk
 
-      - name: Check both protocol eras, a named tool, and Skills
+      - name: Check SDK compatibility and conformance subset
         run: |
           node testdata/mcp_ts_sdk/server.mjs > "$RUNNER_TEMP/mcp-ts-sdk.log" 2>&1 &
           server_pid=$!
@@ -148,6 +148,13 @@ jobs:
           go test -tags=integration \
             -run 'TestDetectEra_Live|TestInitializeMCP_Live|TestOpenSessions_Live|TestNamedTool_LiveTypeScriptSDK|TestSkillsIntegrity_LiveTypeScriptSDK' \
             -v ./internal/attack/mcp/
+
+          pushd "$RUNNER_TEMP"
+          npx --yes @modelcontextprotocol/conformance@0.1.16 server \
+            --url http://127.0.0.1:7798/mcp --scenario server-initialize
+          npx --yes @modelcontextprotocol/conformance@0.1.16 server \
+            --url http://127.0.0.1:7798/mcp --scenario tools-list
+          popd
         env:
           BATESIAN_LIVE_MCP_ENDPOINT: http://127.0.0.1:7798/mcp
           BATESIAN_LIVE_MCP_SDK: typescript

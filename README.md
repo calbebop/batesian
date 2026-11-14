@@ -263,6 +263,8 @@ to loopback. Other A2A rules use JSON-RPC or HTTP+JSON; see the
 For A2A probes, JSON `agent_card` is a parsed, redacted view, not the original response bytes. `agent_card_provenance` records the fetched URL and SHA-256 of those bytes.
 
 A finding is marked `confirmed` when the rule proves a failed boundary, including observed access that matches an explicit expected denial. An `indicator` identifies a risky condition without claiming a policy violation.
+Review each finding's evidence and remediation alongside its rule outcome. A
+skipped or errored rule has not established that the target is safe.
 
 `scan` exits non-zero for command-level failures, including invalid configuration or filters that select no rules. Findings and individual rule skips do not change the process exit code. Check rule outcomes in JSON or SARIF before treating a scan as complete; a zero exit code alone is not a clean bill of health. SARIF invocation metadata records completed, skipped, and errored rules and sets `executionSuccessful` to `false` when coverage is incomplete.
 
@@ -347,7 +349,7 @@ Report vulnerabilities in Batesian privately according to [SECURITY.md](SECURITY
 
 ## References
 
-- [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/)
+- [A2A 1.0.1 Protocol Specification](https://a2a-protocol.org/v1.0.1/specification/)
 - [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 - [MCP Security Best Practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
 - [Unit 42: Agent Session Smuggling in A2A Systems](https://unit42.paloaltonetworks.com/agent-session-smuggling-in-agent2agent-systems/)
