@@ -6,6 +6,9 @@ are welcome, whether that is a new attack rule, a bug fix, or improved documenta
 ## Before You Start
 
 - Read the [project README](README.md) to understand what Batesian is and is not.
+- Check the versioned [A2A 1.0.1 specification](https://a2a-protocol.org/v1.0.1/specification/)
+  or [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28)
+  before changing a protocol rule.
 - Every rule must send crafted payloads to a live endpoint and evaluate real server
   responses (status, body, headers, timing, or out-of-band signals as defined in
   the rule). Rules should encode concrete protocol abuse checks, not static-page
@@ -104,10 +107,14 @@ Rules for executors:
    - `attack.ConfirmedExploit`: the attack demonstrably succeeded.
    - `attack.RiskIndicator`: a suspicious pattern detected, but exploitability
      is not proven. Always include a note recommending manual verification.
-3. Keep executors focused. One rule = one attack class. Shared helpers (session
+3. Correlate the response with the request and target object before reporting
+   access. For stateful probes, verify the probe marker and a control response.
+   Evidence should name the method, control, and observed result. Omit raw
+   response snippets, credentials, task IDs, probe markers, and private content.
+4. Keep executors focused. One rule = one attack class. Shared helpers (session
    setup, SSE parsing) belong in package-level functions, not inlined.
-4. Never use `time.Sleep` for more than 500ms. Use `context.WithTimeout`.
-5. All payloads live in Go. The YAML descriptor is metadata only and is never read
+5. Never use `time.Sleep` for more than 500ms. Use `context.WithTimeout`.
+6. All payloads live in Go. The YAML descriptor is metadata only and is never read
    for attack logic at runtime.
 
 ### Register the Executor
@@ -131,8 +138,9 @@ switch statement to edit; an unknown `attack.type` stops the scan during rule lo
 
 ## Validation Checklist
 
-Every rule must pass all six steps before it can be merged. This is not optional.
-A rule with only unit tests is not production-ready.
+Run the applicable checks before merging a rule. A standalone Python fixture is
+optional when a Go integration fixture exercises the live behavior. Production
+validation is best effort and needs an authorized target.
 
 ### Step 1: Unit Tests
 
@@ -148,13 +156,16 @@ Required test cases for every rule:
 - **Precondition not met**: server that cannot exercise the rule. Assert zero
   findings and `errors.Is(err, attack.ErrInconclusive)`. If the test establishes
   that a vulnerability is absent, assert zero findings and no error instead.
+- **Misleading response**: a wrong request ID, wrong object, absent marker, or
+  public control must not become a confirmed finding. Assert that reports omit
+  credentials, task IDs, markers, and response content.
 
 Run tests: `go test ./internal/attack/...`
 
-### Step 2: Testdata Server
+### Step 2: Standalone Testdata Server (When Applicable)
 
-Add the routes that exercise the vulnerability to a Python server in
-`testdata/`. Prefer extending an existing server documented in
+For standalone validation, add the routes that exercise the vulnerability to
+a Python server in `testdata/`. Prefer extending an existing server documented in
 [`testdata/README.md`](testdata/README.md) when the protocol and theme match;
 add a new file only if no existing server is a natural host. Either way:
 
@@ -165,7 +176,7 @@ add a new file only if no existing server is a natural host. Either way:
 - Print startup confirmation lines so the caller can wait for readiness.
 - Implement only the minimum routes needed to trigger the rule(s).
 - Stay within the project test-server dependency set:
-  `pip install starlette uvicorn httpx "mcp>=2"`. Do not introduce new third-party
+  `pip install starlette uvicorn httpx "mcp>=2,<3"`. Do not introduce new third-party
   packages without updating `testdata/README.md`.
 - Include a module docstring listing every rule ID the server covers and how
   to run it.
@@ -174,7 +185,7 @@ add a new file only if no existing server is a natural host. Either way:
 
 ### Step 3: Live Validation
 
-Start the testdata server and run batesian against it:
+Run Batesian against a disposable local fixture. For a standalone server:
 
 ```sh
 # Start the server (in a separate terminal or background process)
@@ -187,7 +198,8 @@ python testdata/<name>_server.py
 
 Confirm:
 - The expected finding(s) appear with the correct severity.
-- The evidence field contains meaningful data (HTTP status, endpoint, snippet).
+- The evidence names the correlated observation and control, with sensitive
+  values omitted. A response snippet alone does not establish a finding.
 - The scan completes in a reasonable time (under 15s for a single rule).
 
 ### Step 4: Full Build and Test
