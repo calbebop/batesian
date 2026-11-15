@@ -158,6 +158,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.MCPFilesystemSymlinkProbe != nil && target != cfg.Target {
 		return errors.New("mcp_filesystem_symlink_probe cannot be used with a different --target")
 	}
+	if cfg.MCPFetchRobotsProbe != nil && target != cfg.Target {
+		return errors.New("mcp_fetch_robots_probe cannot be used with a different --target")
+	}
 	if cfg.MCPCrossAudienceToken != "" && target != cfg.Target {
 		return errors.New("mcp_cross_audience_token cannot be used with a different --target")
 	}
@@ -318,6 +321,12 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 			OutsidePath: p.OutsidePath, OutsideSizeBytes: p.OutsideSizeBytes,
 		}
 	}
+	var fetchRobotsProbe *attackpkg.MCPFetchRobotsProbe
+	if p := cfg.MCPFetchRobotsProbe; p != nil {
+		fetchRobotsProbe = &attackpkg.MCPFetchRobotsProbe{
+			Origin: p.Origin, PrivatePath: p.PrivatePath, PrivateMarker: p.PrivateMarker,
+		}
+	}
 	var a2aBatchProbe *attackpkg.A2ABatchProbe
 	if p := cfg.A2ABatchProbe; p != nil {
 		a2aBatchProbe = &attackpkg.A2ABatchProbe{TaskID: p.TaskID, PrivateMarker: p.PrivateMarker}
@@ -408,6 +417,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 		MCPSubscriptionProbe:      subscriptionProbe,
 		MCPFilesystemSuffixProbe:  filesystemSuffixProbe,
 		MCPFilesystemSymlinkProbe: filesystemSymlinkProbe,
+		MCPFetchRobotsProbe:       fetchRobotsProbe,
 		Verbose:                   verbose,
 		AudienceClaim:             audienceClaim,
 		MCPCrossAudienceToken:     crossAudienceToken,

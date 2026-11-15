@@ -40,7 +40,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 
 ## Server Registry
 
-The bundled rule set is **22 A2A + 38 MCP = 60 rules**. Every rule has an
+The bundled rule set is **22 A2A + 39 MCP = 61 rules**. Every rule has an
 in-process Go HTTP test server with vulnerable and control postures. The Python
 servers below provide standalone live validation for selected rules; some fixtures
 also run in CI. `mcp-task-access-001`, `mcp-cache-scope-001`,
