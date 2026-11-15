@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **39 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **40 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -184,6 +184,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-era-downgrade-001` | [Protocol Era Downgrade Auth Bypass](#mcp-era-downgrade-001) | Critical | confirmed | CWE-757 |
 | `mcp-session-fixation-001` | [Session ID Fixation](#mcp-session-fixation-001) | High | confirmed | CWE-384 |
 | `mcp-header-body-split-001` | [Modern Header/Body Mismatch](#mcp-header-body-split-001) | Medium | indicator | CWE-436 |
+| `mcp-json-key-alias-001` | [JSON-RPC Method Key Alias](#mcp-json-key-alias-001) | Low | indicator | CWE-436 |
 | `mcp-param-header-mismatch-001` | [Annotated Parameter Header/Body Mismatch](#mcp-param-header-mismatch-001) | Medium | indicator | CWE-436 |
 | `mcp-sse-resume-replay-001` | [SSE Resumption Cross-Session Replay](#mcp-sse-resume-replay-001) | High | confirmed | CWE-488 |
 | `mcp-oauth-metadata-ssrf-001` | [OAuth DCR Metadata Fetch](#mcp-oauth-metadata-ssrf-001) | Info / High | indicator / confirmed | CWE-918 |
@@ -810,6 +811,26 @@ only `400/-32020` establishes the expected rejection. Legacy handshake wires
 are not graded against the 2026 requirement, even if `initialize` reports a
 modern version. Annotated tool parameters are covered separately by
 `mcp-param-header-mismatch-001` with explicit tool approval.
+
+---
+
+### mcp-json-key-alias-001
+
+**JSON-RPC Method Key Alias** | Severity: Low | indicator | CWE-436
+
+JSON-RPC member names are case sensitive. A trailing NUL also changes the key.
+The [Go MCP SDK case-folding advisory](https://github.com/modelcontextprotocol/go-sdk/security/advisories/GHSA-wvj2-96wp-fq3f)
+and [NUL-suffix advisory](https://github.com/modelcontextprotocol/go-sdk/security/advisories/GHSA-q382-vc8q-7jhj)
+show how a backend can interpret these keys differently from an intermediary.
+
+On each available wire, Batesian first requires a correlated `tools/list`
+response using the exact `method` key. It then sends the same read-only request
+with `Method` and `method\u0000` separately. A correlated listing for either
+variant is a low-severity **interpretation indicator**. It does not identify the
+server's SDK or prove an authorization bypass; that would require testing an
+intermediary with an exact-key policy. Missing capabilities, uncorrelated
+responses, and transport failures leave the check not tested. The rule makes no
+`tools/call` request.
 
 ---
 
