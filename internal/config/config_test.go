@@ -426,6 +426,37 @@ func TestLoad_MCPFilesystemSuffixProbe(t *testing.T) {
 	}
 }
 
+func TestLoad_MCPFetchRobotsProbe(t *testing.T) {
+	const valid = "target: https://mcp.example.com\nmcp_fetch_robots_probe:\n  origin: https://canary.example.com\n  private_path: /batesian-canary\n  private_marker: batesian-canary-marker-2026\n"
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", valid, true},
+		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1), false},
+		{"origin path", strings.Replace(valid, "https://canary.example.com", "https://canary.example.com/path", 1), false},
+		{"origin userinfo", strings.Replace(valid, "https://canary.example.com", "https://user@canary.example.com", 1), false},
+		{"remote plaintext", strings.Replace(valid, "https://canary.example.com", "http://canary.example.com", 1), false},
+		{"noncanary path", strings.Replace(valid, "/batesian-canary", "/private", 1), false},
+		{"short marker", strings.Replace(valid, "batesian-canary-marker-2026", "short", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tc.valid {
+				if err != nil || cfg.MCPFetchRobotsProbe.Origin != "https://canary.example.com" {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "mcp_fetch_robots_probe") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_MCPFilesystemSymlinkProbe(t *testing.T) {
 	const valid = "target: https://mcp.example.com\nmcp_filesystem_symlink_probe:\n  allowed_directory: /srv/disposable\n  link_name: outside-link\n  outside_path: /srv/outside/fixture.bin\n  outside_size_bytes: 1536\n"
 	configPath := filepath.Join(t.TempDir(), "batesian.yaml")

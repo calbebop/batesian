@@ -80,6 +80,9 @@ type Options struct {
 	// MCPFilesystemSymlinkProbe scopes a disposable metadata check.
 	MCPFilesystemSymlinkProbe *MCPFilesystemSymlinkProbe
 
+	// MCPFetchRobotsProbe scopes an approved Fetch canary check.
+	MCPFetchRobotsProbe *MCPFetchRobotsProbe
+
 	// Verbose enables debug logging.
 	Verbose bool
 

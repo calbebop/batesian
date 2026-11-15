@@ -80,6 +80,9 @@ type Config struct {
 	// MCPFilesystemSymlinkProbe tests an operator-prepared symlink fixture.
 	MCPFilesystemSymlinkProbe *MCPFilesystemSymlinkProbeConfig `yaml:"mcp_filesystem_symlink_probe"`
 
+	// MCPFetchRobotsProbe tests a robots policy on an owned canary origin.
+	MCPFetchRobotsProbe *MCPFetchRobotsProbeConfig `yaml:"mcp_fetch_robots_probe"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -162,6 +165,12 @@ type MCPFilesystemSymlinkProbeConfig struct {
 	LinkName         string `yaml:"link_name"`
 	OutsidePath      string `yaml:"outside_path"`
 	OutsideSizeBytes int64  `yaml:"outside_size_bytes"`
+}
+
+type MCPFetchRobotsProbeConfig struct {
+	Origin        string `yaml:"origin"`
+	PrivatePath   string `yaml:"private_path"`
+	PrivateMarker string `yaml:"private_marker"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -342,6 +351,13 @@ func (c *Config) validate(path string) error {
 		}
 		if probe.OutsideSizeBytes < 1024 || probe.OutsideSizeBytes > 65536 || probe.OutsideSizeBytes%512 != 0 {
 			return fmt.Errorf("config %s: mcp_filesystem_symlink_probe outside_size_bytes must be 1024..65536 and a multiple of 512", path)
+		}
+	}
+	if probe := c.MCPFetchRobotsProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" || !attack.ValidMCPFetchRobotsProbe(&attack.MCPFetchRobotsProbe{
+			Origin: probe.Origin, PrivatePath: probe.PrivatePath, PrivateMarker: probe.PrivateMarker,
+		}) {
+			return fmt.Errorf("config %s: mcp_fetch_robots_probe requires a target, an HTTPS or loopback HTTP origin without a path, a /batesian-* canary path, and a 16..128 character marker", path)
 		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}

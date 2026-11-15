@@ -1,6 +1,6 @@
 # MCP Attack Rules
 
-Batesian ships **38 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Batesian ships **39 rules** targeting the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 Every rule is an active probe: it sends crafted protocol traffic and judges the
 server's actual response. Rules are deliberately scoped to MCP-specific semantics
 (OAuth 2.1 authorization, DCR, audience binding, discovery-chain metadata-fetch
@@ -197,6 +197,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-tool-param-traversal-001` | [Tool Path Traversal](#mcp-tool-param-traversal-001) | High | confirmed | CWE-22 |
 | `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
 | `mcp-filesystem-symlink-001` | [Filesystem Symlink Metadata Exposure](#mcp-filesystem-symlink-001) | Low | indicator | CWE-200 |
+| `mcp-fetch-robots-001` | [Fetch Robots Path Canonicalization](#mcp-fetch-robots-001) | Low | indicator | CWE-41 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
@@ -1472,3 +1473,47 @@ extension, an approved read-only tool, or task handles are unavailable, the
 rule reports not tested. Tool discovery follows up to ten pages and rejects
 repeated cursors. Task IDs must be hard to guess, and servers must
 authorize each task-related request independently.
+
+---
+
+### mcp-fetch-robots-001
+
+**Fetch Robots Path Canonicalization** | Severity: Low | indicator | CWE-41
+
+This check is opt-in. Host a disposable, text-only canary on an origin you own.
+It must serve the same 16-character-or-longer marker at both
+`/batesian-canary` and `//batesian-canary`, and serve only these two lines at
+`/robots.txt`:
+
+```text
+User-agent: *
+Disallow: /batesian-canary
+```
+
+Use HTTPS for a remote origin; plain HTTP is accepted only on loopback. The
+origin must be reachable by both Batesian and the target Fetch server.
+Configure the exact scan target and canary in the same file:
+
+```yaml
+target: https://mcp.example.com/mcp
+mcp_fetch_robots_probe:
+  origin: https://canary.example.com
+  private_path: /batesian-canary
+  private_marker: batesian-canary-marker-2026
+```
+
+Run `batesian scan --rule-ids mcp-fetch-robots-001 --mcp-invoke-tool fetch`
+with that config. The scanner first checks the origin directly without target
+credentials or redirects. It then calls only a listed `fetch` tool declared
+read-only, using the two configured URLs. A finding requires an explicit
+robots-policy denial for the canonical path and the exact marker returned for
+the double-slash path. A second denial is clean; unrelated tool errors,
+unavailable canaries, and partial responses are not tested. Results omit the
+origin, paths, marker, and response text.
+
+This tests the [published robots path advisory](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f9hh-cmx9-2f23),
+not authentication or private-address filtering. The tool annotation is a
+server claim, so approve only a Fetch deployment you trust. The probe sends
+ordinary GET requests to the owned origin and remains disabled without its
+target-bound config and exact tool approval. The reference Fetch server runs
+over stdio by default; Batesian needs the tool exposed on a supported HTTP wire.
