@@ -20,6 +20,24 @@ a third-party FastMCP server for MCP false-positive and true-positive coverage;
 and the OAuth DCR cleanup-and-report-leftovers gate. The per-rule outcomes below
 are the manual runs that established those gates.
 
+## Go SDK JSON key parsing (2026-11-15)
+
+A disposable server using the official Go MCP SDK's Streamable HTTP handler was
+tested with a normal `tools/list` request, then the same request using `Method`
+or `method\u0000`. Each request used a distinct JSON-RPC ID on one initialized
+session. The handler returned JSON responses for the comparison.
+
+| Go SDK version | Exact `method` | `Method` | `method\u0000` |
+|---|---|---|---|
+| v1.3.0 | Listed | Listed | Discarded |
+| v1.4.0 | Listed | Discarded | Listed |
+| v1.4.1 | Listed | Discarded | Discarded |
+
+The two accepted aliases match the upstream advisories. Batesian's rule tests
+cover the corresponding finding and rejection paths on both MCP wires. This
+manual SDK matrix checks the parser behavior; it is not a CI compatibility gate
+or proof that an intermediary can be bypassed.
+
 ---
 
 ## Why this matters

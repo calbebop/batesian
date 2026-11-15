@@ -1,0 +1,33 @@
+id: mcp-json-key-alias-001
+info:
+  name: MCP JSON-RPC Method Key Alias
+  author: batesian
+  severity: low
+  description: |
+    Compares a canonical tools/list request with requests whose method key is
+    written as Method or has a trailing NUL. A correlated tools listing for
+    either variant indicates the server dispatches a noncanonical JSON-RPC key.
+    This may matter if an intermediary checks exact key names, but acceptance
+    alone does not prove an authorization bypass or identify an SDK version.
+
+    The probe uses only tools/list on each available MCP wire. It never calls
+    a tool. A missing capability or ambiguous response is not graded as clean.
+  references:
+    - https://www.jsonrpc.org/specification
+    - https://github.com/modelcontextprotocol/go-sdk/security/advisories/GHSA-wvj2-96wp-fq3f
+    - https://github.com/modelcontextprotocol/go-sdk/security/advisories/GHSA-q382-vc8q-7jhj
+    - https://cwe.mitre.org/data/definitions/436.html
+  tags:
+    - mcp
+    - json-rpc
+    - parser
+    - cwe-436
+
+attack:
+  protocol: mcp
+  type: mcp-json-key-alias
+
+remediation: |
+  Require exact JSON-RPC member names before dispatch. Update affected MCP
+  SDKs and apply the same parsed request semantics at policy gateways and
+  backends. Review gateway policy separately; this probe does not test it.
