@@ -426,7 +426,8 @@ exact task ID and private marker in the list, then checks that anonymous
 listing does not expose the marker. A cross-principal list match is a medium
 severity indicator. An exact `expected_denials` entry for `a2a.tasks.list`
 with the named caller and owner promotes it to a confirmed finding. Incomplete
-pagination and timeouts are not tested.
+pagination, timeouts, and an unavailable `ListTasks` are reported as incomplete
+coverage.
 
 When the card advertises streaming, the rule also samples the first
 `SubscribeToTask` event with a request timeout. It requires the owner's marked

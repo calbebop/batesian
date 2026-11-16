@@ -284,14 +284,14 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 		findings     int
 		inconclusive bool
 	}{
-		{"protected", 0, false},
+		{"protected", 0, true},
 		{"vulnerable", 2, false},
-		{"reader-to-owner", 1, false},
-		{"owner-to-reader", 1, false},
-		{"tls-protected", 0, false},
+		{"reader-to-owner", 1, true},
+		{"owner-to-reader", 1, true},
+		{"tls-protected", 0, true},
 		{"tls-vulnerable", 2, false},
 		{"tls-untrusted", 0, true},
-		{"header-auth", 0, false},
+		{"header-auth", 0, true},
 		{"public", 0, true},
 		{"reader-public", 0, true},
 		{"reader-public-forward-leak", 1, true},
@@ -312,8 +312,8 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 		{"list-public", 0, true},
 		{"list-page-cap", 0, true},
 		{"list-timeout", 0, true},
-		{"subscribe-protected", 0, false},
-		{"subscribe-leak", 2, false},
+		{"subscribe-protected", 0, true},
+		{"subscribe-leak", 2, true},
 		{"subscribe-wrong-id", 0, true},
 		{"subscribe-no-marker", 0, true},
 		{"subscribe-terminal", 0, true},
@@ -342,6 +342,9 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 			if len(findings) != tc.findings || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			if tc.mode == "protected" && (err == nil || !strings.Contains(err.Error(), "ListTasks is unavailable")) {
+				t.Fatalf("unsupported ListTasks was reported clean: %v", err)
 			}
 			fixture.mu.Lock()
 			var taskIDs []string
