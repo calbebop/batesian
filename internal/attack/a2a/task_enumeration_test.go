@@ -33,6 +33,7 @@ const (
 	enumOwnerBlind
 	// enumWideOpen returns every task to ANYONE, including an anonymous caller.
 	enumWideOpen
+	enumReverseOnly
 	enumPagedUnscoped
 	enumPagedScoped
 	enumPagedOpen
@@ -52,6 +53,7 @@ type enumAgentConfig struct {
 	v1CreateAbsent   bool
 	listReplyMode    string
 	seedPrivateTask  bool
+	sameTaskID       bool
 }
 
 func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig) *httptest.Server {
@@ -132,6 +134,9 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 			}
 			n++
 			tk := &task{id: "task-" + string(rune('0'+n)), ctxID: "ctx", owner: caller}
+			if config.sameTaskID {
+				tk.id = "shared-task"
+			}
 			tasks[tk.id] = tk
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0", "id": id,
@@ -229,6 +234,9 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				if behaviour == enumOwnerBlind {
 					continue // implements the list, never returns anything
 				}
+				if behaviour == enumReverseOnly && caller != tk.owner && (caller != "a" || tk.owner != "b") {
+					continue
+				}
 				out = append(out, map[string]interface{}{"id": tk.id, "contextId": tk.ctxID})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -287,6 +295,32 @@ func TestTaskEnumeration_UnscopedListingFires(t *testing.T) {
 		if strings.Contains(f.Description+f.Evidence+f.TargetURL, id) {
 			t.Errorf("task ID %q leaked into finding: %+v", id, f)
 		}
+	}
+}
+
+func TestTaskEnumeration_ReverseOnlyListingFires(t *testing.T) {
+	srv := enumAgent(t, enumReverseOnly)
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("reverse-only listing: findings=%+v err=%v", findings, err)
+	}
+	if !strings.Contains(findings[0].Evidence, "task creator: b") ||
+		!strings.Contains(findings[0].Evidence, "listing principal: a") ||
+		strings.Contains(findings[0].Description+findings[0].Evidence, "task-2") {
+		t.Fatalf("reverse finding lacks attribution or exposes task ID: %+v", findings[0])
+	}
+}
+
+func TestTaskEnumeration_ReusedTaskIDIsIncomplete(t *testing.T) {
+	srv := enumAgent(t, enumReverseOnly, enumAgentConfig{sameTaskID: true})
+	defer srv.Close()
+
+	findings, err := runEnum(t, srv, enumOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "same JSON-RPC task ID") {
+		t.Fatalf("reused task ID was judged as cross-principal access: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -506,15 +540,22 @@ func TestTaskEnumeration_UncorrelatedPageIsNotClean(t *testing.T) {
 }
 
 func TestTaskEnumeration_MismatchedListingsAreIncomplete(t *testing.T) {
-	for _, mode := range []string{
-		"wrong-owner-result", "wrong-anon-auth", "replay-owner-result", "replay-v1-on-legacy",
+	for _, tc := range []struct {
+		mode     string
+		findings int
+	}{
+		{"wrong-owner-result", 0}, {"wrong-anon-auth", 0}, {"replay-owner-result", 1}, {"replay-v1-on-legacy", 0},
 	} {
-		t.Run(mode, func(t *testing.T) {
-			srv := enumAgent(t, enumUnscoped, enumAgentConfig{listReplyMode: mode})
+		t.Run(tc.mode, func(t *testing.T) {
+			srv := enumAgent(t, enumUnscoped, enumAgentConfig{listReplyMode: tc.mode})
 			defer srv.Close()
 			findings, err := runEnum(t, srv, enumOpts())
-			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
-				t.Fatalf("mismatched listing must be incomplete: findings=%+v err=%v", findings, err)
+			if len(findings) != tc.findings || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("mismatched listing must retain only completed findings: findings=%+v err=%v", findings, err)
+			}
+			if tc.findings != 0 && (!strings.Contains(findings[0].Evidence, "task creator: b") ||
+				!strings.Contains(findings[0].Evidence, "listing principal: a")) {
+				t.Fatalf("reverse finding lacks attribution: %+v", findings[0])
 			}
 		})
 	}

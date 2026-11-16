@@ -7,6 +7,7 @@ info:
     Principal A creates a task and confirms it appears in A's ListTasks response.
     An anonymous listing must not return it. If principal B's listing contains the
     task, the rule reports an indicator for review against the agent's access policy.
+    If not, the rule repeats the check with B as creator and A as reader.
     Different credentials do not, by themselves, prove different task visibility.
     The check does not read task history or assume that B can read or modify the task.
 
@@ -15,7 +16,7 @@ info:
     authorization failures.
 
   references:
-    - https://a2a-protocol.org/latest/specification/
+    - https://a2a-protocol.org/v1.0.1/specification/
     - https://cwe.mitre.org/data/definitions/639.html
     - https://cwe.mitre.org/data/definitions/200.html
     - https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/

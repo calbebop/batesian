@@ -23,6 +23,7 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 	t.Helper()
 	var mu sync.Mutex
 	var hits []restEnumHit
+	tasks := map[string]string{}
 	sendPath, listPath := "/agent/message:send", "/agent/tasks"
 	if legacy {
 		sendPath, listPath = "/agent/v1/message:send", "/agent/v1/tasks"
@@ -58,7 +59,7 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			if caller != "a" {
+			if caller != "a" && caller != "b" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -80,7 +81,17 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			task := map[string]interface{}{"id": "rest-owner-task"}
+			taskID := "rest-owner-task"
+			if caller == "b" {
+				taskID = "rest-reader-task"
+				if mode == "reverse-reused-id" {
+					taskID = "rest-owner-task"
+				}
+			}
+			mu.Lock()
+			tasks[taskID] = caller
+			mu.Unlock()
+			task := map[string]interface{}{"id": taskID}
 			if mode != "id-only" {
 				task["status"] = map[string]string{"state": "submitted"}
 			}
@@ -127,12 +138,19 @@ func restEnumAgent(t *testing.T, mode string, legacy, dual bool, requireImmediat
 				writeJSON(w, map[string]interface{}{"tasks": []interface{}{}, "nextPageToken": fmt.Sprintf("page-%d", count)})
 				return
 			}
-			tasks := []interface{}{}
-			if caller == "a" && mode != "owner-blind" || mode == "open" ||
-				caller == "b" && (mode == "unscoped" || mode == "off-origin") {
-				tasks = append(tasks, map[string]string{"id": "rest-owner-task"})
+			visible := []interface{}{}
+			mu.Lock()
+			for id, owner := range tasks {
+				if mode == "owner-blind" {
+					continue
+				}
+				if caller == owner || mode == "open" || mode == "unscoped" || mode == "off-origin" ||
+					(mode == "reverse-only" || mode == "reverse-reused-id") && caller == "a" && owner == "b" {
+					visible = append(visible, map[string]string{"id": id})
+				}
 			}
-			writeJSON(w, map[string]interface{}{"tasks": tasks, "nextPageToken": ""})
+			mu.Unlock()
+			writeJSON(w, map[string]interface{}{"tasks": visible, "nextPageToken": ""})
 			return
 		}
 		if dual && r.Method == http.MethodPost && r.URL.Path == "/" {
@@ -188,8 +206,10 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 		inconclusive bool
 	}{
 		{"REST-only unscoped", "unscoped", false, false, true, false},
+		{"REST-only reverse leak", "reverse-only", false, false, true, false},
+		{"REST reused task ID", "reverse-reused-id", false, false, false, true},
 		{"legacy REST unscoped", "unscoped", true, false, true, false},
-		{"dual binding REST leak", "unscoped", false, true, true, false},
+		{"dual binding REST leak", "unscoped", false, true, true, true},
 		{"off-origin card is pinned", "off-origin", false, false, true, false},
 		{"scoped", "scoped", false, false, false, false},
 		{"legacy scoped", "scoped", true, false, false, false},
@@ -241,6 +261,14 @@ func TestTaskEnumeration_RESTBinding(t *testing.T) {
 			if tc.finding && (!strings.Contains(findings[0].Evidence, "owner task: matched in listing") ||
 				strings.Contains(findings[0].Description+findings[0].Evidence+findings[0].TargetURL, "rest-owner-task")) {
 				t.Fatalf("finding did not redact the matched owner task: %+v", findings[0])
+			}
+			if tc.mode == "reverse-only" && (!strings.Contains(findings[0].Evidence, "task creator: b") ||
+				!strings.Contains(findings[0].Evidence, "listing principal: a") ||
+				strings.Contains(findings[0].Description+findings[0].Evidence, "rest-reader-task")) {
+				t.Fatalf("reverse finding lacks attribution or exposes task ID: %+v", findings[0])
+			}
+			if tc.mode == "reverse-reused-id" && (err == nil || !strings.Contains(err.Error(), "same REST task ID")) {
+				t.Fatalf("reused task ID was judged as access: findings=%+v err=%v", findings, err)
 			}
 		})
 	}

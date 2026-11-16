@@ -751,9 +751,9 @@ its ID or card-declared scheme names.
 **Cross-Credential Task Listing** | Severity: Medium | CWE-639 / CWE-200
 
 Tests whether a task created with one credential appears in `ListTasks` under
-another. A2A requires each client to see only tasks authorized by the agent's
-access policy. Different credentials alone do not prove that their task visibility
-must differ, so the result is an **indicator** for policy review.
+another, in both principal directions. A2A requires each client to see only tasks
+authorized by the agent's access policy. Different credentials alone do not prove
+that task visibility must differ, so the result is an **indicator** for policy review.
 
 **A distinct surface**, not a second look at an existing one.
 `a2a-multitenant-isolation-001` reads a task **by id**, so it only shows that a caller
@@ -776,6 +776,10 @@ is not what decided the outcome:
    enforces no authorization on this surface at all, which is `a2a-task-idor-001`'s
    finding; reporting it here too would count one defect twice.
 4. Principal B lists. A's task ID appearing in B's response is the indicator.
+
+If that direction has no finding, the rule creates a task as B and repeats the
+controls with A as the listing principal. A direction that cannot create its
+task is reported as not tested; a finding from the other direction is retained.
 
 Identifiers are compared, never key names, and history is deliberately not requested
 (`historyLength` 0). The rule follows
