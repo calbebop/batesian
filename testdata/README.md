@@ -23,6 +23,11 @@ The official A2A SDK target has a separate dependency:
 pip install "a2a-sdk[http-server]>=1,<2" uvicorn
 ```
 
+The Go SDK JSON key matrix needs Go, Python 3, and curl. Run
+`sh testdata/mcp_go_sdk_key_alias/check.sh` from the repository root. It builds
+three pinned SDK releases in a temporary module and removes the servers after
+each scan.
+
 Two fixtures use the MCP Python SDK, `mcp_unauth_resources_server.py` and
 `mcp_modern_era_server.py`; the rest are plain Starlette. Both import
 `mcp.server.mcpserver.MCPServer`, so both need the v2 line: it renamed `FastMCP`
@@ -41,7 +46,7 @@ a run that treats it as a clean result is reporting coverage it does not have.
 ## Server Registry
 
 The bundled rule set is **22 A2A + 40 MCP = 62 rules**. Every rule has an
-in-process Go HTTP test server with vulnerable and control postures. The Python
+in-process Go HTTP test server with vulnerable and control postures. The
 servers below provide standalone live validation for selected rules; some fixtures
 also run in CI. `mcp-task-access-001`, `mcp-cache-scope-001`,
 `mcp-extension-consistency-001`,
@@ -71,6 +76,7 @@ fixtures only.
 | `mcp_new_rules_server.py` | 3100 | `mcp-prompt-unauth-001`, `mcp-tools-unauth-001`; `mcp-init-downgrade-001` needs the `downgrade` posture, see below |
 | `mcp_session_fixation_server.py` | 7786 | `mcp-session-fixation-001` |
 | `mcp_header_body_split_server.py` | 7789 | `mcp-header-body-split-001` (modern wire, medium indicator) |
+| `mcp_go_sdk_key_alias/server.go` | 7821 | Official Go SDK v1.3.0, v1.4.0, and v1.4.1 matrix for `mcp-json-key-alias-001`; `check.sh` runs the CLI and asserts no tool calls |
 | `mcp_sse_resume_replay_server.py` | 7790 | `mcp-sse-resume-replay-001` |
 | `mcp_oauth_metadata_ssrf_server.py` | 7791 | `mcp-oauth-metadata-ssrf-001` |
 | `mcp_secret_canary_server.py` | 7792 | `mcp-secret-canary-001` |

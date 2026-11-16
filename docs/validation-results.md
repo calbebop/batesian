@@ -13,12 +13,13 @@ reference implementations** instead: servers written by the protocol maintainers
 with no knowledge of Batesian.
 
 The fixture and third-party validation are now automated in CI.
-`.github/workflows/validation.yml` runs nightly and on dispatch, and exercises the
+`.github/workflows/validation.yml` runs on PRs, nightly, and on dispatch. It exercises the
 A2A false-positive gate against the auth-enforcing secured-agent fixture; the MCP
 property fixtures (probe-honesty, log opt-in, body size, session-as-credential);
 a third-party FastMCP server for MCP false-positive and true-positive coverage;
-and the OAuth DCR cleanup-and-report-leftovers gate. The per-rule outcomes below
-are the manual runs that established those gates.
+the Go SDK JSON key parser matrix; and the OAuth DCR cleanup-and-report-leftovers
+gate. The per-rule outcomes below are the manual runs that established those
+gates.
 
 ## Go SDK JSON key parsing (2026-11-15)
 
@@ -33,10 +34,12 @@ session. The handler returned JSON responses for the comparison.
 | v1.4.0 | Listed | Discarded | Listed |
 | v1.4.1 | Listed | Discarded | Discarded |
 
-The two accepted aliases match the upstream advisories. Batesian's rule tests
-cover the corresponding finding and rejection paths on both MCP wires. This
-manual SDK matrix checks the parser behavior; it is not a CI compatibility gate
-or proof that an intermediary can be bypassed.
+The two accepted aliases match the upstream advisories. The
+[`check.sh`](../testdata/mcp_go_sdk_key_alias/check.sh) matrix now runs the
+Batesian CLI against each SDK handler on PRs and nightly. It asserts the finding
+and clean outcomes and verifies no tool was invoked. The rule's Go tests also
+cover both MCP wires. This gate does not test an intermediary or prove a policy
+bypass.
 
 ---
 
