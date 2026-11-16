@@ -234,7 +234,7 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				if behaviour == enumOwnerBlind {
 					continue // implements the list, never returns anything
 				}
-				if behaviour == enumReverseOnly && !(caller == tk.owner || caller == "a" && tk.owner == "b") {
+				if behaviour == enumReverseOnly && caller != tk.owner && (caller != "a" || tk.owner != "b") {
 					continue
 				}
 				out = append(out, map[string]interface{}{"id": tk.id, "contextId": tk.ctxID})
