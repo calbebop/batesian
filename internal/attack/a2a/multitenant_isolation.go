@@ -162,7 +162,7 @@ func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, 
 // createTask tries v1 and v0.3 and keeps setup diagnostics from both.
 func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
-	v1Headers := tenantVersionHeaders(p.Headers, "1.0")
+	v1Headers := a2aVersionHeaders(p.Headers, "1.0")
 	requestID := "batesian-mt-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -180,7 +180,7 @@ func (e *MultiTenantIsolationExecutor) createTask(ctx context.Context, c *attack
 	if err != nil || !taskSetupReplyAccepted(resp, requestID) {
 		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
-		slashHeaders := tenantVersionHeaders(p.Headers, "")
+		slashHeaders := a2aVersionHeaders(p.Headers, "")
 		requestID += "-v03"
 		resp, err = c.POST(ctx, endpoint, slashHeaders, map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -225,19 +225,6 @@ type tenantReadOutcome struct {
 	unknown  bool
 }
 
-func tenantVersionHeaders(extra map[string]string, version string) map[string]string {
-	headers := make(map[string]string, len(extra)+1)
-	for key, value := range extra {
-		if !strings.EqualFold(key, "A2A-Version") {
-			headers[key] = value
-		}
-	}
-	if version != "" {
-		headers["A2A-Version"] = version
-	}
-	return headers
-}
-
 func advertisesDualJSONRPCVersions(ctx context.Context, client *attack.HTTPClient, baseURL, endpoint string) bool {
 	card, found := fetchDiscoveryCard(ctx, client, baseURL)
 	if !found {
@@ -268,8 +255,8 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 		method  string
 		headers map[string]string
 	}{
-		{"GetTask", tenantVersionHeaders(extraHeaders, "1.0")},
-		{"tasks/get", tenantVersionHeaders(extraHeaders, "")},
+		{"GetTask", a2aVersionHeaders(extraHeaders, "1.0")},
+		{"tasks/get", a2aVersionHeaders(extraHeaders, "")},
 	}
 	var result tenantRead
 	for index, shape := range shapes {

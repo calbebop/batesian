@@ -197,13 +197,11 @@ func (e *ExtensionDowngradeExecutor) sendMessage(ctx context.Context, c *attack.
 		if forceShape != "" && v.name != forceShape {
 			continue
 		}
-		headers := map[string]string{}
+		wireVersion := ""
 		if v.name == "v1.0" {
-			headers["A2A-Version"] = "1.0"
+			wireVersion = "1.0"
 		}
-		for k, val := range extra {
-			headers[k] = val
-		}
+		headers := a2aVersionHeaders(extra, wireVersion)
 		requestID := "batesian-ext-" + requestScope + "-" + v.name
 		params := map[string]interface{}{
 			"message": map[string]interface{}{

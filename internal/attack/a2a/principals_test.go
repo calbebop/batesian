@@ -58,6 +58,16 @@ func TestTwoPrincipals(t *testing.T) {
 		}
 	})
 
+	t.Run("protocol version is not an identity", func(t *testing.T) {
+		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
+			{Name: "a", Headers: map[string]string{"A2A-Version": "1.0"}},
+			{Name: "b", Headers: map[string]string{"a2a-version": "0.3"}},
+		}})
+		if !errors.Is(err, attack.ErrInconclusive) {
+			t.Fatalf("version headers must not establish separate principals, got %v", err)
+		}
+	})
+
 	t.Run("same token with distinct routing headers is unverified", func(t *testing.T) {
 		_, _, err := twoPrincipals(attack.Options{Principals: []attack.Principal{
 			{Name: "a", Token: "shared", Headers: map[string]string{"X-Tenant-Id": "a"}},
@@ -155,6 +165,7 @@ func TestPrincipalCredentialPresent(t *testing.T) {
 		{"anonymous", bare, target, nil, false},
 		{"bearer token", withToken, target, nil, true},
 		{"header-only credential", bare, target, map[string]string{"X-API-Key": "key-a"}, true},
+		{"version header only", bare, target, map[string]string{"a2a-version": "1.0"}, false},
 		{"empty override", withToken, target, map[string]string{"authorization": ""}, false},
 		{"empty override with another credential", withToken, target,
 			map[string]string{"authorization": "", "X-API-Key": "key-a"}, true},

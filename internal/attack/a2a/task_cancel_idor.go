@@ -137,10 +137,7 @@ func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, ran
 func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (string, setupObservation) {
 	var obs setupObservation
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range p.Headers {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(p.Headers, "1.0")
 	requestID := "batesian-cancel-create-" + p.Name + "-" + randID
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -159,7 +156,7 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 		requestID += "-v03"
-		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
+		resp, err = c.POST(ctx, endpoint, a2aVersionHeaders(p.Headers, ""), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
 			"method":  "message/send",
@@ -188,16 +185,13 @@ func (e *TaskCancelIDORExecutor) createTask(ctx context.Context, c *attack.HTTPC
 // cancelTask checks both wire names and confirms changes with an owner read.
 func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attack.HTTPClient, endpoint string,
 	extraHeaders, ownerHeaders map[string]string, taskID, randID, phase string) cancelProbe {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	shapes := []struct {
 		method  string
 		headers map[string]string
 	}{
 		{"CancelTask", v1Headers},
-		{"tasks/cancel", extraHeaders},
+		{"tasks/cancel", a2aVersionHeaders(extraHeaders, "")},
 	}
 	unsupported := 0
 	denied := 0
@@ -278,16 +272,13 @@ func (e *TaskCancelIDORExecutor) cancelTask(ctx context.Context, c, owner *attac
 
 // readTaskState checks both read methods and prefers a canceled observation.
 func (e *TaskCancelIDORExecutor) readTaskState(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, randID, phase string) taskStateRead {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	shapes := []struct {
 		method  string
 		headers map[string]string
 	}{
 		{"GetTask", v1Headers},
-		{"tasks/get", extraHeaders},
+		{"tasks/get", a2aVersionHeaders(extraHeaders, "")},
 	}
 	var read taskStateRead
 	for _, s := range shapes {

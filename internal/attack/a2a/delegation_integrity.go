@@ -143,10 +143,7 @@ func (e *DelegationIntegrityExecutor) consumeOwnedTask(bb *attack.Blackboard, a 
 // createTask tries both wire formats and retains setup failures.
 func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (taskID, contextID string, accepted bool, obs setupObservation) {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range p.Headers {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(p.Headers, "1.0")
 	requestID := "batesian-deleg-create-" + p.Name + "-" + randID + "-v1"
 	observe := func(resp *attack.Response) {
 		outcome := classifyTaskSetup("creating a probe task as principal "+p.Name, endpoint,
@@ -175,7 +172,7 @@ func (e *DelegationIntegrityExecutor) createTask(ctx context.Context, c *attack.
 	if err != nil || !delegationResult(resp, requestID) {
 		observe(resp)
 		requestID = "batesian-deleg-create-" + p.Name + "-" + randID + "-v03"
-		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
+		resp, err = c.POST(ctx, endpoint, a2aVersionHeaders(p.Headers, ""), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
 			"method":  "message/send",
@@ -209,10 +206,7 @@ func delegationResult(resp *attack.Response, requestID string) bool {
 
 // continueTask distinguishes denial from an unanswered probe.
 func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, contextID, marker string) continuationOutcome {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	requestID := "batesian-deleg-cont-" + marker + "-v1"
 	resp, err := c.POST(ctx, endpoint, v1Headers, map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -234,7 +228,7 @@ func (e *DelegationIntegrityExecutor) continueTask(ctx context.Context, c *attac
 		return first
 	}
 	requestID = "batesian-deleg-cont-" + marker + "-v03"
-	resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
+	resp, err = c.POST(ctx, endpoint, a2aVersionHeaders(extraHeaders, ""), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
 		"method":  "message/send",
@@ -315,16 +309,13 @@ func (e *DelegationIntegrityExecutor) waitForOwnerMarker(ctx context.Context, c 
 }
 
 func (e *DelegationIntegrityExecutor) ownerHistoryHasMarker(ctx context.Context, c *attack.HTTPClient, endpoint string, extraHeaders map[string]string, taskID, marker, randID string, attempt int) (readable, found bool) {
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	for _, shape := range []struct {
 		method  string
 		headers map[string]string
 	}{
 		{"GetTask", v1Headers},
-		{"tasks/get", extraHeaders},
+		{"tasks/get", a2aVersionHeaders(extraHeaders, "")},
 	} {
 		requestID := fmt.Sprintf("batesian-deleg-get-%s-%d-%s", randID, attempt, shape.method)
 		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{

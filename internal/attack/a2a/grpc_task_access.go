@@ -66,11 +66,7 @@ func (e *GRPCTaskAccessExecutor) Execute(ctx context.Context, target string, opt
 	}
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	if opts.DryRun {
-		cardHeaders := make(map[string]string, len(owner.Headers)+1)
-		for name, value := range owner.Headers {
-			cardHeaders[name] = value
-		}
-		cardHeaders["A2A-Version"] = "1.0"
+		cardHeaders := a2aVersionHeaders(owner.Headers, "1.0")
 		_, _ = principalClient(opts, vars, owner).GET(ctx,
 			endpoint.AppendPath(vars.BaseURL, cardPathPrimary), cardHeaders)
 		if opts.Recorder != nil {
@@ -170,13 +166,11 @@ func grpcDiscoveryCard(ctx context.Context, client *attack.HTTPClient, base stri
 	extraHeaders map[string]string) (a2aDiscoveryCard, bool) {
 	cardURL := endpoint.AppendPath(base, cardPathPrimary)
 	for _, versioned := range []bool{true, false} {
-		headers := make(map[string]string, len(extraHeaders)+1)
-		for name, value := range extraHeaders {
-			headers[name] = value
-		}
+		version := ""
 		if versioned {
-			headers["A2A-Version"] = "1.0"
+			version = "1.0"
 		}
+		headers := a2aVersionHeaders(extraHeaders, version)
 		resp, err := client.GET(ctx, cardURL, headers)
 		if err != nil || resp == nil || !resp.IsSuccess() || !resp.IsJSON() {
 			continue
