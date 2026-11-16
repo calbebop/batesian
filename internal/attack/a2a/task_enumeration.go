@@ -87,46 +87,94 @@ func (e *TaskEnumerationExecutor) Execute(ctx context.Context, target string, op
 
 func (e *TaskEnumerationExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
-	taskID, obs := e.createTask(ctx, clientA, endpoint, a, randID)
-	if taskID == "" {
-		return nil, obs.err()
+	var incomplete error
+	firstTaskID := ""
+	for _, direction := range []struct {
+		owner, reader             attack.Principal
+		ownerClient, readerClient *attack.HTTPClient
+	}{
+		{a, b, clientA, clientB},
+		{b, a, clientB, clientA},
+	} {
+		probeID := randID + "-" + direction.owner.Name
+		taskID, obs := e.createTask(ctx, direction.ownerClient, endpoint, direction.owner, probeID)
+		if taskID == "" {
+			incomplete = errors.Join(incomplete, obs.err())
+			continue
+		}
+		if firstTaskID == taskID {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: both principals received the same JSON-RPC task ID",
+				attack.ErrInconclusive))
+			continue
+		}
+		firstTaskID = taskID
+		list := func(c *attack.HTTPClient, headers map[string]string, phase string) taskListing {
+			return listJSONRPCTasks(ctx, c, endpoint, headers, probeID, taskID, phase, true)
+		}
+		findings, err := e.probeListing(endpoint, taskID, direction.owner, direction.reader,
+			direction.ownerClient, direction.readerClient, unauthClient, list)
+		incomplete = errors.Join(incomplete, obs.partialErr(), err)
+		if len(findings) != 0 {
+			return findings, incomplete
+		}
 	}
-	list := func(c *attack.HTTPClient, headers map[string]string, phase string) taskListing {
-		return listJSONRPCTasks(ctx, c, endpoint, headers, randID, taskID, phase, true)
-	}
-	findings, err := e.probeListing(endpoint, taskID, a, b, clientA, clientB, unauthClient, list)
-	return findings, errors.Join(obs.partialErr(), err)
+	return nil, incomplete
 }
 
 func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listURL, version, randID string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error, bool) {
-	headers := restVersionHeaders(version, a.Headers)
-	if version == "1.0" {
-		headers["Content-Type"] = "application/a2a+json"
+	var incomplete error
+	tested := false
+	firstTaskID := ""
+	for _, direction := range []struct {
+		owner, reader             attack.Principal
+		ownerClient, readerClient *attack.HTTPClient
+	}{
+		{a, b, clientA, clientB},
+		{b, a, clientB, clientA},
+	} {
+		headers := restVersionHeaders(version, direction.owner.Headers)
+		if version == "1.0" {
+			headers["Content-Type"] = "application/a2a+json"
+		}
+		messageID := randID + "-" + version + "-" + direction.owner.Name
+		resp, err := direction.ownerClient.POST(ctx, sendURL, headers, restTaskSendRequest(messageID, "ping", version))
+		if err != nil || resp == nil {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: REST task creation at %s did not answer",
+				attack.ErrInconclusive, sendURL))
+			continue
+		}
+		if resp.StatusCode == 404 {
+			continue
+		}
+		taskID := ""
+		if resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
+			taskID = restTaskID(resp.Body)
+		}
+		if taskID == "" {
+			incomplete = errors.Join(incomplete, classifyTaskSetup("creating a REST probe task as principal "+direction.owner.Name,
+				sendURL, principalCredentialPresent(direction.ownerClient, sendURL, direction.owner.Headers), resp).err())
+			continue
+		}
+		if firstTaskID == taskID {
+			incomplete = errors.Join(incomplete, fmt.Errorf("%w: both principals received the same REST task ID",
+				attack.ErrInconclusive))
+			continue
+		}
+		firstTaskID = taskID
+		tested = true
+		list := func(c *attack.HTTPClient, principalHeaders map[string]string, _ string) taskListing {
+			ids, outcome := e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
+			return taskListing{ids: ids, outcome: outcome}
+		}
+		findings, err := e.probeListing(listURL, taskID, direction.owner, direction.reader,
+			direction.ownerClient, direction.readerClient, unauthClient, list)
+		incomplete = errors.Join(incomplete, err)
+		if len(findings) != 0 {
+			return findings, incomplete, tested
+		}
 	}
-	messageID := randID + "-" + version
-	body := restTaskSendRequest(messageID, "ping", version)
-	resp, err := clientA.POST(ctx, sendURL, headers, body)
-	if err != nil || resp == nil {
-		return nil, fmt.Errorf("%w: REST task creation at %s did not answer", attack.ErrInconclusive, sendURL), false
-	}
-	if resp.StatusCode == 404 {
-		return nil, nil, false
-	}
-	taskID := ""
-	if resp.IsSuccess() && resp.IsJSON() && !isJSONRPCError(resp.Body) {
-		taskID = restTaskID(resp.Body)
-	}
-	if taskID == "" {
-		return nil, classifyTaskSetup("creating a REST probe task as principal "+a.Name,
-			sendURL, principalCredentialPresent(clientA, sendURL, a.Headers), resp).err(), false
-	}
-	list := func(c *attack.HTTPClient, principalHeaders map[string]string, _ string) taskListing {
-		ids, outcome := e.listRESTTasks(ctx, c, listURL, restVersionHeaders(version, principalHeaders), taskID)
-		return taskListing{ids: ids, outcome: outcome}
-	}
-	findings, err := e.probeListing(listURL, taskID, a, b, clientA, clientB, unauthClient, list)
-	return findings, err, true
+	return nil, incomplete, tested
 }
 
 func restVersionHeaders(version string, extra map[string]string) map[string]string {
