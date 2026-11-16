@@ -4,9 +4,9 @@ info:
   author: batesian
   severity: high
   description: |
-    Creates a throwaway task as one principal and confirms its live state.
-    Probes CancelTask and tasks/cancel anonymously, then as a second principal
-    only if anonymous cancellation is conclusively denied.
+    Creates a throwaway task for each tested owner and confirms its live state.
+    Probes CancelTask and tasks/cancel anonymously, then in both principal
+    directions only if anonymous cancellation is conclusively denied.
     Reports observed anonymous or cross-principal cancellation only when a matching
     successful cancel reply and an owner read-back both show the task canceled.
     These are indicators until the agent's authorization policy establishes that
