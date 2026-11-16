@@ -124,7 +124,7 @@ func (e *GRPCTaskAccessExecutor) checkGRPCListScope(ctx context.Context, client 
 	denials []attack.ExpectedDenial) ([]attack.Finding, error) {
 	owned := grpcListTask(ctx, client, timeout, ownerHeaders, taskID, marker)
 	if owned.unsupported {
-		return nil, nil
+		return nil, fmt.Errorf("%w: owner gRPC ListTasks is unavailable", attack.ErrInconclusive)
 	}
 	if owned.err != nil || !owned.matched {
 		return nil, fmt.Errorf("%w: owner gRPC ListTasks did not show the marked task", attack.ErrInconclusive)

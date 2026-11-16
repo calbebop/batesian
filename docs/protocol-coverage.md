@@ -46,11 +46,13 @@ JSON-RPC, and HTTP+JSON conformance. Batesian's opt-in gRPC rule checks both
 directions of a v1.0 `SendMessage`/`GetTask` authorization boundary with the
 official Go SDK handler as its compatibility fixture. The configured endpoint
 must match a card-advertised address, and plaintext is limited to loopback.
-The rule uses per-call deadlines, bounded responses, and no streams.
+The rule uses per-call deadlines, bounded list pages and responses, and samples
+only the first event of an advertised task subscription.
 
 Other A2A rules still use JSON-RPC and HTTP+JSON. gRPC task access is not broad
-transport parity: v0.3, streaming, push, tenant-scoped interfaces, and path-based
-gRPC proxies remain untested. The TCK validates protocol behavior but does not
+transport parity: v0.3, streaming beyond the first subscription event, push,
+tenant-scoped interfaces, and path-based gRPC proxies remain untested. The TCK
+validates protocol behavior but does not
 establish a security finding. A gRPC-only card must not make HTTP rules look
 clean when their bindings are unavailable.
 
