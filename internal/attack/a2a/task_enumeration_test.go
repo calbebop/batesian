@@ -51,6 +51,8 @@ type enumAgentConfig struct {
 	ownerListCode    int
 	v1CreateStatus   int
 	v1CreateAbsent   bool
+	v1ListAbsent     bool
+	strictVersions   bool
 	listReplyMode    string
 	seedPrivateTask  bool
 	sameTaskID       bool
@@ -102,6 +104,16 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				"error": map[string]interface{}{"code": code, "message": msg},
 			})
 		}
+		if config.strictVersions && method != "" {
+			wantVersion := "1.0"
+			if strings.Contains(method, "/") {
+				wantVersion = ""
+			}
+			if r.Header.Get("A2A-Version") != wantVersion {
+				rpcErr(-32601, "unsupported wire version")
+				return
+			}
+		}
 		if config.requireTenant && method != "" && !strings.Contains(method, "/") {
 			params, _ := req["params"].(map[string]interface{})
 			if params["tenant"] != "enum" {
@@ -146,6 +158,10 @@ func enumAgent(t *testing.T, behaviour enumBehaviour, options ...enumAgentConfig
 				}},
 			})
 		case "ListTasks", "tasks/list":
+			if method == "ListTasks" && config.v1ListAbsent {
+				rpcErr(-32601, "Method not found")
+				return
+			}
 			switch config.listReplyMode {
 			case "wrong-owner-result":
 				if caller == "a" {
@@ -310,6 +326,28 @@ func TestTaskEnumeration_ReverseOnlyListingFires(t *testing.T) {
 		!strings.Contains(findings[0].Evidence, "listing principal: a") ||
 		strings.Contains(findings[0].Description+findings[0].Evidence, "task-2") {
 		t.Fatalf("reverse finding lacks attribution or exposes task ID: %+v", findings[0])
+	}
+}
+
+func TestTaskEnumeration_ConfiguredVersionCannotChangeProbeWire(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config enumAgentConfig
+	}{
+		{"modern", enumAgentConfig{strictVersions: true}},
+		{"legacy fallback", enumAgentConfig{strictVersions: true, v1CreateAbsent: true, v1ListAbsent: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := enumAgent(t, enumUnscoped, tc.config)
+			defer srv.Close()
+			opts := enumOpts()
+			opts.Principals[0].Headers = map[string]string{"A2A-Version": "9.9"}
+			opts.Principals[1].Headers = map[string]string{"a2a-version": "9.9"}
+			findings, err := runEnum(t, srv, opts)
+			if err != nil || len(findings) != 1 {
+				t.Fatalf("configured version changed the probe wire: findings=%+v err=%v", findings, err)
+			}
+		})
 	}
 }
 

@@ -182,10 +182,7 @@ func (r contextSendResult) partialErr(what string) error {
 func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	extraHeaders map[string]string, contextID, text, randID, what string) contextSendResult {
 	var result contextSendResult
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	requestID := "batesian-ctxfix-send-" + randID + "-v1"
 	acceptReply := func(resp *attack.Response, err error) bool {
 		if err != nil || resp == nil || !resp.IsSuccess() {
@@ -230,7 +227,7 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 		result.denied[0] = authRejected(resp)
 		observe(resp)
 		requestID = "batesian-ctxfix-send-" + randID + "-v03"
-		resp, err = c.POST(ctx, endpoint, extraHeaders, map[string]interface{}{
+		resp, err = c.POST(ctx, endpoint, a2aVersionHeaders(extraHeaders, ""), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
 			"method":  "message/send",
@@ -269,16 +266,13 @@ func (e *ContextFixationExecutor) sendUnderContext(ctx context.Context, c *attac
 func (e *ContextFixationExecutor) taskHistoryContains(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	extraHeaders map[string]string, taskID, marker, randID string) (read, contains bool, obs setupObservation, partial bool) {
 	what := "reading the task history back"
-	v1Headers := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extraHeaders {
-		v1Headers[k] = v
-	}
+	v1Headers := a2aVersionHeaders(extraHeaders, "1.0")
 	for _, shape := range []struct {
 		method  string
 		headers map[string]string
 	}{
 		{"GetTask", v1Headers},
-		{"tasks/get", extraHeaders},
+		{"tasks/get", a2aVersionHeaders(extraHeaders, "")},
 	} {
 		requestID := "batesian-ctxfix-get-" + randID + "-" + shape.method
 		resp, err := c.POST(ctx, endpoint, shape.headers, map[string]interface{}{

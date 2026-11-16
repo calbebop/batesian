@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/calbebop/batesian/internal/attack"
 	endpointpkg "github.com/calbebop/batesian/internal/endpoint"
@@ -178,16 +177,10 @@ func (e *TaskEnumerationExecutor) probeREST(ctx context.Context, sendURL, listUR
 }
 
 func restVersionHeaders(version string, extra map[string]string) map[string]string {
-	headers := map[string]string{}
-	for key, value := range extra {
-		if !strings.EqualFold(key, "A2A-Version") {
-			headers[key] = value
-		}
-	}
 	if version == "1.0" {
-		headers["A2A-Version"] = version
+		return a2aVersionHeaders(extra, version)
 	}
-	return headers
+	return a2aVersionHeaders(extra, "")
 }
 
 func (e *TaskEnumerationExecutor) probeListing(endpoint, taskID string, a, b attack.Principal,
@@ -278,10 +271,10 @@ func listJSONRPCTasks(ctx context.Context, c *attack.HTTPClient, endpoint string
 		headers map[string]string
 	}
 	attempts := []attempt{
-		{"ListTasks", withV1Version(extraHeaders)},
+		{"ListTasks", a2aVersionHeaders(extraHeaders, "1.0")},
 	}
 	if legacyFallback {
-		attempts = append(attempts, attempt{"tasks/list", extraHeaders})
+		attempts = append(attempts, attempt{"tasks/list", a2aVersionHeaders(extraHeaders, "")})
 	}
 
 	absentEverywhere := true
@@ -425,23 +418,13 @@ func parseTaskListPage(raw json.RawMessage) ([]string, string, bool) {
 	return ids, *page.NextPageToken, true
 }
 
-// withV1Version adds the v1.0 revision header to a principal's own headers without
-// mutating them.
-func withV1Version(extra map[string]string) map[string]string {
-	h := map[string]string{"A2A-Version": "1.0"}
-	for k, v := range extra {
-		h[k] = v
-	}
-	return h
-}
-
 // createTask establishes a task owned by p, trying the v1.0 method name then the v0.3
 // one. The observation is returned so a caller that got no task can say why rather
 // than reporting a scoped listing it never tested.
 func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTPClient, endpoint string,
 	p attack.Principal, randID string) (taskID string, obs setupObservation) {
 	requestID := "batesian-enum-create-" + p.Name + "-" + randID
-	resp, err := c.POST(ctx, endpoint, withV1Version(p.Headers), map[string]interface{}{
+	resp, err := c.POST(ctx, endpoint, a2aVersionHeaders(p.Headers, "1.0"), map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      requestID,
 		"method":  "SendMessage",
@@ -458,7 +441,7 @@ func (e *TaskEnumerationExecutor) createTask(ctx context.Context, c *attack.HTTP
 		obs.observe(correlatedTaskSetup("creating a probe task as principal "+p.Name, endpoint,
 			principalCredentialPresent(c, endpoint, p.Headers), resp, requestID))
 		requestID += "-v03"
-		resp, err = c.POST(ctx, endpoint, p.Headers, map[string]interface{}{
+		resp, err = c.POST(ctx, endpoint, a2aVersionHeaders(p.Headers, ""), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      requestID,
 			"method":  "message/send",

@@ -38,6 +38,9 @@ func principalHeaders(p attack.Principal) map[string]string {
 	}
 	for name, value := range p.Headers {
 		key := strings.ToLower(name)
+		if key == "a2a-version" {
+			continue
+		}
 		if key == "authorization" {
 			value = canonicalAuthorization(value)
 		}
@@ -66,7 +69,7 @@ func principalCredentialPresent(c *attack.HTTPClient, endpoint string, extra map
 	for name, value := range extra {
 		if strings.EqualFold(name, "Authorization") {
 			authorization, overridesAuthorization = value, true
-		} else if strings.TrimSpace(value) != "" {
+		} else if !strings.EqualFold(name, "A2A-Version") && strings.TrimSpace(value) != "" {
 			otherCredential = true
 		}
 	}
