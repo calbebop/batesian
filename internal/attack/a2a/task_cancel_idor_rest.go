@@ -29,21 +29,38 @@ func (e *TaskCancelIDORExecutor) probeREST(ctx context.Context, target, randID s
 			{"/message:send", "/tasks", "1.0"},
 			{"/v1/message:send", "/v1/tasks", "0.3.0"},
 		} {
-			routeID := fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version)
-			findings, err, tested := e.probeRESTRoute(ctx, endpoint.AppendPath(base, route.send),
-				endpoint.AppendPath(base, route.tasks), route.version, routeID,
-				a, b, owner, other, anon)
-			if len(findings) != 0 {
-				return findings, errors.Join(incomplete, err), true
-			}
-			baseTested = baseTested || tested
-			anyTested = anyTested || tested
-			if err != nil {
-				if tested && incomplete == nil {
-					incomplete = err
-				} else if setupErr == nil {
-					setupErr = err
+			var routeErr error
+			var routeTested [2]bool
+			seenTaskIDs := map[string]bool{}
+			for index, direction := range []struct {
+				owner, reader             attack.Principal
+				ownerClient, readerClient *attack.HTTPClient
+			}{
+				{a, b, owner, other},
+				{b, a, other, owner},
+			} {
+				routeID := fmt.Sprintf("%s-%d-%s-%d", randID, baseIndex, route.version, index)
+				findings, err, tested := e.probeRESTRoute(ctx, endpoint.AppendPath(base, route.send),
+					endpoint.AppendPath(base, route.tasks), route.version, routeID,
+					direction.owner, direction.reader, direction.ownerClient, direction.readerClient,
+					anon, seenTaskIDs)
+				routeTested[index] = tested
+				routeErr = errors.Join(routeErr, err)
+				if len(findings) != 0 {
+					return findings, errors.Join(incomplete, routeErr), true
 				}
+			}
+			if routeTested[0] != routeTested[1] {
+				routeErr = errors.Join(routeErr, fmt.Errorf("%w: only one principal's REST task was tested on this route",
+					attack.ErrInconclusive))
+			}
+			routeCovered := routeTested[0] || routeTested[1]
+			baseTested = baseTested || routeCovered
+			anyTested = anyTested || routeCovered
+			if routeCovered {
+				incomplete = errors.Join(incomplete, routeErr)
+			} else {
+				setupErr = errors.Join(setupErr, routeErr)
 			}
 		}
 		if !baseTested && incomplete == nil {
@@ -59,7 +76,8 @@ func (e *TaskCancelIDORExecutor) probeREST(ctx context.Context, target, randID s
 }
 
 func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, tasksURL, version, randID string,
-	a, b attack.Principal, owner, other, anon *attack.HTTPClient) ([]attack.Finding, error, bool) {
+	a, b attack.Principal, owner, other, anon *attack.HTTPClient,
+	seenTaskIDs map[string]bool) ([]attack.Finding, error, bool) {
 	headers := restVersionHeaders(version, a.Headers)
 	sendHeaders := restVersionHeaders(version, a.Headers)
 	if version == "1.0" {
@@ -81,6 +99,10 @@ func (e *TaskCancelIDORExecutor) probeRESTRoute(ctx context.Context, sendURL, ta
 		return nil, classifyTaskSetup("creating a REST cancel probe task as principal "+a.Name,
 			sendURL, principalCredentialPresent(owner, sendURL, a.Headers), resp).err(), false
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same REST task ID", attack.ErrInconclusive), true
+	}
+	seenTaskIDs[taskID] = true
 	if !principalCredentialPresent(owner, sendURL, a.Headers) {
 		return nil, fmt.Errorf("%w: REST task creation at %s used no owner credential", attack.ErrInconclusive, sendURL), true
 	}

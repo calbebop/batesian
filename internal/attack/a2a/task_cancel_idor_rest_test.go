@@ -25,6 +25,9 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 		taskID = "task/a?b"
 	}
 	state := "submitted"
+	readerState := "submitted"
+	twoOwnerMode := mode == "secure" || mode == "no-cancel" || mode == "reverse-only" ||
+		mode == "same-task-id" || mode == "first-setup-fails-reverse-leak"
 	pendingIndependentCancel := false
 	if mode == "terminal" {
 		state = "completed"
@@ -95,7 +98,11 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			if caller != "a" {
+			if mode == "first-setup-fails-reverse-leak" && caller == "a" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if caller != "a" && (!twoOwnerMode || caller != "b") {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -112,7 +119,11 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			task := map[string]interface{}{"id": taskID}
+			createdID := taskID
+			if caller == "b" && mode != "same-task-id" {
+				createdID = "rest-reader-task"
+			}
+			task := map[string]interface{}{"id": createdID}
 			if mode != "id-only" {
 				task["status"] = map[string]string{"state": "submitted"}
 			}
@@ -124,7 +135,17 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			if caller != "a" || mode == "owner-blind" {
+			currentID, taskOwner := taskID, "a"
+			if twoOwnerMode {
+				requestedID := strings.TrimPrefix(r.URL.EscapedPath(), taskPath)
+				if requestedID == "rest-reader-task" {
+					currentID, taskOwner = requestedID, "b"
+				} else if requestedID != taskID {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+			}
+			if caller != taskOwner || mode == "owner-blind" {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
@@ -134,12 +155,19 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				pendingIndependentCancel = false
 			}
 			current := state
+			if taskOwner == "b" {
+				current = readerState
+			}
 			mu.Unlock()
-			writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": current}})
+			writeJSON(w, map[string]interface{}{"id": currentID, "status": map[string]string{"state": current}})
 			return
 		}
 		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.EscapedPath(), taskPath) &&
 			strings.HasSuffix(r.URL.EscapedPath(), ":cancel") {
+			currentID, taskOwner := taskID, "a"
+			if twoOwnerMode && strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), taskPath), ":cancel") == "rest-reader-task" {
+				currentID, taskOwner = "rest-reader-task", "b"
+			}
 			mu.Lock()
 			hits = append(hits, caller+" "+r.URL.EscapedPath())
 			mu.Unlock()
@@ -152,7 +180,7 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				Name string `json:"name"`
 			}
 			if json.NewDecoder(r.Body).Decode(&body) != nil ||
-				(!legacy && body.ID != taskID) || (legacy && body.Name != "tasks/"+taskID) {
+				(!legacy && body.ID != currentID) || (legacy && body.Name != "tasks/"+currentID) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -198,6 +226,10 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 				}
 				return
 			}
+			if mode == "secure" && caller != taskOwner {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			if mode == "no-cancel" {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -208,14 +240,18 @@ func restCancelAgent(t *testing.T, mode string, legacy, dual bool) (*httptest.Se
 			}
 			if mode != "unpersisted" && mode != "cross-unpersisted" {
 				mu.Lock()
-				state = "canceled"
+				if taskOwner == "b" {
+					readerState = "canceled"
+				} else {
+					state = "canceled"
+				}
 				mu.Unlock()
 			}
 			if mode == "anon-mutate-403" || mode == "cross-mutate-403" {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			writeJSON(w, map[string]interface{}{"id": taskID, "status": map[string]string{"state": "canceled"}})
+			writeJSON(w, map[string]interface{}{"id": currentID, "status": map[string]string{"state": "canceled"}})
 			return
 		}
 		http.NotFound(w, r)
@@ -232,9 +268,10 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 	}{
 		{"REST-only anonymous cancel", "anonymous-leak", false, false, "without authentication", false},
 		{"legacy REST anonymous cancel", "anonymous-leak", true, false, "without authentication", false},
-		{"dual binding REST cancel", "cross-leak", false, true, "non-owning", false},
+		{"dual binding REST cancel", "cross-leak", false, true, "non-owning", true},
 		{"dual binding RPC unavailable", "rpc-unavailable", false, true, "non-owning", true},
 		{"REST-only cross-principal cancel", "cross-leak", false, false, "non-owning", false},
+		{"reverse task creation refused", "reverse-setup-fails", false, false, "", true},
 		{"off-origin card pinned", "off-origin", false, false, "non-owning", false},
 		{"task ID escaped", "escaped-id", false, false, "non-owning", false},
 		{"anonymous response denied after mutation", "anon-mutate-403", false, false, "", true},
@@ -306,6 +343,65 @@ func TestTaskCancelIDOR_REST(t *testing.T) {
 				t.Fatalf("ID-only reply triggered cancellation: %v", gotHits)
 			}
 		})
+	}
+}
+
+func TestTaskCancelIDOR_REST_ReverseOnly(t *testing.T) {
+	srv, _, _ := restCancelAgent(t, "reverse-only", false, false)
+	defer srv.Close()
+	findings, err := a2a.NewTaskCancelIDORExecutor(attack.RuleContext{
+		ID: "a2a-task-cancel-idor-001", Name: "A2A Cross-Principal Task Cancellation",
+	}).Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Token: "tok-a", Tenant: "A"},
+			{Name: "tenant-b", Token: "tok-b", Tenant: "B"},
+		},
+	})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("reverse-only REST cancellation: findings=%+v err=%v", findings, err)
+	}
+	access := findings[0].Access
+	if access == nil || access.Owner != "tenant-b" || access.Caller != "tenant-a" ||
+		access.OwnerTenant != "B" || access.CallerTenant != "A" {
+		t.Fatalf("reverse REST finding has wrong attribution: %+v", findings[0])
+	}
+	assertOpaqueTaskFinding(t, findings[0], "rest-owner-task", "rest-reader-task")
+}
+
+func TestTaskCancelIDOR_REST_ReverseFindingRetainsSetupFailure(t *testing.T) {
+	srv, _, _ := restCancelAgent(t, "first-setup-fails-reverse-leak", false, false)
+	defer srv.Close()
+	findings, err := a2a.NewTaskCancelIDORExecutor(attack.RuleContext{
+		ID: "a2a-task-cancel-idor-001", Name: "A2A Cross-Principal Task Cancellation",
+	}).Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Token: "tok-a", Tenant: "A"},
+			{Name: "tenant-b", Token: "tok-b", Tenant: "B"},
+		},
+	})
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		findings[0].Access == nil || findings[0].Access.Owner != "tenant-b" {
+		t.Fatalf("reverse REST finding lost incomplete forward setup: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskCancelIDOR_REST_ReusedTaskIDIsIncomplete(t *testing.T) {
+	srv, _, _ := restCancelAgent(t, "same-task-id", false, false)
+	defer srv.Close()
+	findings, err := a2a.NewTaskCancelIDORExecutor(attack.RuleContext{
+		ID: "a2a-task-cancel-idor-001", Name: "A2A Cross-Principal Task Cancellation",
+	}).Execute(context.Background(), srv.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals: []attack.Principal{
+			{Name: "tenant-a", Token: "tok-a", Tenant: "A"},
+			{Name: "tenant-b", Token: "tok-b", Tenant: "B"},
+		},
+	})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "same REST task ID") || strings.Contains(err.Error(), "rest-owner-task") {
+		t.Fatalf("reused REST task ID was judged: findings=%+v err=%v", findings, err)
 	}
 }
 

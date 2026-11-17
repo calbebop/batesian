@@ -688,17 +688,17 @@ left unprotected on its own, giving an attacker a targeted way to terminate othe
 principals' tasks. Needs two authenticated principals and reports two observed
 cancellation outcomes:
 
-- **Unauthenticated cancellation (CWE-862).** The rule creates a task as A, then
-  cancels it with no credentials. A matching successful cancel reply and an
-  owner read-back showing `canceled` confirm the action occurred.
+- **Unauthenticated cancellation (CWE-862).** For each tested owner, the rule
+  creates a task and tries to cancel it with no credentials. A matching success
+  reply and owner read-back showing `canceled` confirm the action occurred.
 - **Cross-principal cancellation (CWE-639).** If the unauthenticated cancel is
-  rejected (so auth is enforced), the rule cancels A's task as the wrong principal
-  B. An **indicator** is raised only when B's cancel returns a matching
-  success and a read-back as owner A shows the task is now `canceled`.
+  rejected, the rule tries B against A's task and A against B's task. An
+  **indicator** requires a matching success reply and an owner read-back showing
+  the task is now `canceled`.
 
 A denial followed by an independently canceled task is inconclusive. A successful
-cross-principal cancellation is not called IDOR without a policy that forbids B's
-access to A's task. An exact `expected_denials` entry for `a2a.tasks.cancel`
+cross-principal cancellation is not called IDOR without a policy that forbids the
+caller's access to the owner's task. An exact `expected_denials` entry for `a2a.tasks.cancel`
 can confirm the observed cancellation when it names the denied caller and owner.
 
 A server that rejects the wrong-principal cancel produces no finding: the
@@ -709,7 +709,10 @@ credential, so the rule reports **not tested**; and a server implementing no
 cancel method on either wire is not applicable. The rule creates and cancels its
 own throwaway task; it never cancels a pre-existing one. Against a server that
 completes tasks almost immediately, the probe task may be terminal before it can
-be canceled, in which case the rule reports not tested.
+be canceled, in which case the rule reports not tested. A direction that cannot
+create or read its task remains incomplete; a finding from the other direction
+is retained. The rule stops after its first finding.
+
 Findings retain the owner state change and caller relationship but omit the
 task ID. Created task IDs remain in target objects for follow-up.
 

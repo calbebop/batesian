@@ -88,11 +88,37 @@ func (e *TaskCancelIDORExecutor) Execute(ctx context.Context, target string, opt
 
 func (e *TaskCancelIDORExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient) ([]attack.Finding, error) {
-	// Create and read back a live task owned by A.
+	var incomplete error
+	seenTaskIDs := map[string]bool{}
+	for index, direction := range []struct {
+		owner, reader             attack.Principal
+		ownerClient, readerClient *attack.HTTPClient
+	}{
+		{a, b, clientA, clientB},
+		{b, a, clientB, clientA},
+	} {
+		findings, err := e.probeJSONRPCDirection(ctx, endpoint, fmt.Sprintf("%s-%d", randID, index),
+			direction.owner, direction.reader, direction.ownerClient, direction.readerClient,
+			unauthClient, seenTaskIDs)
+		incomplete = errors.Join(incomplete, err)
+		if len(findings) != 0 {
+			return findings, incomplete
+		}
+	}
+	return nil, incomplete
+}
+
+func (e *TaskCancelIDORExecutor) probeJSONRPCDirection(ctx context.Context, endpoint, randID string,
+	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient,
+	seenTaskIDs map[string]bool) ([]attack.Finding, error) {
 	taskID, obs := e.createTask(ctx, clientA, endpoint, a, randID)
 	if taskID == "" {
 		return nil, obs.err()
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same JSON-RPC task ID", attack.ErrInconclusive)
+	}
+	seenTaskIDs[taskID] = true
 	partial := obs.partialErr()
 	baseline := e.readTaskState(ctx, clientA, endpoint, a.Headers, taskID, randID, "baseline")
 	if baseline.incomplete {

@@ -88,12 +88,20 @@ func cancelServer(mode string) *httptest.Server {
 
 		switch method {
 		case "SendMessage", "message/send":
+			if mode == "first-setup-fails-reverse-leak" && tok == "tok-a" ||
+				mode == "reverse-setup-fails" && tok == "tok-b" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			if mode == "wrong-v1-create" && method == "SendMessage" {
 				id = "other-request"
 			}
 			mu.Lock()
 			counter++
 			tid := fmt.Sprintf("task-%d", counter)
+			if mode == "same-task-id" {
+				tid = "shared-task"
+			}
 			state := "submitted"
 			if mode == "already-canceled" {
 				state = "canceled"
@@ -104,6 +112,10 @@ func cancelServer(mode string) *httptest.Server {
 				"status": map[string]interface{}{"state": "submitted"}})
 
 		case "CancelTask", "tasks/cancel":
+			mu.Lock()
+			stored := store[taskID]
+			crossCaller := stored != nil && tok != "" && tok != stored.owner
+			mu.Unlock()
 			if mode == "wrong-task-independent-cancel" && tok == "" {
 				mu.Lock()
 				pendingIndependentCancel = true
@@ -120,7 +132,7 @@ func cancelServer(mode string) *httptest.Server {
 			}
 			if strings.HasPrefix(requestID, "batesian-cancel-") {
 				if mode == "wrong-anon-cancel-error" && tok == "" ||
-					mode == "wrong-cross-cancel-error" && tok == "tok-b" {
+					mode == "wrong-cross-cancel-error" && crossCaller {
 					id = "other-request"
 					rpcErr(-32001, "Task not found")
 					return
@@ -131,7 +143,7 @@ func cancelServer(mode string) *httptest.Server {
 					return
 				}
 			}
-			if mode == "http-error-b-503" && tok == "tok-b" {
+			if mode == "http-error-b-503" && crossCaller {
 				if method == "CancelTask" {
 					w.WriteHeader(http.StatusServiceUnavailable)
 					rpcErr(-32001, "Task not found")
@@ -199,7 +211,7 @@ func cancelServer(mode string) *httptest.Server {
 			if method == "CancelTask" &&
 				((mode == "mutate-then-403" && tok == "") ||
 					(mode == "mutate-then-notfound" && tok == "") ||
-					(mode == "b-mutate-then-403" && tok == "tok-b")) {
+					(mode == "b-mutate-then-403" && crossCaller)) {
 				mu.Lock()
 				if t := store[taskID]; t != nil {
 					t.state = "canceled"
@@ -244,7 +256,9 @@ func cancelServer(mode string) *httptest.Server {
 			}
 			mu.Lock()
 			t := store[taskID]
-			if (mode == "secure" || mode == "anon-hidden-secure") && (t == nil || t.owner != tok) {
+			if (mode == "secure" || mode == "anon-hidden-secure" || mode == "same-task-id" ||
+				mode == "reverse-setup-fails" ||
+				mode == "reverse-only" && t != nil && t.owner == "tok-a") && (t == nil || t.owner != tok) {
 				mu.Unlock()
 				w.WriteHeader(http.StatusForbidden)
 				return
@@ -307,8 +321,6 @@ func runTaskCancel(t *testing.T, srv *httptest.Server) ([]attack.Finding, error)
 	})
 }
 
-// TestTaskCancelIDOR_CrossPrincipal: unauth cancel rejected, but a different
-// authenticated principal cancels the owner's task => confirmed IDOR.
 func TestTaskCancelIDOR_CrossPrincipal(t *testing.T) {
 	srv := cancelServer("vuln")
 	defer srv.Close()
@@ -329,6 +341,51 @@ func TestTaskCancelIDOR_CrossPrincipal(t *testing.T) {
 	}
 	if f.Access == nil || f.Access.Operation != attack.A2ATasksCancel || f.Access.Caller != "tenant-b" || f.Access.Owner != "tenant-a" || f.Access.CallerTenant != "B" || f.Access.OwnerTenant != "A" {
 		t.Errorf("cancel needs owner/caller access metadata: %+v", f.Access)
+	}
+}
+
+func TestTaskCancelIDOR_ReverseOnly(t *testing.T) {
+	srv := cancelServer("reverse-only")
+	defer srv.Close()
+
+	findings, err := runTaskCancel(t, srv)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("reverse-only cancellation: findings=%+v err=%v", findings, err)
+	}
+	access := findings[0].Access
+	if access == nil || access.Owner != "tenant-b" || access.Caller != "tenant-a" ||
+		access.OwnerTenant != "B" || access.CallerTenant != "A" {
+		t.Fatalf("reverse finding has wrong attribution: %+v", findings[0])
+	}
+	assertOpaqueTaskFinding(t, findings[0], "task-1", "task-2")
+}
+
+func TestTaskCancelIDOR_ReverseFindingRetainsSetupFailure(t *testing.T) {
+	srv := cancelServer("first-setup-fails-reverse-leak")
+	defer srv.Close()
+	findings, err := runTaskCancel(t, srv)
+	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) ||
+		findings[0].Access == nil || findings[0].Access.Owner != "tenant-b" {
+		t.Fatalf("reverse finding lost incomplete forward setup: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskCancelIDOR_ReusedTaskIDIsIncomplete(t *testing.T) {
+	srv := cancelServer("same-task-id")
+	defer srv.Close()
+	findings, err := runTaskCancel(t, srv)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "same JSON-RPC task ID") || strings.Contains(err.Error(), "shared-task") {
+		t.Fatalf("reused task ID was judged: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskCancelIDOR_ReverseSetupFailureIsIncomplete(t *testing.T) {
+	srv := cancelServer("reverse-setup-fails")
+	defer srv.Close()
+	findings, err := runTaskCancel(t, srv)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("uncreated reverse task was reported clean: findings=%+v err=%v", findings, err)
 	}
 }
 
