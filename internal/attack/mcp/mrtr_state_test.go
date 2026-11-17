@@ -16,11 +16,14 @@ import (
 )
 
 type mrtrFixture struct {
-	mode  string
-	mu    sync.Mutex
-	reads int
-	lists int
+	mode    string
+	mu      sync.Mutex
+	reads   int
+	lists   int
+	denials int
 }
+
+const reverseMRTRURI = "resource://caller?token=private"
 
 func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -67,6 +70,7 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	reverseMode := strings.HasPrefix(f.mode, "reverse-only") || f.mode == "protected-both"
 	switch req.Method {
 	case "server/discover":
 		capabilities := map[string]interface{}{"resources": map[string]interface{}{}}
@@ -107,6 +111,9 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resources := []map[string]string{{"uri": "resource://owner?token=private", "name": "owner"}}
+		if reverseMode && principal == "tok-b" {
+			resources = []map[string]string{{"uri": reverseMRTRURI, "name": "caller"}}
+		}
 		if f.mode == "many" {
 			resources = nil
 			for i := range 7 {
@@ -124,11 +131,55 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 			respond(map[string]interface{}{"resultType": "complete", "contents": []interface{}{}}, 0)
 			return
 		}
+		if uri == reverseMRTRURI && reverseMode {
+			if state == "" {
+				if principal == "tok-a" {
+					if f.mode == "reverse-only-lost-denial" {
+						f.mu.Lock()
+						f.denials++
+						denials := f.denials
+						f.mu.Unlock()
+						if denials > 1 {
+							respond(mrtrComplete(uri, "caller-secret"), 0)
+						} else {
+							w.WriteHeader(http.StatusForbidden)
+						}
+					} else {
+						w.WriteHeader(http.StatusForbidden)
+					}
+					return
+				}
+				respond(map[string]interface{}{"resultType": "input_required", "requestState": "state-b"}, 0)
+				return
+			}
+			if state != "state-b" || f.mode == "protected-both" && principal == "tok-a" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			respond(mrtrComplete(uri, "caller-secret"), 0)
+			return
+		}
 		if uri != "resource://owner?token=private" {
 			respond(nil, -32602)
 			return
 		}
+		if f.mode == "reverse-only-first-incomplete" && principal == "tok-a" && state == "" {
+			respond(mrtrComplete(uri, "owner-secret"), 0)
+			return
+		}
 		if principal == "tok-b" && state == "" {
+			if f.mode == "lost-denial" {
+				f.mu.Lock()
+				f.denials++
+				denials := f.denials
+				f.mu.Unlock()
+				if denials > 1 {
+					respond(mrtrComplete(uri, "owner-secret"), 0)
+				} else {
+					w.WriteHeader(http.StatusForbidden)
+				}
+				return
+			}
 			switch f.mode {
 			case "shared":
 				respond(mrtrComplete(uri, "owner-secret"), 0)
@@ -157,7 +208,8 @@ func (f *mrtrFixture) serve(w http.ResponseWriter, r *http.Request) {
 			respond(result, 0)
 			return
 		}
-		if state != "state-a" || f.mode == "protected" && principal == "tok-b" {
+		if state != "state-a" ||
+			(f.mode == "protected" || reverseMode) && principal == "tok-b" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -233,6 +285,39 @@ func TestMRTRState_CrossPrincipalReplay(t *testing.T) {
 	}
 }
 
+func TestMRTRState_ReverseOnlyReplay(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		incomplete bool
+	}{
+		{"reverse-only", false},
+		{"reverse-only-first-incomplete", true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, _, err := runMRTRFixture(t, tc.mode)
+			if errors.Is(err, attack.ErrInconclusive) != tc.incomplete || len(findings) != 1 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			finding := findings[0]
+			if finding.Access == nil || finding.Access.Caller != "tenant-a" || finding.Access.Owner != "tenant-b" ||
+				finding.Access.CallerTenant != "A" || finding.Access.OwnerTenant != "B" {
+				t.Fatalf("incorrect reverse access observation: %+v", finding)
+			}
+			encoded, _ := json.Marshal(finding)
+			for _, secret := range []string{"caller-secret", "state-b", reverseMRTRURI} {
+				if strings.Contains(string(encoded), secret) {
+					t.Fatalf("finding disclosed resource or state: %s", encoded)
+				}
+			}
+			if !attack.ApplyExpectedDenial(&finding, []attack.ExpectedDenial{{
+				Operation: attack.MCPResourcesRead, Caller: "tenant-a", CallerTenant: "A", Owner: "tenant-b", OwnerTenant: "B",
+			}}) || finding.Confidence != attack.ConfirmedExploit {
+				t.Fatalf("expected reverse policy confirmation: %+v", finding)
+			}
+		})
+	}
+}
+
 func TestMRTRState_JSONRPCAuthDenial(t *testing.T) {
 	findings, _, err := runMRTRFixture(t, "rpc-denied")
 	if err != nil || len(findings) != 1 {
@@ -247,7 +332,7 @@ func TestMRTRState_ResourceNotFoundIsNotDenial(t *testing.T) {
 	}
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
-	if fixture.reads != 2 {
+	if fixture.reads != 3 {
 		t.Fatalf("unexpected request-state retry after resource miss: reads=%d", fixture.reads)
 	}
 }
@@ -269,9 +354,9 @@ func TestMRTRState_BoundsResourcePages(t *testing.T) {
 		mode  string
 		lists int
 	}{
-		{"paged-loop", 2},
-		{"paged-limit", 3},
-		{"paged-invalid", 1},
+		{"paged-loop", 4},
+		{"paged-limit", 6},
+		{"paged-invalid", 2},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			findings, fixture, err := runMRTRFixture(t, tc.mode)
@@ -292,7 +377,10 @@ func TestMRTRState_ProtectedAndIncomplete(t *testing.T) {
 		mode       string
 		incomplete bool
 	}{
-		{"protected", false},
+		{"protected", true},
+		{"protected-both", false},
+		{"lost-denial", true},
+		{"reverse-only-lost-denial", true},
 		{"shared", true},
 		{"different", true},
 		{"owner-fails", true},
@@ -321,8 +409,8 @@ func TestMRTRState_BoundsReads(t *testing.T) {
 	}
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
-	if fixture.reads != 5 {
-		t.Fatalf("expected five bounded reads, got %d", fixture.reads)
+	if fixture.reads != 10 {
+		t.Fatalf("expected ten bounded reads across both directions, got %d", fixture.reads)
 	}
 }
 
