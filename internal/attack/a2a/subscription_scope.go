@@ -54,11 +54,36 @@ func (e *SubscriptionScopeExecutor) Execute(ctx context.Context, target string, 
 }
 
 func (e *SubscriptionScopeExecutor) probeJSONRPC(ctx context.Context, endpoint, randID string,
-	owner, other attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error) {
+	a, b attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error) {
+	var partial error
+	seenTaskIDs := map[string]bool{}
+	for index, direction := range []struct {
+		owner, other             attack.Principal
+		ownerClient, otherClient *attack.HTTPClient
+	}{
+		{a, b, clientA, clientB},
+		{b, a, clientB, clientA},
+	} {
+		findings, err := e.probeJSONRPCDirection(ctx, endpoint, fmt.Sprintf("%s-%d", randID, index),
+			direction.owner, direction.other, direction.ownerClient, direction.otherClient, seenTaskIDs)
+		partial = errors.Join(partial, err)
+		if len(findings) != 0 {
+			return findings, partial
+		}
+	}
+	return nil, partial
+}
+
+func (e *SubscriptionScopeExecutor) probeJSONRPCDirection(ctx context.Context, endpoint, randID string,
+	owner, other attack.Principal, clientA, clientB *attack.HTTPClient, seenTaskIDs map[string]bool) ([]attack.Finding, error) {
 	taskID, setup := NewPushBindingExecutor(e.rule).createTask(ctx, clientA, endpoint, owner, randID)
 	if taskID == "" {
 		return nil, setup.err()
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same JSON-RPC task ID", attack.ErrInconclusive)
+	}
+	seenTaskIDs[taskID] = true
 	partial := setup.partialErr()
 
 	for _, wire := range []struct {

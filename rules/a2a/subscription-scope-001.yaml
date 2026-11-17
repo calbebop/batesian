@@ -5,8 +5,9 @@ info:
   severity: high
   description: |
     Creates a nonterminal task as one principal and confirms that a second
-    principal cannot read it. Checks whether that principal can nevertheless
-    receive matching task and context data from a subscription stream. Reads
+    principal cannot read it. Repeats the check in the opposite direction with
+    a distinct task. Checks whether the reader can nevertheless receive matching
+    task and context data from a subscription stream. Reads
     only the first response event and closes the stream.
 
     Different operations may intentionally have different grants. A finding is

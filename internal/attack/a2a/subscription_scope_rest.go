@@ -14,7 +14,7 @@ import (
 )
 
 func (e *SubscriptionScopeExecutor) probeREST(ctx context.Context, target, randID string,
-	owner, other attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error, bool) {
+	a, b attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error, bool) {
 	interfaces := resolveHTTPJSONInterfaces(ctx, clientA, target)
 	if len(interfaces) == 0 {
 		return nil, nil, false
@@ -25,13 +25,31 @@ func (e *SubscriptionScopeExecutor) probeREST(ctx context.Context, target, randI
 		base := iface.base
 		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range restPushRoutes {
-			findings, err, routeTested := e.probeRESTRoute(ctx, base, route,
-				fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version), owner, other, clientA, clientB)
-			if len(findings) != 0 {
-				return findings, errors.Join(partial, err), true
+			var routeErr error
+			var directionTested [2]bool
+			seenTaskIDs := map[string]bool{}
+			for index, direction := range []struct {
+				owner, other             attack.Principal
+				ownerClient, otherClient *attack.HTTPClient
+			}{
+				{a, b, clientA, clientB},
+				{b, a, clientB, clientA},
+			} {
+				findings, err, probed := e.probeRESTRoute(ctx, base, route,
+					fmt.Sprintf("%s-%d-%s-%d", randID, baseIndex, route.version, index),
+					direction.owner, direction.other, direction.ownerClient, direction.otherClient, seenTaskIDs)
+				directionTested[index] = probed
+				routeErr = errors.Join(routeErr, err)
+				if len(findings) != 0 {
+					return findings, errors.Join(partial, routeErr), true
+				}
 			}
-			tested = tested || routeTested
-			partial = errors.Join(partial, err)
+			if directionTested[0] != directionTested[1] {
+				routeErr = errors.Join(routeErr, fmt.Errorf("%w: only one principal's REST task was tested on this route",
+					attack.ErrInconclusive))
+			}
+			tested = tested || directionTested[0] || directionTested[1]
+			partial = errors.Join(partial, routeErr)
 		}
 	}
 	if !tested && partial == nil {
@@ -42,7 +60,8 @@ func (e *SubscriptionScopeExecutor) probeREST(ctx context.Context, target, randI
 }
 
 func (e *SubscriptionScopeExecutor) probeRESTRoute(ctx context.Context, base string, route restPushRoute,
-	randID string, owner, other attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error, bool) {
+	randID string, owner, other attack.Principal, clientA, clientB *attack.HTTPClient,
+	seenTaskIDs map[string]bool) ([]attack.Finding, error, bool) {
 	sendURL := endpoint.AppendPath(base, route.sendPath)
 	taskURL := endpoint.AppendPath(base, route.taskPath)
 	headers := restVersionHeaders(route.version, owner.Headers)
@@ -62,6 +81,10 @@ func (e *SubscriptionScopeExecutor) probeRESTRoute(ctx context.Context, base str
 		return nil, classifyTaskSetup("creating a REST subscription probe task", sendURL,
 			principalCredentialPresent(clientA, sendURL, owner.Headers), resp).err(), false
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same REST task ID", attack.ErrInconclusive), true
+	}
+	seenTaskIDs[taskID] = true
 	if !principalCredentialPresent(clientA, sendURL, owner.Headers) {
 		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive), true
 	}
