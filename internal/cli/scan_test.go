@@ -190,6 +190,21 @@ func TestBuildExpectedDenials(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Operation != attack.MCPSessionUse {
 		t.Fatalf("MCP session denials = %+v, error = %v", got, err)
 	}
+	for _, operation := range []string{attack.A2APushConfigsWrite, attack.A2APushConfigsRead,
+		attack.A2APushConfigsList, attack.A2APushConfigsDelete} {
+		entry.Operation = operation
+		got, err = buildExpectedDenials([]config.ExpectedDenialConfig{entry}, principals)
+		if err != nil || len(got) != 1 || got[0].Operation != operation {
+			t.Fatalf("A2A push denials = %+v, error = %v", got, err)
+		}
+	}
+	entry.Caller = "anonymous"
+	entry.CallerTenant = ""
+	entry.Operation = attack.A2APushConfigsWrite
+	got, err = buildExpectedDenials([]config.ExpectedDenialConfig{entry}, principals)
+	if err != nil || len(got) != 1 || got[0].Caller != "anonymous" {
+		t.Fatalf("anonymous A2A push denial = %+v, error = %v", got, err)
+	}
 	for _, tt := range []struct {
 		name  string
 		entry config.ExpectedDenialConfig
@@ -202,6 +217,9 @@ func TestBuildExpectedDenials(t *testing.T) {
 		{"MCP task unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPTasksCancel, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
 		{"MCP resource unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPResourcesRead, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
 		{"MCP session unknown owner", config.ExpectedDenialConfig{Operation: attack.MCPSessionUse, Caller: "tenant-b", Owner: "missing"}, "unknown owner principal"},
+		{"A2A push unknown owner", config.ExpectedDenialConfig{Operation: attack.A2APushConfigsWrite, Caller: "anonymous", Owner: "missing"}, "unknown owner principal"},
+		{"A2A push unknown caller", config.ExpectedDenialConfig{Operation: attack.A2APushConfigsList, Caller: "missing", Owner: "tenant-a"}, "unknown caller principal"},
+		{"A2A push wrong tenant", config.ExpectedDenialConfig{Operation: attack.A2APushConfigsDelete, Caller: "tenant-b", CallerTenant: "A", Owner: "tenant-a"}, "caller_tenant does not match"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := buildExpectedDenials([]config.ExpectedDenialConfig{tt.entry}, principals)

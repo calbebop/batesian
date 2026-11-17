@@ -13,8 +13,9 @@ Each finding carries a **confidence**:
 - **indicator** - access or another risk-relevant posture was observed, but the
   response alone does not establish a policy violation.
 
-An exact `expected_denials` entry can confirm an observed task read, list, or
-cancellation when the operator declares that caller/owner relationship forbidden.
+An exact `expected_denials` entry can confirm an observed task read, list,
+cancellation, or push-config access when the operator declares that
+caller/owner relationship forbidden.
 It does not promote errors or unverified access.
 
 ## Protocol currency
@@ -592,8 +593,12 @@ the scan report. On single-config servers, a marker can replace an existing
 callback on a reused task; use test tasks for this rule.
 Findings omit callback URLs and task and config IDs. The target-object list keeps
 IDs needed to verify or clean up any remaining config. Push-config grants may
-differ from task-read grants, so findings are **indicators** to review against
-the agent's authorization policy.
+differ from task-read grants, so findings are **indicators**. An exact
+`expected_denials` entry for `a2a.push_configs.write` or
+`a2a.push_configs.read` confirms a matching observed access. Anonymous writes
+use `caller: anonymous` and the configured owner's name; cross-principal
+checks use both configured names. The `write` name covers v1 create and v0.3
+set. A policy entry applies to the whole operation, not selected configs.
 
 ---
 
@@ -613,7 +618,11 @@ task IDs and failed task creation leave that direction inconclusive.
 Findings omit callback URLs and task and config IDs; the target-object list
 keeps IDs needed for cleanup.
 Because an agent may grant push-config access separately from task reads, a
-finding is an **indicator** to review against its authorization policy.
+finding is an **indicator**. An exact `expected_denials` entry for
+`a2a.push_configs.list` or `a2a.push_configs.delete` confirms a matching
+observed access. The caller and owner must be distinct configured principals;
+each direction and operation needs its own entry. A policy entry applies to
+the whole operation, not selected configs.
 
 The rule supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings,
 including `GET /tasks/{id}/pushNotificationConfigs` and

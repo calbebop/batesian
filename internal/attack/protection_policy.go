@@ -17,6 +17,10 @@ const (
 	A2ATasksGet           = "a2a.tasks.get"
 	A2ATasksList          = "a2a.tasks.list"
 	A2ATasksCancel        = "a2a.tasks.cancel"
+	A2APushConfigsWrite   = "a2a.push_configs.write"
+	A2APushConfigsRead    = "a2a.push_configs.read"
+	A2APushConfigsList    = "a2a.push_configs.list"
+	A2APushConfigsDelete  = "a2a.push_configs.delete"
 )
 
 // AccessObservation identifies an operation that the target demonstrably allowed.

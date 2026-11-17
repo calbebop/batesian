@@ -10,7 +10,7 @@ info:
     against scanner-created configs, with owner readback and cleanup.
 
     A finding is an indicator because push-config grants may differ from task
-    read grants. Review the result against the agent's authorization policy.
+    read grants. An exact expected_denials policy can confirm the observed access.
 
     Supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings. It does
     not test callback delivery or gRPC.

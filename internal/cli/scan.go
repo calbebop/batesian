@@ -679,7 +679,9 @@ func buildExpectedDenials(entries []config.ExpectedDenialConfig, principals []at
 	}
 	out := make([]attackpkg.ExpectedDenial, 0, len(entries))
 	for i, entry := range entries {
-		if entry.Operation == attackpkg.A2ATasksCancel || entry.Operation == attackpkg.MCPTasksGet ||
+		if entry.Operation == attackpkg.A2ATasksCancel || entry.Operation == attackpkg.A2APushConfigsWrite ||
+			entry.Operation == attackpkg.A2APushConfigsRead || entry.Operation == attackpkg.A2APushConfigsList ||
+			entry.Operation == attackpkg.A2APushConfigsDelete || entry.Operation == attackpkg.MCPTasksGet ||
 			entry.Operation == attackpkg.MCPTasksUpdate || entry.Operation == attackpkg.MCPTasksCancel ||
 			entry.Operation == attackpkg.MCPResourcesRead || entry.Operation == attackpkg.MCPSessionUse {
 			owner, ok := byName[entry.Owner]
