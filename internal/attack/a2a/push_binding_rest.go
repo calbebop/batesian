@@ -15,6 +15,12 @@ func (e *PushBindingExecutor) probeREST(ctx context.Context, target string, opts
 	owner := opts.Principals[0]
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	clientA := principalClient(opts, vars, owner)
+	directions := []attack.Options{opts}
+	if a, b, principalErr := twoPrincipals(opts); principalErr == nil {
+		reverse := opts
+		reverse.Principals = []attack.Principal{b, a}
+		directions = append(directions, reverse)
+	}
 	interfaces := resolveHTTPJSONInterfaces(ctx, clientA, target)
 	if len(interfaces) == 0 {
 		return nil, nil, false
@@ -26,10 +32,27 @@ func (e *PushBindingExecutor) probeREST(ctx context.Context, target string, opts
 		base := iface.base
 		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range restPushRoutes {
-			routeFindings, routeErr := e.probeRESTRoute(ctx, base, route, opts,
-				fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version), owner, clientA, &taskReached)
-			findings = append(findings, routeFindings...)
-			partial = errors.Join(partial, routeErr)
+			seenTaskIDs := map[string]bool{}
+			reachedDirections := 0
+			for index, direction := range directions {
+				directionOwner := direction.Principals[0]
+				directionClient := principalClient(direction, vars, directionOwner)
+				directionReached := false
+				routeFindings, routeErr := e.probeRESTRoute(ctx, base, route, direction,
+					fmt.Sprintf("%s-%d-%s-%d", randID, baseIndex, route.version, index),
+					directionOwner, directionClient, &directionReached, seenTaskIDs)
+				findings = append(findings, routeFindings...)
+				partial = errors.Join(partial, routeErr)
+				if directionReached {
+					reachedDirections++
+				}
+			}
+			if reachedDirections > 0 {
+				taskReached = true
+			}
+			if reachedDirections > 0 && reachedDirections < len(directions) {
+				partial = errors.Join(partial, fmt.Errorf("%w: advertised HTTP+JSON task route was unavailable for a configured principal", attack.ErrInconclusive))
+			}
 		}
 	}
 	if !taskReached {
@@ -40,7 +63,7 @@ func (e *PushBindingExecutor) probeREST(ctx context.Context, target string, opts
 
 func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, route restPushRoute,
 	opts attack.Options, randID string, owner attack.Principal, clientA *attack.HTTPClient,
-	taskReached *bool) (findings []attack.Finding, err error) {
+	taskReached *bool, seenTaskIDs map[string]bool) (findings []attack.Finding, err error) {
 	vars := attack.NewVars(base, opts.OOBListenerURL)
 	reader := &PushLifecycleExecutor{}
 	ownerHeaders := restVersionHeaders(route.version, owner.Headers)
@@ -62,6 +85,10 @@ func (e *PushBindingExecutor) probeRESTRoute(ctx context.Context, base string, r
 			principalCredentialPresent(clientA, sendURL, owner.Headers), sendResp).err()
 	}
 	*taskReached = true
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same HTTP+JSON task ID", attack.ErrInconclusive)
+	}
+	seenTaskIDs[taskID] = true
 	if !principalCredentialPresent(clientA, sendURL, owner.Headers) {
 		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive)
 	}

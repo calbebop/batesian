@@ -6,11 +6,12 @@ info:
   description: |
     Checks whether an anonymous caller or a second principal can attach a push
     callback to another principal's task. It also checks whether the second
-    principal can read the owner's callback URL. Each write must persist in an
-    owner readback before it is reported. One authenticated principal is enough
-    for the anonymous-write check. If that write does not persist, two distinct
-    principals are needed for cross-principal checks. Tests JSON-RPC and
-    advertised HTTP+JSON bindings.
+    principal can read the owner's callback URL. With two distinct principals,
+    it tests both owner directions using distinct tasks. Each write must persist
+    in an owner readback before it is reported. One authenticated principal is
+    enough for the anonymous-write check. Tests JSON-RPC and advertised
+    HTTP+JSON bindings. A confirmed anonymous write ends JSON-RPC
+    cross-principal checks for that task.
 
     This rule does not verify callback delivery or token disclosure. A finding
     is an indicator because push-config grants may differ from task-read grants.

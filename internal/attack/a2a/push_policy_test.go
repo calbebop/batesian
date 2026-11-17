@@ -15,19 +15,25 @@ func TestPushBindingExpectedDenials(t *testing.T) {
 	}{
 		{"jsonrpc-anonymous", "open", "", []attack.AccessObservation{
 			{Operation: attack.A2APushConfigsWrite, Caller: "anonymous", Owner: "tenant-a", OwnerTenant: "A"},
+			{Operation: attack.A2APushConfigsWrite, Caller: "anonymous", Owner: "tenant-b", OwnerTenant: "B"},
 		}},
 		{"jsonrpc-cross", "unbound", "", []attack.AccessObservation{
 			{Operation: attack.A2APushConfigsRead, Caller: "tenant-b", CallerTenant: "B", Owner: "tenant-a", OwnerTenant: "A"},
 			{Operation: attack.A2APushConfigsWrite, Caller: "tenant-b", CallerTenant: "B", Owner: "tenant-a", OwnerTenant: "A"},
+			{Operation: attack.A2APushConfigsRead, Caller: "tenant-a", CallerTenant: "A", Owner: "tenant-b", OwnerTenant: "B"},
+			{Operation: attack.A2APushConfigsWrite, Caller: "tenant-a", CallerTenant: "A", Owner: "tenant-b", OwnerTenant: "B"},
 		}},
 		{"rest-v1-anonymous", "anonymous-write", "1.0", []attack.AccessObservation{
 			{Operation: attack.A2APushConfigsWrite, Caller: "anonymous", Owner: "tenant-a", OwnerTenant: "A"},
+			{Operation: attack.A2APushConfigsWrite, Caller: "anonymous", Owner: "tenant-b", OwnerTenant: "B"},
 		}},
 		{"rest-v1-read", "cross-read", "1.0", []attack.AccessObservation{
 			{Operation: attack.A2APushConfigsRead, Caller: "tenant-b", CallerTenant: "B", Owner: "tenant-a", OwnerTenant: "A"},
+			{Operation: attack.A2APushConfigsRead, Caller: "tenant-a", CallerTenant: "A", Owner: "tenant-b", OwnerTenant: "B"},
 		}},
 		{"rest-v03-write", "cross-write", "0.3.0", []attack.AccessObservation{
 			{Operation: attack.A2APushConfigsWrite, Caller: "tenant-b", CallerTenant: "B", Owner: "tenant-a", OwnerTenant: "A"},
+			{Operation: attack.A2APushConfigsWrite, Caller: "tenant-a", CallerTenant: "A", Owner: "tenant-b", OwnerTenant: "B"},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

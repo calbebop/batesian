@@ -60,11 +60,30 @@ func (e *PushBindingExecutor) ExecuteChained(ctx context.Context, target string,
 }
 
 func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint string, opts attack.Options, bb *attack.Blackboard) (findings []attack.Finding, err error) {
-	a := opts.Principals[0]
-
 	vars := attack.NewVars(target, opts.OOBListenerURL)
+	directions := []attack.Options{opts}
+	if a, b, principalErr := twoPrincipals(opts); principalErr == nil {
+		reverse := opts
+		reverse.Principals = []attack.Principal{b, a}
+		directions = append(directions, reverse)
+	}
+	seenTaskIDs := map[string]bool{}
+	for index, direction := range directions {
+		directionVars := vars
+		directionVars.RandID = fmt.Sprintf("%s-%d", vars.RandID, index)
+		directionFindings, directionErr := e.probeJSONRPCDirection(ctx, endpoint, direction, bb,
+			directionVars, seenTaskIDs)
+		findings = append(findings, directionFindings...)
+		err = errors.Join(err, directionErr)
+	}
+	return findings, err
+}
+
+func (e *PushBindingExecutor) probeJSONRPCDirection(ctx context.Context, endpoint string, opts attack.Options,
+	bb *attack.Blackboard, vars attack.Vars, seenTaskIDs map[string]bool) (findings []attack.Finding, err error) {
+	a := opts.Principals[0]
 	clientA := principalClient(opts, vars, a)
-	unauthClient := attack.NewUnauthHTTPClient(opts, attack.NewVars(target, opts.OOBListenerURL))
+	unauthClient := attack.NewUnauthHTTPClient(opts, vars)
 
 	// Establish a task owned by A.
 	taskID, consumed := e.ownedTask(bb, a)
@@ -76,6 +95,10 @@ func (e *PushBindingExecutor) probeJSONRPC(ctx context.Context, target, endpoint
 		// No owner task means the binding was not tested.
 		return nil, obs.err()
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same JSON-RPC task ID", attack.ErrInconclusive)
+	}
+	seenTaskIDs[taskID] = true
 	var incomplete error
 	defer func() { err = errors.Join(err, incomplete) }()
 	if !consumed {
