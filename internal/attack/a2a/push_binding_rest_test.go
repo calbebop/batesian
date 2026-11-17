@@ -158,7 +158,7 @@ func TestPushBindingREST(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			if tc.title != "" && (!strings.Contains(findings[0].Title, tc.title) ||
-				findings[0].Confidence != attack.ConfirmedExploit ||
+				findings[0].Confidence != attack.RiskIndicator ||
 				!strings.Contains(findings[0].Evidence, "binding: HTTP+JSON/"+tc.version) ||
 				!strings.Contains(findings[0].Evidence, "deleted after probe")) {
 				t.Fatalf("finding=%+v", findings[0])

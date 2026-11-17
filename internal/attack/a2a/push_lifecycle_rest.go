@@ -15,29 +15,51 @@ import (
 )
 
 func (e *PushLifecycleExecutor) probeREST(ctx context.Context, target string, opts attack.Options, randID string,
-	owner, other attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error, bool) {
+	a, b attack.Principal, clientA, clientB *attack.HTTPClient) ([]attack.Finding, error, bool) {
 	interfaces := resolveHTTPJSONInterfaces(ctx, clientA, target)
 	if len(interfaces) == 0 {
 		return nil, nil, false
 	}
 	var findings []attack.Finding
 	var partial error
+	anyTested := false
 	for baseIndex, iface := range interfaces {
 		base := iface.base
 		ctx := withHTTPJSONInterface(ctx, iface)
 		for _, route := range restPushRoutes {
-			routeFindings, routeErr := e.probeRESTRoute(ctx, base, route, opts,
-				fmt.Sprintf("%s-%d-%s", randID, baseIndex, route.version), owner, other, clientA, clientB)
-			findings = append(findings, routeFindings...)
-			partial = errors.Join(partial, routeErr)
+			var routeTested [2]bool
+			seenTaskIDs := map[string]bool{}
+			for index, direction := range []struct {
+				owner, other             attack.Principal
+				ownerClient, otherClient *attack.HTTPClient
+			}{
+				{a, b, clientA, clientB},
+				{b, a, clientB, clientA},
+			} {
+				routeFindings, routeErr, tested := e.probeRESTRoute(ctx, base, route, opts,
+					fmt.Sprintf("%s-%d-%s-%d", randID, baseIndex, route.version, index),
+					direction.owner, direction.other, direction.ownerClient, direction.otherClient, seenTaskIDs)
+				findings = append(findings, routeFindings...)
+				partial = errors.Join(partial, routeErr)
+				routeTested[index] = tested
+			}
+			if routeTested[0] != routeTested[1] {
+				partial = errors.Join(partial, fmt.Errorf("%w: only one principal's REST push config was tested on this route",
+					attack.ErrInconclusive))
+			}
+			anyTested = anyTested || routeTested[0] || routeTested[1]
 		}
+	}
+	if !anyTested && partial == nil {
+		partial = fmt.Errorf("%w: advertised HTTP+JSON interface did not expose a testable push config",
+			attack.ErrInconclusive)
 	}
 	return findings, partial, true
 }
 
 func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string, route restPushRoute,
 	opts attack.Options, randID string, owner, other attack.Principal,
-	clientA, clientB *attack.HTTPClient) (findings []attack.Finding, err error) {
+	clientA, clientB *attack.HTTPClient, seenTaskIDs map[string]bool) (findings []attack.Finding, err error, tested bool) {
 	sendURL := endpoint.AppendPath(base, route.sendPath)
 	ownerHeaders := restVersionHeaders(route.version, owner.Headers)
 	if route.version == "1.0" {
@@ -46,18 +68,23 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	resp, requestErr := clientA.POST(ctx, sendURL, ownerHeaders,
 		restTaskSendRequest(randID+"-lifecycle", "batesian push lifecycle probe "+randID, route.version))
 	if requestErr != nil || resp == nil {
-		return nil, fmt.Errorf("%w: REST task creation did not answer", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: REST task creation did not answer", attack.ErrInconclusive), false
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return nil, nil
+		return nil, nil, false
 	}
 	taskID := restPushTaskID(resp)
 	if taskID == "" {
 		return nil, classifyTaskSetup("creating a REST push lifecycle task", sendURL,
-			principalCredentialPresent(clientA, sendURL, owner.Headers), resp).err()
+			principalCredentialPresent(clientA, sendURL, owner.Headers), resp).err(), false
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same REST task ID", attack.ErrInconclusive), true
+	}
+	seenTaskIDs[taskID] = true
+	tested = true
 	if !principalCredentialPresent(clientA, sendURL, owner.Headers) {
-		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: REST task creation used no owner credential", attack.ErrInconclusive), true
 	}
 	configURL := endpoint.AppendPath(base, route.configPath(taskID))
 	reportURL := endpoint.AppendPath(base, route.taskPath)
@@ -66,16 +93,16 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	resp, requestErr = clientA.POST(ctx, configURL, ownerHeaders, configRequest)
 	if requestErr != nil || !restPushRegistrationReplyAccepted(resp, taskID, markerURL, route.version) {
 		if requestErr != nil {
-			return nil, fmt.Errorf("%w: REST push configuration did not answer", attack.ErrInconclusive)
+			return nil, fmt.Errorf("%w: REST push configuration did not answer", attack.ErrInconclusive), true
 		}
 		return nil, restPushRegistrationOutcome("creating a REST push configuration", resp,
-			taskID, markerURL, route.version).err()
+			taskID, markerURL, route.version).err(), true
 	}
 	configID := pushConfigID(taskID, route.version, resp)
 	if !safePushConfigPathID(configID) {
 		recordPushConfig(opts.TargetState, configURL, taskID, configID, attack.CleanupUnavailable,
 			"registration returned no safe configuration ID; verify on target")
-		return nil, fmt.Errorf("%w: REST push registration did not return a safe configuration ID", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: REST push registration did not return a safe configuration ID", attack.ErrInconclusive), true
 	}
 	registration := newPushRegistration(configURL, taskID, route.version, markerURL, resp, true)
 	registration.authHeaders = owner.Headers
@@ -97,14 +124,14 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	configItemURL := endpoint.AppendPath(configURL, "/"+url.PathEscape(configID))
 	taskURL := endpoint.AppendPath(base, route.taskPath+"/"+url.PathEscape(taskID))
 	if e.readRESTConfig(ctx, clientA, configItemURL, ownerHeaders, taskID, configID, markerURL, route.version) != configPresent {
-		return nil, fmt.Errorf("%w: owner REST push config was not confirmed after creation", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: owner REST push config was not confirmed after creation", attack.ErrInconclusive), true
 	}
 	if e.readRESTTask(ctx, clientA, taskURL, ownerHeaders, taskID) != taskPresent {
-		return nil, fmt.Errorf("%w: owner could not read the REST probe task", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: owner could not read the REST probe task", attack.ErrInconclusive), true
 	}
 	otherHeaders := restVersionHeaders(route.version, other.Headers)
 	if e.readRESTTask(ctx, clientB, taskURL, otherHeaders, taskID) != taskDenied {
-		return nil, fmt.Errorf("%w: second principal was not confirmed outside REST task-read scope", attack.ErrInconclusive)
+		return nil, fmt.Errorf("%w: second principal was not confirmed outside REST task-read scope", attack.ErrInconclusive), true
 	}
 	ownerList := e.listRESTConfigs(ctx, clientA, configURL, ownerHeaders, taskID, configID, markerURL, route.version)
 	if ownerList.found {
@@ -118,7 +145,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 		err = errors.Join(err, fmt.Errorf("%w: owner REST push-config list did not confirm the marker", attack.ErrInconclusive))
 	}
 	if e.readRESTConfig(ctx, clientA, configItemURL, ownerHeaders, taskID, configID, markerURL, route.version) != configPresent {
-		return findings, errors.Join(err, fmt.Errorf("%w: owner REST marker was not present before the delete probe", attack.ErrInconclusive))
+		return findings, errors.Join(err, fmt.Errorf("%w: owner REST marker was not present before the delete probe", attack.ErrInconclusive)), true
 	}
 	deleteReply := e.deleteRESTConfig(ctx, clientB, configItemURL, otherHeaders)
 	readback := e.readRESTConfig(ctx, clientA, configItemURL, ownerHeaders, taskID, configID, markerURL, route.version)
@@ -135,7 +162,7 @@ func (e *PushLifecycleExecutor) probeRESTRoute(ctx context.Context, base string,
 	} else if readback == configUnknown {
 		err = errors.Join(err, fmt.Errorf("%w: REST delete readback was unjudged", attack.ErrInconclusive))
 	}
-	return findings, err
+	return findings, err, true
 }
 
 func (e *PushLifecycleExecutor) readRESTTask(ctx context.Context, client *attack.HTTPClient,

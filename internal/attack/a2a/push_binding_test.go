@@ -30,6 +30,10 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 	}
 	var lastSetID, ownerGetID interface{}
 	var lastSetResult, ownerGetResult map[string]interface{}
+	reverseOpen := func(operation string) bool {
+		return mode == "lifecycle-reverse-open" || mode == "lifecycle-first-setup-fails-reverse-open" ||
+			mode == "lifecycle-reverse-open-"+operation
+	}
 
 	tenant := func(r *http.Request) string {
 		switch r.Header.Get("X-API-Key") {
@@ -107,7 +111,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("not task owner")
 				return
 			}
-			result(map[string]interface{}{"id": tid, "contextId": "ctx-tenant-a", "status": map[string]string{"state": "working"}})
+			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + taskOwner[tid], "status": map[string]string{"state": "working"}})
 		case "SendMessage", "message/send":
 			if method == "SendMessage" && (mode == "v1-create-unavailable" || mode == "v1-create-unavailable-bound") {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -117,7 +121,15 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("auth required")
 				return
 			}
+			if mode == "lifecycle-first-setup-fails-reverse-open" && who == "tenant-a" ||
+				mode == "lifecycle-reverse-setup-fails" && who == "tenant-b" {
+				rpcErr("task creation denied")
+				return
+			}
 			tid := "task-" + who
+			if mode == "lifecycle-same-task-id" {
+				tid = "task-shared"
+			}
 			taskOwner[tid] = who
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": map[string]string{"state": "working"}})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
@@ -308,7 +320,8 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			}
 			if who != taskOwner[tid] && mode != "lifecycle-list-open" && mode != "lifecycle-open" &&
 				mode != "lifecycle-legacy-open" && mode != "lifecycle-list-wrong-id" &&
-				mode != "lifecycle-list-malformed" && mode != "lifecycle-paged-open" {
+				mode != "lifecycle-list-malformed" && mode != "lifecycle-paged-open" &&
+				(!reverseOpen("list") || taskOwner[tid] != "tenant-b") {
 				rpcErr("not task owner")
 				return
 			}
@@ -316,15 +329,15 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": "second"})
 				return
 			}
-			if mode == "lifecycle-list-loop" && who == "tenant-a" {
+			if mode == "lifecycle-list-loop" && who == taskOwner[tid] {
 				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": "loop"})
 				return
 			}
-			if mode == "lifecycle-list-wrong-id" && who == "tenant-b" {
+			if mode == "lifecycle-list-wrong-id" && who != taskOwner[tid] {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request", "result": map[string]interface{}{"configs": []interface{}{}}})
 				return
 			}
-			if mode == "lifecycle-list-malformed" && who == "tenant-b" {
+			if mode == "lifecycle-list-malformed" && who != taskOwner[tid] {
 				result(map[string]interface{}{"configs": []interface{}{}, "nextPageToken": nil})
 				return
 			}
@@ -346,11 +359,6 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("not task owner")
 				return
 			}
-			if who != "tenant-a" && mode != "lifecycle-delete-open" && mode != "lifecycle-open" &&
-				mode != "lifecycle-legacy-open" && mode != "lifecycle-delete-noop" && mode != "lifecycle-delete-wrong-id" {
-				rpcErr("not task owner")
-				return
-			}
 			tid, configID := "", ""
 			if method == "DeleteTaskPushNotificationConfig" {
 				tid, _ = params["taskId"].(string)
@@ -359,14 +367,20 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				tid, _ = params["id"].(string)
 				configID, _ = params["pushNotificationConfigId"].(string)
 			}
+			if who != taskOwner[tid] && mode != "lifecycle-delete-open" && mode != "lifecycle-open" &&
+				mode != "lifecycle-legacy-open" && mode != "lifecycle-delete-noop" && mode != "lifecycle-delete-wrong-id" &&
+				(!reverseOpen("delete") || taskOwner[tid] != "tenant-b") {
+				rpcErr("not task owner")
+				return
+			}
 			if _, ok := pushCfg[tid][configID]; !ok {
 				rpcErr("config not found")
 				return
 			}
-			if mode != "lifecycle-delete-noop" || who != "tenant-b" {
+			if mode != "lifecycle-delete-noop" || who == taskOwner[tid] {
 				delete(pushCfg[tid], configID)
 			}
-			if mode == "lifecycle-delete-wrong-id" && who == "tenant-b" {
+			if mode == "lifecycle-delete-wrong-id" && who != taskOwner[tid] {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request", "result": map[string]interface{}{}})
 				return
 			}
@@ -421,8 +435,8 @@ func TestPushBinding_Unbound(t *testing.T) {
 		t.Fatalf("expected 2 findings (write + read), got %d: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
-		if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
-			t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+		if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
+			t.Errorf("want high/indicator, got %q/%q", f.Severity, f.Confidence)
 		}
 	}
 	titles := findings[0].Title + "|" + findings[1].Title
@@ -804,8 +818,8 @@ func TestPushBinding_Open(t *testing.T) {
 	if len(findings) != 1 || !strings.Contains(findings[0].Title, "without authentication") {
 		t.Fatalf("expected one anonymous-write finding, got %+v", findings)
 	}
-	if findings[0].Severity != "high" || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	if findings[0].Severity != "high" || findings[0].Confidence != attack.RiskIndicator {
+		t.Errorf("want high/indicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
 	}
 }
 

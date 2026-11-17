@@ -153,7 +153,7 @@ def main():
           f"missing {sorted(missing)}; quality {quality}; fired {sorted(rules)}")
 
     rules, doc = scan_posture("push-binding")
-    quality = finding_quality_issues(doc, {PUSH_RULE: "confirmed"})
+    quality = finding_quality_issues(doc, {PUSH_RULE: "indicator"})
     unexpected = rules & (SECURED_RULES - {PUSH_RULE})
     ok = PUSH_RULE in rules and not quality and not unexpected and \
         rule_statuses(doc, {PUSH_RULE})[PUSH_RULE] == "findings"

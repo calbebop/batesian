@@ -135,8 +135,8 @@ report them not tested against a secured agent, and say so.
 | `a2a-context-fixation-001` | [Context ID Fixation](#a2a-context-fixation-001) | High | confirmed | CWE-384 |
 | `a2a-card-trust-001` | [Agent Card Trust Consistency and Cache Policy](#a2a-card-trust-001) | High / Medium / Low | indicator | CWE-345 |
 | `a2a-extension-downgrade-001` | [Required-Extension Downgrade / Fail-Open](#a2a-extension-downgrade-001) | High | confirmed | CWE-636 |
-| `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | confirmed | CWE-639 |
-| `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | confirmed | CWE-639 |
+| `a2a-push-binding-001` | [Push Config Not Bound to Task Owner](#a2a-push-binding-001) | High | indicator | CWE-639 |
+| `a2a-push-lifecycle-001` | [Push Config List/Delete Outside Task Scope](#a2a-push-lifecycle-001) | High | indicator | CWE-639 |
 | `a2a-subscription-scope-001` | [Subscription and Task-Read Scope Mismatch](#a2a-subscription-scope-001) | High | indicator | CWE-639 |
 | `a2a-jsonrpc-batch-bypass-001` | [JSON-RPC Batch Authentication Bypass](#a2a-jsonrpc-batch-bypass-001) | Medium / High | indicator or confirmed | CWE-288 |
 | `a2a-task-cancel-idor-001` | [Cross-Principal Task Cancellation](#a2a-task-cancel-idor-001) | High | indicator / policy-confirmed | CWE-639 / CWE-862 |
@@ -591,7 +591,9 @@ confirms its callback URL. Unconfirmed markers or refused deletions remain in
 the scan report. On single-config servers, a marker can replace an existing
 callback on a reused task; use test tasks for this rule.
 Findings omit callback URLs and task and config IDs. The target-object list keeps
-IDs needed to verify or clean up any remaining config.
+IDs needed to verify or clean up any remaining config. Push-config grants may
+differ from task-read grants, so findings are **indicators** to review against
+the agent's authorization policy.
 
 ---
 
@@ -599,16 +601,19 @@ IDs needed to verify or clean up any remaining config.
 
 **Push Config List/Delete Outside Task Scope** | Severity: High | CWE-639
 
-Creates an owner task and push config, confirms the owner can read both, and
-requires the second principal to be denied task access before judging it as
-unauthorized. It then checks whether that principal can list the marker or
-delete it. A List finding requires the marker ID and URL in a correlated
-response. A Delete finding requires a correlated success and owner readback
-showing the marker is gone while the task still exists. The rule follows up to
-eight v1.0 list pages and detects repeated page tokens. It never deletes a
-pre-existing config and records cleanup of the scanner-created one.
+Creates separate tasks and push configs as each of two principals, confirms the
+owner can read each, and requires the other principal to be denied task access
+before comparing push-config access. It checks both principal directions for
+list and delete access. A List finding requires the marker ID and URL in a
+correlated response. A Delete finding requires a correlated success and owner
+readback showing the marker is gone while the task still exists. The rule follows
+up to eight v1.0 list pages and detects repeated page tokens. It never deletes a
+pre-existing config and records cleanup of each scanner-created config. Reused
+task IDs and failed task creation leave that direction inconclusive.
 Findings omit callback URLs and task and config IDs; the target-object list
 keeps IDs needed for cleanup.
+Because an agent may grant push-config access separately from task reads, a
+finding is an **indicator** to review against its authorization policy.
 
 The rule supports v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings,
 including `GET /tasks/{id}/pushNotificationConfigs` and
