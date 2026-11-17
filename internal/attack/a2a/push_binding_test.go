@@ -34,6 +34,11 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 		return mode == "lifecycle-reverse-open" || mode == "lifecycle-first-setup-fails-reverse-open" ||
 			mode == "lifecycle-reverse-open-"+operation
 	}
+	bindingReverseOpen := func(operation, who, taskID string) bool {
+		return (mode == "binding-reverse-open-"+operation ||
+			mode == "binding-first-setup-fails-reverse-open-"+operation) &&
+			who == "tenant-a" && taskOwner[taskID] == "tenant-b"
+	}
 
 	tenant := func(r *http.Request) string {
 		switch r.Header.Get("X-API-Key") {
@@ -101,13 +106,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("task not found")
 				return
 			}
-			if mode == "push-binding-owner-unreadable" && who == "tenant-a" ||
-				mode == "push-binding-unknown" && who == "tenant-b" {
+			if mode == "push-binding-owner-unreadable" && who == taskOwner[tid] ||
+				mode == "push-binding-unknown" && who != taskOwner[tid] {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
 			if who != taskOwner[tid] && mode != "lifecycle-shared" && mode != "push-binding-public" &&
-				(mode != "push-binding-shared" || who != "tenant-b") {
+				mode != "push-binding-shared" {
 				rpcErr("not task owner")
 				return
 			}
@@ -122,43 +127,45 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				return
 			}
 			if mode == "lifecycle-first-setup-fails-reverse-open" && who == "tenant-a" ||
-				mode == "lifecycle-reverse-setup-fails" && who == "tenant-b" {
+				mode == "binding-first-setup-fails-reverse-open-read" && who == "tenant-a" ||
+				(mode == "lifecycle-reverse-setup-fails" || mode == "binding-reverse-setup-fails") && who == "tenant-b" {
 				rpcErr("task creation denied")
 				return
 			}
 			tid := "task-" + who
-			if mode == "lifecycle-same-task-id" {
+			if mode == "lifecycle-same-task-id" || mode == "binding-same-task-id" {
 				tid = "task-shared"
 			}
 			taskOwner[tid] = who
 			result(map[string]interface{}{"id": tid, "contextId": "ctx-" + who, "status": map[string]string{"state": "working"}})
 		case "CreateTaskPushNotificationConfig", "tasks/pushNotificationConfig/set":
+			tid, _ := params["taskId"].(string)
+			cross := who != "" && who != taskOwner[tid]
 			if method == "CreateTaskPushNotificationConfig" &&
-				((mode == "v1-owner-set-unavailable" && who == "tenant-a") ||
-					(mode == "v1-attacker-set-unavailable" && who == "tenant-b") ||
+				((mode == "v1-owner-set-unavailable" && who == taskOwner[tid]) ||
+					(mode == "v1-attacker-set-unavailable" && cross) ||
 					(mode == "v1-anon-set-unavailable-open" && who == "")) {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			tid, _ := params["taskId"].(string)
 			if (mode == "write-anon-timeout" && who == "") ||
-				(mode == "write-cross-timeout" && who == "tenant-b") {
+				(mode == "write-cross-timeout" && cross) {
 				w.WriteHeader(http.StatusRequestTimeout)
 				rpcErr("not task owner")
 				return
 			}
 			if method == "CreateTaskPushNotificationConfig" &&
-				((mode == "write-anon-mixed" && who == "") || (mode == "write-cross-mixed" && who == "tenant-b")) {
+				((mode == "write-anon-mixed" && who == "") || (mode == "write-cross-mixed" && cross)) {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if (mode == "write-anon-unavailable" && who == "") ||
-				(mode == "write-cross-unavailable" && who == "tenant-b") {
+				(mode == "write-cross-unavailable" && cross) {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			if (mode == "write-anon-malformed" && who == "") ||
-				(mode == "write-cross-malformed" && who == "tenant-b") {
+				(mode == "write-cross-malformed" && cross) {
 				_, _ = w.Write([]byte("not json"))
 				return
 			}
@@ -166,13 +173,13 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("invalid request")
 				return
 			}
-			if mode == "write-cross-wrong-id" && who == "tenant-b" {
+			if mode == "write-cross-wrong-id" && cross {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": "other-request",
 					"error": map[string]interface{}{"code": -32600, "message": "not task owner"}})
 				return
 			}
 			if (mode == "write-anon-http-denied" && who == "") ||
-				(mode == "write-cross-http-denied" && who == "tenant-b") {
+				(mode == "write-cross-http-denied" && cross) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -195,7 +202,8 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				rpcErr("auth required")
 				return
 			}
-			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && who != "" && taskOwner[tid] != who {
+			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-") || strings.Contains(mode, "reverse-open-")) &&
+				who != "" && taskOwner[tid] != who && !bindingReverseOpen("write", who, tid) {
 				rpcErr("not task owner")
 				return
 			}
@@ -207,9 +215,9 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			if pushCfg[tid] == nil {
 				pushCfg[tid] = map[string]cfg{}
 			}
-			noop := ((mode == "noop-write" || mode == "noop-write-blind") && who == "tenant-b") ||
+			noop := ((mode == "noop-write" || mode == "noop-write-blind") && cross) ||
 				(mode == "noop-anon" && who == "") ||
-				(mode == "noop-owner" && who == "tenant-a")
+				(mode == "noop-owner" && who == taskOwner[tid])
 			if !noop {
 				pushCfg[tid][configID] = cfg{url: url, owner: who, id: configID}
 			}
@@ -221,14 +229,19 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 			lastSetID = reqID
 			result(lastSetResult)
 		case "GetTaskPushNotificationConfig", "tasks/pushNotificationConfig/get":
-			if method == "GetTaskPushNotificationConfig" && mode == "open-anon-readback-unavailable" && who == "tenant-a" {
+			tid, _ := params["taskId"].(string)
+			if tid == "" {
+				tid, _ = params["id"].(string)
+			}
+			cross := who != "" && who != taskOwner[tid]
+			if method == "GetTaskPushNotificationConfig" && mode == "open-anon-readback-unavailable" && who == taskOwner[tid] {
 				configID, _ := params["id"].(string)
 				if strings.HasPrefix(configID, "open-") {
 					w.WriteHeader(http.StatusServiceUnavailable)
 					return
 				}
 			}
-			if who == "tenant-b" {
+			if cross {
 				switch mode {
 				case "cross-read-unavailable":
 					http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -238,7 +251,7 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 					return
 				case "cross-read-empty-result":
 					configID, _ := params["id"].(string)
-					result(map[string]interface{}{"taskId": "task-tenant-a", "id": configID})
+					result(map[string]interface{}{"taskId": tid, "id": configID})
 					return
 				case "cross-read-generic-error":
 					rpcErr("invalid request")
@@ -259,25 +272,24 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": lastSetID, "result": lastSetResult})
 				return
 			}
-			if mode == "replay-owner-read" && who == "tenant-b" {
+			if mode == "replay-owner-read" && cross {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": ownerGetID, "result": ownerGetResult})
 				return
 			}
-			tid, _ := params["id"].(string)
 			configID := ""
 			if method == "GetTaskPushNotificationConfig" {
-				tid, _ = params["taskId"].(string)
 				configID, _ = params["id"].(string)
 			}
 			if who == "" {
 				rpcErr("auth required")
 				return
 			}
-			if mode == "noop-write-blind" && who == "tenant-b" {
+			if mode == "noop-write-blind" && cross {
 				rpcErr("read denied")
 				return
 			}
-			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-")) && taskOwner[tid] != who {
+			if (mode == "bound" || mode == "v1-create-unavailable-bound" || strings.HasPrefix(mode, "cross-read-") || strings.HasPrefix(mode, "write-") || strings.Contains(mode, "reverse-open-")) &&
+				taskOwner[tid] != who && !bindingReverseOpen("read", who, tid) {
 				rpcErr("not task owner")
 				return
 			}
@@ -287,12 +299,12 @@ func pushServerVersioned(mode string, v1Only bool) *httptest.Server {
 					rpcErr("config not found")
 					return
 				}
-				if mode == "read-echo" && who == "tenant-b" && c.owner == "tenant-a" {
+				if mode == "read-echo" && cross && c.owner == taskOwner[tid] {
 					result(map[string]interface{}{"taskId": tid, "id": c.id, "url": "redacted", "metadata": c.url})
 					return
 				}
 				getResult := map[string]interface{}{"taskId": tid, "id": c.id, "url": c.url}
-				if who == "tenant-a" {
+				if who == taskOwner[tid] {
 					ownerGetID, ownerGetResult = reqID, getResult
 				}
 				result(getResult)
@@ -425,14 +437,13 @@ func runPushBinding(t *testing.T, ts *httptest.Server, principals []attack.Princ
 	return findings
 }
 
-// TestPushBinding_Unbound expects read and write findings.
 func TestPushBinding_Unbound(t *testing.T) {
 	ts := pushServer("unbound")
 	defer ts.Close()
 
 	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings (write + read), got %d: %+v", len(findings), findings)
+	if len(findings) != 4 {
+		t.Fatalf("expected read and write findings in both directions, got %d: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
 		if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
@@ -442,6 +453,69 @@ func TestPushBinding_Unbound(t *testing.T) {
 	titles := findings[0].Title + "|" + findings[1].Title
 	if !strings.Contains(titles, "writable") || !strings.Contains(titles, "readable") {
 		t.Errorf("expected one write and one read finding, got: %s", titles)
+	}
+}
+
+func TestPushBindingReverseOnly(t *testing.T) {
+	for _, tc := range []struct {
+		mode, operation string
+		objects         int
+	}{
+		{"binding-reverse-open-read", attack.A2APushConfigsRead, 2},
+		{"binding-reverse-open-write", attack.A2APushConfigsWrite, 3},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			server := pushServer(tc.mode)
+			defer server.Close()
+			state := &attack.TargetState{}
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), server.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
+			if err != nil || len(findings) != 1 || findings[0].Access == nil ||
+				findings[0].Access.Operation != tc.operation || findings[0].Access.Caller != "tenant-a" ||
+				findings[0].Access.Owner != "tenant-b" {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			objects := pushConfigObjects(state.Snapshot())
+			if len(objects) != tc.objects {
+				t.Fatalf("cleanup objects=%+v", objects)
+			}
+			for _, object := range objects {
+				if object.Cleanup != attack.CleanupCompleted {
+					t.Fatalf("cleanup object=%+v", object)
+				}
+			}
+		})
+	}
+}
+
+func TestPushBindingReverseSetupIncomplete(t *testing.T) {
+	for _, mode := range []string{"binding-reverse-setup-fails", "binding-same-task-id"} {
+		t.Run(mode, func(t *testing.T) {
+			server := pushServer(mode)
+			defer server.Close()
+			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), server.URL,
+				attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+			if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 2 {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			for _, finding := range findings {
+				if finding.Access == nil || finding.Access.Owner != "tenant-a" {
+					t.Fatalf("reverse direction was misattributed: %+v", finding)
+				}
+			}
+		})
+	}
+}
+
+func TestPushBindingFirstSetupFailsReverseRead(t *testing.T) {
+	server := pushServer("binding-first-setup-fails-reverse-open-read")
+	defer server.Close()
+	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), server.URL,
+		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 || findings[0].Access == nil ||
+		findings[0].Access.Operation != attack.A2APushConfigsRead || findings[0].Access.Owner != "tenant-b" ||
+		findings[0].Access.Caller != "tenant-a" {
+		t.Fatalf("reverse finding lost after first setup failure: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -477,9 +551,9 @@ func TestPushBindingCleansVerifiedMarkers(t *testing.T) {
 		mode string
 		want int
 	}{
-		{"unbound", 2},
-		{"legacy-only", 2},
-		{"open", 2},
+		{"unbound", 4},
+		{"legacy-only", 4},
+		{"open", 4},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			ts := pushServer(tc.mode)
@@ -515,11 +589,11 @@ func TestPushBindingPreservesExistingConfigOnReusedTask(t *testing.T) {
 	state := &attack.TargetState{}
 	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).ExecuteChained(t.Context(), ts.URL,
 		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state}, bb)
-	if err != nil || len(findings) != 2 {
+	if err != nil || len(findings) != 4 {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 	objects := pushConfigObjects(state.Snapshot())
-	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
+	if len(objects) != 4 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
 		t.Fatalf("target objects = %+v", objects)
 	}
 	client := attack.NewHTTPClient(attack.Options{Token: "tok-a"}, attack.NewVars(ts.URL, ""))
@@ -542,8 +616,9 @@ func TestPushBindingSkipsUnconfirmedMarkerCleanup(t *testing.T) {
 		t.Fatalf("expected inconclusive write, got %v", err)
 	}
 	objects := pushConfigObjects(state.Snapshot())
-	if len(objects) != 2 || !strings.HasPrefix(objects[0].ID, "attacker-") ||
-		objects[0].Cleanup != attack.CleanupUnavailable || objects[1].Cleanup != attack.CleanupCompleted {
+	if len(objects) != 4 || !strings.HasPrefix(objects[0].ID, "attacker-") ||
+		objects[0].Cleanup != attack.CleanupUnavailable || objects[1].Cleanup != attack.CleanupCompleted ||
+		objects[2].Cleanup != attack.CleanupUnavailable || objects[3].Cleanup != attack.CleanupCompleted {
 		t.Fatalf("target objects = %+v", objects)
 	}
 }
@@ -554,11 +629,11 @@ func TestPushBindingReportsRefusedCleanup(t *testing.T) {
 	state := &attack.TargetState{}
 	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
 		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals(), TargetState: state})
-	if err != nil || len(findings) != 2 {
+	if err != nil || len(findings) != 4 {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 	objects := pushConfigObjects(state.Snapshot())
-	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupAttempted || objects[1].Cleanup != attack.CleanupAttempted ||
+	if len(objects) != 4 || objects[0].Cleanup != attack.CleanupAttempted || objects[1].Cleanup != attack.CleanupAttempted ||
 		!strings.Contains(objects[0].CleanupDetail, "JSON-RPC error -32600") ||
 		!strings.Contains(findings[0].Evidence, "verify on target") {
 		t.Fatalf("refused cleanup = %+v, evidence = %q", objects, findings[0].Evidence)
@@ -570,11 +645,11 @@ func TestPushBinding_PartialFallbackOutcomes(t *testing.T) {
 		mode     string
 		findings int
 	}{
-		{"v1-create-unavailable", 2},
+		{"v1-create-unavailable", 4},
 		{"v1-create-unavailable-bound", 0},
-		{"v1-owner-set-unavailable", 2},
-		{"v1-attacker-set-unavailable", 2},
-		{"v1-anon-set-unavailable-open", 1},
+		{"v1-owner-set-unavailable", 4},
+		{"v1-attacker-set-unavailable", 4},
+		{"v1-anon-set-unavailable-open", 2},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			ts := pushServer(tc.mode)
@@ -593,7 +668,7 @@ func TestPushBinding_UnjudgedAnonymousReadbackRetainsCrossFindings(t *testing.T)
 	defer ts.Close()
 	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
 		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
-	if len(findings) != 2 || !errors.Is(err, attack.ErrInconclusive) {
+	if len(findings) != 4 || !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("want cross-principal findings and incomplete anonymous readback, got findings=%+v err=%v", findings, err)
 	}
 }
@@ -604,8 +679,8 @@ func TestPushBinding_UnboundV1Only(t *testing.T) {
 	defer ts.Close()
 
 	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings against a v1.0-only server, got %d: %+v", len(findings), findings)
+	if len(findings) != 4 {
+		t.Fatalf("expected 4 findings against a v1.0-only server, got %d: %+v", len(findings), findings)
 	}
 }
 
@@ -613,7 +688,7 @@ func TestPushBinding_LegacyOnly(t *testing.T) {
 	ts := pushServer("legacy-only")
 	defer ts.Close()
 
-	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 2 {
+	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 4 {
 		t.Fatalf("expected read and write findings on v0.3, got %+v", findings)
 	}
 }
@@ -637,11 +712,11 @@ func TestPushBinding_LegacyVersionStrict(t *testing.T) {
 			state := &attack.TargetState{}
 			findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(t.Context(), ts.URL,
 				attack.Options{TimeoutSeconds: 5, Principals: principals, TargetState: state})
-			if err != nil || len(findings) != 2 {
+			if err != nil || len(findings) != 4 {
 				t.Fatalf("expected read and write findings on a version-strict v0.3 server, got %+v, err=%v", findings, err)
 			}
 			configs := pushConfigObjects(state.Snapshot())
-			if len(configs) != 2 || configs[0].Cleanup != attack.CleanupCompleted || configs[1].Cleanup != attack.CleanupCompleted {
+			if len(configs) != 4 || configs[0].Cleanup != attack.CleanupCompleted || configs[1].Cleanup != attack.CleanupCompleted {
 				t.Fatalf("version-strict cleanup = %+v", configs)
 			}
 		})
@@ -654,7 +729,7 @@ func TestPushBinding_AcknowledgedWriteWithoutMutation(t *testing.T) {
 
 	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
 		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "readable") || !errors.Is(err, attack.ErrInconclusive) {
+	if len(findings) != 2 || !strings.Contains(findings[0].Title, "readable") || !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected a read finding and incomplete write check, got findings=%+v err=%v", findings, err)
 	}
 }
@@ -674,7 +749,7 @@ func TestPushBinding_AcknowledgedAnonymousNoOp(t *testing.T) {
 	ts := pushServer("noop-anon")
 	defer ts.Close()
 
-	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 2 {
+	if findings := runPushBinding(t, ts, pushPrincipals()); len(findings) != 4 {
 		t.Fatalf("anonymous no-op must not suppress findings, got %+v", findings)
 	}
 }
@@ -695,7 +770,7 @@ func TestPushBinding_MetadataEchoIsNotReadEvidence(t *testing.T) {
 	defer ts.Close()
 
 	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "writable") {
+	if len(findings) != 2 || !strings.Contains(findings[0].Title, "writable") {
 		t.Fatalf("expected only a write finding, got %+v", findings)
 	}
 }
@@ -717,7 +792,7 @@ func TestPushBinding_ReplayedOwnerReadIsNotCrossRead(t *testing.T) {
 
 	findings, err := a2a.NewPushBindingExecutor(testRuleCtx()).Execute(context.Background(), ts.URL,
 		attack.Options{TimeoutSeconds: 5, Principals: pushPrincipals()})
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "writable") || !errors.Is(err, attack.ErrInconclusive) {
+	if len(findings) != 2 || !strings.Contains(findings[0].Title, "writable") || !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("replayed owner read must leave cross-principal read incomplete: findings=%+v err=%v", findings, err)
 	}
 }
@@ -746,7 +821,7 @@ func TestPushBindingRequiresTaskScope(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			configs := pushConfigObjects(state.Snapshot())
-			if len(configs) != 1 || configs[0].Cleanup != attack.CleanupCompleted {
+			if len(configs) != 2 || configs[0].Cleanup != attack.CleanupCompleted {
 				t.Fatalf("cleanup=%+v", configs)
 			}
 		})
@@ -815,8 +890,8 @@ func TestPushBinding_Open(t *testing.T) {
 	defer ts.Close()
 
 	findings := runPushBinding(t, ts, pushPrincipals())
-	if len(findings) != 1 || !strings.Contains(findings[0].Title, "without authentication") {
-		t.Fatalf("expected one anonymous-write finding, got %+v", findings)
+	if len(findings) != 2 || !strings.Contains(findings[0].Title, "without authentication") {
+		t.Fatalf("expected anonymous-write findings in both directions, got %+v", findings)
 	}
 	if findings[0].Severity != "high" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("want high/indicator, got %q/%q", findings[0].Severity, findings[0].Confidence)
@@ -867,11 +942,11 @@ func TestPushBinding_HeaderOnlyOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 2 {
+	if len(findings) != 4 {
 		t.Fatalf("expected header-authenticated cross-principal findings, got %+v", findings)
 	}
 	objects := pushConfigObjects(state.Snapshot())
-	if len(objects) != 2 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
+	if len(objects) != 4 || objects[0].Cleanup != attack.CleanupCompleted || objects[1].Cleanup != attack.CleanupCompleted {
 		t.Fatalf("header-authenticated cleanup = %+v", objects)
 	}
 }

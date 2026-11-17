@@ -573,14 +573,16 @@ Findings identify the extension by its position in the card without copying its 
 **Push Config Not Bound to Task Owner** | Severity: High | CWE-639
 
 The rule creates or reuses an authenticated principal's task, stores a marker
-push config, and verifies it through the owner's readback. It then checks whether
-an anonymous caller can store a different callback on that task, but only after
-confirming anonymous task read is denied. A persisted anonymous write is reported
-with one configured principal. If that write does not persist, two distinct
-principals enable cross-principal read and write checks. The second principal
-must be denied task read access first; a shared task or unjudged task read is
-not treated as an ownership breach. Findings require the owner's marker URL or
-an owner-confirmed write, respectively.
+push config, and verifies it through the owner's readback. It checks whether
+an anonymous caller can store a different callback after confirming anonymous
+task read is denied. A persisted anonymous write is reported with one configured
+principal. With two distinct principals, the rule uses a separate task for
+each owner and checks cross-principal read and write access in both directions.
+The other principal must be denied task read access first; a shared task or
+unjudged task read is not treated as an ownership breach. A task ID shared by
+both owners or failed setup makes that direction incomplete. Findings require
+the owner's marker URL or an owner-confirmed write, respectively. A confirmed anonymous
+write ends JSON-RPC cross-principal checks for that task.
 
 The rule supports v1.0's flat `TaskPushNotificationConfig` and v0.3's nested
 `pushNotificationConfig` over JSON-RPC and advertised HTTP+JSON bindings.
@@ -590,7 +592,8 @@ v0.3. The rule does not test notification delivery or gRPC.
 It attempts to delete each accepted marker after the task owner's readback
 confirms its callback URL. Unconfirmed markers or refused deletions remain in
 the scan report. On single-config servers, a marker can replace an existing
-callback on a reused task; use test tasks for this rule.
+callback on a reused task; use test tasks for this rule. Two-principal scans
+may create more tasks and push configs than one-principal scans.
 Findings omit callback URLs and task and config IDs. The target-object list keeps
 IDs needed to verify or clean up any remaining config. Push-config grants may
 differ from task-read grants, so findings are **indicators**. An exact
@@ -598,7 +601,8 @@ differ from task-read grants, so findings are **indicators**. An exact
 `a2a.push_configs.read` confirms a matching observed access. Anonymous writes
 use `caller: anonymous` and the configured owner's name; cross-principal
 checks use both configured names. The `write` name covers v1 create and v0.3
-set. A policy entry applies to the whole operation, not selected configs.
+set. Each caller/owner direction needs its own policy entry. A policy entry
+applies to the whole operation, not selected configs.
 
 ---
 
