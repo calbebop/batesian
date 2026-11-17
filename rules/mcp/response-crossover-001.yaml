@@ -6,7 +6,7 @@ info:
   description: |
     Sends bounded concurrent resource reads from two isolated clients with
     colliding JSON-RPC IDs. A finding requires a denied cross-principal read,
-    stable distinct resource content, and the caller receiving the owner's
+    stable distinct resource content, and either client receiving the other's
     content while requesting its own resource. A clean result covers only the
     observed attempts and cannot rule out a timing-dependent race.
 
