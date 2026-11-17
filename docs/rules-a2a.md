@@ -625,17 +625,18 @@ access relationship is ambiguous and the rule reports not tested.
 Creates a nonterminal task as one principal and requires that principal to read
 and subscribe to it. A second principal must be denied task read access before
 the rule tests whether it receives the same task and context in a subscription
-event. The rule captures one bounded response event, then closes the stream.
-It expects a task snapshot on v1.0; v0.3 may start with a task or
-status/artifact update. A missing task,
-terminal task, malformed stream, or ambiguous access control is not reported as
-clean. Task identifiers and stream content are omitted from findings. Because
-the agent may intentionally grant subscription without task-read access, a
-matching stream is an **indicator** to review against its authorization policy.
+event. It repeats the check with the principals reversed, using a distinct task.
+The rule captures one bounded response event, then closes the stream. It expects
+a task snapshot on v1.0; v0.3 may start with a task or status/artifact update.
+A missing task, terminal task, malformed stream, reused task ID, or ambiguous
+access control is not reported as clean. Task identifiers and stream content
+are omitted from findings. Because the agent may intentionally grant
+subscription without task-read access, a matching stream is an **indicator**
+to review against its authorization policy.
 
 The rule tests v1.0 and v0.3 JSON-RPC and advertised HTTP+JSON bindings, but not
-gRPC. It requires two distinct configured principals and creates a task on the
-target.
+gRPC. It requires two distinct configured principals and creates a separate task
+for each principal on a tested binding.
 
 ---
 

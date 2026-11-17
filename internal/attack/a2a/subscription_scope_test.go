@@ -52,12 +52,16 @@ func subscriptionServer(mode string) *httptest.Server {
 		}
 		switch request.Method {
 		case "SendMessage", "message/send":
-			if who != "tok-a" {
+			if who != "tok-a" && who != "tok-b" || mode == "reverse-setup-fails" && who == "tok-b" ||
+				mode == "first-setup-fails-reverse-open" && who == "tok-a" {
 				rpcError(-32001, "Task not found")
 				return
 			}
 			nextTask++
 			id := "task-subscription-" + strconv.Itoa(nextTask)
+			if mode == "same-task-id" {
+				id = "shared-task"
+			}
 			tasks[id] = who
 			result(snapshot(id))
 		case "GetTask", "tasks/get":
@@ -73,7 +77,8 @@ func subscriptionServer(mode string) *httptest.Server {
 				rpcError(-32601, "Method not found")
 				return
 			}
-			if owner == "" || (who != owner && mode == "bound") {
+			if owner == "" || (who != owner && (mode == "bound" || mode == "reverse-setup-fails" ||
+				mode == "same-task-id" || strings.Contains(mode, "reverse-open") && owner == "tok-a")) {
 				rpcError(-32001, "Task not found")
 				return
 			}
@@ -83,10 +88,10 @@ func subscriptionServer(mode string) *httptest.Server {
 				return
 			}
 			id := request.Params.ID
-			if mode == "wrong-task" && who == "tok-b" {
+			if mode == "wrong-task" && who != owner {
 				id = "unrelated-task"
 			}
-			if mode == "wrong-context" && who == "tok-b" {
+			if mode == "wrong-context" && who != owner {
 				payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID,
 					"result": map[string]any{"id": id, "contextId": "unrelated-context",
 						"status": map[string]string{"state": state}}})
@@ -95,7 +100,7 @@ func subscriptionServer(mode string) *httptest.Server {
 				return
 			}
 			replyID := request.ID
-			if mode == "wrong-reply-id" && who == "tok-b" {
+			if mode == "wrong-reply-id" && who != owner {
 				replyID = "unrelated-request"
 			}
 			var event any = snapshot(id)
@@ -107,7 +112,7 @@ func subscriptionServer(mode string) *httptest.Server {
 				event = map[string]any{"taskId": id, "contextId": "private-context", "kind": "artifact-update",
 					"artifact": map[string]any{"artifactId": "private-artifact", "parts": []any{map[string]string{"text": "private"}}}}
 			}
-			if mode == "missing-context" && who == "tok-b" {
+			if mode == "missing-context" && who != owner {
 				event = map[string]any{"id": id, "status": map[string]string{"state": state}}
 			}
 			payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": replyID, "result": event})
@@ -132,6 +137,11 @@ func TestSubscriptionScope(t *testing.T) {
 	}{
 		{mode: "bound"},
 		{mode: "open", findings: 1},
+		{mode: "reverse-open", findings: 1},
+		{mode: "legacy-reverse-open", findings: 1},
+		{mode: "first-setup-fails-reverse-open", findings: 1, inconclusive: true},
+		{mode: "reverse-setup-fails", inconclusive: true},
+		{mode: "same-task-id", inconclusive: true},
 		{mode: "legacy-open", findings: 1},
 		{mode: "legacy-update-open", findings: 1},
 		{mode: "legacy-artifact-open", findings: 1},
@@ -163,6 +173,10 @@ func TestSubscriptionScope(t *testing.T) {
 					!strings.Contains(finding.Evidence, "denied") {
 					t.Fatalf("finding=%+v", finding)
 				}
+			}
+			if strings.Contains(tc.mode, "reverse-open") && !strings.Contains(findings[0].Description,
+				"Principal \"tenant-a\" could not read principal \"tenant-b\"'s task") {
+				t.Fatalf("reverse finding=%+v", findings[0])
 			}
 		})
 	}
