@@ -437,9 +437,11 @@ func (e *PushLifecycleExecutor) deleteConfig(ctx context.Context, c *attack.HTTP
 func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Principal, operation, readMethod string) attack.Finding {
 	title := "A2A push-notification configs listed outside task scope"
 	detail := "listed the owner's scanner-created push config, including its callback URL"
+	accessOperation := attack.A2APushConfigsList
 	if operation == "delete" {
 		title = "A2A push-notification config deleted outside task scope"
 		detail = "deleted the owner's scanner-created push config"
+		accessOperation = attack.A2APushConfigsDelete
 	}
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.RiskIndicator,
@@ -449,6 +451,10 @@ func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Pri
 		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\nowner readback: callback matched\n%s control: denied for other principal\noperation: %s",
 			owner.Name, other.Name, readMethod, operation),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
+		Access: &attack.AccessObservation{
+			Operation: accessOperation, Caller: other.Name, CallerTenant: other.Tenant,
+			Owner: owner.Name, OwnerTenant: owner.Tenant,
+		},
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task and push config", Outcome: "owner readback confirmed marker"},
 			{Hop: 2, Principal: other.Name, Action: "get owner task", Outcome: "denied"},

@@ -450,6 +450,10 @@ func (e *PushBindingExecutor) anonymousWriteFinding(endpoint string, owner attac
 			owner.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+		Access: &attack.AccessObservation{
+			Operation: attack.A2APushConfigsWrite, Caller: "anonymous",
+			Owner: owner.Name, OwnerTenant: owner.Tenant,
+		},
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "task owned by " + owner.Name},
 			{Hop: 2, Principal: "anonymous", Action: "set push config on owner task", Outcome: "GRANTED - anonymous callback stored"},
@@ -473,6 +477,10 @@ func (e *PushBindingExecutor) writeFinding(endpoint string, owner, attacker atta
 			owner.Name, attacker.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+		Access: &attack.AccessObservation{
+			Operation: attack.A2APushConfigsWrite, Caller: attacker.Name, CallerTenant: attacker.Tenant,
+			Owner: owner.Name, OwnerTenant: owner.Tenant,
+		},
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "task owned by " + owner.Name},
 			{Hop: 2, Principal: attacker.Name, Action: "set push config on owner task (cross-principal)", Outcome: "GRANTED - other principal's callback attached"},
@@ -495,6 +503,10 @@ func (e *PushBindingExecutor) readFinding(endpoint string, owner, attacker attac
 			owner.Name, attacker.Name, taskOrigin(consumed), taskControl),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
+		Access: &attack.AccessObservation{
+			Operation: attack.A2APushConfigsRead, Caller: attacker.Name, CallerTenant: attacker.Tenant,
+			Owner: owner.Name, OwnerTenant: owner.Tenant,
+		},
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "own task with a configured webhook", Outcome: "callback URL configured"},
 			{Hop: 2, Principal: attacker.Name, Action: "get owner push config (cross-principal)", Outcome: "GRANTED - owner's callback URL disclosed"},

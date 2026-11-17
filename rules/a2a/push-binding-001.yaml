@@ -14,6 +14,7 @@ info:
 
     This rule does not verify callback delivery or token disclosure. A finding
     is an indicator because push-config grants may differ from task-read grants.
+    An exact expected_denials policy can confirm the observed access.
 
   references:
     - https://a2a-protocol.org/v1.0.1/specification/#131-data-access-and-authorization-scoping

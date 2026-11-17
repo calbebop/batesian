@@ -413,6 +413,13 @@ func validateExpectedDenial(d ExpectedDenialConfig) error {
 			(d.Caller == "anonymous" && d.CallerTenant != "") {
 			return errors.New("A2A task-cancel policy requires distinct caller and owner names")
 		}
+	case attack.A2APushConfigsWrite, attack.A2APushConfigsRead,
+		attack.A2APushConfigsList, attack.A2APushConfigsDelete:
+		if d.Caller == "" || d.Owner == "" || d.Caller == d.Owner ||
+			d.Caller == "default" || d.Owner == "anonymous" || d.Owner == "default" ||
+			(d.Caller == "anonymous" && (d.Operation != attack.A2APushConfigsWrite || d.CallerTenant != "")) {
+			return errors.New("A2A push-config policy requires distinct named caller and owner principals (anonymous is allowed only for writes)")
+		}
 	default:
 		return fmt.Errorf("unsupported operation %q", d.Operation)
 	}
@@ -592,6 +599,9 @@ func Example() string {
 #     caller_tenant: B
 #     owner: tenant-a
 #     owner_tenant: A
+#   - operation: a2a.push_configs.write
+#     caller: tenant-b
+#     owner: tenant-a
 #   - operation: mcp.prompts.get
 #     caller: anonymous
 #   - operation: mcp.tasks.get
