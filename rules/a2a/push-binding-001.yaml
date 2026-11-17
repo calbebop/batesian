@@ -12,10 +12,11 @@ info:
     principals are needed for cross-principal checks. Tests JSON-RPC and
     advertised HTTP+JSON bindings.
 
-    This rule does not verify callback delivery or token disclosure.
+    This rule does not verify callback delivery or token disclosure. A finding
+    is an indicator because push-config grants may differ from task-read grants.
 
   references:
-    - https://a2a-protocol.org/latest/specification/#131-data-access-and-authorization-scoping
+    - https://a2a-protocol.org/v1.0.1/specification/#131-data-access-and-authorization-scoping
     - https://cwe.mitre.org/data/definitions/639.html
     - https://cwe.mitre.org/data/definitions/862.html
     - https://cwe.mitre.org/data/definitions/441.html
@@ -33,7 +34,7 @@ attack:
   type: a2a-push-binding
 
 remediation: |
-  Require authentication and task-level authorization for every push-config
-  operation, including create, get, list, and delete. Keep callback URLs and
-  tokens private to the task owner. Validate callback destinations before
-  registration and delivery (see a2a-push-ssrf-001).
+  Confirm whether these callers should create or read the task's push configs.
+  If not, enforce the intended authorization policy on every operation. Keep
+  callback URLs and tokens within their permitted audience. Validate callback
+  destinations before registration and delivery (see a2a-push-ssrf-001).

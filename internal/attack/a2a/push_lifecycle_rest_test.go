@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,8 +15,12 @@ import (
 
 func pushLifecycleRESTServer(version, mode string) *httptest.Server {
 	var server *httptest.Server
-	var configID, markerURL string
+	var configID, markerURL, taskID, taskOwner string
+	nextTask := 0
 	present := false
+	reverseOpen := func(operation string) bool {
+		return mode == "reverse-open" || mode == "first-setup-fails-reverse-open" || mode == "reverse-open-"+operation
+	}
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/agent-card.json" {
 			w.Header().Set("Content-Type", "application/json")
@@ -40,26 +45,35 @@ func pushLifecycleRESTServer(version, mode string) *httptest.Server {
 		}
 		config := func(id, callback string) any {
 			if version == "1.0" {
-				return map[string]string{"taskId": "rest-task", "id": id, "url": callback}
+				return map[string]string{"taskId": taskID, "id": id, "url": callback}
 			}
 			if mode == "legacy-optional-id" {
-				return map[string]any{"name": "tasks/rest-task/pushNotificationConfigs/" + id,
+				return map[string]any{"name": "tasks/" + taskID + "/pushNotificationConfigs/" + id,
 					"pushNotificationConfig": map[string]string{"url": callback}}
 			}
-			return map[string]any{"name": "tasks/rest-task/pushNotificationConfigs/" + id,
+			return map[string]any{"name": "tasks/" + taskID + "/pushNotificationConfigs/" + id,
 				"pushNotificationConfig": map[string]string{"id": id, "url": callback}}
 		}
-		itemPath := "/tasks/rest-task/pushNotificationConfigs/" + configID
+		configPath := "/tasks/" + taskID + "/pushNotificationConfigs"
+		itemPath := configPath + "/" + configID
 		switch {
 		case r.Method == http.MethodPost && path == "/message:send":
-			if who != "tok-a" {
+			if who != "tok-a" && who != "tok-b" || mode == "first-setup-fails-reverse-open" && who == "tok-a" ||
+				mode == "reverse-setup-fails" && who == "tok-b" {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			writeJSON(map[string]any{"task": map[string]any{"id": "rest-task", "contextId": "rest-context",
+			nextTask++
+			taskID = fmt.Sprintf("rest-task-%d", nextTask)
+			if mode == "same-task-id" {
+				taskID = "rest-task"
+			}
+			taskOwner = who
+			configID, markerURL, present = "", "", false
+			writeJSON(map[string]any{"task": map[string]any{"id": taskID, "contextId": "rest-context-" + taskID,
 				"status": map[string]string{"state": "TASK_STATE_WORKING"}}})
-		case r.Method == http.MethodPost && path == "/tasks/rest-task/pushNotificationConfigs":
-			if who != "tok-a" {
+		case r.Method == http.MethodPost && path == configPath && taskID != "":
+			if who != taskOwner {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
@@ -83,33 +97,34 @@ func pushLifecycleRESTServer(version, mode string) *httptest.Server {
 			}
 			present = true
 			writeJSON(config(configID, markerURL))
-		case r.Method == http.MethodGet && path == "/tasks/rest-task":
-			if who != "tok-a" && mode != "shared" {
+		case r.Method == http.MethodGet && path == "/tasks/"+taskID && taskID != "":
+			if who != taskOwner && mode != "shared" {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			writeJSON(map[string]any{"id": "rest-task", "contextId": "rest-context",
+			writeJSON(map[string]any{"id": taskID, "contextId": "rest-context-" + taskID,
 				"status": map[string]string{"state": "TASK_STATE_WORKING"}})
-		case r.Method == http.MethodGet && path == itemPath:
-			if !present || who != "tok-a" {
+		case r.Method == http.MethodGet && path == itemPath && taskID != "":
+			if !present || who != taskOwner {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			writeJSON(config(configID, markerURL))
-		case r.Method == http.MethodGet && path == "/tasks/rest-task/pushNotificationConfigs":
+		case r.Method == http.MethodGet && path == configPath && taskID != "":
 			if mode == "unsupported-list" {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			if mode == "list-loop" && who == "tok-a" {
+			if mode == "list-loop" && who == taskOwner {
 				writeJSON(map[string]any{"configs": []any{}, "nextPageToken": "loop"})
 				return
 			}
-			if mode == "list-malformed" && who == "tok-b" {
+			if mode == "list-malformed" && who != taskOwner {
 				writeJSON(map[string]any{"configs": "not an array"})
 				return
 			}
-			allowed := who == "tok-a" || mode == "open" || mode == "list-open" || mode == "paged-open" || mode == "list-wrong-id"
+			allowed := who == taskOwner || mode == "open" || mode == "list-open" || mode == "paged-open" ||
+				mode == "list-wrong-id" || reverseOpen("list") && taskOwner == "tok-b"
 			if !allowed {
 				w.WriteHeader(http.StatusForbidden)
 				return
@@ -117,7 +132,7 @@ func pushLifecycleRESTServer(version, mode string) *httptest.Server {
 			items := []any{}
 			if present {
 				id := configID
-				if mode == "list-wrong-id" && who == "tok-b" {
+				if mode == "list-wrong-id" && who != taskOwner {
 					id = "different"
 				}
 				items = append(items, config(id, markerURL))
@@ -131,16 +146,17 @@ func pushLifecycleRESTServer(version, mode string) *httptest.Server {
 			} else {
 				writeJSON(items)
 			}
-		case r.Method == http.MethodDelete && path == itemPath:
-			if who == "tok-b" && mode == "unsupported-delete" {
+		case r.Method == http.MethodDelete && path == itemPath && taskID != "":
+			if who != taskOwner && mode == "unsupported-delete" {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
-			if who != "tok-a" && mode != "open" && mode != "delete-open" && mode != "delete-noop" {
+			if who != taskOwner && mode != "open" && mode != "delete-open" && mode != "delete-noop" &&
+				(!reverseOpen("delete") || taskOwner != "tok-b") {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			if mode != "delete-noop" || who != "tok-b" {
+			if mode != "delete-noop" || who == taskOwner {
 				present = false
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -158,10 +174,16 @@ func TestPushLifecycleREST(t *testing.T) {
 		inconclusive  bool
 	}{
 		{"1.0", "bound", 0, false},
-		{"1.0", "list-open", 1, false},
-		{"1.0", "paged-open", 1, false},
-		{"1.0", "delete-open", 1, false},
-		{"1.0", "open", 2, false},
+		{"1.0", "list-open", 2, false},
+		{"1.0", "paged-open", 2, false},
+		{"1.0", "delete-open", 2, false},
+		{"1.0", "open", 4, false},
+		{"1.0", "reverse-open-list", 1, false},
+		{"1.0", "reverse-open-delete", 1, false},
+		{"1.0", "reverse-open", 2, false},
+		{"1.0", "first-setup-fails-reverse-open", 2, true},
+		{"1.0", "reverse-setup-fails", 0, true},
+		{"1.0", "same-task-id", 0, true},
 		{"1.0", "shared", 0, true},
 		{"1.0", "list-loop", 0, true},
 		{"1.0", "list-malformed", 0, true},
@@ -170,9 +192,11 @@ func TestPushLifecycleREST(t *testing.T) {
 		{"1.0", "unsupported-list", 0, false},
 		{"1.0", "unsupported-delete", 0, false},
 		{"0.3.0", "bound", 0, false},
-		{"0.3.0", "list-open", 1, false},
-		{"0.3.0", "delete-open", 1, false},
-		{"0.3.0", "open", 2, false},
+		{"0.3.0", "list-open", 2, false},
+		{"0.3.0", "delete-open", 2, false},
+		{"0.3.0", "open", 4, false},
+		{"0.3.0", "reverse-open-list", 1, false},
+		{"0.3.0", "reverse-open-delete", 1, false},
 		{"0.3.0", "shared", 0, true},
 		{"0.3.0", "list-malformed", 0, true},
 		{"0.3.0", "list-wrong-id", 0, false},
@@ -191,13 +215,33 @@ func TestPushLifecycleREST(t *testing.T) {
 			}
 			objects := pushConfigObjects(state.Snapshot())
 			assertPushFindingsOmitObjectIDs(t, findings, objects)
-			if len(objects) != 1 || objects[0].Cleanup != attack.CleanupCompleted {
+			wantObjects := 2
+			if tc.mode == "first-setup-fails-reverse-open" || tc.mode == "reverse-setup-fails" ||
+				tc.mode == "same-task-id" {
+				wantObjects = 1
+			}
+			if len(objects) != wantObjects {
 				t.Fatalf("cleanup=%+v", objects)
 			}
+			for _, object := range objects {
+				if object.Cleanup != attack.CleanupCompleted {
+					t.Fatalf("cleanup=%+v", objects)
+				}
+			}
 			for _, finding := range findings {
-				if finding.Confidence != attack.ConfirmedExploit || !strings.Contains(finding.Evidence, "GET task control: denied") ||
+				if finding.Confidence != attack.RiskIndicator || !strings.Contains(finding.Evidence, "GET task control: denied") ||
 					!strings.Contains(finding.Evidence, "deleted") || !strings.Contains(finding.TargetURL, "/agent/") {
 					t.Fatalf("finding=%+v", finding)
+				}
+			}
+			if strings.Contains(tc.mode, "reverse-open") && len(findings) > 0 {
+				reverseFound := false
+				for _, finding := range findings {
+					reverseFound = reverseFound || strings.Contains(finding.Description,
+						"Principal \"tenant-a\" could not read principal \"tenant-b\"'s task")
+				}
+				if !reverseFound {
+					t.Fatalf("reverse finding missing: %+v", findings)
 				}
 			}
 		})

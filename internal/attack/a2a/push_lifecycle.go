@@ -59,11 +59,36 @@ func (e *PushLifecycleExecutor) ExecuteChained(ctx context.Context, target strin
 
 func (e *PushLifecycleExecutor) probeJSONRPC(ctx context.Context, endpoint string, opts attack.Options,
 	vars attack.Vars, a, b attack.Principal, clientA, clientB *attack.HTTPClient) (findings []attack.Finding, err error) {
+	seenTaskIDs := map[string]bool{}
+	for index, direction := range []struct {
+		owner, other             attack.Principal
+		ownerClient, otherClient *attack.HTTPClient
+	}{
+		{a, b, clientA, clientB},
+		{b, a, clientB, clientA},
+	} {
+		directionVars := vars
+		directionVars.RandID = fmt.Sprintf("%s-%d", vars.RandID, index)
+		directionFindings, directionErr := e.probeJSONRPCDirection(ctx, endpoint, opts, directionVars,
+			direction.owner, direction.other, direction.ownerClient, direction.otherClient, seenTaskIDs)
+		findings = append(findings, directionFindings...)
+		err = errors.Join(err, directionErr)
+	}
+	return findings, err
+}
+
+func (e *PushLifecycleExecutor) probeJSONRPCDirection(ctx context.Context, endpoint string, opts attack.Options,
+	vars attack.Vars, a, b attack.Principal, clientA, clientB *attack.HTTPClient,
+	seenTaskIDs map[string]bool) (findings []attack.Finding, err error) {
 	binding := NewPushBindingExecutor(e.rule)
 	taskID, setup := binding.createTask(ctx, clientA, endpoint, a, vars.RandID)
 	if taskID == "" {
 		return nil, setup.err()
 	}
+	if seenTaskIDs[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same JSON-RPC task ID", attack.ErrInconclusive)
+	}
+	seenTaskIDs[taskID] = true
 	partial := setup.partialErr()
 	defer func() { err = errors.Join(err, partial) }()
 
@@ -417,9 +442,9 @@ func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Pri
 		detail = "deleted the owner's scanner-created push config"
 	}
 	return attack.Finding{
-		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
+		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.RiskIndicator,
 		Title: title,
-		Description: fmt.Sprintf("Principal %q could not read principal %q's task, but %s using its own credentials.",
+		Description: fmt.Sprintf("Principal %q could not read principal %q's task, but %s using its own credentials. Confirm whether this grant is intended.",
 			other.Name, owner.Name, detail),
 		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\nowner readback: callback matched\n%s control: denied for other principal\noperation: %s",
 			owner.Name, other.Name, readMethod, operation),

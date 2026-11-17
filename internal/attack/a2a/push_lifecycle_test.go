@@ -16,11 +16,17 @@ func TestPushLifecycle(t *testing.T) {
 		inconclusive bool
 	}{
 		{mode: "lifecycle-bound"},
-		{mode: "lifecycle-list-open", wantFindings: 1},
-		{mode: "lifecycle-paged-open", wantFindings: 1},
-		{mode: "lifecycle-delete-open", wantFindings: 1},
-		{mode: "lifecycle-open", wantFindings: 2},
-		{mode: "lifecycle-legacy-open", wantFindings: 2},
+		{mode: "lifecycle-list-open", wantFindings: 2},
+		{mode: "lifecycle-paged-open", wantFindings: 2},
+		{mode: "lifecycle-delete-open", wantFindings: 2},
+		{mode: "lifecycle-open", wantFindings: 4},
+		{mode: "lifecycle-legacy-open", wantFindings: 4},
+		{mode: "lifecycle-reverse-open-list", wantFindings: 1},
+		{mode: "lifecycle-reverse-open-delete", wantFindings: 1},
+		{mode: "lifecycle-reverse-open", wantFindings: 2},
+		{mode: "lifecycle-first-setup-fails-reverse-open", wantFindings: 2, inconclusive: true},
+		{mode: "lifecycle-reverse-setup-fails", inconclusive: true},
+		{mode: "lifecycle-same-task-id", inconclusive: true},
 		{mode: "lifecycle-shared", inconclusive: true},
 		{mode: "lifecycle-list-wrong-id", inconclusive: true},
 		{mode: "lifecycle-list-malformed", inconclusive: true},
@@ -40,15 +46,34 @@ func TestPushLifecycle(t *testing.T) {
 			}
 			objects := pushConfigObjects(state.Snapshot())
 			assertPushFindingsOmitObjectIDs(t, findings, objects)
-			if len(objects) != 1 || objects[0].Cleanup != attack.CleanupCompleted ||
-				!strings.HasPrefix(objects[0].ID, "lifecycle-") {
+			wantObjects := 2
+			if tc.mode == "lifecycle-first-setup-fails-reverse-open" || tc.mode == "lifecycle-reverse-setup-fails" ||
+				tc.mode == "lifecycle-same-task-id" {
+				wantObjects = 1
+			}
+			if len(objects) != wantObjects {
 				t.Fatalf("cleanup=%+v", objects)
 			}
+			for _, object := range objects {
+				if object.Cleanup != attack.CleanupCompleted || !strings.HasPrefix(object.ID, "lifecycle-") {
+					t.Fatalf("cleanup=%+v", objects)
+				}
+			}
 			for _, finding := range findings {
-				if finding.Severity != "high" || finding.Confidence != attack.ConfirmedExploit ||
+				if finding.Severity != "high" || finding.Confidence != attack.RiskIndicator ||
 					!strings.Contains(finding.Evidence, "GetTask control: denied") ||
 					!strings.Contains(finding.Evidence, "deleted") {
 					t.Fatalf("finding=%+v", finding)
+				}
+			}
+			if strings.Contains(tc.mode, "reverse-open") && len(findings) > 0 {
+				reverseFound := false
+				for _, finding := range findings {
+					reverseFound = reverseFound || strings.Contains(finding.Description,
+						"Principal \"tenant-a\" could not read principal \"tenant-b\"'s task")
+				}
+				if !reverseFound {
+					t.Fatalf("reverse finding missing: %+v", findings)
 				}
 			}
 		})
