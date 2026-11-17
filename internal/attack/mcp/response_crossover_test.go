@@ -72,7 +72,12 @@ func (f *crossoverFixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "wrong name", http.StatusBadRequest)
 			return
 		}
-		if principal == "caller-token" && uri == "resource://owner/private" && f.mode != "no-denial" {
+		if principal == "caller-token" && uri == "resource://owner/private" &&
+			f.mode != "no-denial" && f.mode != "reverse-denial-only" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if principal == "owner-token" && uri == "resource://caller/private" && f.mode != "no-denial" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -87,7 +92,8 @@ func (f *crossoverFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, _ := strconv.Atoi(string(req.ID))
-		if f.mode == "unstable-post" && id >= 600 && uri == "resource://owner/private" {
+		if f.mode == "unstable-post" && id >= 600 && uri == "resource://owner/private" ||
+			f.mode == "reverse-unstable-post" && id >= 600 && uri == "resource://caller/private" {
 			content["text"] = "changed-owner-content"
 		}
 		if id >= 500 && id < 503 {
@@ -95,7 +101,8 @@ func (f *crossoverFixture) serve(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			if f.mode == "vulnerable" || f.mode == "unstable-post" || f.mode == "wrong-id" {
+			if f.mode == "vulnerable" || f.mode == "unstable-post" || f.mode == "wrong-id" ||
+				strings.HasPrefix(f.mode, "reverse-") {
 				ticket := &crossoverPending{content: content, reply: make(chan map[string]string, 1)}
 				f.mu.Lock()
 				first := f.pending
@@ -113,13 +120,23 @@ func (f *crossoverFixture) serve(w http.ResponseWriter, r *http.Request) {
 					f.mu.Lock()
 					f.pending = nil
 					f.mu.Unlock()
-					first.reply <- content
-					content = first.content
+					if strings.HasPrefix(f.mode, "reverse-") {
+						if first.content["uri"] == "resource://owner/private" {
+							first.reply <- content
+						} else {
+							first.reply <- first.content
+							content = first.content
+						}
+					} else {
+						first.reply <- content
+						content = first.content
+					}
 				}
 			}
 		}
 		responseID := req.ID
-		if f.mode == "wrong-id" && principal == "caller-token" && id >= 500 && id < 503 {
+		if (f.mode == "wrong-id" && principal == "caller-token" ||
+			f.mode == "reverse-wrong-id" && principal == "owner-token") && id >= 500 && id < 503 {
 			responseID = json.RawMessage(strconv.Itoa(id + 1))
 		}
 		respond(map[string]interface{}{"resultType": "complete", "contents": []map[string]string{content}}, responseID)
@@ -144,15 +161,26 @@ func runCrossoverFixture(t *testing.T, mode string) ([]attack.Finding, error) {
 }
 
 func TestResponseCrossover_Observed(t *testing.T) {
-	findings, err := runCrossoverFixture(t, "vulnerable")
-	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit {
-		t.Fatalf("findings=%+v err=%v", findings, err)
-	}
-	encoded, _ := json.Marshal(findings)
-	for _, secret := range []string{"owner-secret", "caller-content", "resource://", "owner-token", "caller-token"} {
-		if strings.Contains(string(encoded), secret) {
-			t.Fatalf("finding disclosed resource or credential: %s", encoded)
-		}
+	for _, tc := range []struct {
+		mode, owner, caller string
+	}{
+		{"vulnerable", "owner", "caller"},
+		{"reverse-only", "caller", "owner"},
+		{"reverse-denial-only", "caller", "owner"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			findings, err := runCrossoverFixture(t, tc.mode)
+			if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit ||
+				!strings.Contains(findings[0].Evidence, "owner: "+tc.owner+"\ncaller: "+tc.caller) {
+				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			encoded, _ := json.Marshal(findings)
+			for _, secret := range []string{"owner-secret", "caller-content", "resource://", "owner-token", "caller-token"} {
+				if strings.Contains(string(encoded), secret) {
+					t.Fatalf("finding disclosed resource or credential: %s", encoded)
+				}
+			}
+		})
 	}
 }
 
@@ -167,6 +195,8 @@ func TestResponseCrossover_ProtectedAndIncomplete(t *testing.T) {
 		{"incomplete-pair", true},
 		{"wrong-id", true},
 		{"unstable-post", true},
+		{"reverse-wrong-id", true},
+		{"reverse-unstable-post", true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			findings, err := runCrossoverFixture(t, tc.mode)

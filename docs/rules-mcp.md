@@ -680,12 +680,12 @@ answer elicitation, or test arbitrary state tampering and expiry.
 
 This rule uses two isolated HTTP clients with distinct principals. It finds
 readable resources for each, requires stable and different content, and checks
-that the second principal is denied a direct read of the first principal's
-resource. It then sends up to three pairs of concurrent `resources/read`
-requests with the same JSON-RPC ID. A confirmed finding requires the second
-client to receive the first client's resource content while requesting its own
-resource, followed by stable reads and the same denial after the race. Resource
-URIs, content, and credentials stay out of the finding.
+for a denied cross-principal read in either direction. It then sends up to
+three pairs of concurrent `resources/read` requests with the same JSON-RPC ID.
+A confirmed finding requires a client to receive the other client's resource
+content while requesting its own resource, followed by stable reads and the
+same denial after the race. Resource URIs, content, and credentials stay out
+of the finding.
 
 The rule tests up to three list pages and three resource pairs. It does not
 mutate resources or depend on a particular SDK version. A clean result means

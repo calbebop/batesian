@@ -79,9 +79,8 @@ func (e *ResponseCrossoverExecutor) Execute(ctx context.Context, target string, 
 		if aErr != nil || aRepeatErr != nil || ownerContent == nil || !bytes.Equal(ownerContent, crossoverContent(a2)) {
 			continue
 		}
-		if !mrtrPost(ctx, callerClient, session, caller, 102+4*i, "resources/read", ownerRead.params).denied {
-			continue
-		}
+		callerDeniedOwner := mrtrPost(ctx, callerClient, session, caller, 102+4*i,
+			"resources/read", ownerRead.params).denied
 		for j, callerURI := range callerURIs {
 			if callerURI == ownerURI {
 				continue
@@ -94,36 +93,45 @@ func (e *ResponseCrossoverExecutor) Execute(ctx context.Context, target string, 
 				!bytes.Equal(callerContent, crossoverContent(b2)) || bytes.Equal(callerContent, ownerContent) {
 				continue
 			}
+			ownerDeniedCaller := mrtrPost(ctx, ownerClient, session, owner, 202+4*j,
+				"resources/read", callerRead.params).denied
+			if !callerDeniedOwner && !ownerDeniedCaller {
+				continue
+			}
 			controlled = true
 			pairCount++
 			completeRounds := 0
 			for round := range crossoverRounds {
-				ownerReply, crossed := crossoverPair(ctx, ownerClient, callerClient, session, owner, caller,
+				ownerReply, callerReply := crossoverPair(ctx, ownerClient, callerClient, session, owner, caller,
 					ownerRead, callerRead, 500+round)
-				crossedContent := crossoverContent(crossed)
-				if !bytes.Equal(crossedContent, ownerContent) {
-					if crossoverContent(ownerReply) != nil && crossedContent != nil {
-						completeRounds++
-					}
+				ownerObserved, callerObserved := crossoverContent(ownerReply), crossoverContent(callerReply)
+				if ownerObserved == nil || callerObserved == nil {
+					continue
+				}
+				ownerToCaller := callerDeniedOwner && bytes.Equal(callerObserved, ownerContent)
+				callerToOwner := ownerDeniedCaller && bytes.Equal(ownerObserved, callerContent)
+				if !ownerToCaller && !callerToOwner {
+					completeRounds++
 					continue
 				}
 				ownerAfter, ownerErr := cacheScopeFetch(ctx, ownerClient, session, owner, 600, ownerRead)
 				callerAfter, callerErr := cacheScopeFetch(ctx, callerClient, session, caller, 601, callerRead)
 				if ownerErr != nil || callerErr != nil || !bytes.Equal(crossoverContent(ownerAfter), ownerContent) ||
-					!bytes.Equal(crossoverContent(callerAfter), callerContent) ||
-					!mrtrPost(ctx, callerClient, session, caller, 602, "resources/read", ownerRead.params).denied {
+					!bytes.Equal(crossoverContent(callerAfter), callerContent) {
 					incomplete = append(incomplete, fmt.Errorf("%w: resource controls changed after a concurrent response",
 						attack.ErrInconclusive))
 					continue
 				}
-				return []attack.Finding{{
-					RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
-					Title:       "MCP response crossed between authenticated clients",
-					Description: fmt.Sprintf("%s was denied a read of %s's resource, but received that resource's content while concurrently requesting its own resource with the same JSON-RPC ID. Keep each HTTP response bound to its originating request and authorization context.", caller.name, owner.name),
-					Evidence: fmt.Sprintf("wire: MCP %s\nowner: %s\ncaller: %s\ncaller read of owner resource: denied before and after\nsequential resource contents: stable and distinct\nconcurrent caller response: matched owner content\nresource URIs and content omitted",
-						modernEraVersion, owner.name, caller.name),
-					Remediation: e.rule.Remediation, TargetURL: session.Endpoint,
-				}}, errors.Join(incomplete...)
+				if ownerToCaller && mrtrPost(ctx, callerClient, session, caller, 602,
+					"resources/read", ownerRead.params).denied {
+					return []attack.Finding{e.finding(session.Endpoint, owner, caller)}, errors.Join(incomplete...)
+				}
+				if callerToOwner && mrtrPost(ctx, ownerClient, session, owner, 603,
+					"resources/read", callerRead.params).denied {
+					return []attack.Finding{e.finding(session.Endpoint, caller, owner)}, errors.Join(incomplete...)
+				}
+				incomplete = append(incomplete, fmt.Errorf("%w: cross-principal read was not denied after a concurrent response",
+					attack.ErrInconclusive))
 			}
 			if completeRounds != crossoverRounds {
 				incomplete = append(incomplete, fmt.Errorf("%w: concurrent resource reads did not both return comparable results",
@@ -139,6 +147,17 @@ func (e *ResponseCrossoverExecutor) Execute(ctx context.Context, target string, 
 			attack.ErrInconclusive))
 	}
 	return nil, errors.Join(incomplete...)
+}
+
+func (e *ResponseCrossoverExecutor) finding(endpoint string, owner, caller taskPrincipal) attack.Finding {
+	return attack.Finding{
+		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.ConfirmedExploit,
+		Title:       "MCP response crossed between authenticated clients",
+		Description: fmt.Sprintf("%s was denied a read of %s's resource, but received that resource's content while concurrently requesting its own resource with the same JSON-RPC ID. Keep each HTTP response bound to its originating request and authorization context.", caller.name, owner.name),
+		Evidence: fmt.Sprintf("wire: MCP %s\nowner: %s\ncaller: %s\ncaller read of owner resource: denied before and after\nsequential resource contents: stable and distinct\nconcurrent caller response: matched owner content\nresource URIs and content omitted",
+			modernEraVersion, owner.name, caller.name),
+		Remediation: e.rule.Remediation, TargetURL: endpoint,
+	}
 }
 
 func crossoverPrincipals(opts attack.Options) (taskPrincipal, taskPrincipal, error) {
