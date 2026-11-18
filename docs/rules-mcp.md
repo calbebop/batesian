@@ -656,21 +656,24 @@ subscription access separately from resource reads.
 **Cross-Principal Request State Replay** | Severity: High | indicator / policy-confirmed | CWE-639
 
 This rule tests modern `resources/read` flows with two configured principals.
-It checks up to three owner list pages and reads at most five resources,
-sampling across pages. A candidate must return
+It checks each principal as a potential owner and samples at most five
+resources across three list pages per direction. It stops at the first
+finding. A candidate must return
 `input_required` with a bounded `requestState` and no `inputRequests`, so the
 scanner can retry without filling a form or invoking another operation. The
 second principal must be denied the same read without state. The rule then
 tries the owner's state as that principal and compares any returned content
-with a fresh owner retry. Resource URIs, state, and content stay out of findings.
+with a fresh owner retry. It rechecks the direct denial before reporting a
+replay. Resource URIs, state, and content stay out of findings.
 
 Matching content is an **indicator** because a deployment may intentionally
 make state transferable. Set an exact `expected_denials` entry for
 `mcp.resources.read` and the caller/owner pair to confirm an unauthorized
 handoff. A denied replay followed by a successful owner retry is a protected
-control. Missing state, input requests, unlisted resources, malformed results,
-and unmatched content remain **not tested**. The rule does not mutate state,
-answer elicitation, or test arbitrary state tampering and expiry.
+control for that direction. Missing state, input requests, unlisted resources,
+malformed results, changed denial, and unmatched content remain **not tested**.
+The rule does not mutate state, answer elicitation, or test arbitrary state
+tampering and expiry.
 
 ---
 

@@ -4,10 +4,11 @@ info:
   author: batesian
   severity: high
   description: |
-    Tests whether requestState from one principal lets another read the same
-    resource after a denied baseline. Only state-only resources/read flows are
-    attempted. Matching owner content is an indicator unless an expected
-    denial declares the boundary.
+    Tests both principal directions for a requestState replay that permits a
+    denied resource read, stopping at the first finding. Only state-only
+    resources/read flows are attempted.
+    A finding requires matching owner content and a repeated direct denial;
+    it remains an indicator unless an expected denial declares the boundary.
 
   references:
     - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr

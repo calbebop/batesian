@@ -35,6 +35,18 @@ type mrtrReply struct {
 }
 
 func (e *MRTRStateExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	findings, firstErr := e.executeDirection(ctx, target, opts)
+	if len(findings) != 0 || len(opts.Principals) < 2 {
+		return findings, firstErr
+	}
+	reversed := opts
+	reversed.Principals = append([]attack.Principal(nil), opts.Principals...)
+	reversed.Principals[0], reversed.Principals[1] = reversed.Principals[1], reversed.Principals[0]
+	findings, secondErr := e.executeDirection(ctx, target, reversed)
+	return findings, errors.Join(firstErr, secondErr)
+}
+
+func (e *MRTRStateExecutor) executeDirection(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	a, b, err := mrtrPrincipals(opts)
 	if err != nil {
 		return nil, err
@@ -72,7 +84,7 @@ func (e *MRTRStateExecutor) Execute(ctx context.Context, target string, opts att
 	}
 	tested := false
 	for i, uri := range uris {
-		id := 100 + 6*i
+		id := 100 + 7*i
 		params := map[string]interface{}{"uri": uri}
 		ownerStart := mrtrPost(ctx, client, session, a, id, "resources/read", params)
 		state, ok := mrtrInputState(ownerStart.result)
@@ -119,11 +131,16 @@ func (e *MRTRStateExecutor) Execute(ctx context.Context, target string, opts att
 				attack.ErrInconclusive, i+1))
 			continue
 		}
+		if !mrtrPost(ctx, client, session, b, id+6, "resources/read", params).denied {
+			incomplete = append(incomplete, fmt.Errorf("%w: the caller's resource-read denial did not persist for candidate %d",
+				attack.ErrInconclusive, i+1))
+			continue
+		}
 		return []attack.Finding{{
 			RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "high", Confidence: attack.RiskIndicator,
 			Title:       "MCP resource request state allowed a cross-principal read",
 			Description: fmt.Sprintf("%s was denied a resource read without request state, then received the same content as %s after presenting that principal's state. If this handoff is not intended, bind request state to the authenticated principal and request. Declare an expected denial to confirm the policy violation.", b.name, a.name),
-			Evidence: fmt.Sprintf("wire: MCP %s\nowner: %s\ncaller: %s\nresource: listed candidate %d of %d (URI omitted)\ncaller baseline: denied\ncaller with owner state: complete resource content matching owner retry\nrequest state and content omitted",
+			Evidence: fmt.Sprintf("wire: MCP %s\nowner: %s\ncaller: %s\nresource: listed candidate %d of %d (URI omitted)\ncaller direct read: denied before and after\ncaller with owner state: complete resource content matching owner retry\nrequest state and content omitted",
 				modernEraVersion, a.name, b.name, i+1, len(uris)),
 			Remediation: e.rule.Remediation, TargetURL: session.Endpoint,
 			Access: &attack.AccessObservation{Operation: attack.MCPResourcesRead, Caller: b.name,
