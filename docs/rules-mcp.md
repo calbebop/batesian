@@ -544,28 +544,35 @@ skipped rather than mis-tested. The modern extension is covered by
 This rule probes the MCP 2026-07-28 `io.modelcontextprotocol/tasks` extension.
 It requires two named principals with distinct credentials and an exact
 `--mcp-invoke-tool` approval for a tool advertising `readOnlyHint: true`. The
-rule creates a disposable task as principal A, confirms A can read it, then
-tries `tasks/get` as principal B after a nonexistent-ID control. A completed
-result can be returned in `tasks/get`, so the rule treats a valid task response
-as observed access. It does not include the task ID or result content in evidence.
+rule tests each principal as task owner with at most two approved tool calls
+per direction. It confirms the owner can read the task, then tries `tasks/get`
+as the other principal after a nonexistent-ID control. A completed result can
+be returned in `tasks/get`, so a valid task response counts as observed access.
+Task IDs and result content stay out of the evidence.
 
-When A's task is waiting on a form elicitation, B sends `tasks/update` with a
-`decline` response to one outstanding request. The rule creates a separate
-task for `tasks/cancel` and sends cancellation as B only while A observes it
-active. Accepted update and cancel acknowledgements show that the server
-accepted those requests; they do not prove the task changed state or stopped.
+When the owner's task is waiting on a form elicitation, the other principal
+sends `tasks/update` with a `decline` response to one outstanding request. The
+rule creates a separate task for `tasks/cancel` and sends cancellation as the
+other principal only while the owner observes it active. Accepted update and
+cancel acknowledgements show that the server accepted those requests; they do
+not prove the task changed state or stopped.
 The rule first checks that the same method rejects a nonexistent task; a
 server that acknowledges any task ID yields no update or cancel finding.
 The rule does not send form data, answer sampling requests, or cancel tasks it
 did not create.
+
+A finding from one direction remains available if the other direction is not
+testable. The rule attempts to cancel its disposable tasks after each direction,
+including when the scan is interrupted.
 
 Cross-principal access is an **indicator** because a task ID can be an
 intentional bearer capability. If the deployment should deny a specific
 relationship, set `expected_denials` for `mcp.tasks.get`, `mcp.tasks.update`,
 or `mcp.tasks.cancel` with the caller and owner principal names. Only a
 matching observed access is promoted to **confirmed**. Absent task handles,
-missing approval, malformed replies, and unanswered subchecks remain **not
-tested**. `tasks/update` is skipped when no safe form elicitation is pending.
+handles reused across owners, missing approval, malformed replies, and
+unanswered subchecks remain **not tested**. `tasks/update` is skipped when no
+safe form elicitation is pending.
 The scan then reports that subcheck as not tested rather than clean.
 
 ---
