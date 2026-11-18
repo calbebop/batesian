@@ -72,13 +72,13 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 	if errors.Is(err, attack.ErrInconclusive) && observed.rank > rankNothing {
 		return nil, inconclusive(handshakeRefusal{observed.reason})
 	}
-	if len(findings) != 0 || err != nil {
+	if err != nil {
 		return findings, err
 	}
 	if incomplete != "" {
-		return nil, fmt.Errorf("%w: %s", attack.ErrInconclusive, incomplete)
+		return findings, fmt.Errorf("%w: %s", attack.ErrInconclusive, incomplete)
 	}
-	return nil, nil
+	return findings, nil
 }
 
 func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep string, principalA, principalB taskPrincipal,
@@ -98,68 +98,121 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil, true, "the server issued no session ID for the replay comparison"
 	}
 
-	// Capture a checkpoint and a later event that names session A.
 	aEvents, aStatus, aErr := e.sseCollect(ctx, raw, ep, principalA, sessionA, "", 3*time.Second)
-	if aStatus == http.StatusNotFound || aStatus == http.StatusMethodNotAllowed ||
-		aStatus == http.StatusNotAcceptable || aStatus == http.StatusNotImplemented {
-		return nil, true, "the server exposed no SSE stream for session A"
-	}
-	if (aErr != nil && !errors.Is(aErr, context.DeadlineExceeded)) || aStatus < 200 || aStatus >= 300 {
-		return nil, true, "session A SSE stream could not be read"
-	}
-	checkpointID, markers := resumeCheckpoint(aEvents, sessionA.SessionID)
-	if checkpointID == "" || len(markers) == 0 {
-		return nil, true, "session A stream supplied no checkpoint and later session-labeled event to compare"
-	}
+	aCheckpoint, aMarkers, aSourceReason := sseSource(ctx, aEvents, aStatus, aErr, sessionA.SessionID, "A")
 
 	sessionB, ok, _, setupReason := e.initialize(ctx, client, ep, principalB)
 	if sessionB.SessionID != sessionA.SessionID {
 		defer closeSSEResumeSession(ctx, client, sessionB, principalB)
 	}
 	if setupReason != "" {
-		return nil, true, "session B " + setupReason
+		return nil, true, strings.Join(appendReason(aSourceReason, "session B "+setupReason), "; ")
 	}
 	if !ok || sessionB.SessionID == "" || sessionB.SessionID == sessionA.SessionID {
-		return nil, true, "a second distinct session was not established"
+		return nil, true, strings.Join(appendReason(aSourceReason, "a second distinct session was not established"), "; ")
 	}
 
-	// As B, resume from A's checkpoint id and see whether A's later events are
-	// replayed into B's session. MCP event ids are opaque (spec: Streamable HTTP
-	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
-	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, principalB, sessionB, checkpointID, 3*time.Second)
-	if bStatus == http.StatusNotImplemented || (bStatus >= 400 && bStatus < 500 &&
-		bStatus != http.StatusRequestTimeout && bStatus != http.StatusTooManyRequests) {
-		return nil, true, "" // the cross-session resume was refused
+	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, principalB, sessionB, "", 3*time.Second)
+	bCheckpoint, bMarkers, bSourceReason := sseSource(ctx, bEvents, bStatus, bErr, sessionB.SessionID, "B")
+
+	var directions []string
+	var incomplete []string
+	// Event IDs are opaque, so use each source stream's checkpoint verbatim.
+	if aSourceReason != "" {
+		incomplete = append(incomplete, aSourceReason)
+	} else if matched, reason := e.resumeAcross(ctx, raw, ep, principalB, sessionB, aCheckpoint, aMarkers); matched {
+		directions = append(directions, "A to B")
+	} else if reason != "" {
+		incomplete = append(incomplete, "session B SSE resume of A's stream "+reason)
 	}
-	if (bErr != nil && !errors.Is(bErr, context.DeadlineExceeded)) || bStatus < 200 || bStatus >= 300 {
-		return nil, true, "session B SSE resume response could not be read"
+
+	if bSourceReason != "" {
+		incomplete = append(incomplete, bSourceReason)
+	} else if matched, reason := e.resumeAcross(ctx, raw, ep, principalA, sessionA, bCheckpoint, bMarkers); matched {
+		directions = append(directions, "B to A")
+	} else if reason != "" {
+		incomplete = append(incomplete, "session A SSE resume of B's stream "+reason)
 	}
-	for _, ev := range bEvents {
-		if marker, ok := markers[ev.id]; ok && marker == ev.data {
-			return []attack.Finding{{
-				RuleID:     e.rule.ID,
-				RuleName:   e.rule.Name,
-				Severity:   "high",
-				Confidence: attack.ConfirmedExploit,
-				Title:      "MCP SSE resumption delivered a session-A-labeled event to session B",
-				Description: fmt.Sprintf(
-					"At %s, session B resumed from session A's checkpoint and received an event "+
-						"with the same ID and data observed on session A's stream. The data names "+
-						"session A's server-issued ID. This is evidence of cross-session redelivery "+
-						"on the legacy MCP SSE transport.", ep),
-				Evidence: fmt.Sprintf(
-					"endpoint: %s\nsession A ID: [redacted]\nsession B ID: [redacted]\n"+
-						"B resumed from A's checkpoint: yes\nmatching event id: [redacted]\n"+
-						"matching event data: yes (payload omitted)", ep),
-				Remediation: e.rule.Remediation,
-				TargetURL:   ep,
-			}}, true, ""
+
+	if len(directions) > 0 {
+		return []attack.Finding{e.replayFinding(ep, directions)}, true, strings.Join(incomplete, "; ")
+	}
+	return nil, true, strings.Join(incomplete, "; ")
+}
+
+func appendReason(first, second string) []string {
+	if first == "" {
+		return []string{second}
+	}
+	return []string{first, second}
+}
+
+func sseSource(ctx context.Context, events []sseEvent, status int, err error, sessionID, label string) (string, map[string]string, string) {
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed ||
+		status == http.StatusNotAcceptable || status == http.StatusNotImplemented {
+		return "", nil, "the server exposed no SSE stream for session " + label
+	}
+	if !usableSSEStream(ctx, status, err) {
+		return "", nil, "session " + label + " SSE stream could not be read"
+	}
+	checkpoint, markers := resumeCheckpoint(events, sessionID)
+	if checkpoint == "" || len(markers) == 0 {
+		return "", nil, "session " + label + " stream supplied no checkpoint and later session-labeled event to compare"
+	}
+	return checkpoint, markers, ""
+}
+
+func usableSSEStream(ctx context.Context, status int, err error) bool {
+	return ctx.Err() == nil && status >= 200 && status < 300 &&
+		(err == nil || errors.Is(err, context.DeadlineExceeded))
+}
+
+func (e *SSEResumeReplayExecutor) resumeAcross(ctx context.Context, raw *http.Client, ep string,
+	receiver taskPrincipal, session mcpSession, checkpointID string, markers map[string]string) (bool, string) {
+	events, status, err := e.sseCollect(ctx, raw, ep, receiver, session, checkpointID, 3*time.Second)
+	if status == http.StatusNotImplemented || (status >= 400 && status < 500 &&
+		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests) {
+		return false, ""
+	}
+	if !usableSSEStream(ctx, status, err) {
+		return false, "response could not be read"
+	}
+	for _, event := range events {
+		if marker, ok := markers[event.id]; ok && marker == event.data {
+			return true, ""
 		}
 	}
-	if bErr != nil {
-		return nil, true, "session B SSE resume response could not be read"
+	if err != nil {
+		return false, "response could not be read"
 	}
-	return nil, true, ""
+	return false, ""
+}
+
+func (e *SSEResumeReplayExecutor) replayFinding(endpoint string, directions []string) attack.Finding {
+	evidence := fmt.Sprintf("endpoint: %s\nsession A ID: [redacted]\nsession B ID: [redacted]\n", endpoint)
+	for _, direction := range directions {
+		if direction == "A to B" {
+			evidence += "B resumed from A's checkpoint: yes\n"
+		} else {
+			evidence += "A resumed from B's checkpoint: yes\n"
+		}
+	}
+	evidence += "matching event id: [redacted]\nmatching event data: yes (payload omitted)"
+	return attack.Finding{
+		RuleID:     e.rule.ID,
+		RuleName:   e.rule.Name,
+		Severity:   "high",
+		Confidence: attack.ConfirmedExploit,
+		Title:      "MCP SSE resumption replayed another session's event",
+		Description: fmt.Sprintf(
+			"At %s, a session resumed from another session's checkpoint and received an event "+
+				"with the same ID and data observed on the source stream. The data names the source's "+
+				"server-issued session ID. This demonstrates cross-session redelivery on the legacy "+
+				"MCP SSE transport. Observed direction(s): %s.", endpoint, strings.Join(directions, ", ")),
+		Evidence:    evidence,
+		Remediation: e.rule.Remediation,
+		TargetURL:   endpoint,
+	}
 }
 
 // initialize opens a session and reports incomplete notification setup separately.

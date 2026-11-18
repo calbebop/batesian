@@ -140,7 +140,20 @@ func resumeServerWithCleanup(t *testing.T, mode string, closed *[]string) *httpt
 		}
 		sid := r.Header.Get("Mcp-Session-Id")
 		leid := r.Header.Get("Last-Event-ID")
+		if mode == "b-get-denied" && sid == "sess-2" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		if leid == "" {
+			if (mode == "a-empty-stream" && sid == "sess-1") ||
+				(mode == "b-empty-stream" && sid == "sess-2") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				return
+			}
+			if mode == "b-own-denied-cross-vuln" && sid == "sess-2" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			switch mode {
 			case "stream-error":
 				w.WriteHeader(http.StatusBadGateway)
@@ -157,6 +170,11 @@ func resumeServerWithCleanup(t *testing.T, mode string, closed *[]string) *httpt
 				return
 			}
 		} else {
+			if (mode == "forward-resume-error" && sid == "sess-2") ||
+				(mode == "reverse-resume-error" && sid == "sess-1") {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			switch mode {
 			case "resume-broken":
 				w.Header().Set("Content-Length", "100000")
@@ -238,7 +256,8 @@ func resumeServerWithCleanup(t *testing.T, mode string, closed *[]string) *httpt
 			return // unknown checkpoint id: nothing to replay
 		}
 		for _, ev := range snapshot[start+1:] {
-			if mode == "secure" && ev.sid != sid {
+			if (mode == "secure" || mode == "reverse-only" && sid == "sess-2" ||
+				mode == "forward-only" && sid == "sess-1") && ev.sid != sid {
 				continue // compliant: only replay the requester's own events
 			}
 			writeEvent(ev.eid, ev.data)
@@ -277,6 +296,55 @@ func TestResume_Vulnerable(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "matching event id:") {
 		t.Errorf("expected matching event id in evidence, got %q", findings[0].Evidence)
+	}
+	if !strings.Contains(findings[0].Evidence, "B resumed from A's checkpoint: yes") ||
+		!strings.Contains(findings[0].Evidence, "A resumed from B's checkpoint: yes") {
+		t.Errorf("expected both replay directions, got %q", findings[0].Evidence)
+	}
+}
+
+func TestResume_DirectionalAndPartialResults(t *testing.T) {
+	for _, tc := range []struct {
+		mode, direction string
+		incomplete      bool
+	}{
+		{mode: "reverse-only", direction: "A resumed from B's checkpoint: yes"},
+		{mode: "forward-only", direction: "B resumed from A's checkpoint: yes"},
+		{mode: "a-empty-stream", direction: "A resumed from B's checkpoint: yes", incomplete: true},
+		{mode: "b-empty-stream", direction: "B resumed from A's checkpoint: yes", incomplete: true},
+		{mode: "b-own-denied-cross-vuln", direction: "B resumed from A's checkpoint: yes", incomplete: true},
+		{mode: "forward-resume-error", direction: "A resumed from B's checkpoint: yes", incomplete: true},
+		{mode: "reverse-resume-error", direction: "B resumed from A's checkpoint: yes", incomplete: true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ts := resumeServer(t, tc.mode)
+			defer ts.Close()
+			findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL,
+				attack.Options{TimeoutSeconds: 5})
+			if len(findings) != 1 || errors.Is(err, attack.ErrInconclusive) != tc.incomplete ||
+				(!tc.incomplete && err != nil) {
+				t.Fatalf("findings=%+v err=%v, want incomplete=%t", findings, err, tc.incomplete)
+			}
+			if !strings.Contains(findings[0].Evidence, tc.direction) {
+				t.Fatalf("wrong replay direction: %+v", findings[0])
+			}
+			if strings.Contains(findings[0].Evidence, "evt-") || strings.Contains(findings[0].Evidence, "sess-1") ||
+				strings.Contains(findings[0].Evidence, "sess-2") {
+				t.Fatalf("finding exposed an event or session handle: %+v", findings[0])
+			}
+		})
+	}
+}
+
+func TestResume_DeniedReceivingStreamIsNotClean(t *testing.T) {
+	ts := resumeServer(t, "b-get-denied")
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "session B SSE stream") {
+		t.Fatalf("a denied receiving stream was reported clean: findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -321,7 +389,7 @@ func TestResume_ClosesSessionsOnAllOutcomes(t *testing.T) {
 		{mode: "vulnerable", want: []string{"sess-2:", "sess-1:"}},
 		{mode: "delete-refused", want: []string{"sess-2:", "sess-1:"}},
 		{mode: "resume-refused", want: []string{"sess-2:", "sess-1:"}},
-		{mode: "stream-unavailable", want: []string{"sess-1:"}},
+		{mode: "stream-unavailable", want: []string{"sess-2:", "sess-1:"}},
 		{mode: "notification-error", want: []string{"sess-1:"}},
 		{mode: "second-init-error", want: []string{"sess-1:"}},
 		{mode: "same-session", want: []string{"sess-1:"}},
