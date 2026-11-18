@@ -875,8 +875,10 @@ sessions. It captures a checkpoint and later event on session A, then resumes as
 B from A's checkpoint. A **confirmed** finding requires the later event's ID and
 data to match in B's stream and a session field in its data to equal A's session ID.
 A shared broadcast without that session-specific evidence is inconclusive. A server that scopes
-replay to B or ignores `Last-Event-ID` produces no finding. The 2026-07-28
-revision removed this resumability mechanism.
+replay to B or ignores `Last-Event-ID` produces no finding. Configured principal
+tokens and identity headers are sent on initialization and stream requests. The
+rule attempts a bounded DELETE for server-issued sessions, including incomplete
+handshakes. The 2026-07-28 revision removed this resumability mechanism.
 
 ---
 

@@ -39,20 +39,31 @@ const (
 
 func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
-	client := attack.NewHTTPClient(opts, vars)
+	client := attack.NewUnauthHTTPClient(opts, vars)
 	raw := rawSSEClient(opts)
 
-	// Two principals strengthen the test (cross-principal), but two sessions of
-	// the same identity are sufficient to demonstrate cross-session replay.
-	tokenA, tokenB := opts.Token, opts.Token
-	if len(opts.Principals) >= 2 {
-		tokenA, tokenB = opts.Principals[0].Token, opts.Principals[1].Token
+	principalA := taskPrincipal{token: opts.Token}
+	principalB := principalA
+	if len(opts.Principals) > 0 {
+		var err error
+		principalA, err = configuredTaskPrincipal(opts.Principals[0])
+		if err != nil {
+			return nil, err
+		}
+		principalB = principalA
+	}
+	if len(opts.Principals) > 1 {
+		var err error
+		principalB, err = configuredTaskPrincipal(opts.Principals[1])
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var observed initObservation
 	var incomplete string
 	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
-		result, reached, reason := e.probe(ctx, client, raw, ep, tokenA, tokenB, &observed)
+		result, reached, reason := e.probe(ctx, client, raw, ep, principalA, principalB, &observed)
 		if reached {
 			incomplete = reason
 		}
@@ -70,15 +81,16 @@ func (e *SSEResumeReplayExecutor) Execute(ctx context.Context, target string, op
 	return nil, nil
 }
 
-func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep, tokenA, tokenB string,
+func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTPClient, raw *http.Client, ep string, principalA, principalB taskPrincipal,
 	observed *initObservation) ([]attack.Finding, bool, string) {
-	sessionA, ok, resp, setupReason := e.initialize(ctx, client, ep, tokenA)
+	sessionA, ok, resp, setupReason := e.initialize(ctx, client, ep, principalA)
+	defer closeSSEResumeSession(ctx, client, sessionA, principalA)
 	if setupReason != "" {
 		return nil, true, "session A " + setupReason
 	}
 	if !ok {
 		if resp != nil {
-			observed.observe(classifyInitFailure(ep, tokenA != "" || client.PresentsCredential(ep), resp))
+			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(principalA)) != 0, resp))
 		}
 		return nil, false, "" // not a responsive MCP endpoint
 	}
@@ -87,7 +99,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	}
 
 	// Capture a checkpoint and a later event that names session A.
-	aEvents, aStatus, aErr := e.sseCollect(ctx, raw, ep, tokenA, sessionA, "", 3*time.Second)
+	aEvents, aStatus, aErr := e.sseCollect(ctx, raw, ep, principalA, sessionA, "", 3*time.Second)
 	if aStatus == http.StatusNotFound || aStatus == http.StatusMethodNotAllowed ||
 		aStatus == http.StatusNotAcceptable || aStatus == http.StatusNotImplemented {
 		return nil, true, "the server exposed no SSE stream for session A"
@@ -100,7 +112,10 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 		return nil, true, "session A stream supplied no checkpoint and later session-labeled event to compare"
 	}
 
-	sessionB, ok, _, setupReason := e.initialize(ctx, client, ep, tokenB)
+	sessionB, ok, _, setupReason := e.initialize(ctx, client, ep, principalB)
+	if sessionB.SessionID != sessionA.SessionID {
+		defer closeSSEResumeSession(ctx, client, sessionB, principalB)
+	}
 	if setupReason != "" {
 		return nil, true, "session B " + setupReason
 	}
@@ -111,7 +126,7 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 	// As B, resume from A's checkpoint id and see whether A's later events are
 	// replayed into B's session. MCP event ids are opaque (spec: Streamable HTTP
 	// resumability), so the checkpoint id is sent verbatim, with no arithmetic.
-	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, tokenB, sessionB, checkpointID, 3*time.Second)
+	bEvents, bStatus, bErr := e.sseCollect(ctx, raw, ep, principalB, sessionB, checkpointID, 3*time.Second)
 	if bStatus == http.StatusNotImplemented || (bStatus >= 400 && bStatus < 500 &&
 		bStatus != http.StatusRequestTimeout && bStatus != http.StatusTooManyRequests) {
 		return nil, true, "" // the cross-session resume was refused
@@ -148,11 +163,9 @@ func (e *SSEResumeReplayExecutor) probe(ctx context.Context, client *attack.HTTP
 }
 
 // initialize opens a session and reports incomplete notification setup separately.
-func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep, token string) (mcpSession, bool, *attack.Response, string) {
+func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack.HTTPClient, ep string, principal taskPrincipal) (mcpSession, bool, *attack.Response, string) {
 	headers := map[string]string{}
-	if token != "" {
-		headers["Authorization"] = "Bearer " + token
-	}
+	attachPrincipal(headers, principal)
 	resp, err := client.POST(ctx, ep, headers, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -169,33 +182,47 @@ func (e *SSEResumeReplayExecutor) initialize(ctx context.Context, client *attack
 	if resp == nil {
 		return mcpSession{}, false, nil, ""
 	}
-	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
-		return mcpSession{}, false, resp, ""
-	}
 	session := mcpSession{
-		Endpoint: ep, SessionID: resp.Headers.Get("Mcp-Session-Id"),
-		ProtocolVersion: negotiatedVersion(resp.Body),
+		Endpoint: ep, Era: EraLegacy, SessionID: resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersionOr(resp.Body, latestStable),
+	}
+	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+		return session, false, resp, ""
 	}
 	if session.SessionID == "" {
 		return session, true, resp, ""
 	}
-	inited := session.header()
-	if token != "" {
-		inited["Authorization"] = "Bearer " + token
-	}
+	inited := sseResumeHeaders(session, principal)
 	initialized, initErr := client.POST(ctx, ep, inited, map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	if initErr != nil || initialized == nil || !initialized.IsSuccess() {
-		return mcpSession{}, false, resp, "initialized notification failed"
+		return session, false, resp, "initialized notification failed"
 	}
 	if _, rejected := jsonRPCErrorCode(initialized.Body); rejected {
-		return mcpSession{}, false, resp, "initialized notification failed"
+		return session, false, resp, "initialized notification failed"
 	}
 	return session, true, resp, ""
 }
 
+func sseResumeHeaders(session mcpSession, principal taskPrincipal) map[string]string {
+	headers := map[string]string{}
+	attachPrincipal(headers, principal)
+	for name, value := range session.header() {
+		headers[name] = value
+	}
+	return headers
+}
+
+func closeSSEResumeSession(ctx context.Context, client *attack.HTTPClient, session mcpSession, principal taskPrincipal) {
+	closeLegacySessionsWith(ctx, client, []mcpSession{session}, func(headers map[string]string) {
+		for name, value := range sseResumeHeaders(session, principal) {
+			headers[name] = value
+		}
+	})
+}
+
 // sseCollect issues a GET for an SSE stream and returns the events read within
 // the window. It uses a raw client so it can read the per-event `id:` lines.
-func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.Client, url, token string,
+func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.Client, url string, principal taskPrincipal,
 	session mcpSession, lastEventID string, window time.Duration) ([]sseEvent, int, error) {
 	cctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
@@ -203,14 +230,12 @@ func (e *SSEResumeReplayExecutor) sseCollect(ctx context.Context, client *http.C
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for name, value := range session.header() {
+	for name, value := range sseResumeHeaders(session, principal) {
 		req.Header.Set(name, value)
 	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", "batesian/"+attack.Version+" (https://github.com/calbebop/batesian)")
+	req.Header.Del("Last-Event-ID")
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}

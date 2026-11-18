@@ -24,10 +24,14 @@ info:
          the same later event ID and data in B's resumed stream. Shared broadcasts
          without a session-specific marker do not establish a cross-session leak.
 
+    The rule sends configured principal credentials and headers on initialization
+    and stream requests, then attempts a bounded DELETE for server-issued sessions,
+    including sessions from incomplete handshakes.
+
     Currency: GET-stream resumption via Last-Event-ID is normative in revisions
     2025-03-26 through 2025-11-25; the 2026-07-28 revision removes the GET stream
     and Last-Event-ID resumability, so this rule applies to servers on the earlier
-    revisions (the deployed majority as of mid-2026).
+    revisions.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-11-25/basic/transports

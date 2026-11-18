@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -31,12 +32,49 @@ type sseLogEntry struct {
 //   - "secure":     replays only the requesting session's own events
 //   - "ignore":     never replays (no resumption support)
 func resumeServer(t *testing.T, mode string) *httptest.Server {
+	return resumeServerWithCleanup(t, mode, nil)
+}
+
+func resumeServerWithCleanup(t *testing.T, mode string, closed *[]string) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	var sessionCounter, eventCounter int
 	var log []sseLogEntry
+	sessionOwners := map[string]string{}
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mode == "header-auth" {
+			who := r.Header.Get("X-Tenant")
+			if (who != "A" && who != "B") || r.Header.Get("Authorization") != "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+				mu.Lock()
+				owner := sessionOwners[sid]
+				mu.Unlock()
+				if owner != who {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			} else if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+		}
+		if r.Method == http.MethodDelete {
+			if closed != nil {
+				mu.Lock()
+				*closed = append(*closed, r.Header.Get("Mcp-Session-Id")+":"+r.Header.Get("X-Tenant"))
+				mu.Unlock()
+			}
+			if mode == "delete-refused" {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method == http.MethodPost {
 			var req map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -56,9 +94,14 @@ func resumeServer(t *testing.T, mode string) *httptest.Server {
 				if mode == "same-session" {
 					sid = "sess-1"
 				}
+				sessionOwners[sid] = r.Header.Get("X-Tenant")
 				mu.Unlock()
 				if mode != "no-session" {
 					w.Header().Set("Mcp-Session-Id", sid)
+				}
+				if mode == "init-error-with-session" {
+					w.WriteHeader(http.StatusBadGateway)
+					return
 				}
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0", "id": id,
@@ -234,6 +277,83 @@ func TestResume_Vulnerable(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "matching event id:") {
 		t.Errorf("expected matching event id in evidence, got %q", findings[0].Evidence)
+	}
+}
+
+func TestResume_PrincipalHeadersReachStreamsAndCleanup(t *testing.T) {
+	var closed []string
+	ts := resumeServerWithCleanup(t, "header-auth", &closed)
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{
+		TimeoutSeconds: 5, Token: "global-token-must-not-be-sent",
+		Principals: []attack.Principal{
+			{Name: "A", Headers: map[string]string{"X-Tenant": "A", "Last-Event-Id": "not-a-checkpoint"}},
+			{Name: "B", Headers: map[string]string{"X-Tenant": "B"}},
+		},
+	})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("header-authenticated replay was missed: findings=%+v err=%v", findings, err)
+	}
+	if len(closed) != 2 || closed[0] != "sess-2:B" || closed[1] != "sess-1:A" {
+		t.Fatalf("session cleanup used the wrong principal: %v", closed)
+	}
+}
+
+func TestResume_SingleHeaderPrincipalCoversTwoSessions(t *testing.T) {
+	ts := resumeServer(t, "header-auth")
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL, attack.Options{
+		TimeoutSeconds: 5,
+		Principals:     []attack.Principal{{Name: "A", Headers: map[string]string{"X-Tenant": "A"}}},
+	})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("same-principal cross-session replay was missed: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestResume_ClosesSessionsOnAllOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want []string
+	}{
+		{mode: "vulnerable", want: []string{"sess-2:", "sess-1:"}},
+		{mode: "delete-refused", want: []string{"sess-2:", "sess-1:"}},
+		{mode: "resume-refused", want: []string{"sess-2:", "sess-1:"}},
+		{mode: "stream-unavailable", want: []string{"sess-1:"}},
+		{mode: "notification-error", want: []string{"sess-1:"}},
+		{mode: "second-init-error", want: []string{"sess-1:"}},
+		{mode: "same-session", want: []string{"sess-1:"}},
+		{mode: "no-session"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var closed []string
+			ts := resumeServerWithCleanup(t, tc.mode, &closed)
+			defer ts.Close()
+			_, _ = mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL,
+				attack.Options{TimeoutSeconds: 5})
+			if !reflect.DeepEqual(closed, tc.want) {
+				t.Fatalf("closed sessions = %v, want %v", closed, tc.want)
+			}
+		})
+	}
+}
+
+func TestResume_ClosesSessionFromFailedInitialize(t *testing.T) {
+	var closed []string
+	ts := resumeServerWithCleanup(t, "init-error-with-session", &closed)
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSSEResumeReplayExecutor(sseRuleCtx()).Execute(t.Context(), ts.URL,
+		attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || len(closed) == 0 {
+		t.Fatalf("failed initialize left a session open: findings=%+v err=%v closed=%v", findings, err, closed)
+	}
+	for _, entry := range closed {
+		if !strings.HasPrefix(entry, "sess-") {
+			t.Fatalf("cleanup omitted the server-issued session ID: %v", closed)
+		}
 	}
 }
 
