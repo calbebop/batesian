@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
 )
@@ -28,6 +29,17 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 	if err != nil {
 		return nil, err
 	}
+	seenTasks := map[string]bool{}
+	first, firstErr := e.executeDirection(ctx, target, opts, a, b, seenTasks)
+	if ctx.Err() != nil {
+		return first, firstErr
+	}
+	second, secondErr := e.executeDirection(ctx, target, opts, b, a, seenTasks)
+	return append(first, second...), errors.Join(firstErr, secondErr)
+}
+
+func (e *TaskAccessExecutor) executeDirection(ctx context.Context, target string, opts attack.Options,
+	a, b taskPrincipal, seenTasks map[string]bool) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	client := attack.NewUnauthHTTPClient(opts, vars)
 
@@ -75,7 +87,12 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 		return nil, fmt.Errorf("%w: principal %s did not receive a task handle from %q: %v",
 			attack.ErrInconclusive, a.name, tool.name, err)
 	}
-	defer taskAccessAck(ctx, client, session, a, 60, "tasks/cancel", map[string]interface{}{"taskId": firstID})
+	if seenTasks[firstID] {
+		return nil, fmt.Errorf("%w: the task handle was reused across principal directions",
+			attack.ErrInconclusive)
+	}
+	seenTasks[firstID] = true
+	defer taskAccessCleanup(ctx, client, session, a, 60, firstID)
 	ownerTask, ownerVerdict := taskAccessGet(ctx, client, session, a, firstID, 41)
 	if ownerVerdict != probeAnswered {
 		return nil, fmt.Errorf("%w: principal %s could not read its new task", attack.ErrInconclusive, a.name)
@@ -125,13 +142,18 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 	} else if cancelID == firstID {
 		incomplete = append(incomplete, fmt.Errorf("%w: the tool reused the first task handle, so tasks/cancel was not tested on a separate task",
 			attack.ErrInconclusive))
+	} else if seenTasks[cancelID] {
+		incomplete = append(incomplete, fmt.Errorf("%w: the cancellation task handle was reused across principal directions",
+			attack.ErrInconclusive))
 	} else if state, verdict := taskAccessGet(ctx, client, session, a, cancelID, 51); verdict != probeAnswered ||
 		(state.Status != "working" && state.Status != "input_required") {
-		defer taskAccessAck(ctx, client, session, a, 61, "tasks/cancel", map[string]interface{}{"taskId": cancelID})
+		seenTasks[cancelID] = true
+		defer taskAccessCleanup(ctx, client, session, a, 61, cancelID)
 		incomplete = append(incomplete, fmt.Errorf("%w: the cancellation task was not observed active under its owner",
 			attack.ErrInconclusive))
 	} else {
-		defer taskAccessAck(ctx, client, session, a, 61, "tasks/cancel", map[string]interface{}{"taskId": cancelID})
+		seenTasks[cancelID] = true
+		defer taskAccessCleanup(ctx, client, session, a, 61, cancelID)
 		control := taskAccessAck(ctx, client, session, b, 52, "tasks/cancel", map[string]interface{}{
 			"taskId": "batesian-missing-" + vars.RandID,
 		})
@@ -151,6 +173,13 @@ func (e *TaskAccessExecutor) Execute(ctx context.Context, target string, opts at
 	}
 
 	return findings, errors.Join(incomplete...)
+}
+
+func taskAccessCleanup(ctx context.Context, client *attack.HTTPClient, session mcpSession,
+	owner taskPrincipal, id int, taskID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	taskAccessAck(cleanupCtx, client, session, owner, id, "tasks/cancel", map[string]interface{}{"taskId": taskID})
 }
 
 func taskAccessPost(ctx context.Context, client *attack.HTTPClient, s mcpSession, p taskPrincipal,
