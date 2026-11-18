@@ -25,8 +25,8 @@ info:
     contexts: a server that binds tasks to the credential but not additionally to
     the session is conformant, so the rule does not compare session ids.
 
-    The rule creates a task as one principal and attempts to read it from a
-    separate session as another, reporting three distinct failures:
+    The rule creates a distinct task as each principal and attempts to read
+    it as the other, reporting three distinct failures:
 
     - tasks/get returns another context's task (high). Task metadata discloses
       execution status, timing, and status messages for work the caller did not
@@ -41,7 +41,9 @@ info:
     task ID, and a tasks/get response naming the requested task. A tasks/result
     finding also requires matching related-task metadata, a refused unknown-ID
     control, and output matching the owner's result. Task handles, status
-    messages, and tool output are redacted from findings.
+    messages, and tool output are redacted from findings. A reused task handle
+    leaves the second direction not tested, while findings from the first
+    direction are retained.
 
     A finding requires an anonymous initialize or task creation refusal, or an
     anonymous task read refusal after open creation. A fully open task surface

@@ -184,9 +184,17 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+			if (mode == "reverse-create-failed" && r.Header.Get("Authorization") == "Bearer tok-b") ||
+				(mode == "forward-create-failed" && r.Header.Get("Authorization") == "Bearer tok-a") {
+				rpcErr(-32001, "Task creation unavailable")
+				return
+			}
 			mu.Lock()
 			tasks++
 			tid := fmt.Sprintf("task-%d", tasks)
+			if mode == "reused-task-id" {
+				tid = "task-1"
+			}
 			owner[tid] = sid
 			mu.Unlock()
 			result(map[string]interface{}{"task": map[string]interface{}{
@@ -195,6 +203,10 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			}})
 
 		case "tasks/get":
+			tid, _ := params["taskId"].(string)
+			mu.Lock()
+			own, exists := owner[tid]
+			mu.Unlock()
 			// create-open gates the read surface even though creation is open.
 			if mode == "create-open" && !authed {
 				rpcErr(-32001, "Unauthorized")
@@ -214,9 +226,11 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 					rpcErr(-32603, "server overloaded")
 					return
 				case "get-b-400-not-found":
-					w.WriteHeader(http.StatusBadRequest)
-					rpcErr(-32602, "Task not found")
-					return
+					if own != sid {
+						w.WriteHeader(http.StatusBadRequest)
+						rpcErr(-32602, "Task not found")
+						return
+					}
 				case "get-b-408-rpc-error":
 					w.WriteHeader(http.StatusRequestTimeout)
 					rpcErr(-32602, "Task not found")
@@ -233,11 +247,7 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 					return
 				}
 			}
-			tid, _ := params["taskId"].(string)
-			mu.Lock()
-			own, exists := owner[tid]
-			mu.Unlock()
-			if mode == "get-bogus-open" && !exists && r.Header.Get("Authorization") == "Bearer tok-b" {
+			if mode == "get-bogus-open" && !exists {
 				result(map[string]interface{}{"taskId": tid, "status": "completed"})
 				return
 			}
@@ -246,19 +256,21 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			case "secure", "tool-paged", "list-only", "list-paged", "list-paged-secure", "list-paged-loop",
 				"list-paged-limit", "list-paged-rejected", "list-failed", "list-rpc-failed", "list-denied",
 				"list-denied-envelope", "list-rpc-error", "list-400-rpc-error",
-				"list-method-absent", "list-408-rpc-error", "list-incomplete", "list-malformed":
+				"list-method-absent", "list-408-rpc-error", "list-incomplete", "list-malformed", "reused-task-id", "get-b-400-not-found":
+				scopedGet = true
+			}
+			if mode == "reverse-only" && r.Header.Get("Authorization") == "Bearer tok-b" {
 				scopedGet = true
 			}
 			if !exists || (scopedGet && own != sid) {
 				rpcErr(-32602, "Task not found")
 				return
 			}
-			if mode == "owner-wrong-id" && r.Header.Get("Authorization") == "Bearer tok-a" {
+			if mode == "owner-wrong-id" && own == sid {
 				result(map[string]interface{}{"taskId": "other-task", "status": "completed"})
 				return
 			}
-			if r.Header.Get("Authorization") == "Bearer tok-b" &&
-				(mode == "get-wrong-id" || mode == "get-missing-id") {
+			if own != sid && (mode == "get-wrong-id" || mode == "get-missing-id") {
 				state := map[string]interface{}{"status": "completed"}
 				if mode == "get-wrong-id" {
 					state["taskId"] = "other-task"
@@ -287,6 +299,10 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			})
 
 		case "tasks/result":
+			tid, _ := params["taskId"].(string)
+			mu.Lock()
+			own, exists := owner[tid]
+			mu.Unlock()
 			if r.Header.Get("Authorization") == "Bearer tok-b" {
 				switch mode {
 				case "result-rpc-error":
@@ -297,9 +313,11 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 					rpcErr(-32603, "server overloaded")
 					return
 				case "result-400-denied":
-					w.WriteHeader(http.StatusBadRequest)
-					rpcErr(-32602, "Task not found")
-					return
+					if own != sid {
+						w.WriteHeader(http.StatusBadRequest)
+						rpcErr(-32602, "Task not found")
+						return
+					}
 				case "result-method-absent":
 					rpcErr(-32601, "Method not found")
 					return
@@ -316,11 +334,7 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 				rpcErr(-32001, "Unauthorized")
 				return
 			}
-			tid, _ := params["taskId"].(string)
-			mu.Lock()
-			own, exists := owner[tid]
-			mu.Unlock()
-			if mode == "result-bogus-open" && !exists && r.Header.Get("Authorization") == "Bearer tok-b" {
+			if mode == "result-bogus-open" && !exists {
 				result(map[string]interface{}{
 					"content": []interface{}{},
 					"_meta":   map[string]interface{}{"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": tid}},
@@ -328,15 +342,17 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 				return
 			}
 			if !exists || mode == "metadata-only" || mode == "list-only" ||
-				strings.HasPrefix(mode, "list-paged") || (mode == "secure" || mode == "tool-paged") && own != sid {
+				strings.HasPrefix(mode, "list-paged") ||
+				(mode == "secure" || mode == "tool-paged" || mode == "reused-task-id" || mode == "result-400-denied") && own != sid ||
+				mode == "reverse-only" && r.Header.Get("Authorization") == "Bearer tok-b" && own != sid {
 				rpcErr(-32602, "Task not found")
 				return
 			}
-			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-invalid" {
+			if own != sid && mode == "result-invalid" {
 				result(map[string]interface{}{"ok": true})
 				return
 			}
-			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-mismatch" {
+			if own != sid && mode == "result-mismatch" {
 				result(map[string]interface{}{"content": []interface{}{map[string]interface{}{
 					"type": "text", "text": "other task output",
 				}}, "_meta": map[string]interface{}{
@@ -344,7 +360,7 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 				}})
 				return
 			}
-			if r.Header.Get("Authorization") == "Bearer tok-b" && mode == "result-wrong-task" {
+			if own != sid && mode == "result-wrong-task" {
 				result(map[string]interface{}{
 					"content": []interface{}{map[string]interface{}{"type": "text", "text": "CONFIDENTIAL research output"}},
 					"_meta":   map[string]interface{}{"io.modelcontextprotocol/related-task": map[string]interface{}{"taskId": "other-task"}},
@@ -444,7 +460,8 @@ func taskIDORServerWithCleanup(mode string, calls *atomic.Int32, closed *[]strin
 			listed := []interface{}{}
 			for tid, own := range owner {
 				// A correctly-scoped server returns only the caller's own tasks.
-				if (mode == "secure" || mode == "tool-paged" || mode == "metadata-only") && own != sid {
+				if (mode == "secure" || mode == "tool-paged" || mode == "metadata-only" || mode == "reused-task-id" ||
+					mode == "reverse-only" && r.Header.Get("Authorization") == "Bearer tok-b") && own != sid {
 					continue
 				}
 				listed = append(listed, map[string]interface{}{"taskId": tid, "status": "completed"})
@@ -646,10 +663,10 @@ func TestTaskIDOR_ClosesStatefulSessions(t *testing.T) {
 		mode string
 		want []string
 	}{
-		{"no-tasks-cap", []string{"sess-1:Bearer tok-a"}},
-		{"a-notify-503", []string{"sess-1:Bearer tok-a"}},
-		{"b-notify-503", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b"}},
-		{"secure", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b"}},
+		{"no-tasks-cap", []string{"sess-1:Bearer tok-a", "sess-2:Bearer tok-b"}},
+		{"a-notify-503", []string{"sess-1:Bearer tok-a", "sess-2:Bearer tok-b", "sess-3:", "sess-4:Bearer tok-a"}},
+		{"b-notify-503", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b", "sess-4:Bearer tok-b"}},
+		{"secure", []string{"sess-1:Bearer tok-a", "sess-2:", "sess-3:Bearer tok-b", "sess-4:Bearer tok-b", "sess-5:", "sess-6:Bearer tok-a"}},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			var closed []string
@@ -852,6 +869,80 @@ func TestTaskIDOR_CrossContext(t *testing.T) {
 	}
 	if !sawGet || !sawResult || !sawList {
 		t.Errorf("expected all three failures, got get=%v result=%v list=%v", sawGet, sawResult, sawList)
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Evidence, "reverse direction: also observed") {
+			t.Errorf("missing reverse-direction evidence: %+v", finding)
+		}
+	}
+}
+
+func TestTaskIDOR_ReverseOnly(t *testing.T) {
+	srv := taskIDORServer("reverse-only")
+	defer srv.Close()
+
+	findings := runTaskIDOR(t, srv)
+	if len(findings) != 3 {
+		t.Fatalf("expected reverse-only get, result, and list findings, got %+v", findings)
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Evidence, "owner: second configured principal; reader: first configured principal") {
+			t.Errorf("finding attributed to wrong direction: %+v", finding)
+		}
+	}
+}
+
+func TestTaskIDOR_ReverseSetupFailureKeepsForwardFindings(t *testing.T) {
+	srv := taskIDORServer("reverse-create-failed")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(t.Context(), srv.URL, attack.Options{
+			TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if len(findings) != 3 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected forward findings and incomplete reverse check, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestTaskIDOR_ForwardSetupFailureKeepsReverseFindings(t *testing.T) {
+	srv := taskIDORServer("forward-create-failed")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(t.Context(), srv.URL, attack.Options{
+			TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if len(findings) != 3 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("expected reverse findings and incomplete forward check, got findings=%+v err=%v", findings, err)
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Evidence, "owner: second configured principal; reader: first configured principal") {
+			t.Errorf("finding attributed to wrong direction: %+v", finding)
+		}
+	}
+}
+
+func TestTaskIDOR_RejectsReusedOwnerTaskID(t *testing.T) {
+	srv := taskIDORServer("reused-task-id")
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTaskIDORExecutor(attack.RuleContext{ID: "mcp-task-idor-001"}).
+		Execute(t.Context(), srv.URL, attack.Options{
+			TimeoutSeconds: 5, MCPInvokeTools: []string{"research"},
+			Principals: []attack.Principal{
+				{Name: "tenant-a", Token: "tok-a"}, {Name: "tenant-b", Token: "tok-b"},
+			},
+		})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "same task handle") || strings.Contains(err.Error(), "task-1") {
+		t.Fatalf("expected redacted incomplete reused-handle result, got findings=%+v err=%v", findings, err)
 	}
 }
 

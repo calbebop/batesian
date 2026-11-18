@@ -105,6 +105,39 @@ const (
 )
 
 func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts attack.Options) ([]attack.Finding, error) {
+	seen := make(map[string]bool)
+	forward, forwardErr := e.executeDirection(ctx, target, opts, seen)
+	if ctx.Err() != nil {
+		return forward, errors.Join(forwardErr, fmt.Errorf("%w: reverse task check was interrupted", attack.ErrInconclusive))
+	}
+	if _, _, err := taskPrincipals(opts); err != nil {
+		return forward, forwardErr
+	}
+	reverseOpts := opts
+	reverseOpts.Principals = append([]attack.Principal(nil), opts.Principals...)
+	reverseOpts.Principals[0], reverseOpts.Principals[1] = reverseOpts.Principals[1], reverseOpts.Principals[0]
+	reverse, reverseErr := e.executeDirection(ctx, target, reverseOpts, seen)
+	for i := range forward {
+		forward[i].Evidence += "\nowner: first configured principal; reader: second configured principal"
+	}
+	for _, finding := range reverse {
+		matched := false
+		for i := range forward {
+			if forward[i].Title == finding.Title && forward[i].TargetURL == finding.TargetURL {
+				forward[i].Evidence += "\nreverse direction: also observed"
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			finding.Evidence += "\nowner: second configured principal; reader: first configured principal"
+			forward = append(forward, finding)
+		}
+	}
+	return forward, errors.Join(forwardErr, reverseErr)
+}
+
+func (e *TaskIDORExecutor) executeDirection(ctx context.Context, target string, opts attack.Options, seen map[string]bool) ([]attack.Finding, error) {
 	vars := attack.NewVars(target, opts.OOBListenerURL)
 	// One transport, with credentials attached per request, so each session can
 	// present a different principal.
@@ -180,6 +213,11 @@ func (e *TaskIDORExecutor) Execute(ctx context.Context, target string, opts atta
 			"no task for another authorization context to read",
 			attack.ErrInconclusive, princA.name, tool.name, sessA.Endpoint)
 	}
+	if seen[taskID] {
+		return nil, fmt.Errorf("%w: both principals received the same task handle, so distinct owner tasks were not established",
+			attack.ErrInconclusive)
+	}
+	seen[taskID] = true
 
 	// Step 2: establish authentication on task creation or reads. An unanswered
 	// control is inconclusive, and a fully open surface belongs to the unauth rules.
