@@ -474,8 +474,9 @@ credential but not additionally to the session is conformant, and requiring the
 two session ids to differ also made the rule a silent no-op against every
 stateless deployment, which mints none.
 
-The rule creates a task as one principal and reads it from a separate session as
-another, reporting three failures, all **confirmed**:
+The rule creates a distinct task as each principal and checks access from the
+other principal. A reused task ID leaves the second direction not tested. It
+reports three failures, all **confirmed**:
 
 - An accepted cross-context `tasks/get` discloses another context's task
   metadata: status, timing, and status messages (**high**).
@@ -494,8 +495,9 @@ must receive a refusal for a never-issued ID, and `tasks/get` must return the
 requested task ID with a valid status. A `tasks/result` finding also requires a
 refused unknown-ID control, matching related-task metadata, and output matching
 the owner's result. Unanswered controls leave those subchecks not tested;
-`tasks/list` is assessed independently. Findings redact task IDs, status
-messages, and tool output.
+`tasks/list` is assessed independently. Findings from one direction survive an
+incomplete check in the other. Findings redact task IDs, status messages, and
+tool output.
 
 A finding requires an anonymous initialize or task creation refusal, or an
 anonymous task read refusal after open creation. A server with no authentication is
