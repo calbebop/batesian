@@ -111,7 +111,7 @@ func (e *BatchBypassExecutor) probeEndpoint(ctx context.Context, client *attack.
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
-		if err != nil || initialized == nil || !initialized.IsSuccess() {
+		if !initializedNotificationOK(initialized, err) {
 			return nil, true, fmt.Errorf("%w: initialized notification failed", attack.ErrInconclusive)
 		}
 		findings, err := e.probeMethodGate(ctx, client, session)

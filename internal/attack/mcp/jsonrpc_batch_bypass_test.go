@@ -247,7 +247,7 @@ func TestBatchBypass_RequiresExpectedResultShape(t *testing.T) {
 func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
 	for _, mode := range []string{
 		"initialize batch error", "initialize batch timeout", "method batch error",
-		"method batch timeout", "method control timeout", "notification error",
+		"method batch timeout", "method control timeout", "notification error", "notification rpc error",
 	} {
 		t.Run(mode, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -265,9 +265,16 @@ func TestBatchBypass_FailedChecksAreIncomplete(t *testing.T) {
 						w.WriteHeader(http.StatusBadGateway)
 					}
 				case strings.Contains(string(body), "notifications/initialized"):
-					if mode == "notification error" {
+					switch mode {
+					case "notification error":
 						w.WriteHeader(http.StatusBadGateway)
-					} else {
+					case "notification rpc error":
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"jsonrpc": "2.0", "error": map[string]interface{}{
+								"code": -32603, "message": "initialization failed",
+							},
+						})
+					default:
 						w.WriteHeader(http.StatusAccepted)
 					}
 				case strings.Contains(string(body), "initialize") && strings.HasPrefix(mode, "initialize batch"):

@@ -9,25 +9,8 @@ import (
 	"github.com/calbebop/batesian/internal/attack"
 )
 
-// SessionAsCredentialExecutor tests whether an MCP server accepts its own
-// Mcp-Session-Id as proof of identity (rule mcp-session-as-credential-001).
-//
-// The Security Best Practices are explicit, and the second sentence is what this
-// rule tests: "MCP servers that implement authorization MUST verify all inbound
-// requests. MCP Servers MUST NOT use sessions for authentication."
-//
-// Note the condition on the first sentence. The requirement binds on servers that
-// implement authorization, so the rule has to establish that the server enforces
-// authorization at all before it can accuse it of authenticating by session. That
-// is what the unauthenticated control does; without it, an open tool list could
-// be misreported as session-based authentication.
-//
-// The oracle is a pair of requests that differ in one detail. Both carry no
-// credential. One presents a session id the server issued, the other a random id
-// it never issued. If the first is answered and the second refused, the session id
-// alone authorized the call. That is the exploit performed rather than inferred,
-// and it is the spec's own Session Hijack Impersonation flow: anyone who reads a
-// session id out of a proxy log replays the authenticated session.
+// SessionAsCredentialExecutor checks whether an issued session ID authorizes
+// a request without the credential that opened it.
 type SessionAsCredentialExecutor struct {
 	rule attack.RuleContext
 }
@@ -69,6 +52,7 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 	findings, err := probeCandidates(vars.BaseURL, func(ep string) ([]attack.Finding, bool) {
 		// Step 1: handshake with the credential and capture the session id.
 		session, ok, resp := e.initialize(ctx, client, ep, authed)
+		defer closeProbeSession(ctx, client, ep, resp, token, latestStable)
 		if !ok {
 			if resp != nil {
 				observed.observe(classifyInitFailure(ep, true, resp))
@@ -79,6 +63,11 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 			// Stateless, or a 2026-07-28 server, which removed protocol-level
 			// sessions. There is no session id to misuse.
 			return nil, true
+		}
+		if !e.initialized(ctx, client, ep, session, authed) {
+			observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+				"the credentialed initialized notification at %s did not complete", ep)})
+			return nil, false
 		}
 
 		// Step 2: the session must actually work when presented with the credential,
@@ -120,11 +109,18 @@ func (e *SessionAsCredentialExecutor) Execute(ctx context.Context, target string
 		// servers this rule exists to find. What answers the question is whether the
 		// session the anonymous caller was given can then call tools/list.
 		var anonSession mcpSession
-		if s, anonOK, anonResp := e.initialize(ctx, client, ep, nil); anonOK {
+		s, anonOK, anonResp := e.initialize(ctx, client, ep, nil)
+		defer closeProbeSession(ctx, client, ep, anonResp, "", latestStable)
+		if anonOK {
 			anonSession = s
 			if anonSession.SessionID == "" {
 				missingAnonSession = fmt.Sprintf("the anonymous handshake at %s issued no session id, "+
 					"so the authentication control could not be compared", ep)
+				return nil, false
+			}
+			if !e.initialized(ctx, client, ep, anonSession, nil) {
+				observed.observe(initObservation{rankStatusOnly, fmt.Sprintf(
+					"the anonymous initialized notification at %s did not complete", ep)})
 				return nil, false
 			}
 			switch e.toolsList(ctx, client, ep, anonSession, nil, listAuthOnly) {
@@ -232,7 +228,7 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 		},
 	})
 	if err != nil {
-		return mcpSession{}, false, nil
+		return mcpSession{}, false, resp
 	}
 	if classifyAccess(resp, nil, 1) != accessGranted {
 		return mcpSession{}, false, resp
@@ -240,6 +236,18 @@ func (e *SessionAsCredentialExecutor) initialize(ctx context.Context, client *at
 	return mcpSession{
 		SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body),
 	}, true, resp
+}
+
+func (e *SessionAsCredentialExecutor) initialized(ctx context.Context, client *attack.HTTPClient,
+	endpoint string, session mcpSession, credentials map[string]string) bool {
+	headers := session.header()
+	for name, value := range credentials {
+		headers[name] = value
+	}
+	resp, err := client.POST(ctx, endpoint, headers, map[string]interface{}{
+		"jsonrpc": "2.0", "method": "notifications/initialized",
+	})
+	return initializedNotificationOK(resp, err)
 }
 
 type listVerdictMode int
@@ -301,8 +309,7 @@ func (e *SessionAsCredentialExecutor) finding(endpoint, anonSession string) atta
 				"all was refused, so authorization is enforced and the session id is what satisfied it. "+
 				"The Security Best Practices require that servers implementing authorization verify all "+
 				"inbound requests and state that servers MUST NOT use sessions for authentication. A "+
-				"session id is a plaintext header logged by every proxy in the path, so anyone who reads "+
-				"one replays the authenticated session.", endpoint),
+				"session ID exposed in a log or trace could be replayed against this server.", endpoint),
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nsession id issued to the credentialed handshake: [redacted]\n"+
 				"tools/list with session + credential: answered\n"+

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -38,10 +39,24 @@ import (
 //	                         anonymous session to compare against a refusal cannot be
 //	                         attributed to the missing credential.
 //	"stateless":             no session id is ever issued            => not applicable
-func sessionCredServer(t *testing.T, mode string) *httptest.Server {
+type sessionCredStats struct {
+	initializedAuthed atomic.Int32
+	initializedAnon   atomic.Int32
+	closedAuthed      atomic.Int32
+	closedAnon        atomic.Int32
+}
+
+func sessionCredServer(t *testing.T, mode string, stats ...*sessionCredStats) *httptest.Server {
 	t.Helper()
 	const validToken = "operator-token"
+	strict := strings.HasSuffix(mode, "-strict")
+	mode = strings.TrimSuffix(mode, "-strict")
+	rejectAnonNotification := strings.HasSuffix(mode, "-anon-notification-error")
+	mode = strings.TrimSuffix(mode, "-anon-notification-error")
+	rejectNotification := strings.HasSuffix(mode, "-notification-error")
+	mode = strings.TrimSuffix(mode, "-notification-error")
 	issued := map[string]bool{}
+	initialized := map[string]bool{}
 	// Which sessions were opened by a credentialed caller. Distinct from issued:
 	// the postures where the handshake is ungated mint sessions for both callers,
 	// and the whole question is whether the two are then treated alike.
@@ -55,6 +70,22 @@ func sessionCredServer(t *testing.T, mode string) *httptest.Server {
 		id := req["id"]
 		sid := r.Header.Get("Mcp-Session-Id")
 		authed := r.Header.Get("Authorization") == "Bearer "+validToken
+		if r.Method == http.MethodDelete {
+			if !issued[sid] || bornAuthed[sid] && !authed {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if len(stats) > 0 {
+				if authed {
+					stats[0].closedAuthed.Add(1)
+				} else {
+					stats[0].closedAnon.Add(1)
+				}
+			}
+			delete(issued, sid)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		result := func(v interface{}) {
@@ -96,10 +127,34 @@ func sessionCredServer(t *testing.T, mode string) *httptest.Server {
 			if got := r.Header.Get("Mcp-Protocol-Version"); got != "2025-06-18" {
 				t.Errorf("initialized version = %q, want 2025-06-18", got)
 			}
+			if rejectNotification || rejectAnonNotification && !authed {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if strict && !issued[sid] {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			initialized[sid] = true
+			if len(stats) > 0 {
+				if authed {
+					stats[0].initializedAuthed.Add(1)
+				} else {
+					stats[0].initializedAnon.Add(1)
+				}
+			}
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
 			if r.Header.Get("Mcp-Protocol-Version") != "2025-06-18" {
 				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if strict && !issued[sid] {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if strict && !initialized[sid] {
+				w.WriteHeader(http.StatusConflict)
 				return
 			}
 			ok := false
@@ -191,6 +246,59 @@ func TestSessionAsCredential_Vulnerable(t *testing.T) {
 	if strings.Contains(f.Evidence, "sess-session-authenticates-1") ||
 		strings.Contains(f.Evidence, "batesian-never-issued-") {
 		t.Errorf("evidence exposed a session probe ID: %s", f.Evidence)
+	}
+}
+
+func TestSessionAsCredential_CompletesAndClosesStatefulSessions(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		findings int
+		anon     int32
+	}{
+		{mode: "session-authenticates-strict", findings: 1},
+		{mode: "open-init-session-auth-strict", findings: 1, anon: 1},
+		{mode: "no-auth-session-required-strict", anon: 1},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			stats := &sessionCredStats{}
+			srv := sessionCredServer(t, tc.mode, stats)
+			defer srv.Close()
+
+			findings, err := runSessionCred(t, srv)
+			if err != nil || len(findings) != tc.findings {
+				t.Fatalf("want %d findings after complete handshakes, got findings=%+v err=%v", tc.findings, findings, err)
+			}
+			if stats.initializedAuthed.Load() != 1 || stats.closedAuthed.Load() != 1 ||
+				stats.initializedAnon.Load() != tc.anon || stats.closedAnon.Load() != tc.anon {
+				t.Fatalf("session lifecycle mismatch: initialized=%d/%d closed=%d/%d",
+					stats.initializedAuthed.Load(), stats.initializedAnon.Load(),
+					stats.closedAuthed.Load(), stats.closedAnon.Load())
+			}
+		})
+	}
+}
+
+func TestSessionAsCredential_FailedNotificationIsInconclusive(t *testing.T) {
+	for _, tc := range []struct {
+		mode          string
+		anonMustClose bool
+	}{
+		{mode: "session-authenticates-notification-error"},
+		{mode: "open-init-session-auth-anon-notification-error", anonMustClose: true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			stats := &sessionCredStats{}
+			srv := sessionCredServer(t, tc.mode, stats)
+			defer srv.Close()
+
+			findings, err := runSessionCred(t, srv)
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+				!strings.Contains(err.Error(), "initialized notification") || stats.closedAuthed.Load() == 0 ||
+				tc.anonMustClose && stats.closedAnon.Load() == 0 {
+				t.Fatalf("want incomplete handshake and session cleanup, got findings=%+v err=%v closes=%d/%d",
+					findings, err, stats.closedAuthed.Load(), stats.closedAnon.Load())
+			}
+		})
 	}
 }
 
