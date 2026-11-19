@@ -234,6 +234,44 @@ func TestCanary_ClosesLegacySession(t *testing.T) {
 	}
 }
 
+func TestCanary_ClosesSessionFromFailedInitialize(t *testing.T) {
+	var deletes atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if r.Header.Get("Mcp-Session-Id") == "issued-on-error" &&
+				strings.HasPrefix(r.Header.Get("Authorization"), "Bearer batesian-canary-") {
+				deletes.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "issued-on-error")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	findings, err := mcpattack.NewSecretCanaryExecutor(canaryRuleCtx()).Execute(
+		context.Background(), ts.URL, attack.Options{TimeoutSeconds: 5})
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || deletes.Load() != 1 {
+		t.Fatalf("want incomplete probe and one session cleanup, got findings=%+v err=%v deletes=%d",
+			findings, err, deletes.Load())
+	}
+}
+
 func modernCanaryHandler(reflectToken, legacy bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
