@@ -63,6 +63,7 @@ type scopeServer struct {
 	limitedToolError        string
 	limitedResultText       string
 	toolResultError         bool
+	successfulCall          bool
 	anonymousCallStatus     int
 	anonymousCallError      string
 	anonymousCallResult     string
@@ -76,6 +77,8 @@ type scopeServer struct {
 	limitedInitialized      atomic.Bool
 	toolCalls               atomic.Int32
 	listPageCalls           atomic.Int32
+	closedSessions          atomic.Int32
+	closedLimited           atomic.Int32
 }
 
 func (s *scopeServer) validToken(token string) bool {
@@ -166,6 +169,20 @@ func TestScope_ReadOnlyHintStillRequiresApproval(t *testing.T) {
 
 func (s *scopeServer) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if s.validToken(token) && (r.Header.Get("Mcp-Session-Id") == scopeSessionID(token) ||
+				!s.bindSessions && r.Header.Get("Mcp-Session-Id") == "sess-scope") {
+				s.closedSessions.Add(1)
+				if token == "tok-lim-b" {
+					s.closedLimited.Add(1)
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		var req struct {
 			Method string          `json:"method"`
 			ID     json.RawMessage `json:"id"`
@@ -477,6 +494,16 @@ func (s *scopeServer) handler() http.HandlerFunc {
 					}, http.StatusOK)
 					return
 				}
+				if s.successfulCall {
+					reply(map[string]interface{}{
+						"jsonrpc": "2.0", "id": req.ID,
+						"result": map[string]interface{}{
+							"content": []map[string]interface{}{{"type": "text", "text": "no item deleted"}},
+							"isError": false,
+						},
+					}, http.StatusOK)
+					return
+				}
 				rpcErr(-32602, msg, http.StatusOK)
 			case "send_email":
 				probe, _ := req.Params.Arguments["batesian_probe"].(string)
@@ -606,7 +633,7 @@ func runScope(t *testing.T, ts *httptest.Server) ([]attack.Finding, error) {
 	return mcp.NewScopeConfusionExecutor(scopeRC()).Execute(context.Background(), ts.URL, scopeOpts())
 }
 
-func TestScope_VulnerableFires(t *testing.T) {
+func TestScope_ValidationResponseIsIndicator(t *testing.T) {
 	ts := httptest.NewServer((&scopeServer{auth: true}).handler())
 	defer ts.Close()
 
@@ -618,11 +645,43 @@ func TestScope_VulnerableFires(t *testing.T) {
 		t.Fatalf("expected exactly 1 finding, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Confidence != attack.ConfirmedExploit || f.Severity != "high" {
-		t.Errorf("want high/ConfirmedExploit, got %q/%q", f.Severity, f.Confidence)
+	if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
+		t.Errorf("want high/RiskIndicator, got %q/%q", f.Severity, f.Confidence)
 	}
-	if !strings.Contains(f.Evidence, "limited principal") {
-		t.Errorf("evidence should name the limited principal's dispatch, got: %q", f.Evidence)
+	if !strings.Contains(f.Evidence, "limited principal") || strings.Contains(f.Evidence, "dispatched") {
+		t.Errorf("evidence should describe the observed response without claiming dispatch, got: %q", f.Evidence)
+	}
+}
+
+func TestScope_SuccessfulToolResultIsConfirmed(t *testing.T) {
+	ts := httptest.NewServer((&scopeServer{auth: true, successfulCall: true}).handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.ConfirmedExploit {
+		t.Fatalf("want one confirmed finding for successful tool results, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestScope_ToolErrorResultIsIndicator(t *testing.T) {
+	ts := httptest.NewServer((&scopeServer{auth: true, toolResultError: true}).handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+		t.Fatalf("want one indicator for a canary-specific tool error, got findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestScope_ToolErrorScopeRefusalIsClean(t *testing.T) {
+	ts := httptest.NewServer((&scopeServer{
+		auth: true, toolResultError: true, limitedResultText: "insufficient_scope: items:write required",
+	}).handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("want a clean result for an explicit scope refusal, got findings=%+v err=%v", findings, err)
 	}
 }
 
@@ -705,7 +764,8 @@ func TestScope_InitializedRPCErrorIsInconclusive(t *testing.T) {
 
 			findings, err := runScope(t, ts)
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
-				!strings.Contains(err.Error(), "initialized notification") || s.toolCalls.Load() != 0 {
+				!strings.Contains(err.Error(), "initialized notification") || s.toolCalls.Load() != 0 ||
+				s.closedSessions.Load() == 0 || token == "tok-lim-b" && s.closedLimited.Load() == 0 {
 				t.Fatalf("want incomplete %s handshake without tool calls, got findings=%+v err=%v calls=%d",
 					token, findings, err, s.toolCalls.Load())
 			}
@@ -815,7 +875,7 @@ func TestScope_HiddenToolResponses(t *testing.T) {
 		wantFindings int
 	}{
 		{name: "hidden but callable", wantFindings: 1},
-		{name: "generic tool result", resultText: "Not found", wantFindings: 1},
+		{name: "generic tool result", resultText: "Not found"},
 		{name: "unknown tool", toolError: "Unknown tool: delete_item"},
 		{name: "tool not found", toolError: "Tool delete_item not found"},
 		{name: "no such tool", toolError: "No such tool: delete_item"},
@@ -836,6 +896,18 @@ func TestScope_HiddenToolResponses(t *testing.T) {
 				t.Fatalf("expected %d findings, got findings=%+v err=%v", tc.wantFindings, findings, err)
 			}
 		})
+	}
+}
+
+func TestScope_FailedInitializeClosesIssuedSession(t *testing.T) {
+	s := &scopeServer{auth: true, initializeResponseID: 99}
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	findings, err := runScope(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || s.closedSessions.Load() == 0 {
+		t.Fatalf("want incomplete handshake and session cleanup, got findings=%+v err=%v closes=%d",
+			findings, err, s.closedSessions.Load())
 	}
 }
 

@@ -1,6 +1,6 @@
 id: mcp-scope-confusion-001
 info:
-  name: MCP Tool Scope Confusion (Valid Token, Privileged Dispatch)
+  name: MCP Tool Scope Confusion
   author: batesian
   severity: high
   description: |
@@ -19,6 +19,9 @@ info:
     approval or credentials produces a not-tested result.
     Each approved tool has its own anonymous control. A public tool does not
     suppress a finding for a separate protected tool.
+    Successful tool results from both identities support a confirmed finding.
+    Canary-specific errors are indicators because validation can precede
+    execution. Generic errors do not establish a scope verdict.
 
   references:
     - https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
