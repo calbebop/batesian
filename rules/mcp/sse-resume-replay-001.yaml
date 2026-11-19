@@ -15,14 +15,17 @@ info:
     The check needs two distinct, server-minted sessions and session-specific
     evidence:
 
-      1. Initialize session A; open A's SSE stream (no Last-Event-ID) and capture
-         an id-bearing checkpoint event plus a later event whose session field
-         equals A's server-issued session ID. Without both, the result is
-         inconclusive.
-      2. Initialize session B; confirm B's session id differs from A's.
-      3. As session B, resume with A's checkpoint ID. A confirmed finding requires
-         the same later event ID and data in B's resumed stream. Shared broadcasts
-         without a session-specific marker do not establish a cross-session leak.
+      1. Initialize two sessions with distinct server-issued IDs and read each
+         session's own SSE stream.
+      2. For each stream, capture an id-bearing checkpoint and a later event whose
+         session field equals the source's server-issued session ID.
+      3. Resume from each source checkpoint as the other session. A confirmed
+         finding requires the same later event ID and data in the receiving
+         stream. Shared broadcasts do not establish a cross-session leak.
+
+    A negative replay result requires the receiving session's own SSE stream to
+    work. Missing checkpoints, unavailable streams, and timed-out resumes are
+    not tested. Findings from one direction survive incomplete checks in the other.
 
     The rule sends configured principal credentials and headers on initialization
     and stream requests, then attempts a bounded DELETE for server-issued sessions,

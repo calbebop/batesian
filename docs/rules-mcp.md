@@ -870,15 +870,20 @@ unfinished listing is not graded as clean.
 **SSE Resumption Cross-Session Replay (Last-Event-ID)** | Severity: High | CWE-488
 
 The legacy Streamable HTTP transport allows SSE resumption with `Last-Event-ID`
-and forbids replay from another stream. This rule uses two distinct server-minted
-sessions. It captures a checkpoint and later event on session A, then resumes as
-B from A's checkpoint. A **confirmed** finding requires the later event's ID and
-data to match in B's stream and a session field in its data to equal A's session ID.
-A shared broadcast without that session-specific evidence is inconclusive. A server that scopes
-replay to B or ignores `Last-Event-ID` produces no finding. Configured principal
-tokens and identity headers are sent on initialization and stream requests. The
-rule attempts a bounded DELETE for server-issued sessions, including incomplete
-handshakes. The 2026-07-28 revision removed this resumability mechanism.
+and forbids replay from another stream. The rule opens two distinct server-minted
+sessions and reads each session's own SSE stream. When a stream supplies a
+checkpoint and a later session-labeled event, the other session attempts to
+resume from that checkpoint. A **confirmed** finding requires the later event's
+ID and data to match on the receiving stream. A shared broadcast without
+session-specific evidence is inconclusive. A negative result requires the
+receiving session's own stream to work; an unavailable stream or timed-out
+resume is **not tested**. A finding in one direction survives an incomplete
+check in the other.
+
+Configured principal tokens and identity headers are sent on initialization and
+stream requests. The rule attempts a bounded DELETE for server-issued sessions,
+including incomplete handshakes. The 2026-07-28 revision removed this
+resumability mechanism.
 
 ---
 
