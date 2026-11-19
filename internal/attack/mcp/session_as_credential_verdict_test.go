@@ -14,6 +14,10 @@ import (
 func sessionVerdictServer(t *testing.T, mode string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		var req struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
@@ -35,6 +39,8 @@ func sessionVerdictServer(t *testing.T, mode string) *httptest.Server {
 		}
 		authed := r.Header.Get("Authorization") == "Bearer operator-token"
 		switch req.Method {
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
 		case "initialize":
 			if !authed {
 				switch mode {

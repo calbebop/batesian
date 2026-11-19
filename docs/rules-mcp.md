@@ -1022,14 +1022,14 @@ Tests whether a server treats its own `Mcp-Session-Id` as proof of identity. The
 Security Best Practices are explicit: "MCP servers that implement authorization
 MUST verify all inbound requests. MCP Servers MUST NOT use sessions for
 authentication." A server that authenticates by session has turned a header into
-a bearer token, and one that is not scoped, rotated or revocable the way a token
-is, travels in plaintext on every request, and is logged by every proxy in the
-path. Anyone who reads one out of a log replays the authenticated session, which
-is the specification's own Session Hijack Impersonation flow.
+a bearer credential. If the session ID appears in a log or trace, someone with
+access to that record may be able to replay it.
 
 The rule needs one working credential (`--token` or a principal), because it asks
 whether a session id can stand in for one, which cannot be asked without a
 credential to compare against. Without one it reports **inconclusive**, not clean.
+It completes each legacy handshake before reading and attempts to close issued
+sessions when the comparison ends.
 
 1. Handshake **with** the credential and capture the server-minted session id. No
    session id means the server is stateless and the rule does not apply.
