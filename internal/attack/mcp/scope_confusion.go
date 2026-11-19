@@ -215,19 +215,23 @@ func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, ba
 			},
 		})
 		if err != nil {
+			closeScopeResponseSession(ctx, client, ep, resp, p)
 			continue
 		}
 		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+			closeScopeResponseSession(ctx, client, ep, resp, p)
 			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(p)) != 0, resp))
 			continue
 		}
 		if !scopeResponseMatches(resp.Body, 1) {
+			closeScopeResponseSession(ctx, client, ep, resp, p)
 			observed.observe(initObservation{rankRefused, fmt.Sprintf(
 				"the MCP initialize response at %s did not match its request", ep)})
 			continue
 		}
 		session := mcpSession{
 			Endpoint:        ep,
+			Era:             EraLegacy,
 			SessionID:       resp.Headers.Get("Mcp-Session-Id"),
 			ProtocolVersion: negotiatedVersion(resp.Body),
 			RawInit:         resp.Body,
@@ -238,6 +242,7 @@ func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, ba
 			"jsonrpc": "2.0", "method": "notifications/initialized",
 		})
 		if !initializedNotificationOK(initialized, err) {
+			closeLegacySessionsWith(ctx, client, []mcpSession{session}, func(h map[string]string) { attachPrincipal(h, p) })
 			return mcpSession{}, scopeNotificationFailure{fmt.Sprintf(
 				"the MCP initialized notification at %s for principal %q did not complete", ep, p.name)}
 		}
@@ -247,6 +252,17 @@ func scopeHandshakeCandidates(ctx context.Context, client *attack.HTTPClient, ba
 		return mcpSession{}, handshakeRefusal{observed.reason}
 	}
 	return mcpSession{}, fmt.Errorf("no MCP server found at %s", baseURL)
+}
+
+func closeScopeResponseSession(ctx context.Context, client *attack.HTTPClient, endpoint string,
+	resp *attack.Response, p taskPrincipal) {
+	if resp == nil || resp.Headers.Get("Mcp-Session-Id") == "" {
+		return
+	}
+	closeLegacySessionsWith(ctx, client, []mcpSession{{
+		Endpoint: endpoint, Era: EraLegacy, SessionID: resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersionOr(resp.Body, "2025-11-25"),
+	}}, func(h map[string]string) { attachPrincipal(h, p) })
 }
 
 type scopeTool struct {
@@ -335,7 +351,7 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q returned HeaderMismatch on the anonymous control", cand.Name))
 			continue
 		}
-		if scopeShowsDispatch(anonymousCall, randID) {
+		if scopeShowsToolResponse(anonymousCall, randID) {
 			continue
 		}
 		if !scopeShowsAuthRefusal(anonymousCall) {
@@ -351,8 +367,8 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			incomplete = append(incomplete, fmt.Sprintf("tools/call returned no correlated response for the full principal %q", princA.name))
 			continue
 		}
-		if !scopeShowsDispatch(fullCall, randID) {
-			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q did not establish dispatch for the full principal %q",
+		if !scopeShowsToolResponse(fullCall, randID) {
+			incomplete = append(incomplete, fmt.Sprintf("tools/call for %q did not establish a tool-specific response for the full principal %q",
 				cand.Name, princA.name))
 			continue
 		}
@@ -366,8 +382,9 @@ func (e *ScopeConfusionExecutor) probeSession(ctx context.Context, client *attac
 			continue
 		}
 		switch {
-		case scopeShowsDispatch(limCall, randID):
-			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name))
+		case scopeShowsToolResponse(limCall, randID):
+			confirmed := !fullCall.protocolError && !fullCall.toolError && !limCall.protocolError && !limCall.toolError
+			findings = append(findings, e.finding(sessA.Endpoint, cand, princA.name, princB.name, confirmed))
 		case scopeShowsAuthRefusal(limCall):
 			// Scope enforcement held.
 		default:
@@ -459,6 +476,7 @@ func scopeListedTools(raw []byte) ([]scopeTool, *string, bool) {
 type scopeCallOutcome struct {
 	text           string
 	protocolError  bool
+	toolError      bool
 	answered       bool
 	headerMismatch bool
 }
@@ -495,6 +513,7 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 	}
 	var body struct {
 		Result struct {
+			IsError bool `json:"isError"`
 			Content []struct {
 				Text string `json:"text"`
 			} `json:"content"`
@@ -514,7 +533,7 @@ func (e *ScopeConfusionExecutor) callAs(ctx context.Context, client *attack.HTTP
 		sb.WriteString(c.Text)
 		sb.WriteString("\n")
 	}
-	return scopeCallOutcome{text: sb.String(), answered: true}
+	return scopeCallOutcome{text: sb.String(), toolError: body.Result.IsError, answered: true}
 }
 
 // scopeProbeArgs fills required fields with canary values.
@@ -555,18 +574,20 @@ func scopeProbeArgs(schema map[string]interface{}, randID string) map[string]int
 var scopeAuthFlavored = regexp.MustCompile(`(?i)(insufficient[_ ]?scope|missing[_ ]?scope|invalid[_ ]?token|` +
 	`unauthorized|forbidden|access denied|not authorized|not permitted|permission denied|requires?[_ ](a )?scope|` +
 	`scope[s]? required|insufficient.?privilege|not allowed)`)
+var scopeExplicitScopeRefusal = regexp.MustCompile(`(?i)(insufficient[_ ]?scope|missing[_ ]?scope|scope[s]? required)`)
 
-// scopeShowsAuthRefusal detects HTTP and protocol-level authorization failures.
+// scopeShowsAuthRefusal detects transport, protocol, and explicit scope refusals.
 func scopeShowsAuthRefusal(call scopeCallOutcome) bool {
 	text := call.text
 	if strings.HasPrefix(text, "http 401") || strings.HasPrefix(text, "http 403") {
 		return true
 	}
-	return call.protocolError && text != "" && scopeAuthFlavored.MatchString(text)
+	return call.protocolError && text != "" && scopeAuthFlavored.MatchString(text) ||
+		call.toolError && scopeExplicitScopeRefusal.MatchString(text)
 }
 
-// scopeShowsDispatch requires a tool result or a protocol error that echoes the probe canary.
-func scopeShowsDispatch(call scopeCallOutcome, randID string) bool {
+// Error responses must echo the canary to distinguish them from generic refusals.
+func scopeShowsToolResponse(call scopeCallOutcome, randID string) bool {
 	text := call.text
 	if text == "" {
 		return false
@@ -583,7 +604,7 @@ func scopeShowsDispatch(call scopeCallOutcome, randID string) bool {
 		(strings.Contains(lower, "tool ") && strings.Contains(lower, "not found")) {
 		return false
 	}
-	if call.protocolError {
+	if call.protocolError || call.toolError {
 		return strings.Contains(text, scopeCanaryPrefix+randID)
 	}
 	return strings.TrimSpace(text) != ""
@@ -598,25 +619,36 @@ func scopeVerdictName(v probeVerdict) string {
 	}
 }
 
-func (e *ScopeConfusionExecutor) finding(endpoint string, cand scopeTool, fullName, limName string) attack.Finding {
-	return attack.Finding{
+func (e *ScopeConfusionExecutor) finding(endpoint string, cand scopeTool, fullName, limName string, confirmed bool) attack.Finding {
+	finding := attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "high",
-		Confidence: attack.ConfirmedExploit,
-		Title:      fmt.Sprintf("MCP tools/call runs %q under a scope-limited credential", cand.Name),
+		Confidence: attack.RiskIndicator,
+		Title:      fmt.Sprintf("MCP tools/call exposes %q to a scope-limited credential", cand.Name),
 		Description: fmt.Sprintf(
 			"The same approved tools/call for %q at %s was sent as two principals: %q "+
-				"(full) and %q (limited). Both dispatched the tool, while an unauthenticated "+
-				"call to that tool was refused. The configured limited credential reached a tool "+
-				"it should not be authorized to use.",
+				"(full) and %q (limited). Both received a tool-specific response, while an "+
+				"unauthenticated call to that tool was refused. An error response can reflect "+
+				"validation before execution; review the tool's scope enforcement.",
 			cand.Name, endpoint, fullName, limName),
 		Evidence: fmt.Sprintf(
-			"endpoint: %s\ntool: %s\nfull principal %q: dispatched (validation answered)\n"+
-				"limited principal %q: dispatched (validation answered; expected denial supplied by operator)\n"+
+			"endpoint: %s\ntool: %s\nfull principal %q: tool-specific response\n"+
+				"limited principal %q: tool-specific response (expected denial supplied by operator)\n"+
 				"anonymous control for this tool: refused",
 			endpoint, cand.Name, fullName, limName),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,
 	}
+	if confirmed {
+		finding.Confidence = attack.ConfirmedExploit
+		finding.Title = fmt.Sprintf("MCP tools/call runs %q under a scope-limited credential", cand.Name)
+		finding.Description = fmt.Sprintf(
+			"The same approved tools/call for %q at %s returned successful tool results for %q (full) "+
+				"and %q (limited), while an unauthenticated call was refused. The configured "+
+				"limited credential reached a tool it should not be authorized to use.",
+			cand.Name, endpoint, fullName, limName)
+		finding.Evidence += "\nfull and limited tool results: successful"
+	}
+	return finding
 }

@@ -8,7 +8,8 @@ Deliberately vulnerable MCP test server for validating:
 
 Postures (prefix with modern- for a 2026-07-28-only server):
   vulnerable (default) - any accepted bearer authorizes everything. The rule
-                         MUST fire confirmed/high on delete_item.
+                         MUST fire high/indicator on delete_item. Its missing
+                         item error does not prove tool execution.
   patched              - tokens carry scopes (tok-a -> items:write+read,
                          tok-b -> items:read) and privileged tools check them
                          first, refusing with an insufficient_scope message

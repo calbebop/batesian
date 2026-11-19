@@ -199,7 +199,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
 | `mcp-filesystem-symlink-001` | [Filesystem Symlink Metadata Exposure](#mcp-filesystem-symlink-001) | Low | indicator | CWE-200 |
 | `mcp-fetch-robots-001` | [Fetch Robots Path Canonicalization](#mcp-fetch-robots-001) | Low | indicator | CWE-41 |
-| `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed | CWE-285 |
+| `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed / indicator | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
 | `mcp-vulnerable-version-001` | [Known-Vulnerable Component Identity](#mcp-vulnerable-version-001) | High | indicator | CWE-1104 |
@@ -1300,7 +1300,7 @@ raw responses from findings. It does not establish the installed package.
 
 ### mcp-scope-confusion-001
 
-**Tool Scope Confusion (Valid Token, Privileged Dispatch)** | Severity: High | CWE-285
+**Tool Scope Confusion** | Severity: High | CWE-285
 
 Tests whether `tools/call` enforces the scopes of the credential presented, or
 merely that a valid credential exists. It compares the same tool call under a
@@ -1317,9 +1317,11 @@ generated probe arguments may be accepted and cause side effects.
 Server-supplied `readOnlyHint` does not exclude a tool whose name suggests a write.
 
 Two distinct, differently scoped principals are required. Missing approval or
-credentials reports **not tested**, not clean. A confirmed high finding means
-both authenticated identities reached dispatch while the anonymous call to
-that same tool was refused. Each approved candidate has its own control.
+credentials reports **not tested**, not clean. A confirmed high finding requires
+successful tool results for both authenticated identities while the anonymous
+call is refused. Canary-specific error responses produce an indicator: they
+may reflect validation before execution. Generic errors leave the test
+inconclusive. Each approved candidate has its own control.
 
 ---
 
