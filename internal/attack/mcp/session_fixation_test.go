@@ -426,6 +426,10 @@ func TestSessionFixation_ClosesPublishedSessionAfterChaining(t *testing.T) {
 				if !ok || artifact.Value == "" {
 					t.Fatalf("missing published session: %+v", artifact)
 				}
+				reported, err := json.Marshal(findings[0])
+				if err != nil || strings.Contains(string(reported), artifact.Value) {
+					t.Fatalf("finding exposed the live session ID: %s, err=%v", reported, err)
+				}
 				bb.Close()
 				bb.Close()
 				mu.Lock()
@@ -436,6 +440,11 @@ func TestSessionFixation_ClosesPublishedSessionAfterChaining(t *testing.T) {
 				}
 			} else if len(before) != 2 || before[0] != "srv-1" || !strings.HasPrefix(before[1], "batesian-fixed-") {
 				t.Fatalf("after direct execute: %v", before)
+			} else {
+				reported, err := json.Marshal(findings[0])
+				if err != nil || strings.Contains(string(reported), before[1]) {
+					t.Fatalf("finding exposed the live session ID: %s, err=%v", reported, err)
+				}
 			}
 		})
 	}

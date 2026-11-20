@@ -151,7 +151,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 	keepSeeded = true
 
 	chain := []attack.ChainStep{
-		{Hop: 1, Action: "initialize with client-chosen Mcp-Session-Id " + fixed, Outcome: "server adopted the client-supplied session id"},
+		{Hop: 1, Action: "initialize with a client-chosen Mcp-Session-Id", Outcome: "server adopted the client-supplied session id"},
 		{Hop: 2, Action: "call tools/list presenting the pre-seeded id", Outcome: "accepted as an established session"},
 		{Hop: 3, Action: "call tools/list presenting an un-initialized random id", Outcome: "rejected - server does enforce sessions"},
 	}
@@ -180,7 +180,7 @@ func (e *SessionFixationExecutor) ExecuteChained(ctx context.Context, target str
 		}
 	}
 
-	finding := e.finding(ep, fixed, crossPrincipal, chain)
+	finding := e.finding(ep, crossPrincipal, chain)
 	if crossPrincipalResult != "" {
 		finding.Evidence += "\n" + crossPrincipalResult
 	}
@@ -199,20 +199,24 @@ func (e *SessionFixationExecutor) initWithSession(ctx context.Context, client *a
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || resp == nil {
+	if resp == nil {
 		return mcpSession{}, accessUndetermined
+	}
+	session := mcpSession{
+		Endpoint: endpoint, SessionID: resp.Headers.Get("Mcp-Session-Id"),
+		ProtocolVersion: negotiatedVersionOr(resp.Body, latestStable),
+	}
+	if err != nil {
+		return session, accessUndetermined
 	}
 	if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized ||
 			resp.StatusCode == http.StatusForbidden || sessionRefusalError(resp.Body) {
-			return mcpSession{}, accessRefused
+			return session, accessRefused
 		}
-		return mcpSession{}, accessUndetermined
+		return session, accessUndetermined
 	}
-	return mcpSession{
-		Endpoint: endpoint, SessionID: resp.Headers.Get("Mcp-Session-Id"),
-		ProtocolVersion: negotiatedVersion(resp.Body),
-	}, accessGranted
+	return session, accessGranted
 }
 
 func sessionRefusalError(body []byte) bool {
@@ -271,22 +275,22 @@ func (e *SessionFixationExecutor) sessionAccepted(ctx context.Context, client *a
 }
 
 // finding builds the confirmed session-fixation finding.
-func (e *SessionFixationExecutor) finding(endpoint, fixed, crossPrincipal string, chain []attack.ChainStep) attack.Finding {
+func (e *SessionFixationExecutor) finding(endpoint, crossPrincipal string, chain []attack.ChainStep) attack.Finding {
 	desc := fmt.Sprintf(
-		"POST %s adopted a client-supplied Mcp-Session-Id (%q) as a live session: a "+
+		"POST %s adopted a client-supplied Mcp-Session-Id as a live session: a "+
 			"follow-up call presenting that attacker-chosen id was accepted, while a "+
 			"different, never-initialized id was rejected - proving the server does enforce "+
 			"sessions but trusts an identifier the client dictated. Per the Streamable HTTP "+
 			"transport the server must mint the session id itself and reject unrecognized "+
 			"ids (HTTP 404). An attacker can fix a known id, lure a victim onto it, and ride "+
-			"the victim's authenticated session (CWE-384).", endpoint, fixed)
+			"the victim's authenticated session (CWE-384).", endpoint)
 	if crossPrincipal != "" {
 		desc += fmt.Sprintf(" A second principal (%q) successfully presented the same "+
 			"pre-seeded id, confirming the fixed session is borrowable across principals.", crossPrincipal)
 	}
 	evidence := fmt.Sprintf(
-		"endpoint: %s\nclient-supplied Mcp-Session-Id: %s\npre-seeded id accepted: yes\n"+
-			"un-initialized random id accepted: no (rejected)", endpoint, fixed)
+		"endpoint: %s\nclient-supplied Mcp-Session-Id: accepted (value omitted)\npre-seeded id accepted: yes\n"+
+			"un-initialized random id accepted: no (rejected)", endpoint)
 	if crossPrincipal != "" {
 		evidence += fmt.Sprintf("\ncross-principal borrow (%s): accepted", crossPrincipal)
 	}
