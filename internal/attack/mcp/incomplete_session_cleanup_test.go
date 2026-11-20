@@ -31,6 +31,10 @@ func TestOriginProbesCloseIncompleteHandshake(t *testing.T) {
 				}
 				var req map[string]interface{}
 				_ = json.NewDecoder(r.Body).Decode(&req)
+				if req["method"] == "notifications/initialized" {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
 				if req["method"] != "initialize" {
 					http.NotFound(w, r)
 					return

@@ -368,6 +368,12 @@ func (e *TaskIDORExecutor) initSession(ctx context.Context, client *attack.HTTPC
 			continue // transport failure: nothing answered, so nothing to explain
 		}
 		if !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+			if id := resp.Headers.Get("Mcp-Session-Id"); id != "" {
+				closeTaskIDORSession(ctx, client, mcpSession{
+					Endpoint: ep, Era: EraLegacy, SessionID: id,
+					ProtocolVersion: negotiatedVersionOr(resp.Body, latestStable),
+				}, p)
+			}
 			// Principal credentials are attached per request, not through the client.
 			observed.observe(classifyInitFailure(ep, len(principalIdentityHeaders(p)) != 0, resp))
 			continue

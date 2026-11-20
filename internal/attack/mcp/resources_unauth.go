@@ -383,6 +383,7 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			continue // transport failure: nothing answered, so nothing to explain
 		}
 		if !initResp.IsSuccess() || !initializeSucceeded(initResp.Body) {
+			closeProbeSession(ctx, client, ep, initResp, "", latestStable)
 			if hadCached && ep == cachedEp {
 				// The remembered endpoint has gone stale: forget it and let
 				// this walk continue over every candidate as before.
@@ -400,15 +401,17 @@ func initializeMCP(ctx context.Context, client *attack.HTTPClient, baseURL strin
 			RawInit:         initResp.Body,
 		}
 
-		// First successful resolution wins for the whole scan: later rules
-		// start here instead of re-walking every candidate.
-		client.Discovery().RememberLegacy(baseURL, ep)
-
-		// notifications/initialized - fire and forget
-		_, _ = client.POST(ctx, ep, session.header(), map[string]interface{}{
+		ack, ackErr := client.POST(ctx, ep, session.header(), map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "notifications/initialized",
 		})
+		if !initializedNotificationOK(ack, ackErr) {
+			closeLegacySessions(ctx, client, []mcpSession{session})
+			return mcpSession{}, fmt.Errorf("%w: notifications/initialized at %s did not complete",
+				attack.ErrInconclusive, ep)
+		}
+
+		client.Discovery().RememberLegacy(baseURL, ep)
 
 		return session, nil
 	}
