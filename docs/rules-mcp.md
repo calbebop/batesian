@@ -723,9 +723,9 @@ credentials, so attaching a token would let an auth-enforcing server grant the
 modern path and mask the bug. A **confirmed** finding is reported only when the
 modern session returns an authorization refusal but the legacy session returns
 items. A generic RPC error is not an auth refusal; an empty legacy list leaves
-the comparison incomplete. If
-both succeed, the server simply has no auth (owned by the unauthenticated-listing rules);
-if both are rejected, the server is secure - neither produces a finding here.
+the comparison incomplete. If both succeed, the unauthenticated-listing rules
+cover the open surface. If both are rejected, neither produces a finding here.
+The scanner attempts to close both sessions after the comparison.
 
 ---
 

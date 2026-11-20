@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -28,12 +29,45 @@ const (
 // than one hardcoded string: pinning the version the rule offers made a fully-open
 // server look like a critical downgrade bypass the moment that version was updated.
 func versionAwareServer(t *testing.T, legacyAllows, modernAllows bool, listMode ...string) *httptest.Server {
+	return versionAwareServerWithCleanup(t, legacyAllows, modernAllows, nil, listMode...)
+}
+
+type downgradeCleanup struct {
+	legacy atomic.Int32
+	modern atomic.Int32
+}
+
+func versionAwareServerWithCleanup(t *testing.T, legacyAllows, modernAllows bool,
+	cleanup *downgradeCleanup, listMode ...string) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	sessions := map[string]string{} // sessionID -> protocolVersion
 	counter := 0
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			version, ok := sessions[r.Header.Get("Mcp-Session-Id")]
+			if ok && r.Header.Get("Mcp-Protocol-Version") == version {
+				delete(sessions, r.Header.Get("Mcp-Session-Id"))
+			} else {
+				ok = false
+			}
+			mu.Unlock()
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if cleanup != nil {
+				if version == legacyVer {
+					cleanup.legacy.Add(1)
+				} else {
+					cleanup.modern.Add(1)
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		var req map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		method, _ := req["method"].(string)
@@ -120,6 +154,19 @@ func TestInitDowngrade_ConfirmedBypass(t *testing.T) {
 	}
 	if findings[0].Severity != "critical" || findings[0].Confidence != attack.ConfirmedExploit {
 		t.Errorf("expected critical/ConfirmedExploit, got %q/%q", findings[0].Severity, findings[0].Confidence)
+	}
+}
+
+func TestInitDowngrade_ClosesComparedSessions(t *testing.T) {
+	cleanup := &downgradeCleanup{}
+	srv := versionAwareServerWithCleanup(t, true, false, cleanup)
+	defer srv.Close()
+
+	findings, err := mcpattack.NewInitDowngradeExecutor(attack.RuleContext{ID: "mcp-init-downgrade-001"}).
+		Execute(context.Background(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 1 || cleanup.legacy.Load() != 1 || cleanup.modern.Load() != 1 {
+		t.Fatalf("want one finding and both sessions closed, got findings=%+v err=%v closes=%d/%d",
+			findings, err, cleanup.legacy.Load(), cleanup.modern.Load())
 	}
 }
 
@@ -363,22 +410,33 @@ func TestInitDowngrade_OldServerRejectingModernIsNotABypass(t *testing.T) {
 
 func TestInitDowngrade_IncompleteHandshake(t *testing.T) {
 	tests := []struct {
-		name    string
-		version string
-		method  string
-		status  int
-		rpcErr  bool
+		name        string
+		version     string
+		method      string
+		status      int
+		rpcErr      bool
+		wantDeletes int32
 	}{
-		{"legacy initialize error", legacyVer, "initialize", http.StatusBadGateway, false},
-		{"legacy initialize auth refusal", legacyVer, "initialize", http.StatusUnauthorized, false},
-		{"modern initialize error", "2025-11-25", "initialize", http.StatusBadGateway, false},
-		{"modern initialize auth refusal", "2025-11-25", "initialize", http.StatusUnauthorized, false},
-		{"legacy notification error", legacyVer, "notifications/initialized", http.StatusServiceUnavailable, false},
-		{"modern notification RPC error", "2025-11-25", "notifications/initialized", http.StatusOK, true},
+		{"legacy initialize error", legacyVer, "initialize", http.StatusBadGateway, false, 0},
+		{"legacy initialize auth refusal", legacyVer, "initialize", http.StatusUnauthorized, false, 0},
+		{"modern initialize error", "2025-11-25", "initialize", http.StatusBadGateway, false, 1},
+		{"modern initialize auth refusal", "2025-11-25", "initialize", http.StatusUnauthorized, false, 1},
+		{"legacy notification error", legacyVer, "notifications/initialized", http.StatusServiceUnavailable, false, 1},
+		{"modern notification RPC error", "2025-11-25", "notifications/initialized", http.StatusOK, true, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var deletes atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					if r.Header.Get("Mcp-Session-Id") == "session-"+r.Header.Get("Mcp-Protocol-Version") {
+						deletes.Add(1)
+						w.WriteHeader(http.StatusNoContent)
+					} else {
+						w.WriteHeader(http.StatusBadRequest)
+					}
+					return
+				}
 				var req struct {
 					ID     interface{} `json:"id"`
 					Method string      `json:"method"`
@@ -441,6 +499,9 @@ func TestInitDowngrade_IncompleteHandshake(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.method) || !strings.Contains(err.Error(), tt.version) {
 				t.Fatalf("missing failed handshake step: %v", err)
+			}
+			if got := deletes.Load(); got != tt.wantDeletes {
+				t.Fatalf("want %d session cleanups, got %d", tt.wantDeletes, got)
 			}
 		})
 	}

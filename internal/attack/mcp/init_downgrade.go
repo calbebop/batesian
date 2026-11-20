@@ -56,6 +56,7 @@ func (e *InitDowngradeExecutor) Execute(ctx context.Context, target string, opts
 
 func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attack.HTTPClient, ep string) ([]attack.Finding, bool, string) {
 	legacySession, legacyState, legacyReason := e.handshake(ctx, client, ep, legacyVersion)
+	defer closeLegacySessions(ctx, client, []mcpSession{legacySession})
 	switch legacyState {
 	case downgradeHandshakeAbsent:
 		return nil, false, legacyReason
@@ -66,6 +67,7 @@ func (e *InitDowngradeExecutor) probeEndpoint(ctx context.Context, client *attac
 	}
 
 	modernSession, modernState, modernReason := e.handshake(ctx, client, ep, modernVersion)
+	defer closeLegacySessions(ctx, client, []mcpSession{modernSession})
 	switch modernState {
 	case downgradeHandshakeUnsupported:
 		return nil, true, ""
@@ -161,7 +163,8 @@ func responsiveMCP(ctx context.Context, client *attack.HTTPClient, ep string) bo
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
-	if err != nil || !resp.IsSuccess() {
+	defer closeProbeSession(ctx, client, ep, resp, "", modernVersion)
+	if err != nil || resp == nil || !resp.IsSuccess() {
 		return false
 	}
 	return answersMCPInitialize(resp.Body)
@@ -266,6 +269,12 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
+	keepSession := false
+	defer func() {
+		if !keepSession {
+			closeProbeSession(ctx, client, ep, initResp, "", version)
+		}
+	}()
 	if err != nil || initResp == nil {
 		return mcpSession{}, downgradeHandshakeAbsent, fmt.Sprintf(
 			"initialize at %s with protocol version %s did not answer", ep, version)
@@ -292,6 +301,7 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 	}
 	session := mcpSession{
 		Endpoint:        ep,
+		Era:             EraLegacy,
 		SessionID:       initResp.Headers.Get("Mcp-Session-Id"),
 		ProtocolVersion: negotiatedVersion(initResp.Body),
 		RawInit:         initResp.Body,
@@ -308,6 +318,7 @@ func (e *InitDowngradeExecutor) handshake(ctx context.Context, client *attack.HT
 		return mcpSession{}, downgradeHandshakeIncomplete, fmt.Sprintf(
 			"notifications/initialized at %s with protocol version %s returned a JSON-RPC error", ep, version)
 	}
+	keepSession = true
 	return session, downgradeHandshakeComplete, ""
 }
 

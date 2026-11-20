@@ -93,12 +93,12 @@ func (e *SecretCanaryExecutor) probe(ctx context.Context, client *attack.HTTPCli
 			"clientInfo":      map[string]interface{}{"name": "batesian", "version": "1.0"},
 		},
 	})
+	defer closeProbeSession(ctx, client, ep, initResp, canary, latestStable)
 	record(initResp, err, "legacy initialize")
 	if err == nil && initResp != nil {
 		if isMCPInitialize(initResp) {
 			applicable = true
 			session := mcpSession{Endpoint: ep, Era: EraLegacy, SessionID: initResp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(initResp.Body)}
-			defer closeLegacySessions(ctx, client, []mcpSession{session})
 			initialized, initErr := client.POST(ctx, ep, session.header(), map[string]interface{}{
 				"jsonrpc": "2.0", "method": "notifications/initialized",
 			})
