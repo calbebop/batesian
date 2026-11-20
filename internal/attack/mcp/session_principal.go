@@ -99,13 +99,17 @@ func openPrincipalSession(ctx context.Context, client *attack.HTTPClient, endpoi
 	headers := map[string]string{}
 	attachPrincipal(headers, p)
 	resp, err := client.POST(ctx, endpoint, headers, json.RawMessage(mcpInitBody))
-	if classifyAuthAccess(resp, err, 1) != accessGranted || !initializeSucceeded(resp.Body) {
+	if resp == nil {
 		return mcpSession{}, fmt.Errorf("%w: initialize did not establish a session for %s", attack.ErrInconclusive, p.name)
 	}
 	session := mcpSession{
 		Endpoint: endpoint, Era: EraLegacy, SessionID: resp.Headers.Get("Mcp-Session-Id"),
-		ProtocolVersion: negotiatedVersion(resp.Body), RawInit: resp.Body,
+		ProtocolVersion: negotiatedVersionOr(resp.Body, latestStable),
 	}
+	if classifyAuthAccess(resp, err, 1) != accessGranted || !initializeSucceeded(resp.Body) {
+		return session, fmt.Errorf("%w: initialize did not establish a session for %s", attack.ErrInconclusive, p.name)
+	}
+	session.RawInit = resp.Body
 	if session.SessionID == "" {
 		return session, nil
 	}

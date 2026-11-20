@@ -36,11 +36,11 @@ func originResponseVerdict(resp *attack.Response, err error, session mcpSession,
 
 func closeLegacyOriginProbe(ctx context.Context, client *attack.HTTPClient, endpoint string,
 	resp *attack.Response, origin string) {
-	if resp == nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+	if resp == nil || resp.Headers.Get("Mcp-Session-Id") == "" {
 		return
 	}
 	probe := mcpSession{Endpoint: endpoint, Era: EraLegacy,
-		SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersion(resp.Body)}
+		SessionID: resp.Headers.Get("Mcp-Session-Id"), ProtocolVersion: negotiatedVersionOr(resp.Body, latestStable)}
 	closeLegacySessionsWith(ctx, client, []mcpSession{probe},
 		func(headers map[string]string) { headers["Origin"] = origin })
 }

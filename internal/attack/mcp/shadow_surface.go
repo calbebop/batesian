@@ -94,6 +94,7 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 			continue
 		}
 		if err != nil || !resp.IsSuccess() || !initializeSucceeded(resp.Body) {
+			closeLegacyOriginProbe(ctx, client, base+path, resp, "")
 			continue
 		}
 		mcpPath = path
@@ -170,6 +171,8 @@ func (e *ShadowSurfaceExecutor) probePort(ctx context.Context, client *attack.HT
 				ProtocolVersion: negotiatedVersion(rebindResp.Body), RawInit: rebindResp.Body}
 			defer closeLegacySessionsWith(ctx, client, []mcpSession{foreignSession},
 				func(h map[string]string) { h["Origin"] = foreignOrigin })
+		} else {
+			closeLegacyOriginProbe(ctx, client, endpoint, rebindResp, foreignOrigin)
 		}
 	}
 	originRefused := rebindErr == nil && rebindResp != nil && rebindResp.StatusCode == http.StatusForbidden
