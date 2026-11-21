@@ -59,6 +59,36 @@ var vvTable = []vvAdvisory{
 		note: "On Windows, check the advisory's remaining junction limitation before relying on repository confinement.",
 	},
 	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.18", severity: "medium",
+		title: "reference git server index path confinement bypass",
+		refs:  "GHSA-r2q8-f657-4r56", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.18", severity: "medium",
+		title: "reference git server submodule configuration command execution",
+		refs:  "GHSA-8wv7-r664-7594", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.11.4 <2026.11.18", severity: "medium",
+		title: "reference git server automatic maintenance command execution",
+		refs:  "GHSA-h2g3-rwxm-xfm3", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.18", severity: "medium",
+		title: "reference git server promisor configuration command execution",
+		refs:  "GHSA-87qg-cmw8-jc5m", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.11.4 <2026.11.18", severity: "medium",
+		title: "reference git server merge include command execution",
+		refs:  "GHSA-9vjp-x34c-xg6v", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.18", severity: "medium",
+		title: "reference git server empty driver command execution",
+		refs:  "GHSA-pm7p-vphh-2cg7", fixed: "2026.11.18", pkg: "mcp-server-git",
+	},
+	{
 		key: "serena", affected: "<1.5.2", severity: "high",
 		title: "Serena dashboard memory poisoning to RCE via DNS rebinding",
 		refs:  "CVE-2026-49471",
@@ -98,6 +128,18 @@ var vvTable = []vvAdvisory{
 		affected: ">=1.0.0 <2.3.0", severity: "low",
 		title: "reference filesystem server move source race",
 		refs:  "GHSA-7m4x-rv66-mxhh", fixed: "2.3.0", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key:      "secure-filesystem-server",
+		affected: ">=1.0.0 <2.4.0", severity: "low",
+		title: "reference filesystem server directory listing race",
+		refs:  "GHSA-rq2p-q7c4-6g27", fixed: "2.4.0", pkg: "@modelcontextprotocol/server-filesystem",
+	},
+	{
+		key:      "mcp-servers/everything",
+		affected: ">=1.0.0 <2.3.1 || >=2026.1.14 <=2026.8.31", severity: "low",
+		title: "reference everything server NAT64 SSRF guard gap",
+		refs:  "GHSA-38j4-j742-j7r3", fixed: "2.3.1", pkg: "@modelcontextprotocol/server-everything",
 	},
 	{
 		key:      "mcp-fetch",
@@ -188,23 +230,29 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 	parsed := vvParseVersion(version)
 
 	var findings []attack.Finding
+	var unverifiableRefs []string
+	var matchedName string
 	for _, adv := range vvTable {
 		if !strings.EqualFold(name, adv.key) {
 			continue
 		}
 		if parsed == nil {
-			findings = append(findings, e.unverifiableFinding(endpoint, adv))
+			matchedName = adv.key
+			unverifiableRefs = append(unverifiableRefs, adv.refs)
 			continue
 		}
 		inRange, valid := vvMatchesAffected(parsed, adv.affected)
 		if !valid {
-			findings = append(findings, e.unverifiableFinding(endpoint, adv))
+			findings = append(findings, e.unverifiableFinding(endpoint, adv.key, adv.refs))
 			continue
 		}
 		if !inRange {
 			continue
 		}
 		findings = append(findings, e.finding(endpoint, vvPublicVersion(parsed), adv))
+	}
+	if len(unverifiableRefs) > 0 {
+		return []attack.Finding{e.unverifiableFinding(endpoint, matchedName, strings.Join(unverifiableRefs, ", "))}
 	}
 	return findings
 }
@@ -237,24 +285,22 @@ func (e *VulnerableVersionExecutor) finding(endpoint, version string, adv vvAdvi
 	}
 }
 
-// unverifiableFinding covers the awkward middle: the name says this is a
-// product with a published advisory but the version string cannot be parsed,
-// so neither clean nor vulnerable can be claimed.
-func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint string, adv vvAdvisory) attack.Finding {
+// unverifiableFinding reports one lead when version metadata cannot be compared.
+func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, refs string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
 		Severity:   "low",
 		Confidence: attack.RiskIndicator,
-		Title:      fmt.Sprintf("MCP server identifies as %s but its version is unverifiable", adv.key),
+		Title:      fmt.Sprintf("MCP server identifies as %s but its version is unverifiable", name),
 		Description: fmt.Sprintf(
 			"MCP server metadata at %s identifies this server as %s reporting a version that cannot "+
-				"be compared with the affected range for %s (%s). Whether this deployment is "+
+				"be compared with the affected advisories (%s). Whether this deployment is "+
 				"affected could not be determined from what the server publishes.",
-			endpoint, adv.key, adv.key, adv.refs),
+			endpoint, name, refs),
 		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: matched %s\nserverInfo.version: unparseable (value omitted)\nrelated advisories: %s",
-			endpoint, adv.key, adv.refs),
-		Remediation: fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", adv.refs),
+			endpoint, name, refs),
+		Remediation: fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", refs),
 		TargetURL:   endpoint,
 	}
 }
@@ -327,31 +373,35 @@ func vvValidIdentifiers(s string) bool {
 }
 
 func vvMatchesAffected(version *vvVersion, affected string) (bool, bool) {
-	bounds := strings.Fields(affected)
-	if len(bounds) == 0 {
-		return false, false
-	}
-	within := true
-	for _, spec := range bounds {
-		op, bound, ok := vvParseRange(spec)
-		if !ok {
+	matched := false
+	for _, clause := range strings.Split(affected, "||") {
+		bounds := strings.Fields(clause)
+		if len(bounds) == 0 {
 			return false, false
 		}
-		cmp := vvCompare(version, bound)
-		switch op {
-		case "<":
-			within = within && cmp < 0
-		case "<=":
-			within = within && cmp <= 0
-		case ">":
-			within = within && cmp > 0
-		case ">=":
-			within = within && cmp >= 0
-		case "=":
-			within = within && cmp == 0
+		within := true
+		for _, spec := range bounds {
+			op, bound, ok := vvParseRange(spec)
+			if !ok {
+				return false, false
+			}
+			cmp := vvCompare(version, bound)
+			switch op {
+			case "<":
+				within = within && cmp < 0
+			case "<=":
+				within = within && cmp <= 0
+			case ">":
+				within = within && cmp > 0
+			case ">=":
+				within = within && cmp >= 0
+			case "=":
+				within = within && cmp == 0
+			}
 		}
+		matched = matched || within
 	}
-	return within, true
+	return matched, true
 }
 
 // vvParseRange splits an operator from its stable version bound.

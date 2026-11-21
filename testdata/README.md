@@ -96,7 +96,7 @@ fixtures only.
 | `mcp_scope_confusion_server.py` | 7806 | `mcp-scope-confusion-001` must fire on `vulnerable`; stay silent on `patched` and `open`, on both legacy and `modern-` postures (needs two principals and `--mcp-scope-tool delete_item`) |
 | `mcp_shadow_surface_server.py` | 7807 + 6277 | `mcp-shadow-surface-001`: high on `shadow-open`, medium on `shadow-hardened`, low on `shadow-protected`, silent on `none` |
 | `mcp_tool_poisoning_server.py` | 7808 | `mcp-tool-poisoning-001`: checks 1-3 fire on `poisoned`, check 4 fires on `drifting`, all silent on `clean` (three postures, see below) |
-| `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` must fire on `vulnerable`; stay silent on `patched` and `unknown` (three postures, see below) |
+| `mcp_vulnerable_version_server.py` | 7809 | `mcp-vulnerable-version-001` fires on `vulnerable` and `intermediate`; stays silent on `patched` and `unknown` (four postures, see below) |
 | `mcp_origin_prefix_bypass_server.py` | 7811 | `mcp-origin-prefix-bypass-001` fires on `prefix`; stays silent on `port-prefix`, `hardened`, and `open` |
 | `mcp_task_entropy_server.py` | 7812 | Modern Tasks extension; `mcp-task-id-entropy-001` flags `weak` with `--mcp-invoke-tool wait_a_moment`, silent on `clean` |
 | `mcp_token_replay_server.py` | 7813 | `mcp-token-replay-001` must fire on `vulnerable`; stay silent on `patched` (two postures, see below) |
@@ -500,17 +500,16 @@ was added or changed. `clean` is factual, unique and stable. Nothing beyond
 
 ```sh
 python testdata/mcp_vulnerable_version_server.py vulnerable  # medium indicator
+python testdata/mcp_vulnerable_version_server.py intermediate  # medium indicator
 python testdata/mcp_vulnerable_version_server.py patched     # silent
 python testdata/mcp_vulnerable_version_server.py unknown     # silent
 batesian scan --target http://127.0.0.1:7809 --rule-ids mcp-vulnerable-version-001 -v
 ```
 
-The three postures differ only in what `serverInfo` reports: an affected
-`mcp-git` version, the fixed version, and an unrelated product identity. The
-patched posture pins the range boundary - the fix version itself must not
-fire - and `unknown` pins that the advisory table is closed rather than
-heuristic. Only `initialize` is served; this rule reads identity and nothing
-else.
+The four postures differ only in `serverInfo`: two affected `mcp-git` versions,
+the fixed 2026.11.18 release, and an unrelated identity. The patched and
+unknown postures pin the upper range boundary and exact identity match. Only
+`initialize` is served; the rule reads identity and nothing else.
 
 **`a2a_push_callback_auth_server.py` takes a posture argument**, defaulting to
 `unsigned`. batesian starts its local OOB listener for this one, so no extra

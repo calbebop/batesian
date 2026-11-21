@@ -37,7 +37,7 @@ is a difference the gate catches:
                                   keeps drift from firing where content was the
                                   defect, and vice versa (#229).
   mcp_vulnerable_version_*        affected and intermediate releases fire;
-                                  2026.11.11 and unknown identities stay silent.
+                                  2026.11.18 and unknown identities stay silent.
 
 Run by .github/workflows/validation.yml.
 """

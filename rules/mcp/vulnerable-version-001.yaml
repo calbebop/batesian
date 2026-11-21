@@ -22,6 +22,18 @@ info:
                                     (GHSA-6hqx-gqrx-c5r2; fixed in 2026.11.11)
       - mcp-git >=2026.10.28 <2026.11.11
                                     (GHSA-q74p-4wrc-q7w6; fixed in 2026.11.11)
+      - mcp-git >=2026.10.10 <2026.11.18
+                                    (GHSA-r2q8-f657-4r56; fixed in 2026.11.18)
+      - mcp-git >=2026.10.10 <2026.11.18
+                                    (GHSA-8wv7-r664-7594; fixed in 2026.11.18)
+      - mcp-git >=2026.11.4 <2026.11.18
+                                    (GHSA-h2g3-rwxm-xfm3; fixed in 2026.11.18)
+      - mcp-git >=2026.10.10 <2026.11.18
+                                    (GHSA-87qg-cmw8-jc5m; fixed in 2026.11.18)
+      - mcp-git >=2026.11.4 <2026.11.18
+                                    (GHSA-9vjp-x34c-xg6v; fixed in 2026.11.18)
+      - mcp-git >=2026.10.10 <2026.11.18
+                                    (GHSA-pm7p-vphh-2cg7; fixed in 2026.11.18)
       - serena <1.5.2               (CVE-2026-49471)
       - secure-filesystem-server >=1.0.0 <2.0.1
                                     (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
@@ -35,6 +47,10 @@ info:
                                     (GHSA-p9cv-8g75-4xcg; fixed in 2.3.0)
       - secure-filesystem-server >=1.0.0 <2.3.0
                                     (GHSA-7m4x-rv66-mxhh; fixed in 2.3.0)
+      - secure-filesystem-server >=1.0.0 <2.4.0
+                                    (GHSA-rq2p-q7c4-6g27; fixed in 2.4.0)
+      - mcp-servers/everything >=1.0.0 <2.3.1 or
+        >=2026.1.14 <=2026.8.31 (GHSA-38j4-j742-j7r3; fixed in 2.3.1)
       - mcp-fetch >=2026.10.10 <=2026.10.19
                                     (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
       - mcp-fetch >=2026.10.10 <=2026.10.19
@@ -61,10 +77,11 @@ info:
     matching. The mcp-atlassian handshake does not reliably report its package
     release. Verify these components through installed-package inventory.
 
-    A name that matches a table entry but reports an unparseable version is a
-    low indicator: neither clean nor vulnerable can be claimed from what the
-    server publishes. Other identities yield no finding under this rule; they
-    are not evidence that the installed components are unaffected.
+    A name that matches a table entry but reports an unparseable version yields
+    one low indicator listing the related advisories. Neither clean nor
+    vulnerable can be claimed from what the server publishes. Other identities
+    yield no finding under this rule. That does not establish that their
+    installed components are unaffected.
 
   references:
     - https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
@@ -74,10 +91,18 @@ info:
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-w766-5x43-whvw
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-6hqx-gqrx-c5r2
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-q74p-4wrc-q7w6
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-r2q8-f657-4r56
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-8wv7-r664-7594
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-h2g3-rwxm-xfm3
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-pm7p-vphh-2cg7
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-4gxg-m5jx-9j57
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-53mr-w429-c597
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-p9cv-8g75-4xcg
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7m4x-rv66-mxhh
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-rq2p-q7c4-6g27
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-38j4-j742-j7r3
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-v38p-wf49-hx2j
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6

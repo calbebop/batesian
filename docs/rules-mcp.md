@@ -1421,6 +1421,12 @@ Findings omit raw server names and version suffixes.
 - **mcp-git** >=2026.10.10 <2026.10.28 - nested gitdir repository confinement bypass (GHSA-w766-5x43-whvw; fixed in 2026.10.28)
 - **mcp-git** >=2026.10.10 <2026.11.11 - repository configuration command execution (GHSA-6hqx-gqrx-c5r2; fixed in 2026.11.11)
 - **mcp-git** >=2026.10.28 <2026.11.11 - alternate object store and linked-worktree confinement bypass (GHSA-q74p-4wrc-q7w6; fixed in 2026.11.11)
+- **mcp-git** >=2026.10.10 <2026.11.18 - crafted index path escapes repository confinement (GHSA-r2q8-f657-4r56; fixed in 2026.11.18)
+- **mcp-git** >=2026.10.10 <2026.11.18 - submodule configuration command execution (GHSA-8wv7-r664-7594; fixed in 2026.11.18)
+- **mcp-git** >=2026.11.4 <2026.11.18 - automatic maintenance command execution (GHSA-h2g3-rwxm-xfm3; fixed in 2026.11.18)
+- **mcp-git** >=2026.10.10 <2026.11.18 - promisor configuration command execution (GHSA-87qg-cmw8-jc5m; fixed in 2026.11.18)
+- **mcp-git** >=2026.11.4 <2026.11.18 - merge include command execution (GHSA-9vjp-x34c-xg6v; fixed in 2026.11.18)
+- **mcp-git** >=2026.10.10 <2026.11.18 - empty driver command execution (GHSA-pm7p-vphh-2cg7; fixed in 2026.11.18)
 - **serena** <1.5.2 - dashboard memory poisoning to RCE via DNS rebinding (CVE-2026-49471)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - path validation mismatch (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - symlink metadata disclosure (GHSA-hhwq-wxfx-cj7g; fixed in 2.0.1)
@@ -1428,6 +1434,8 @@ Findings omit raw server names and version suffixes.
 - **secure-filesystem-server** >=1.0.0 <2.0.1 - parent-directory write race (GHSA-53mr-w429-c597; fixed in 2.0.1)
 - **secure-filesystem-server** >=1.0.0 <2.3.0 - read path symlink-swap race (GHSA-p9cv-8g75-4xcg; fixed in 2.3.0)
 - **secure-filesystem-server** >=1.0.0 <2.3.0 - move source-parent race (GHSA-7m4x-rv66-mxhh; fixed in 2.3.0)
+- **secure-filesystem-server** >=1.0.0 <2.4.0 - directory listing race (GHSA-rq2p-q7c4-6g27; fixed in 2.4.0)
+- **mcp-servers/everything** >=1.0.0 <2.3.1 or >=2026.1.14 <=2026.8.31 - NAT64 SSRF guard gap in `gzip-file-as-resource` (GHSA-38j4-j742-j7r3; fixed in 2.3.1)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - IDNA private-address guard bypass (GHSA-v38p-wf49-hx2j; fixed in 2026.10.24)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - robots.txt redirect bypass (GHSA-3jqg-r5pp-rmp2; fixed in 2026.10.24)
 - **mcp-fetch** >=2026.10.10 <=2026.10.19 - NAT64 private-address guard bypass (GHSA-66qx-2266-pmj6; fixed in 2026.10.24)
@@ -1439,17 +1447,19 @@ server releases cannot be identified by a target MCP handshake. The
 `mcp-atlassian` handshake does not reliably report its package version. Check
 installed packages and the relevant control interfaces separately.
 
-The filesystem, fetch, `mcp-git`, and `serena` names match exactly. Multiple
-bounds must all match; a prerelease of a fixed version remains below that
-version. These advisories also affect older package releases. Earlier filesystem
-builds report a static
-`0.2.0` server version, and earlier `mcp-fetch` and `mcp-server-git` builds may
+The filesystem, Everything, fetch, `mcp-git`, and `serena` names match exactly.
+Bounds within a range must all match; Everything has two alternative release
+lines. A prerelease of a fixed version remains below that version. These
+advisories also affect older package releases. Earlier filesystem builds report
+a static `0.2.0` server version, and earlier `mcp-fetch` and `mcp-server-git` builds may
 report the SDK version. The inventory rule does not match those older ranges;
 verify the installed packages directly.
 
 The newer filesystem races need a competing local process; routine scans do not
-attempt them. The Git command-execution advisory requires an untrusted
-repository, and the fetch advisories need controlled network or origin fixtures.
+attempt them. The Git advisories require an untrusted repository; Batesian does
+not invoke Git tools. The fetch advisories need controlled network or origin
+fixtures. The Everything NAT64 issue needs a route through a NAT64 translator;
+the version check does not establish one.
 The 2026.11.11 Git confinement fix still has a Windows junction limitation;
 review that advisory before relying on `--repository` on Windows.
 
@@ -1460,9 +1470,9 @@ verifies against the actual patch.
 
 Two edge cases are pinned rather than papered over:
 
-- A name that matches a table entry but reports an unparseable version is a
-  **low indicator** - neither clean nor vulnerable can be claimed from what
-  the server publishes.
+- A name that matches a table entry but reports an unparseable version yields
+  one **low indicator** listing the related advisories. The server metadata
+  cannot establish whether the deployment is affected.
 - An identity matching nothing yields no finding under this rule. It does not
   establish that installed components are unaffected.
 
