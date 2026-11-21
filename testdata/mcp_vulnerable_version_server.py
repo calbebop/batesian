@@ -5,14 +5,10 @@ Deliberately vulnerable MCP test server for validating:
   with published advisories, reporting a version inside the affected range.
 
 Postures:
-  vulnerable (default) - identifies as mcp-git 2026.10.19. The rule fires
-                         indicators for the older confinement and command
-                         execution advisories.
-  intermediate         - same product at 2026.10.28. The rule still fires
-                         for the November advisories.
-  patched              - same product at 2026.11.11. The rule stays silent.
-  unknown              - an unrelated custom identity. Nothing in the table
-                         matches; the rule MUST stay silent.
+  vulnerable (default) - mcp-git 2026.10.19; fires.
+  intermediate         - mcp-git 2026.11.11; fires for November 18 advisories.
+  patched              - mcp-git 2026.11.18; silent.
+  unknown              - unrelated identity; silent.
 
 The server serves nothing beyond initialize - this rule reads identity only,
 so there is no other surface to exercise.
@@ -38,8 +34,8 @@ PORT = 7809
 
 SERVER_INFO = {
     "vulnerable": {"name": "mcp-git", "version": "2026.10.19"},
-    "intermediate": {"name": "mcp-git", "version": "2026.10.28"},
-    "patched": {"name": "mcp-git", "version": "2026.11.11"},
+    "intermediate": {"name": "mcp-git", "version": "2026.11.11"},
+    "patched": {"name": "mcp-git", "version": "2026.11.18"},
     "unknown": {"name": "acme-custom-mcp", "version": "1.0.0"},
 }
 
