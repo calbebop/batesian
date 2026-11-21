@@ -243,7 +243,7 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 		}
 		inRange, valid := vvMatchesAffected(parsed, adv.affected)
 		if !valid {
-			findings = append(findings, e.unverifiableFinding(endpoint, adv.key, adv.refs))
+			findings = append(findings, e.unverifiableFinding(endpoint, adv.key, adv.refs, "unverifiable:"+adv.refs))
 			continue
 		}
 		if !inRange {
@@ -252,7 +252,7 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 		findings = append(findings, e.finding(endpoint, vvPublicVersion(parsed), adv))
 	}
 	if len(unverifiableRefs) > 0 {
-		return []attack.Finding{e.unverifiableFinding(endpoint, matchedName, strings.Join(unverifiableRefs, ", "))}
+		return []attack.Finding{e.unverifiableFinding(endpoint, matchedName, strings.Join(unverifiableRefs, ", "), "unverifiable:"+matchedName)}
 	}
 	return findings
 }
@@ -280,13 +280,14 @@ func (e *VulnerableVersionExecutor) finding(endpoint, version string, adv vvAdvi
 			endpoint, adv.key, version, adv.affected, adv.key, adv.refs),
 		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: matched %s\nserverInfo.version: %s (suffix omitted)\nmatched: %s %s\nadvisories: %s",
 			endpoint, adv.key, version, adv.key, adv.affected, adv.refs),
-		Remediation: remediation,
-		TargetURL:   endpoint,
+		Remediation:    remediation,
+		TargetURL:      endpoint,
+		FingerprintKey: adv.refs,
 	}
 }
 
 // unverifiableFinding reports one lead when version metadata cannot be compared.
-func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, refs string) attack.Finding {
+func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, refs, fingerprintKey string) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -300,8 +301,9 @@ func (e *VulnerableVersionExecutor) unverifiableFinding(endpoint, name, refs str
 			endpoint, name, refs),
 		Evidence: fmt.Sprintf("endpoint: %s\nserverInfo.name: matched %s\nserverInfo.version: unparseable (value omitted)\nrelated advisories: %s",
 			endpoint, name, refs),
-		Remediation: fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", refs),
-		TargetURL:   endpoint,
+		Remediation:    fmt.Sprintf("Verify the installed component version against %s; upgrade if affected.", refs),
+		TargetURL:      endpoint,
+		FingerprintKey: fingerprintKey,
 	}
 }
 

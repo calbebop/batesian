@@ -72,6 +72,9 @@ func TestVV_VulnerableGitFires(t *testing.T) {
 		!strings.Contains(findings[1].Evidence, "GHSA-6hqx-gqrx-c5r2") {
 		t.Errorf("evidence should cite the advisories, got: %q", f.Evidence)
 	}
+	if f.FingerprintKey != "GHSA-w766-5x43-whvw" || findings[1].FingerprintKey != "GHSA-6hqx-gqrx-c5r2" {
+		t.Errorf("advisory fingerprint keys = %q, %q", f.FingerprintKey, findings[1].FingerprintKey)
+	}
 }
 
 // TestVV_PatchedSilent: same product at the patched version.
@@ -120,6 +123,9 @@ func TestVV_UnparseableVersionLow(t *testing.T) {
 	if findings[0].Severity != "low" || findings[0].Confidence != attack.RiskIndicator {
 		t.Errorf("want low/RiskIndicator for unverifiable version, got %q/%q",
 			findings[0].Severity, findings[0].Confidence)
+	}
+	if findings[0].FingerprintKey != "unverifiable:serena" {
+		t.Errorf("unverifiable fingerprint key = %q", findings[0].FingerprintKey)
 	}
 }
 

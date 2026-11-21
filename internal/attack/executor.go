@@ -191,6 +191,8 @@ type Finding struct {
 	Evidence    string
 	Remediation string
 	TargetURL   string
+	// FingerprintKey distinguishes findings from the same rule and target in SARIF.
+	FingerprintKey string `json:"-"`
 	// Access is internal policy-matching metadata, not part of scan output.
 	Access *AccessObservation `json:"-"`
 	// Chain is the optional provenance trail for findings produced by a
