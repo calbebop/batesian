@@ -744,7 +744,8 @@ task ID. Created task IDs remain in target objects for follow-up.
 
 The AgentCard is a machine-readable contract: its `securitySchemes` plus a
 requirements list (named `security` in v0.3 cards, `securityRequirements` in v1.0
-proto-JSON cards - both are read) declare which authentication a caller MUST
+proto-JSON cards, with the v1.0 field taking precedence when both are present)
+declare which authentication a caller MUST
 present. This rule fires only when the card declares a **non-empty** requirement
 with **no anonymous alternative** (an empty `{}` requirement object, per OpenAPI
 convention, explicitly permits anonymous access and is not flagged), then sends an

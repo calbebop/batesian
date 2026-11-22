@@ -71,6 +71,12 @@ func TestDeclaredAuthRequirement_Shapes(t *testing.T) {
 			why:          "an empty list declares no requirement",
 		},
 		{
+			name:         "empty v1.0 requirements override legacy security",
+			card:         `{"securityRequirements":[],"security":[{"bearerAuth":[]}]}`,
+			wantRequired: false,
+			why:          "the v1.0 field takes precedence even when its list is empty",
+		},
+		{
 			name:         "malformed entry",
 			card:         `{"securityRequirements":["bearerAuth"]}`,
 			wantRequired: false,

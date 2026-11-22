@@ -414,7 +414,7 @@ type AgentSkill struct {
 // anonymous callers outright. The precedence lives here so callers do not each
 // reimplement it.
 func (c *AgentCard) DeclaredSecurity() []SecurityRequirement {
-	if len(c.SecurityRequirements) > 0 {
+	if c.SecurityRequirements != nil {
 		return c.SecurityRequirements
 	}
 	return c.Security
