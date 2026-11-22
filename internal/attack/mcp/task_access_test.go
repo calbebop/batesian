@@ -278,7 +278,12 @@ func TestTaskAccessBothDirections(t *testing.T) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
 			owners := map[string]int{}
+			keys := map[string]bool{}
 			for _, finding := range findings {
+				if finding.FingerprintKey == "" || keys[finding.FingerprintKey] || strings.Contains(finding.FingerprintKey, "tok-") || strings.Contains(finding.FingerprintKey, "task-") {
+					t.Fatalf("missing, unsafe, or duplicate finding identity: %+v", finding)
+				}
+				keys[finding.FingerprintKey] = true
 				if finding.Access == nil || strings.Contains(finding.Evidence, "task-1") ||
 					strings.Contains(finding.Evidence, "task-2") || strings.Contains(finding.Evidence, "task-3") ||
 					strings.Contains(finding.Evidence, "task-4") {
@@ -403,6 +408,10 @@ func TestTaskAccessSkipsUnsafeActions(t *testing.T) {
 	}
 	if len(findings) != 1 || fixture.updates != 0 || fixture.cancels != 0 {
 		t.Fatalf("unsafe action was attempted: findings=%+v fixture=%+v", findings, fixture)
+	}
+	full, err := runTaskAccess(t, &taskAccessFixture{shared: true, inputNeeded: true, secondActive: true}, taskAccessOptions())
+	if !errors.Is(err, attack.ErrInconclusive) || len(full) != 3 || findings[0].FingerprintKey == "" || findings[0].FingerprintKey != full[0].FingerprintKey {
+		t.Fatalf("tasks/get identity changed when other methods were unavailable: partial=%+v full=%+v err=%v", findings, full, err)
 	}
 }
 
