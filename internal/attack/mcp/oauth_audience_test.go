@@ -853,6 +853,16 @@ func TestOAuthAudience_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_UngatedInitMalformedListingIsInconclusive(t *testing.T) {
+	srv := ungatedInitServer(t, "malformed-list")
+	defer srv.Close()
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("malformed listing: findings=%+v, err=%v", findings, err)
+	}
+}
+
 func TestOAuthAudience_IncompleteGateHandshake(t *testing.T) {
 	for _, mode := range []string{"anon-notify-503", "forged-notify-rpc-error"} {
 		t.Run(mode, func(t *testing.T) {

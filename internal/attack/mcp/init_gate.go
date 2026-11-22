@@ -102,7 +102,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 	}
 
 	listResp, err := session.post(ctx, anon, 9, method, map[string]interface{}{})
-	switch classifyAuthAccess(listResp, err, 9) {
+	switch classifyLegacyMethodAccess(listResp, err, 9, method) {
 	case accessRefused:
 		return gateProbe{gate: gateAfterInit, method: method}
 	case accessGranted:
@@ -110,7 +110,7 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 			"initialize and %s at %s both answer an anonymous caller, so the server presents no credential-gated surface for this rule (the unauth rules report the open surface)", method, ep)}
 	default:
 		return gateProbe{gate: gateUnknown, reason: fmt.Sprintf(
-			"the anonymous %s control at %s returned neither a result nor a refusal, so no credential-gated surface was confirmed to judge a forged token against", method, ep)}
+			"the anonymous %s control at %s returned neither a valid method result nor an authorization refusal, so no credential-gated surface was confirmed to judge a forged token against", method, ep)}
 	}
 }
 
@@ -160,11 +160,42 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 	resp, err := session.postShaping(ctx, anon, 10, method, map[string]interface{}{}, func(h map[string]string) {
 		h["Authorization"] = "Bearer " + token
 	})
-	verdict := classifyAuthAccess(resp, err, 10)
+	verdict := classifyLegacyMethodAccess(resp, err, 10, method)
 	if verdict == accessUndetermined {
-		return resp, verdict, fmt.Sprintf("forged %s at %s returned neither a result nor a refusal", method, ep)
+		return resp, verdict, fmt.Sprintf("forged %s at %s returned neither a valid method result nor an authorization refusal", method, ep)
 	}
 	return resp, verdict, ""
+}
+
+func classifyLegacyMethodAccess(resp *attack.Response, err error, id int, method string) accessVerdict {
+	verdict := classifyAuthAccess(resp, err, id)
+	if verdict != accessGranted {
+		return verdict
+	}
+	body, ok := parseResponseBody(resp.Body)
+	if !ok {
+		return accessUndetermined
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok {
+		return accessUndetermined
+	}
+	switch method {
+	case "tools/list":
+		_, ok = result["tools"].([]interface{})
+	case "resources/list":
+		_, ok = result["resources"].([]interface{})
+	case "prompts/list":
+		_, ok = result["prompts"].([]interface{})
+	case "ping":
+		return accessGranted
+	default:
+		return accessUndetermined
+	}
+	if !ok {
+		return accessUndetermined
+	}
+	return accessGranted
 }
 
 func initializedNotificationOK(resp *attack.Response, err error) bool {
