@@ -61,7 +61,7 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 			caps := map[string]interface{}{
 				"tools": map[string]interface{}{}, "resources": map[string]interface{}{},
 			}
-			if nameMode == "second-stale" {
+			if nameMode == "second-stale" || nameMode == "both-ignores" || nameMode == "both-stale" || nameMode == "mixed" {
 				caps["prompts"] = map[string]interface{}{}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -100,7 +100,10 @@ func nameSplitServer(t *testing.T, nameMode string) *httptest.Server {
 					rpcErr(http.StatusBadRequest, -32020, "HeaderMismatch: Mcp-Name")
 					return
 				}
-			case "ignores", "stale-control", "stale-error", "stale-result", "auth-mismatch", "generic-error":
+			case "ignores", "both-ignores", "both-stale", "mixed", "stale-control", "stale-error", "stale-result", "auth-mismatch", "generic-error":
+				if nameMode == "both-stale" || (nameMode == "mixed" && method == "prompts/get") {
+					id = 99
+				}
 				if nameMode == "stale-control" && hdr == subject {
 					id = 99
 					rpcErr(http.StatusOK, -32002, "Resource not found: "+subject)
@@ -169,6 +172,43 @@ func TestSplit_McpNameValueNotValidated(t *testing.T) {
 	}
 	if !strings.Contains(f.Evidence, "subject: nonexistent control") {
 		t.Errorf("evidence should record the read-only control; got:\n%s", f.Evidence)
+	}
+}
+
+func TestSplit_ReportsBothNameBearingReadMethods(t *testing.T) {
+	ts := nameSplitServer(t, "both-ignores")
+	defer ts.Close()
+
+	findings, err := runSplitRule(t, ts)
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("both named reads: findings=%+v err=%v", findings, err)
+	}
+	for i, method := range []string{"resources/read", "prompts/get"} {
+		if !strings.Contains(findings[i].Evidence, "method: "+method) || findings[i].FingerprintKey != "name:"+method {
+			t.Errorf("missing independent %s finding: %+v", method, findings[i])
+		}
+	}
+}
+
+func TestSplit_PreservesNameFindingWithIncompleteCompanion(t *testing.T) {
+	ts := nameSplitServer(t, "mixed")
+	defer ts.Close()
+
+	findings, err := runSplitRule(t, ts)
+	if len(findings) != 1 || findings[0].FingerprintKey != "name:resources/read" ||
+		!errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "prompts/get") {
+		t.Fatalf("partial named read coverage: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestSplit_ReportsEveryIncompleteNameMethod(t *testing.T) {
+	ts := nameSplitServer(t, "both-stale")
+	defer ts.Close()
+
+	findings, err := runSplitRule(t, ts)
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) ||
+		!strings.Contains(err.Error(), "resources/read") || !strings.Contains(err.Error(), "prompts/get") {
+		t.Fatalf("incomplete named reads: findings=%+v err=%v", findings, err)
 	}
 }
 

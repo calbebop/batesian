@@ -814,7 +814,8 @@ On a server that advertises the modern wire, Batesian first sends a matching
 changes `Mcp-Method` or `MCP-Protocol-Version` separately. If the ordinary method
 mismatch is rejected, it also tests a case-folded method value. For advertised
 resources and prompts, it compares matching and mismatched `Mcp-Name` values on
-a nonexistent read-only subject. It never invokes a tool.
+a nonexistent read-only subject and reports each affected method. It never
+invokes a tool.
 
 An accepted mismatch is a **protocol indicator**. The scan does not establish
 that a gateway uses the header for authorization or routing. A generic error,

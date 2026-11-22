@@ -95,6 +95,20 @@ class OutcomeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "malformed"):
                 validate_mcp_fixtures.scan(7804)
 
+    def test_mcp_scan_accepts_finding_with_incomplete_companion(self):
+        rid = "mcp-header-body-split-001"
+        doc = report(findings=[rid], skipped=[rid])
+        result = CompletedProcess([], 0, json.dumps(doc), "")
+        with patch.object(validate_mcp_fixtures.subprocess, "run", return_value=result):
+            fired, skipped, _ = validate_mcp_fixtures.scan(7804)
+        self.assertEqual((fired, skipped), ({rid}, {rid}))
+
+        doc["rule_outcomes"][0]["status"] = "findings"
+        result = CompletedProcess([], 0, json.dumps(doc), "")
+        with patch.object(validate_mcp_fixtures.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "has findings outcome"):
+                validate_mcp_fixtures.scan(7804)
+
     def test_control_rule_ids_exist(self):
         known = {path.read_text(encoding="utf-8").splitlines()[0].removeprefix("id: ")
                  for path in Path("rules").rglob("*.yaml")}

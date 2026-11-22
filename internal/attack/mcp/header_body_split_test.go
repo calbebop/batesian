@@ -153,6 +153,9 @@ func TestSplit_UnawareOnAModernWireReportsIndicators(t *testing.T) {
 			t.Fatalf("unexpected risk rating: %+v", finding)
 		}
 	}
+	if findings[0].FingerprintKey != "method:mismatch" || findings[1].FingerprintKey != "version:mismatch" {
+		t.Fatalf("header findings lack stable identities: %+v", findings)
+	}
 }
 
 // TestSplit_NotMCP: non-MCP server => no finding.
@@ -223,7 +226,7 @@ func TestSplit_FindingSurvivesOtherInconclusiveChecks(t *testing.T) {
 	ts := modernSplitServer(t, "accept", "unsupported")
 	defer ts.Close()
 	findings, err := mcpattack.NewHeaderBodySplitExecutor(hbsRuleCtx()).Execute(t.Context(), ts.URL, testOpts())
-	if err != nil || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
+	if !errors.Is(err, attack.ErrInconclusive) || len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator {
 		t.Fatalf("method finding was lost to inconclusive version check: findings=%+v err=%v", findings, err)
 	}
 }

@@ -140,7 +140,8 @@ def scan(port, *extra):
     errors = {e["rule_id"] for e in doc.get("errors", [])}
     statuses = rule_statuses(doc, fired | skipped | errors)
     for rid in fired:
-        if statuses[rid] != "findings":
+        expected = "skipped" if rid in skipped else "findings"
+        if statuses[rid] != expected:
             raise ValueError(f"finding for {rid} has {statuses[rid]} outcome")
     for rid in skipped:
         if statuses[rid] != "skipped":
