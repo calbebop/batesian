@@ -634,23 +634,6 @@ func endpointAbsent(resp *attack.Response) bool {
 	return resp.StatusCode == 404 || resp.StatusCode == 405
 }
 
-// isJSONRPCResult reports whether body parses as a JSON-RPC response with a
-// non-empty `result` field. We accept both the streamable-HTTP wrapped form
-// and a raw JSON envelope.
-func isJSONRPCResult(body string) bool {
-	if body == "" {
-		return false
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
-		return false
-	}
-	if _, ok := m["result"]; ok {
-		return true
-	}
-	return false
-}
-
 func isJSONRPCError(body string) bool {
 	if body == "" {
 		return false
