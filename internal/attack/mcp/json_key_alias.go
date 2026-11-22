@@ -57,13 +57,13 @@ func (e *JSONKeyAliasExecutor) probeSession(ctx context.Context, client *attack.
 	}
 	var findings []attack.Finding
 	var unknown []string
-	for i, variant := range []struct{ key, label string }{
-		{"Method", "case-folded"},
-		{"method\x00", "NUL-suffixed"},
+	for i, variant := range []struct{ key, label, identity string }{
+		{"Method", "case-folded", "case-folded"},
+		{"method\x00", "NUL-suffixed", "nul-suffixed"},
 	} {
 		switch listWithMethodKey(ctx, client, session, 21+i, variant.key) {
 		case keyAliasListed:
-			findings = append(findings, e.finding(session.Endpoint, variant.label))
+			findings = append(findings, e.finding(session, variant.label, variant.identity))
 		case keyAliasUnknown:
 			unknown = append(unknown, variant.label)
 		}
@@ -119,12 +119,14 @@ func listWithMethodKey(ctx context.Context, client *attack.HTTPClient, session m
 	return keyAliasListed
 }
 
-func (e *JSONKeyAliasExecutor) finding(endpoint, variant string) attack.Finding {
+func (e *JSONKeyAliasExecutor) finding(session mcpSession, variant, identity string) attack.Finding {
+	endpoint := session.Endpoint
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "low", Confidence: attack.RiskIndicator,
 		Title:       "MCP server accepts a " + variant + " JSON-RPC method key",
 		Description: "A canonical tools/list request and the same read-only request with a noncanonical method key both returned correlated listings. This is an interpretation difference that could matter when an intermediary enforces policy using exact keys. No intermediary bypass or SDK version was established.",
 		Evidence:    "endpoint: " + endpoint + "\ncanonical tools/list: listed\n" + variant + " method key: listed\ntool names and response content omitted",
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
+		FingerprintKey: session.Era.String() + ":method-key:" + identity,
 	}
 }

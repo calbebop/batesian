@@ -59,6 +59,9 @@ func (e *HeaderBodySplitExecutor) Execute(ctx context.Context, target string, op
 		return nil, errors.Join(sessionErr, fmt.Errorf("%w: header validation requires the %s wire", attack.ErrInconclusive, headerValidationVersion))
 	}
 	if len(findings) > 0 {
+		if len(blocked) > 0 {
+			return findings, errors.Join(sessionErr, fmt.Errorf("%w: %s", attack.ErrInconclusive, strings.Join(blocked, "; ")))
+		}
 		return findings, nil
 	}
 	if len(blocked) > 0 {
@@ -109,8 +112,9 @@ func (e *HeaderBodySplitExecutor) probe(ctx context.Context, client *attack.HTTP
 			Evidence: fmt.Sprintf(
 				"endpoint: %s\nmatching tools/list: listed\nMcp-Method: tools/call with body tools/list: listed",
 				session.Endpoint),
-			Remediation: e.rule.Remediation,
-			TargetURL:   session.Endpoint,
+			Remediation:    e.rule.Remediation,
+			TargetURL:      session.Endpoint,
+			FingerprintKey: "method:mismatch",
 		},
 	}, true, ""
 }
@@ -146,8 +150,9 @@ func (e *HeaderBodySplitExecutor) probeVersion(ctx context.Context, client *atta
 		Evidence: fmt.Sprintf(
 			"endpoint: %s\nmatching version: listed\nbody version: %s\nheader version: %s\nmismatch: listed",
 			session.Endpoint, headerValidationVersion, mismatchedHeaderVersion),
-		Remediation: e.rule.Remediation,
-		TargetURL:   session.Endpoint,
+		Remediation:    e.rule.Remediation,
+		TargetURL:      session.Endpoint,
+		FingerprintKey: "version:mismatch",
 	}}, true, ""
 }
 
@@ -195,6 +200,7 @@ var nameBearingProbes = []nameBearingProbe{
 // probeName compares matching and mismatched Mcp-Name reads.
 func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.HTTPClient,
 	session mcpSession) (findings []attack.Finding, tested bool, blocked string) {
+	var incomplete []string
 	for _, np := range nameBearingProbes {
 		if !session.ServerSupports(np.capability) {
 			continue
@@ -204,10 +210,10 @@ func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.
 		control := e.nameVerdict(ctx, client, session, np, params, nil)
 		switch control {
 		case nameNotImplemented:
-			blocked = "the server advertised " + np.capability + " but " + np.method + " returned method not found"
+			incomplete = append(incomplete, "the server advertised "+np.capability+" but "+np.method+" returned method not found")
 			continue
 		case nameUndetermined, nameRejected:
-			blocked = "matching " + np.method + " control did not reach the named subject"
+			incomplete = append(incomplete, "matching "+np.method+" control did not reach the named subject")
 			continue
 		}
 
@@ -218,12 +224,13 @@ func (e *HeaderBodySplitExecutor) probeName(ctx context.Context, client *attack.
 		case nameRejected:
 			tested = true
 		case nameDispatched:
-			return []attack.Finding{e.nameMismatchFinding(session, np)}, true, ""
+			findings = append(findings, e.nameMismatchFinding(session, np))
+			tested = true
 		default:
-			blocked = "mismatched Mcp-Name request for " + np.method + " returned neither a dispatched answer nor 400/-32020"
+			incomplete = append(incomplete, "mismatched Mcp-Name request for "+np.method+" returned neither a dispatched answer nor 400/-32020")
 		}
 	}
-	return nil, tested, blocked
+	return findings, tested, strings.Join(incomplete, "; ")
 }
 
 // nameVerdict grades one shaped name-bearing call by which error came back.
@@ -296,8 +303,9 @@ func (e *HeaderBodySplitExecutor) nameMismatchFinding(session mcpSession, np nam
 			"endpoint: %s\nmethod: %s\nmatching Mcp-Name: subject reached\n"+
 				"Mcp-Name disagreeing with params.%s: subject reached\nsubject: nonexistent control",
 			session.Endpoint, np.method, np.field),
-		Remediation: e.rule.Remediation,
-		TargetURL:   session.Endpoint,
+		Remediation:    e.rule.Remediation,
+		TargetURL:      session.Endpoint,
+		FingerprintKey: "name:" + np.method,
 	}
 }
 
@@ -318,7 +326,8 @@ func (e *HeaderBodySplitExecutor) caseFoldedFinding(session mcpSession) attack.F
 			"endpoint: %s\nMcp-Method: tools/call with body tools/list: 400/-32020\n"+
 				"Mcp-Method: TOOLS/LIST with body tools/list: listed",
 			session.Endpoint),
-		Remediation: e.rule.Remediation,
-		TargetURL:   session.Endpoint,
+		Remediation:    e.rule.Remediation,
+		TargetURL:      session.Endpoint,
+		FingerprintKey: "method:case-folded",
 	}
 }

@@ -86,7 +86,7 @@ func keyAliasServer(t *testing.T, modern bool, acceptedKey, variantReply string)
 				})
 				return
 			}
-			if key != "method" && (key != acceptedKey || variantReply == "discard") {
+			if key != "method" && ((key != acceptedKey && acceptedKey != "both") || variantReply == "discard") {
 				w.WriteHeader(http.StatusAccepted)
 				return
 			}
@@ -143,6 +143,18 @@ func TestJSONKeyAliasFindingsOnBothWires(t *testing.T) {
 					strings.Contains(findings[0].Evidence, "fixture-secret") || strings.Contains(findings[0].Description, "fixture-secret") {
 					t.Fatalf("unsafe or misrated finding: %+v", findings[0])
 				}
+				era := "legacy"
+				if modern {
+					era = "modern"
+				}
+				variantID := "case-folded"
+				if alias == "method\x00" {
+					variantID = "nul-suffixed"
+				}
+				wantKey := era + ":method-key:" + variantID
+				if findings[0].FingerprintKey != wantKey {
+					t.Fatalf("fingerprint key = %q, want %q", findings[0].FingerprintKey, wantKey)
+				}
 				if modern && !strings.Contains(findings[0].Title, "2026-07-28 wire") {
 					t.Fatalf("modern wire not labeled: %+v", findings[0])
 				}
@@ -156,6 +168,19 @@ func TestJSONKeyAliasFindingsOnBothWires(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestJSONKeyAliasBothVariantsHaveDistinctIdentities(t *testing.T) {
+	srv, _ := keyAliasServer(t, true, "both", "list")
+	defer srv.Close()
+	findings, err := mcpattack.NewJSONKeyAliasExecutor(keyAliasRule()).Execute(t.Context(), srv.URL, testOpts())
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("both method-key aliases: findings=%+v err=%v", findings, err)
+	}
+	if findings[0].FingerprintKey != "modern:method-key:case-folded" ||
+		findings[1].FingerprintKey != "modern:method-key:nul-suffixed" {
+		t.Fatalf("alias identities = %q, %q", findings[0].FingerprintKey, findings[1].FingerprintKey)
 	}
 }
 
