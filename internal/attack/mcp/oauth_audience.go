@@ -380,7 +380,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		}
 		// 401 is the expected discovery response; some servers also emit the
 		// header on 403. We accept any response that carries the header.
-		if u := parseResourceMetadataURL(resp.Headers.Get("WWW-Authenticate")); u != "" {
+		if u := parseResourceMetadataURL(resp.Headers); u != "" {
 			// A challenge is itself proof the endpoint is live and gated.
 			return u, true, observed
 		}
@@ -389,7 +389,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 			headers["Authorization"] = ""
 		})
 		if modernErr == nil && modernResp != nil {
-			if u := parseResourceMetadataURL(modernResp.Headers.Get("WWW-Authenticate")); u != "" {
+			if u := parseResourceMetadataURL(modernResp.Headers); u != "" {
 				return u, true, observed
 			}
 			if classifyAccess(modernResp, modernErr, 1) == accessGranted && modernWireAdvertised(modernResp.Body) {
@@ -398,7 +398,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 						headers["Authorization"] = ""
 					})
 					if methodErr == nil && methodResp != nil {
-						if u := parseResourceMetadataURL(methodResp.Headers.Get("WWW-Authenticate")); u != "" {
+						if u := parseResourceMetadataURL(methodResp.Headers); u != "" {
 							return u, true, observed
 						}
 					}
@@ -421,23 +421,17 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 	return "", false, observed
 }
 
-// resourceMetadataRE extracts the resource_metadata="..." parameter from a
-// WWW-Authenticate header per RFC 9728 section 5.1.
-var resourceMetadataRE = regexp.MustCompile(`(?i)resource_metadata\s*=\s*"([^"]+)"`)
-
-func parseResourceMetadataURL(header string) string {
-	if header == "" {
-		return ""
+func parseResourceMetadataURL(headers http.Header) string {
+	for _, challenge := range authChallenges(headers) {
+		if challenge.resourceMetadata == "" {
+			continue
+		}
+		parsed, err := url.Parse(challenge.resourceMetadata)
+		if err == nil && parsed.IsAbs() {
+			return parsed.String()
+		}
 	}
-	m := resourceMetadataRE.FindStringSubmatch(header)
-	if len(m) != 2 {
-		return ""
-	}
-	parsed, err := url.Parse(m[1])
-	if err != nil || !parsed.IsAbs() {
-		return ""
-	}
-	return parsed.String()
+	return ""
 }
 
 // fetchResourceFromMetadata GETs the metadata document and returns the
