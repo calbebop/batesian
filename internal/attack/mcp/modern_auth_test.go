@@ -24,6 +24,10 @@ func modernAuthServerWithDiscovery(t *testing.T, accept func(string) bool, openD
 }
 
 func modernAuthServerWithResponseID(t *testing.T, accept func(string) bool, openDiscovery bool, staleIDOn string) *httptest.Server {
+	return modernAuthServerWithResults(t, accept, openDiscovery, staleIDOn, nil)
+}
+
+func modernAuthServerWithResults(t *testing.T, accept func(string) bool, openDiscovery bool, staleIDOn string, overrides map[string]map[string]interface{}) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,8 +72,12 @@ func modernAuthServerWithResponseID(t *testing.T, accept func(string) bool, open
 			responseID = 99
 		}
 		if openDiscovery && call.Method == "tools/list" {
+			result := map[string]interface{}{"resultType": "complete", "tools": []interface{}{}}
+			if override, ok := overrides[call.Method]; ok {
+				result = override
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0", "id": responseID, "result": map[string]interface{}{"tools": []interface{}{}},
+				"jsonrpc": "2.0", "id": responseID, "result": result,
 			})
 			return
 		}
@@ -77,12 +85,19 @@ func modernAuthServerWithResponseID(t *testing.T, accept func(string) bool, open
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		result := map[string]interface{}{
+			"resultType": "complete", "supportedVersions": []string{modernVersion},
+			"capabilities": map[string]interface{}{},
+		}
+		key := call.Method
+		if r.Header.Get("Authorization") == "" {
+			key = "anonymous/" + key
+		}
+		if override, ok := overrides[key]; ok {
+			result = override
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"jsonrpc": "2.0", "id": responseID,
-			"result": map[string]interface{}{
-				"resultType": "complete", "supportedVersions": []string{modernVersion},
-				"capabilities": map[string]interface{}{},
-			},
+			"jsonrpc": "2.0", "id": responseID, "result": result,
 		})
 	}))
 	return srv
@@ -142,6 +157,63 @@ func TestTokenReplay_ModernListingGate(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Evidence, "tools/list") {
 		t.Errorf("finding was not judged at the gated listing: %+v", findings[0])
+	}
+}
+
+func TestModernAuth_IncompleteResultsAreNotTokenAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		method        string
+		openDiscovery bool
+		result        map[string]interface{}
+	}{
+		{"discovery missing result type", "server/discover", false, map[string]interface{}{
+			"supportedVersions": []string{modernVersion}, "capabilities": map[string]interface{}{},
+		}},
+		{"discovery input required", "server/discover", false, map[string]interface{}{
+			"resultType": "input_required", "supportedVersions": []string{modernVersion}, "capabilities": map[string]interface{}{},
+		}},
+		{"discovery missing capabilities", "server/discover", false, map[string]interface{}{
+			"resultType": "complete", "supportedVersions": []string{modernVersion},
+		}},
+		{"listing missing result type", "tools/list", true, map[string]interface{}{"tools": []interface{}{}}},
+		{"listing input required", "tools/list", true, map[string]interface{}{
+			"resultType": "input_required", "tools": []interface{}{},
+		}},
+		{"listing missing tools", "tools/list", true, map[string]interface{}{"resultType": "complete"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := modernAuthServerWithResults(t, func(auth string) bool {
+				return strings.HasPrefix(auth, "Bearer ")
+			}, tc.openDiscovery, "", map[string]map[string]interface{}{tc.method: tc.result})
+			defer srv.Close()
+
+			findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("incomplete modern result: findings=%+v, err=%v", findings, err)
+			}
+			findings, err = mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+				context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("incomplete modern audience result: findings=%+v, err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestModernAuth_IncompleteAnonymousDiscoveryDoesNotEstablishGate(t *testing.T) {
+	srv := modernAuthServerWithResults(t, func(auth string) bool {
+		return strings.HasPrefix(auth, "Bearer ")
+	}, true, "", map[string]map[string]interface{}{
+		"anonymous/server/discover": {
+			"supportedVersions": []string{modernVersion}, "capabilities": map[string]interface{}{},
+		},
+	})
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("incomplete anonymous discovery: findings=%+v, err=%v", findings, err)
 	}
 }
 
