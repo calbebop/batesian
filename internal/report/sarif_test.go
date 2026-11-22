@@ -297,6 +297,66 @@ func TestSARIF_FingerprintDistinguishesRepeatedRuleAndTarget(t *testing.T) {
 	}
 }
 
+func TestSARIF_FingerprintStableAcrossAdvisoryChanges(t *testing.T) {
+	finding := func(key, title string) attack.Finding {
+		return attack.Finding{
+			RuleID:         "mcp-vulnerable-version-001",
+			Severity:       "medium",
+			Title:          title,
+			TargetURL:      "https://agent.example.com/mcp",
+			FingerprintKey: key,
+		}
+	}
+	fingerprints := func(findings []attack.Finding) map[string]string {
+		t.Helper()
+		results := []engine.RunResult{{
+			Rule:     &rules.Rule{ID: "mcp-vulnerable-version-001"},
+			Findings: findings,
+		}}
+		var buf bytes.Buffer
+		if err := report.WriteSARIF(&buf, results, "test", "https://agent.example.com/mcp"); err != nil {
+			t.Fatalf("WriteSARIF: %v", err)
+		}
+		var doc struct {
+			Runs []struct {
+				Results []struct {
+					Fingerprints map[string]string `json:"partialFingerprints"`
+				} `json:"results"`
+			} `json:"runs"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+			t.Fatalf("decode SARIF: %v", err)
+		}
+		got := make(map[string]string)
+		for i, f := range findings {
+			got[f.FingerprintKey] = doc.Runs[0].Results[i].Fingerprints["findingIdentity/v2"]
+			if got[f.FingerprintKey] == "" {
+				t.Fatalf("missing fingerprint for %s", f.FingerprintKey)
+			}
+		}
+		return got
+	}
+
+	a := finding("GHSA-aaaa-bbbb-cccc", "Original title")
+	b := finding("GHSA-dddd-eeee-ffff", "Second title")
+	c := finding("GHSA-gggg-hhhh-iiii", "New advisory")
+	baseline := fingerprints([]attack.Finding{a, b})
+	if baseline[a.FingerprintKey] == baseline[b.FingerprintKey] {
+		t.Fatal("distinct advisories share an alert identity")
+	}
+	a.Title = "Reworded title"
+	for _, scan := range [][]attack.Finding{{b, a}, {c, b, a}, {a}} {
+		for key, got := range fingerprints(scan) {
+			if key == c.FingerprintKey {
+				continue
+			}
+			if got != baseline[key] {
+				t.Errorf("fingerprint for %s changed: %q vs %q", key, got, baseline[key])
+			}
+		}
+	}
+}
+
 func TestWriteSARIF_PreservesEvidenceAndChain(t *testing.T) {
 	results := sarifFixture()
 	finding := &results[0].Findings[0]

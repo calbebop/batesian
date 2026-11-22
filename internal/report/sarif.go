@@ -175,7 +175,7 @@ func buildSARIF(results []engine.RunResult, toolVersion, assessedTarget string) 
 	occurrences := make(map[string]int)
 	for _, r := range results {
 		for _, f := range r.Findings {
-			key := f.RuleID + "\x00" + fingerprintTarget(f.TargetURL)
+			key := strings.Join([]string{f.RuleID, fingerprintTarget(f.TargetURL), f.FingerprintKey}, "\x00")
 			result := findingToSARIF(f, occurrences[key])
 			occurrences[key]++
 			if base, ok := ruleMap[f.RuleID]; ok &&
@@ -319,7 +319,12 @@ func findingToSARIF(f attackpkg.Finding, occurrence int) sarifResult {
 }
 
 func fingerprint(f attackpkg.Finding, occurrence int) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{f.RuleID, fingerprintTarget(f.TargetURL), fmt.Sprint(occurrence)}, "\x00")))
+	parts := []string{f.RuleID, fingerprintTarget(f.TargetURL)}
+	if f.FingerprintKey != "" {
+		parts = append(parts, f.FingerprintKey)
+	}
+	parts = append(parts, fmt.Sprint(occurrence))
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
