@@ -122,7 +122,7 @@ report them not tested against a secured agent, and say so.
 
 | Rule ID | Attack | Severity | Confidence | CWE |
 |---|---|:---:|:---:|---|
-| `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | High / Critical | confirmed | CWE-862 |
+| `a2a-extcard-unauth-001` | [Extended Agent Card Unauthenticated Disclosure](#a2a-extcard-unauth-001) | Medium / High / Critical | indicator / confirmed | CWE-862 |
 | `a2a-push-ssrf-001` | [Private Push Callback Delivery](#a2a-push-ssrf-001) | Medium | indicator | CWE-918 |
 | `a2a-task-idor-001` | [Anonymous Task Read or List Exposure](#a2a-task-idor-001) | Medium | indicator / policy-confirmed | CWE-639 |
 | `a2a-session-smuggle-001` | [Agent Role Injection / Session Smuggling](#a2a-session-smuggle-001) | High | confirmed | CWE-384 |
@@ -151,21 +151,22 @@ report them not tested against a secured agent, and say so.
 
 ### a2a-extcard-unauth-001
 
-**Extended Agent Card Unauthenticated Disclosure** | Severity: High / Critical | CWE-862
+**Extended Agent Card Unauthenticated Disclosure** | Severity: Medium / High / Critical | CWE-862
 
 Fetches the Extended Agent Card without credentials. It uses v1 JSON-RPC
 `GetExtendedAgentCard` and HTTP+JSON `GET /extendedAgentCard`, plus v0.3 JSON-RPC
-`agent/getAuthenticatedExtendedCard` and REST `GET /v1/card`. The card carries
-privileged capability listings (tools, skills, resource scopes) that should
-require authentication. A JSON-RPC `error` envelope or an HTTP 401/403 is
-treated as a correct rejection,
-not a finding. To avoid noise, outcomes are coalesced to **one finding per
-transport** (an invalid-token acceptance is preferred over a no-token acceptance,
-since accepting a bogus token is the stronger signal).
-Findings omit the returned card and the fabricated token.
+`agent/getAuthenticatedExtendedCard` and REST `GET /v1/card`. The extended card
+may expose skills and interfaces unavailable in the public card. The rule
+compares fabricated-token and anonymous requests on the same route and protocol
+version. Anonymous access is a high-severity disclosure. A fabricated token
+accepted while anonymous access is refused is a critical authentication bypass.
+If the anonymous control is inconclusive, fabricated-token acceptance is a
+medium-severity indicator and the scan records incomplete coverage. The strongest
+result across bindings is reported. Findings omit the returned card and token.
 
-This is a confirmed bug in Google's official `a2a-samples` reference
-implementation ([issue #340](https://github.com/google-a2a/a2a-samples/issues/340)).
+An [issue in the A2A samples repository](https://github.com/a2aproject/a2a-samples/issues/340)
+reports that its `helloworld` example returns an extended card with or without
+a token.
 
 ---
 

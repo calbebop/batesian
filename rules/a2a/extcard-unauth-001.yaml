@@ -5,19 +5,17 @@ info:
   severity: critical
   description: |
     Tests whether the A2A Extended Agent Card endpoint is accessible without
-    authentication. The extended agent card contains privileged capability listings
-    (tools, skills, and resource access scopes) intended only for authenticated,
-    authorized callers. If reachable without credentials, an attacker can enumerate
-    the full capability surface of the agent before launching targeted attacks.
+    authentication. The extended card may contain skills and interfaces intended
+    only for authenticated callers. Anonymous access can disclose those details.
+    Acceptance of a fabricated token is an authentication bypass only when an
+    anonymous request to the same operation is refused.
 
-    This is a confirmed bug in Google's official a2a-samples reference implementation.
-    Every developer who followed the official A2A getting-started tutorial is likely
-    affected.
+    An issue in the A2A samples repository reports that its helloworld example
+    returns an extended card with or without a token.
 
   references:
-    - https://github.com/google-a2a/a2a-samples/issues/340
-    - https://a2aprotocol.ai/docs/specification#extended-agent-card
-    - https://a2aprotocol.ai/docs/specification#agent-capabilities
+    - https://github.com/a2aproject/a2a-samples/issues/340
+    - https://github.com/a2aproject/A2A/blob/main/docs/specification.md
     - https://cwe.mitre.org/data/definitions/862.html
     - https://cwe.mitre.org/data/definitions/200.html
 

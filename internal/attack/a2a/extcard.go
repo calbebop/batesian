@@ -21,6 +21,12 @@ type ExtCardExecutor struct {
 	rule attack.RuleContext
 }
 
+type extCardAccess struct {
+	resp   *attack.Response
+	usable bool
+	denied bool
+}
+
 // NewExtCardExecutor creates an executor for the extcard-unauth-disclosure attack type.
 func init() {
 	attack.Register("extcard-unauth-disclosure", func(rc attack.RuleContext) attack.Executor { return NewExtCardExecutor(rc) })
@@ -40,6 +46,7 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 
 	invalidToken := "batesian-invalid-" + vars.RandID
 	var best *attack.Finding
+	bestRank := 0
 	var incomplete []string
 	incompleteErr := func() error {
 		if len(incomplete) == 0 {
@@ -48,21 +55,32 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 		return fmt.Errorf("%w: extended card reads were not judged: %s", attack.ErrInconclusive,
 			strings.Join(incomplete, "; "))
 	}
-	record := func(transport, target, token string, resp *attack.Response) bool {
-		finding := e.finding(transport, target, token, resp)
-		if best == nil || token != "" {
-			best = &finding
+	recordPair := func(transport, target string, invalid, anonymous extCardAccess) bool {
+		var finding attack.Finding
+		rank := 0
+		switch {
+		case invalid.usable && anonymous.denied:
+			finding, rank = e.finding(transport, target, invalidToken, invalid.resp), 3
+		case anonymous.usable:
+			finding, rank = e.finding(transport, target, "", anonymous.resp), 2
+		case invalid.usable:
+			finding, rank = e.unjudgedFinding(transport, target, invalid.resp), 1
+			incomplete = append(incomplete, transport+" "+target+": anonymous control did not return an Agent Card or authentication refusal")
 		}
-		return token != ""
+		if rank > bestRank {
+			best, bestRank = &finding, rank
+		}
+		return rank == 3
 	}
 
-	// Prefer a fabricated-token disclosure over an anonymous one.
 	reached := false
 	jsonrpcEP, endpointOK := resolveA2AEndpoint(ctx, unauthClient, vars.BaseURL)
 	for _, ep := range []string{jsonrpcEP, endpoint.AppendPath(vars.BaseURL, "/v1/message:send")} {
 		for _, version := range []string{"1.0", "0.3.0"} {
-			for _, token := range []string{invalidToken, ""} {
+			var pair [2]extCardAccess
+			for i, token := range []string{invalidToken, ""} {
 				resp, usable, reason := e.probeJSONRPC(ctx, unauthClient, ep, token, vars.RandID, version)
+				pair[i] = extCardAccess{resp: resp, usable: usable, denied: extCardJSONRPCDenied(resp, "batesian-"+vars.RandID)}
 				if reason != "" {
 					credential := "anonymous"
 					if token != "" {
@@ -73,9 +91,9 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 				if resp != nil && resp.StatusCode != 404 {
 					reached = true
 				}
-				if usable && record("JSON-RPC", ep, token, resp) {
-					return []attack.Finding{*best}, incompleteErr()
-				}
+			}
+			if recordPair("JSON-RPC", ep, pair[0], pair[1]) {
+				return []attack.Finding{*best}, incompleteErr()
 			}
 		}
 	}
@@ -92,7 +110,8 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 			{"/v1/card", "0.3.0"},
 		} {
 			extURL := endpoint.AppendPath(base, route.path)
-			for _, token := range []string{invalidToken, ""} {
+			var pair [2]extCardAccess
+			for i, token := range []string{invalidToken, ""} {
 				headers := restVersionHeaders(route.version, nil)
 				if token != "" {
 					headers["Authorization"] = "Bearer " + token
@@ -102,6 +121,10 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 					incomplete = append(incomplete, route.path+": no response")
 					continue
 				}
+				pair[i] = extCardAccess{
+					resp: resp, usable: extCardDisclosed(resp),
+					denied: resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden,
+				}
 				if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
 					resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode >= 300 && resp.StatusCode < 400 {
 					incomplete = append(incomplete, fmt.Sprintf("%s: HTTP %d", route.path, resp.StatusCode))
@@ -110,9 +133,9 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 				if resp.StatusCode != 404 {
 					reached = true
 				}
-				if extCardDisclosed(resp) && record("HTTP GET", extURL, token, resp) {
-					return []attack.Finding{*best}, incompleteErr()
-				}
+			}
+			if recordPair("HTTP GET", extURL, pair[0], pair[1]) {
+				return []attack.Finding{*best}, incompleteErr()
 			}
 		}
 	}
@@ -127,6 +150,29 @@ func (e *ExtCardExecutor) Execute(ctx context.Context, target string, opts attac
 		return nil, attack.ErrInconclusive
 	}
 	return nil, notTestableGiven(ctx, unauthClient, vars.BaseURL, endpointOK)
+}
+
+func extCardJSONRPCDenied(resp *attack.Response, requestID string) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return true
+	}
+	_, _, hasError, valid := discoveryResponse(resp.Body, requestID)
+	return valid && hasError && errMessageIsAuth(resp.Body)
+}
+
+func (e *ExtCardExecutor) unjudgedFinding(transport, endpoint string, resp *attack.Response) attack.Finding {
+	return attack.Finding{
+		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "medium", Confidence: attack.RiskIndicator,
+		Title: "Extended Agent Card returned to a fabricated token without a usable anonymous control",
+		Description: "The endpoint returned an extended Agent Card to a fabricated bearer token. " +
+			"The anonymous request did not establish whether the card is public or the token bypassed authentication.",
+		Evidence: fmt.Sprintf("transport: %s\nHTTP %d from %s\nAuthorization: fabricated Bearer token\nanonymous control: inconclusive\ncard content omitted",
+			transport, resp.StatusCode, endpoint),
+		Remediation: e.rule.Remediation, TargetURL: endpoint,
+	}
 }
 
 // finding builds an extended-card disclosure finding. A non-empty token means a
@@ -157,8 +203,8 @@ func (e *ExtCardExecutor) finding(transport, endpoint, token string, resp *attac
 		Title:      fmt.Sprintf("Extended Agent Card (%s) accessible without authentication", transport),
 		Description: fmt.Sprintf(
 			"%s %s returned HTTP %d for the extended agent card without any Authorization header. "+
-				"The extended card discloses privileged capability listings intended only for "+
-				"authenticated callers.", transport, endpoint, resp.StatusCode),
+				"The card may expose skills or interfaces beyond the public Agent Card.",
+			transport, endpoint, resp.StatusCode),
 		Evidence:    fmt.Sprintf("transport: %s\nHTTP %d from %s (no auth)\ncard content omitted", transport, resp.StatusCode, endpoint),
 		Remediation: e.rule.Remediation,
 		TargetURL:   endpoint,

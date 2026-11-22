@@ -62,8 +62,7 @@ func extendedCard() map[string]interface{} {
 	}
 }
 
-// TestExtCardExecutor_Vulnerable checks a card returned to an invalid token.
-func TestExtCardExecutor_Vulnerable(t *testing.T) {
+func TestExtCardExecutor_PublicCard(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			http.NotFound(w, r)
@@ -95,12 +94,9 @@ func TestExtCardExecutor_Vulnerable(t *testing.T) {
 	if !hasHighOrCritical {
 		t.Errorf("expected at least one high or critical finding, got: %+v", findings)
 	}
-	// A server that accepts a fabricated invalid token is an auth bypass: at
-	// least one finding must be critical.
-	hasCritical := false
 	for _, f := range findings {
-		if f.Severity == "critical" {
-			hasCritical = true
+		if f.Severity != "high" {
+			t.Errorf("public extended card severity = %q, want high", f.Severity)
 		}
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("finding %q: want ConfirmedExploit, got %q", f.Title, f.Confidence)
@@ -110,9 +106,6 @@ func TestExtCardExecutor_Vulnerable(t *testing.T) {
 			!strings.Contains(f.Evidence, "card content omitted") {
 			t.Errorf("extended card or fabricated token leaked into finding: %+v", f)
 		}
-	}
-	if !hasCritical {
-		t.Errorf("expected a critical finding for fabricated-token acceptance, got: %+v", findings)
 	}
 }
 
@@ -323,13 +316,88 @@ func TestExtCardExecutor_HTTPGetRawCard(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one finding from the HTTP-GET raw-card path, got %d: %+v", len(findings), findings)
 	}
-	// The first GET carries a fabricated invalid token; a card returned to it is
-	// a critical auth bypass.
-	if findings[0].Severity != "critical" {
-		t.Errorf("expected critical (fabricated token accepted), got %q", findings[0].Severity)
+	if findings[0].Severity != "high" {
+		t.Errorf("expected high anonymous disclosure, got %q", findings[0].Severity)
 	}
 	if strings.Contains(findings[0].Evidence, "server-private-canary") ||
 		!strings.Contains(findings[0].Evidence, "card content omitted") {
 		t.Errorf("HTTP card content leaked into finding: %+v", findings[0])
+	}
+}
+
+func TestExtCardExecutor_IncompleteAnonymousControl(t *testing.T) {
+	for _, transport := range []string{"JSON-RPC", "HTTP GET"} {
+		t.Run(transport, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if transport == "HTTP GET" {
+					if r.Method != http.MethodGet || r.URL.Path != "/extendedAgentCard" {
+						http.NotFound(w, r)
+						return
+					}
+					if r.Header.Get("Authorization") == "" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					writeJSON(w, extendedCard())
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				if request["method"] != "GetExtendedAgentCard" {
+					response := jsonRPCError(-32601, "method not found")
+					response["id"] = request["id"]
+					writeJSON(w, response)
+					return
+				}
+				if r.Header.Get("Authorization") == "" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": extendedCard()})
+			}))
+			defer srv.Close()
+
+			findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != 1 || findings[0].Severity != "medium" ||
+				findings[0].Confidence != attack.RiskIndicator || !errors.Is(err, attack.ErrInconclusive) {
+				t.Fatalf("unjudged anonymous control: findings=%+v err=%v", findings, err)
+			}
+			if strings.Contains(findings[0].Evidence, "server-private-canary") ||
+				strings.Contains(findings[0].Evidence, "batesian-invalid-") {
+				t.Fatal("card content or token leaked into evidence")
+			}
+		})
+	}
+}
+
+func TestExtCardExecutor_JSONRPCAuthErrorEstablishesBypass(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		request := readBody(r)
+		if request["method"] != "GetExtendedAgentCard" {
+			response := jsonRPCError(-32601, "method not found")
+			response["id"] = request["id"]
+			writeJSON(w, response)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			response := jsonRPCError(-32001, "authentication required")
+			response["id"] = request["id"]
+			writeJSON(w, response)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"jsonrpc": "2.0", "id": request["id"], "result": extendedCard()})
+	}))
+	defer srv.Close()
+
+	findings, err := a2a.NewExtCardExecutor(testRuleCtx()).Execute(t.Context(), srv.URL, testOpts())
+	if err != nil || len(findings) != 1 || findings[0].Severity != "critical" {
+		t.Fatalf("JSON-RPC auth refusal must establish bypass: findings=%+v err=%v", findings, err)
 	}
 }
