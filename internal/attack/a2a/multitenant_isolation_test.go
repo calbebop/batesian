@@ -275,6 +275,7 @@ func TestMultiTenant_Vulnerable(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected cross-tenant leak in both directions (2 findings), got %d: %+v", len(findings), findings)
 	}
+	assertUniqueFindingIdentities(t, findings)
 	for _, f := range findings {
 		if f.Confidence != attack.ConfirmedExploit {
 			t.Errorf("want ConfirmedExploit, got %q", f.Confidence)
@@ -398,6 +399,17 @@ func TestMultiTenant_RetainsFindingWhenOtherDirectionFails(t *testing.T) {
 		Execute(context.Background(), ts.URL, mtOpts(tenantPrincipals()...))
 	if len(findings) != 1 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "B reading A") {
 		t.Fatalf("one cross-tenant leak and one unreadable comparison must both survive: findings=%+v err=%v", findings, err)
+	}
+	full := tenantServer("vulnerable")
+	defer full.Close()
+	baseline, err := a2a.NewMultiTenantIsolationExecutor(testRuleCtx()).
+		Execute(context.Background(), full.URL, mtOpts(tenantPrincipals()...))
+	if err != nil || len(baseline) != 2 {
+		t.Fatalf("baseline findings=%+v err=%v", baseline, err)
+	}
+	if findings[0].FingerprintKey == "" ||
+		findings[0].FingerprintKey != baseline[0].FingerprintKey && findings[0].FingerprintKey != baseline[1].FingerprintKey {
+		t.Fatalf("remaining direction changed identity: partial=%+v baseline=%+v", findings, baseline)
 	}
 }
 

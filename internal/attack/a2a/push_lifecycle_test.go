@@ -44,6 +44,7 @@ func TestPushLifecycle(t *testing.T) {
 				(err != nil && !tc.inconclusive) {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
+			assertUniqueFindingIdentities(t, findings)
 			objects := pushConfigObjects(state.Snapshot())
 			assertPushFindingsOmitObjectIDs(t, findings, objects)
 			wantObjects := 2

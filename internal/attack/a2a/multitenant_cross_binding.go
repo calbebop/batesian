@@ -236,6 +236,7 @@ func (e *MultiTenantIsolationExecutor) crossBindingFinding(direction, source, de
 		Evidence: fmt.Sprintf("direction: %s\nsource: %s\ndestination: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\nowner task and probe text: matched (values omitted)\nsource reader: denied\ndestination anonymous: denied\nmatched task content omitted",
 			direction, source, destination, owner.Name, owner.Tenant, reader.Name, reader.Tenant),
 		Remediation: e.rule.Remediation, TargetURL: destination,
+		FingerprintKey: accessFindingIdentity("cross-binding:"+direction, owner, reader),
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create task on " + source, Outcome: "owner read probe text on both bindings"},
 			{Hop: 2, Principal: reader.Name, Action: "read task on source binding", Outcome: "denied"},

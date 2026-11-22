@@ -451,6 +451,7 @@ func (e *PushLifecycleExecutor) finding(endpoint string, owner, other attack.Pri
 		Evidence: fmt.Sprintf("owner: %s\nother principal: %s\nowner readback: callback matched\n%s control: denied for other principal\noperation: %s",
 			owner.Name, other.Name, readMethod, operation),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
+		FingerprintKey: accessFindingIdentity("push:"+operation, owner, other),
 		Access: &attack.AccessObservation{
 			Operation: accessOperation, Caller: other.Name, CallerTenant: other.Tenant,
 			Owner: owner.Name, OwnerTenant: owner.Tenant,

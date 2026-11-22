@@ -142,6 +142,7 @@ func TestMultiTenantREST(t *testing.T) {
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
+			assertUniqueFindingIdentities(t, findings)
 			for _, finding := range findings {
 				assertOpaqueTaskFinding(t, finding, "task-A", "task-B", "batesian mt probe")
 				if finding.Confidence != attack.ConfirmedExploit ||
