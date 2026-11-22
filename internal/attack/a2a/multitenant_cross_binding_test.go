@@ -187,6 +187,7 @@ func TestMultiTenantCrossBindingTaskReads(t *testing.T) {
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
+			assertUniqueFindingIdentities(t, findings)
 			for _, finding := range findings {
 				if finding.Confidence != attack.ConfirmedExploit ||
 					!strings.Contains(finding.Evidence, "source reader: denied") ||

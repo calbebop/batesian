@@ -152,6 +152,7 @@ func (e *GRPCTaskAccessExecutor) checkGRPCListScope(ctx context.Context, client 
 			reader.Name, owner.Name),
 		Evidence:    "owner list: exact task and private marker matched\nanonymous list: private marker absent or denied\ncross GetTask: denied\nreader list: exact task and private marker matched (values omitted)",
 		Remediation: e.rule.Remediation, TargetURL: target,
+		FingerprintKey: accessFindingIdentity("grpc:list", owner, reader),
 		Access: &attack.AccessObservation{Operation: attack.A2ATasksList, Caller: reader.Name,
 			CallerTenant: reader.Tenant, Owner: owner.Name, OwnerTenant: owner.Tenant},
 	}
@@ -189,5 +190,6 @@ func (e *GRPCTaskAccessExecutor) checkGRPCSubscribeScope(ctx context.Context, cl
 			reader.Name, owner.Name),
 		Evidence:    "owner subscription: exact task and private marker matched\nanonymous subscription: denied\ncross GetTask: denied\nreader subscription: exact task and private marker matched (values omitted)",
 		Remediation: e.rule.Remediation, TargetURL: target,
+		FingerprintKey: accessFindingIdentity("grpc:subscribe", owner, reader),
 	}}, nil
 }

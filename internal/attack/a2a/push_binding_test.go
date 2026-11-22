@@ -445,6 +445,7 @@ func TestPushBinding_Unbound(t *testing.T) {
 	if len(findings) != 4 {
 		t.Fatalf("expected read and write findings in both directions, got %d: %+v", len(findings), findings)
 	}
+	assertUniqueFindingIdentities(t, findings)
 	for _, f := range findings {
 		if f.Confidence != attack.RiskIndicator || f.Severity != "high" {
 			t.Errorf("want high/indicator, got %q/%q", f.Severity, f.Confidence)

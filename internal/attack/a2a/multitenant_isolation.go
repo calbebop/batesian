@@ -105,12 +105,12 @@ func (e *MultiTenantIsolationExecutor) probeJSONRPC(ctx context.Context, endpoin
 	read := func(c *attack.HTTPClient, headers map[string]string, taskID, marker, phase string) tenantRead {
 		return e.readTask(ctx, c, endpoint, headers, taskID, marker, vars.RandID, phase)
 	}
-	findings, readErr := e.compareTaskReads(endpoint, taskA, taskB, markerA, markerB, a, b,
+	findings, readErr := e.compareTaskReads(endpoint, "jsonrpc", taskA, taskB, markerA, markerB, a, b,
 		clientA, clientB, unauthClient, dualVersion, read)
 	return findings, errors.Join(setupErr, readErr)
 }
 
-func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, markerA, markerB string,
+func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, binding, taskA, taskB, markerA, markerB string,
 	a, b attack.Principal, clientA, clientB, unauthClient *attack.HTTPClient,
 	dualVersion bool,
 	read func(*attack.HTTPClient, map[string]string, string, string, string) tenantRead) ([]attack.Finding, error) {
@@ -125,12 +125,12 @@ func (e *MultiTenantIsolationExecutor) compareTaskReads(endpoint, taskA, taskB, 
 	readA := read(clientB, b.Headers, taskA, markerA, "cross-a")
 	if ownerA.location != "" && readA.location != "" && anonA.location == "" &&
 		!anonA.unknown && (anonA.denied || anonA.matched) {
-		findings = append(findings, e.versionedFinding(endpoint, b, a, readA, ownerA, anonA, dualVersion))
+		findings = append(findings, e.versionedFinding(endpoint, binding, b, a, readA, ownerA, anonA, dualVersion))
 	}
 	readB := read(clientA, a.Headers, taskB, markerB, "cross-b")
 	if ownerB.location != "" && readB.location != "" && anonB.location == "" &&
 		!anonB.unknown && (anonB.denied || anonB.matched) {
-		findings = append(findings, e.versionedFinding(endpoint, a, b, readB, ownerB, anonB, dualVersion))
+		findings = append(findings, e.versionedFinding(endpoint, binding, a, b, readB, ownerB, anonB, dualVersion))
 	}
 	var missing []string
 	if ownerA.location == "" {
@@ -304,9 +304,9 @@ func (e *MultiTenantIsolationExecutor) readTask(ctx context.Context, c *attack.H
 	return result
 }
 
-func (e *MultiTenantIsolationExecutor) versionedFinding(endpoint string, reader, owner attack.Principal,
+func (e *MultiTenantIsolationExecutor) versionedFinding(endpoint, binding string, reader, owner attack.Principal,
 	read, ownerRead, anonRead tenantRead, dualVersion bool) attack.Finding {
-	finding := e.finding(endpoint, reader, owner, read)
+	finding := e.finding(endpoint, binding, reader, owner, read)
 	if !dualVersion || read.v1.unknown || !read.v1.denied || read.v03.location == "" ||
 		ownerRead.v1.location == "" || ownerRead.v03.location == "" ||
 		anonRead.v03.unknown || !anonRead.v03.denied {
@@ -321,7 +321,7 @@ func (e *MultiTenantIsolationExecutor) versionedFinding(endpoint string, reader,
 }
 
 // finding describes the owner's content observed by another tenant.
-func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner attack.Principal, read tenantRead) attack.Finding {
+func (e *MultiTenantIsolationExecutor) finding(endpoint, binding string, reader, owner attack.Principal, read tenantRead) attack.Finding {
 	return attack.Finding{
 		RuleID:     e.rule.ID,
 		RuleName:   e.rule.Name,
@@ -337,8 +337,9 @@ func (e *MultiTenantIsolationExecutor) finding(endpoint string, reader, owner at
 			"reader: %s (tenant %s)\nowner: %s (tenant %s)\nmethod: %s\n"+
 				"owner task and probe text: matched (values omitted)\nlocation: %s\nmatched task content omitted",
 			reader.Name, reader.Tenant, owner.Name, owner.Tenant, read.method, read.location),
-		Remediation: e.rule.Remediation,
-		TargetURL:   endpoint,
+		Remediation:    e.rule.Remediation,
+		TargetURL:      endpoint,
+		FingerprintKey: accessFindingIdentity("tenant-read:"+binding, owner, reader),
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "authenticate and create task", Outcome: "task created (owner " + owner.Tenant + ")"},
 			{Hop: 2, Principal: reader.Name, Action: "authenticate as a different tenant", Outcome: "valid distinct credentials confirmed"},

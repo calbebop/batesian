@@ -279,6 +279,7 @@ func newGRPCTaskFixture(t *testing.T, mode string) (string, string, *grpcTaskFix
 }
 
 func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
+	baselineKeys := map[string]bool{}
 	for _, tc := range []struct {
 		mode         string
 		findings     int
@@ -342,6 +343,15 @@ func TestGRPCTaskAccessOfficialSDK(t *testing.T) {
 			if len(findings) != tc.findings || errors.Is(err, attack.ErrInconclusive) != tc.inconclusive ||
 				err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
+			}
+			assertUniqueFindingIdentities(t, findings)
+			if tc.mode == "vulnerable" {
+				for _, finding := range findings {
+					baselineKeys[finding.FingerprintKey] = true
+				}
+			}
+			if (tc.mode == "reader-to-owner" || tc.mode == "owner-to-reader") && !baselineKeys[findings[0].FingerprintKey] {
+				t.Fatalf("remaining direction changed identity: %+v", findings[0])
 			}
 			if tc.mode == "protected" && (err == nil || !strings.Contains(err.Error(), "ListTasks is unavailable")) {
 				t.Fatalf("unsupported ListTasks was reported clean: %v", err)

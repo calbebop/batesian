@@ -322,6 +322,7 @@ func (e *GRPCTaskAccessExecutor) finding(target string, owner, reader attack.Pri
 		Evidence: fmt.Sprintf("target: %s\nowner: %s (tenant %s)\nreader: %s (tenant %s)\nowner task and probe text: matched (values omitted)\nlocation: %s\nanonymous: denied",
 			target, owner.Name, owner.Tenant, reader.Name, reader.Tenant, read.location),
 		Remediation: e.rule.Remediation, TargetURL: target,
+		FingerprintKey: accessFindingIdentity("grpc:get", owner, reader),
 		Chain: []attack.ChainStep{
 			{Hop: 1, Principal: owner.Name, Action: "create and read gRPC task", Outcome: "read probe text"},
 			{Hop: 2, Principal: reader.Name, Action: "create and read own gRPC task", Outcome: "read control text"},

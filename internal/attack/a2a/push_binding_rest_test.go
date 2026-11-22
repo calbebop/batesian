@@ -190,6 +190,7 @@ func TestPushBindingREST(t *testing.T) {
 				errors.Is(err, attack.ErrInconclusive) != tc.inconclusive || err != nil && !tc.inconclusive {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
+			assertUniqueFindingIdentities(t, findings)
 			if tc.title != "" && (!strings.Contains(findings[0].Title, tc.title) ||
 				findings[0].Confidence != attack.RiskIndicator ||
 				!strings.Contains(findings[0].Evidence, "binding: HTTP+JSON/"+tc.version) ||
