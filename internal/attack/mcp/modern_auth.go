@@ -26,7 +26,7 @@ func probeModernAuthGate(ctx context.Context, anon *attack.HTTPClient, ep string
 	if verdict == accessRefused && authRefusal(resp) && hasBearerChallenge(resp) {
 		return modernAuthGate{method: "server/discover", ready: true}
 	}
-	if verdict != accessGranted || !modernWireAdvertised(resp.Body) {
+	if verdict != accessGranted || !modernAuthResult(resp.Body, "server/discover") {
 		return modernAuthGate{}
 	}
 	for _, method := range modernAuthMethods {
@@ -49,7 +49,7 @@ func probeModernBearer(ctx context.Context, anon *attack.HTTPClient, ep, method,
 	})
 	switch classifyAccess(resp, err, 3) {
 	case accessGranted:
-		if method != "server/discover" || modernWireAdvertised(resp.Body) {
+		if modernAuthResult(resp.Body, method) {
 			return resp, accessGranted
 		}
 		return resp, accessUndetermined
@@ -59,6 +59,33 @@ func probeModernBearer(ctx context.Context, anon *attack.HTTPClient, ep, method,
 		}
 	}
 	return resp, accessUndetermined
+}
+
+func modernAuthResult(raw []byte, method string) bool {
+	body, ok := parseResponseBody(raw)
+	if !ok {
+		return false
+	}
+	result, ok := body["result"].(map[string]interface{})
+	if !ok || result["resultType"] != "complete" {
+		return false
+	}
+	switch method {
+	case "server/discover":
+		_, ok = result["capabilities"].(map[string]interface{})
+		return ok && modernWireAdvertised(raw)
+	case "tools/list":
+		_, ok = result["tools"].([]interface{})
+	case "resources/list":
+		_, ok = result["resources"].([]interface{})
+	case "prompts/list":
+		_, ok = result["prompts"].([]interface{})
+	case "ping":
+		return true
+	default:
+		return false
+	}
+	return ok
 }
 
 func authRefusal(resp *attack.Response) bool {
