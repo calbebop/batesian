@@ -33,6 +33,8 @@ func cardSecServer(mode string) *httptest.Server {
 			sec = `"securityRequirements":[{},{"bearerAuth":[]}],`
 		case "anon-allowed-v1":
 			sec = `"securityRequirements":[{"schemes":{}}],`
+		case "anon-allowed-with-legacy":
+			sec = `"securityRequirements":[],"security":[{"bearerAuth":[]}],`
 		case "no-security":
 			sec = ``
 		case "malformed-v1":
@@ -389,6 +391,15 @@ func TestCardSecurity_AnonymousAllowedV1(t *testing.T) {
 	if findings, err := runCardSec(t, srv); err != nil || len(findings) != 0 {
 		t.Errorf("expected 0 findings / nil err when the v1.0 card permits anonymous access, got %d findings, err=%v",
 			len(findings), err)
+	}
+}
+
+func TestCardSecurity_EmptyV1RequirementsOverrideLegacy(t *testing.T) {
+	srv := cardSecServer("anon-allowed-with-legacy")
+	defer srv.Close()
+
+	if findings, err := runCardSec(t, srv); err != nil || len(findings) != 0 {
+		t.Fatalf("empty v1.0 requirements must not produce an auth finding: findings=%+v err=%v", findings, err)
 	}
 }
 

@@ -587,8 +587,9 @@ func requirementSchemeNames(entry map[string]interface{}) (names []string, ok bo
 // cardSecurityList returns the requirements list, preferring the v1.0
 // securityRequirements field and falling back to the v0.3 security field.
 func cardSecurityList(card map[string]interface{}) []interface{} {
-	if v, ok := card["securityRequirements"].([]interface{}); ok && len(v) > 0 {
-		return v
+	if v, present := card["securityRequirements"]; present {
+		list, _ := v.([]interface{})
+		return list
 	}
 	if v, ok := card["security"].([]interface{}); ok {
 		return v

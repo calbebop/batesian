@@ -726,6 +726,12 @@ func TestAgentCard_RequiresAuth(t *testing.T) {
 			why:  "v1.0 takes precedence when a card carries both",
 		},
 		{
+			name: "empty v1.0 requirements override legacy security",
+			sec:  `"securityRequirements":[],"security":[{"bearerAuth":[]}]`,
+			want: false,
+			why:  "an explicit empty v1.0 list does not require authentication",
+		},
+		{
 			name: "no declaration",
 			sec:  `"name2":"x"`,
 			want: false,
