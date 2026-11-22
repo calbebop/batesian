@@ -599,14 +599,10 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 func classifyResponse(resp *attack.Response) audVerdict {
 	switch {
 	case resp.StatusCode == 200:
-		body := resp.BodyString()
-		if isJSONRPCError(body) {
-			if authRefusal(resp) {
-				return verdictRejected
-			}
-			return verdictInconclusive
+		if classifyAuthAccess(resp, nil, 1) == accessRefused {
+			return verdictRejected
 		}
-		if isJSONRPCResult(body) {
+		if initializeSucceeded(resp.Body) {
 			return verdictAcceptedVulnerable
 		}
 		return verdictInconclusive
@@ -636,23 +632,6 @@ func classifyResponse(resp *attack.Response) audVerdict {
 // verdict on the forged token, and neither should end the candidate walk.
 func endpointAbsent(resp *attack.Response) bool {
 	return resp.StatusCode == 404 || resp.StatusCode == 405
-}
-
-// isJSONRPCResult reports whether body parses as a JSON-RPC response with a
-// non-empty `result` field. We accept both the streamable-HTTP wrapped form
-// and a raw JSON envelope.
-func isJSONRPCResult(body string) bool {
-	if body == "" {
-		return false
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
-		return false
-	}
-	if _, ok := m["result"]; ok {
-		return true
-	}
-	return false
 }
 
 func isJSONRPCError(body string) bool {

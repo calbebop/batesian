@@ -274,12 +274,11 @@ matching. The negative control disambiguates: if the control is accepted, the
 server accepts any forged token regardless of audience, so the result is reported
 as **blanket forged-token acceptance** (point at `mcp-token-replay-001`) rather
 than misattributed to a specific matching bug. A trap acceptance is a
-**confirmed** isolated matching bug only when the control was rejected; a
-control that carried no JSON-RPC result envelope (so it could not be clearly
-rejected) downgrades trap acceptances to an **indicator**, and a 2xx body with
-no result envelope is never itself treated as acceptance. Catching a
-server that validates signatures correctly but still mishandles `aud` requires
-the separate opt-in check below.
+**confirmed** isolated matching bug only when the control was rejected; an
+unjudged control downgrades trap acceptances to an **indicator**. A 2xx body
+without a complete, correlated MCP `initialize` result is never itself
+acceptance. Catching a server that validates signatures correctly but still
+mishandles `aud` requires the separate opt-in check below.
 
 Finding evidence names the probe, gate, and HTTP status without copying the
 forged JWT or server response.
@@ -321,7 +320,7 @@ Submits forged bearer tokens the server cannot have validated: two HS256 tokens
 signed with a random key (one with no `aud`, one with a wrong `aud`) and one
 unsigned (`alg: none`). A compliant OAuth 2.1 resource server verifies the token
 signature and the `aud` claim (RFC 9068, RFC 8707) and rejects all three.
-Acceptance is judged at the protocol layer - HTTP 200 + a JSON-RPC `result` - so a
+Acceptance requires a successful, correlated MCP `initialize` result, so a
 200 carrying an `invalid_token` JSON-RPC error is correctly treated as a rejection.
 
 Before a **confirmed** finding is reported, an anonymous `initialize` control

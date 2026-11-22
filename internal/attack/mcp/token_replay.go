@@ -150,13 +150,17 @@ func (e *TokenReplayExecutor) Execute(ctx context.Context, target string, opts a
 				legacyEstablished = true
 				legacyJudged[i] = true
 			}
-			// Acceptance = HTTP 200 with a JSON-RPC result envelope. A 200 that
-			// carries a JSON-RPC error is a protocol-layer rejection of the
-			// forged token and must not be reported.
+			// A result must complete the initialize handshake for this request.
 			if !resp.IsAccepted() {
 				continue
 			}
 			legacyEstablished = true
+			if !initializeSucceeded(resp.Body) {
+				if notTestedReason == "" {
+					notTestedReason = fmt.Sprintf("forged initialize at %s did not return a correlated MCP initialize result", ep)
+				}
+				continue
+			}
 
 			// The probe was accepted at initialize. Before that says anything
 			// about tokens, establish where this server actually examines them
