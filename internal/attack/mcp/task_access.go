@@ -357,6 +357,7 @@ func (e *TaskAccessExecutor) finding(endpoint, method string, owner, caller task
 		Evidence: fmt.Sprintf("endpoint: %s\nwire: MCP %s\nowner: %s\ncaller: %s\n%s: %s",
 			endpoint, modernEraVersion, owner.name, caller.name, method, observation),
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
+		FingerprintKey: fmt.Sprintf("%q:%q:%q:%q:%q", operation, owner.name, owner.tenant, caller.name, caller.tenant),
 		Access: &attack.AccessObservation{Operation: operation, Caller: caller.name, CallerTenant: caller.tenant,
 			Owner: owner.name, OwnerTenant: owner.tenant},
 	}

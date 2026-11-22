@@ -72,7 +72,7 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	// Compare a second listing on the same wire for rapid changes.
 	second, ok := listToolPages(ctx, client, session, 3+toolListPageCap)
 	if !ok {
-		return e.manifestFindings(session.Endpoint, firstText, ""), false
+		return e.manifestFindings(session, firstText, ""), false
 	}
 	secondText := canonicalTools(second)
 
@@ -80,7 +80,7 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	if !sameToolManifest(firstText, secondText) {
 		drift = diffSummary(firstText, secondText)
 	}
-	findings := e.manifestFindings(session.Endpoint, firstText, drift)
+	findings := e.manifestFindings(session, firstText, drift)
 	if drift == "" {
 		return findings, true
 	}
@@ -89,7 +89,7 @@ func (e *ToolPoisoningExecutor) probeSession(ctx context.Context, client *attack
 	for _, finding := range findings {
 		seen[findingKey{finding.Title, finding.Evidence}] = struct{}{}
 	}
-	for _, finding := range e.manifestFindings(session.Endpoint, secondText, "") {
+	for _, finding := range e.manifestFindings(session, secondText, "") {
 		key := findingKey{finding.Title, finding.Evidence}
 		if _, ok := seen[key]; ok {
 			continue
@@ -396,7 +396,11 @@ func matchInjectionText(values []string) (string, bool) {
 }
 
 // manifestFindings inspects one listing and optionally reports drift.
-func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift string) []attack.Finding {
+func (e *ToolPoisoningExecutor) manifestFindings(session mcpSession, canon, drift string) []attack.Finding {
+	endpoint := session.Endpoint
+	fingerprintKey := func(kind, subject, detail string) string {
+		return fmt.Sprintf("%s:%s:%q:%q", session.Era.String(), kind, subject, detail)
+	}
 	lines := strings.Split(canon, "\n")
 	entries := lines[1:]
 
@@ -423,9 +427,10 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 						"The spec recommends unique names per server. Duplicates can make name-based approval "+
 						"and dispatch ambiguous, but this listing does not show which definition a client or "+
 						"server will use.", endpoint, t.Name, firstAt+1, i+1),
-				Evidence:    fmt.Sprintf("endpoint: %s\nduplicate tool name: %s", endpoint, t.Name),
-				Remediation: e.rule.Remediation,
-				TargetURL:   endpoint,
+				Evidence:       fmt.Sprintf("endpoint: %s\nduplicate tool name: %s", endpoint, t.Name),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      endpoint,
+				FingerprintKey: fingerprintKey("duplicate-name", t.Name, ""),
 			})
 		} else {
 			seen[t.Name] = i
@@ -434,7 +439,7 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 
 	// Check ambiguous members, format characters, and injection patterns.
 	for i, line := range entries {
-		name := toolDisplayName(line, i)
+		name, identity := toolDisplayName(line, i)
 		values := jsonStringValues(line)
 		if member, duplicate := duplicateJSONMember([]byte(line)); duplicate {
 			findings = append(findings, attack.Finding{
@@ -447,9 +452,10 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 					"Entry %d of the tools/list response from %s repeats the JSON member %q. "+
 						"Clients may keep different values or reject the definition, so review the raw entry.",
 					i+1, endpoint, member),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\nrepeated member: %q", endpoint, name, member),
-				Remediation: e.rule.Remediation,
-				TargetURL:   endpoint,
+				Evidence:       fmt.Sprintf("endpoint: %s\ntool: %s\nrepeated member: %q", endpoint, name, member),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      endpoint,
+				FingerprintKey: fingerprintKey("duplicate-member", identity, member),
 			})
 		}
 
@@ -465,9 +471,10 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 						"Non-printing characters can obscure text or alter its rendering, but may be legitimate in Unicode text. "+
 						"Review the code point and surrounding text before treating the definition as poisoned.",
 					i+1, endpoint, r),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\nmatching text omitted", endpoint, name, r, idx),
-				Remediation: e.rule.Remediation,
-				TargetURL:   endpoint,
+				Evidence:       fmt.Sprintf("endpoint: %s\ntool: %s\ncharacter: U+%04X\nstring byte offset: %d\nmatching text omitted", endpoint, name, r, idx),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      endpoint,
+				FingerprintKey: fingerprintKey("hidden-character", identity, ""),
 			})
 		}
 
@@ -483,9 +490,10 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 						"Agents may consume names, descriptions, and schemas, so imperative text about prior "+
 						"instructions, credentials, or outbound URLs can signal poisoning. This check is "+
 						"heuristic; review the matched text before treating it as malicious.", i+1, endpoint, pattern),
-				Evidence:    fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\nmatching text omitted", endpoint, name, pattern),
-				Remediation: e.rule.Remediation,
-				TargetURL:   endpoint,
+				Evidence:       fmt.Sprintf("endpoint: %s\ntool: %s\npattern: %s\nmatching text omitted", endpoint, name, pattern),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      endpoint,
+				FingerprintKey: fingerprintKey("injection-pattern", identity, pattern),
 			})
 		}
 	}
@@ -502,23 +510,24 @@ func (e *ToolPoisoningExecutor) manifestFindings(endpoint string, canon, drift s
 				"Two tools/list requests to %s returned different manifests (%s). MCP permits the tool set "+
 					"to change over time. Rapid changes merit review where clients cache or approve definitions, "+
 					"but these responses do not show whether a client used an outdated definition.", endpoint, drift),
-			Evidence:    fmt.Sprintf("endpoint: %s\ndifferences: %s", endpoint, drift),
-			Remediation: e.rule.Remediation,
-			TargetURL:   endpoint,
+			Evidence:       fmt.Sprintf("endpoint: %s\ndifferences: %s", endpoint, drift),
+			Remediation:    e.rule.Remediation,
+			TargetURL:      endpoint,
+			FingerprintKey: fingerprintKey("manifest-drift", "", ""),
 		})
 	}
 
 	return findings
 }
 
-// toolDisplayName extracts a tool's name for finding titles, falling back to
-// its position when the entry has none.
-func toolDisplayName(line string, pos int) string {
+// toolDisplayName uses the entry hash to identify unnamed tools across scans.
+func toolDisplayName(line string, pos int) (string, string) {
 	var t struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal([]byte(line), &t) == nil && t.Name != "" {
-		return t.Name
+		return t.Name, "named:" + t.Name
 	}
-	return fmt.Sprintf("<entry %d>", pos+1)
+	sum := sha256.Sum256([]byte(line))
+	return fmt.Sprintf("<entry %d>", pos+1), "entry-sha256:" + hex.EncodeToString(sum[:])
 }
