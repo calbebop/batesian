@@ -599,14 +599,10 @@ func runProbesAgainstEndpoint(ctx context.Context, client *attack.HTTPClient, an
 func classifyResponse(resp *attack.Response) audVerdict {
 	switch {
 	case resp.StatusCode == 200:
-		body := resp.BodyString()
-		if isJSONRPCError(body) {
-			if authRefusal(resp) {
-				return verdictRejected
-			}
-			return verdictInconclusive
+		if classifyAuthAccess(resp, nil, 1) == accessRefused {
+			return verdictRejected
 		}
-		if isJSONRPCResult(body) {
+		if initializeSucceeded(resp.Body) {
 			return verdictAcceptedVulnerable
 		}
 		return verdictInconclusive

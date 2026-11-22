@@ -46,6 +46,9 @@ func gateErrorServer(t *testing.T, phase string, status, code int, message strin
 				"serverInfo":      map[string]interface{}{"name": "gate-test", "version": "1"},
 				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			}
+			if phase == "incomplete-initialize" {
+				delete(result, "capabilities")
+			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
 	}))
@@ -99,5 +102,20 @@ func TestProbeForgedAtMethod_RequiresAuthRefusal(t *testing.T) {
 				t.Fatalf("verdict = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProbeGate_IncompleteInitialize(t *testing.T) {
+	srv := gateErrorServer(t, "incomplete-initialize", 200, 0, "")
+	defer srv.Close()
+	client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(srv.URL, ""))
+
+	gate := probeInitGate(context.Background(), client, srv.URL)
+	if gate.gate != gateUnknown {
+		t.Fatalf("incomplete anonymous handshake established gate %v", gate.gate)
+	}
+	_, verdict, reason := probeForgedAtMethod(context.Background(), client, srv.URL, "tools/list", "forged")
+	if verdict != accessUndetermined || reason == "" {
+		t.Fatalf("incomplete forged handshake produced verdict %v, reason %q", verdict, reason)
 	}
 }

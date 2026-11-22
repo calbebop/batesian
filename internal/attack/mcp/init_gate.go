@@ -60,6 +60,10 @@ func probeInitGate(ctx context.Context, anon *attack.HTTPClient, ep string) gate
 	}
 
 	verdict := classifyAuthAccess(resp, nil, 1)
+	if verdict == accessGranted && !initializeSucceeded(resp.Body) {
+		return gateProbe{gate: gateUnknown, reason: fmt.Sprintf(
+			"the anonymous initialize control at %s did not return a complete MCP initialize result", ep)}
+	}
 	if verdict != accessGranted {
 		switch verdict {
 		case accessRefused:
@@ -127,6 +131,9 @@ func probeForgedAtMethod(ctx context.Context, anon *attack.HTTPClient, ep, metho
 		return nil, accessUndetermined, fmt.Sprintf("forged initialize at %s did not answer", ep)
 	}
 	initVerdict := classifyAuthAccess(initResp, nil, 1)
+	if initVerdict == accessGranted && !initializeSucceeded(initResp.Body) {
+		return initResp, accessUndetermined, fmt.Sprintf("forged initialize at %s did not return a complete MCP initialize result", ep)
+	}
 	if initVerdict != accessGranted {
 		if initVerdict == accessUndetermined {
 			return initResp, initVerdict, fmt.Sprintf("forged initialize at %s returned neither a result nor a refusal", ep)

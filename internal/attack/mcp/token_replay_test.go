@@ -47,6 +47,7 @@ func vulnerableTokenServer(t *testing.T) *httptest.Server {
 					"id":      1,
 					"result": map[string]interface{}{
 						"protocolVersion": "2024-11-05",
+						"capabilities":    map[string]interface{}{},
 						"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
 					},
 				})
@@ -140,6 +141,74 @@ func TestTokenReplay_SecureServer(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings on secure server, got %d: %v", len(findings), findings)
+	}
+}
+
+func invalidTokenInitializeServer(t *testing.T, mode string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL, "token_endpoint": srv.URL + "/token",
+			})
+			return
+		}
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		id := 1
+		if mode == "wrong-id" {
+			id = 2
+		}
+		result := map[string]interface{}{
+			"protocolVersion": "2025-11-25",
+			"capabilities":    map[string]interface{}{},
+			"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
+		}
+		if mode == "missing-capabilities" {
+			delete(result, "capabilities")
+		}
+		var responseResult interface{} = result
+		if mode == "null-result" {
+			responseResult = nil
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": id, "result": responseResult,
+		})
+	}))
+	return srv
+}
+
+func TestForgedOAuthProbes_InvalidInitializeIsInconclusive(t *testing.T) {
+	for _, mode := range []string{"wrong-id", "missing-capabilities", "null-result"} {
+		t.Run(mode, func(t *testing.T) {
+			srv := invalidTokenInitializeServer(t, mode)
+			defer srv.Close()
+			for _, probe := range []struct {
+				name string
+				run  func() ([]attack.Finding, error)
+			}{
+				{"token replay", func() ([]attack.Finding, error) {
+					return mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+				}},
+				{"audience", func() ([]attack.Finding, error) {
+					return mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+				}},
+			} {
+				t.Run(probe.name, func(t *testing.T) {
+					findings, err := probe.run()
+					if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+						t.Fatalf("invalid initialize must be inconclusive: findings=%+v err=%v", findings, err)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -265,6 +334,7 @@ func tokenServerWithDiscovery(t *testing.T, discoveryPath string) *httptest.Serv
 					"jsonrpc": "2.0", "id": 1,
 					"result": map[string]interface{}{
 						"protocolVersion": "2024-11-05",
+						"capabilities":    map[string]interface{}{},
 						"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
 					},
 				})
@@ -415,6 +485,7 @@ func versionRejectingTokenServer(t *testing.T) *httptest.Server {
 					"id":      req["id"],
 					"result": map[string]interface{}{
 						"protocolVersion": version,
+						"capabilities":    map[string]interface{}{},
 						"serverInfo":      map[string]interface{}{"name": "test-server", "version": "1.0"},
 					},
 				})
