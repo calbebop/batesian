@@ -76,6 +76,35 @@ func TestWellKnownHostInject_XForwardedHostReflected(t *testing.T) {
 	}
 }
 
+func TestWellKnownHostInject_PrefersHigherSeverityAcrossCardPaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-card.json" && r.URL.Path != "/.well-known/agent.json" {
+			http.NotFound(w, r)
+			return
+		}
+		card := hostInjectCard("https://agent.example.com/a2a")
+		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+			card["description"] = host
+			if r.URL.Path == "/.well-known/agent.json" {
+				card["description"] = "https://" + host + "/"
+			}
+		}
+		writeJSON(w, card)
+	}))
+	defer srv.Close()
+
+	findings, err := a2aattack.NewWellKnownHostInjectExecutor(attack.RuleContext{
+		ID: "a2a-wellknown-hostinject-001",
+	}).Execute(t.Context(), srv.URL, attack.Options{TimeoutSeconds: 5})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected one deduplicated reflection: findings=%+v err=%v", findings, err)
+	}
+	if findings[0].Severity != "high" || findings[0].TargetURL != srv.URL+"/.well-known/agent.json" ||
+		findings[0].FingerprintKey != "header:X-Forwarded-Host" {
+		t.Fatalf("later higher-severity reflection was suppressed: %+v", findings[0])
+	}
+}
+
 func TestWellKnownHostInject_HardcodedURL(t *testing.T) {
 	// Server always returns the same hardcoded URL - not vulnerable.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

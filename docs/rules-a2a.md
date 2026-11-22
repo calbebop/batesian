@@ -295,6 +295,7 @@ that is the advertised service location peers and registries trust. Reflection
 that only lands in a non-URL field (e.g. `description`) is a real injection
 primitive but lower direct impact, reported as **medium / indicator**.
 Findings identify the reflected field and header without copying the card body.
+Equivalent reflections across both paths are reported once at the higher severity.
 
 ---
 

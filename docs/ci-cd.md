@@ -13,8 +13,9 @@ default severity, its SARIF rule ID gains a severity suffix, such as
 `mcp-example-001/medium`. The original ID remains in `sourceRuleId`. This keeps
 GitHub's rule-level security score aligned with each result. Fingerprints use
 the rule and target path. Advisory, header, method-key, tool-manifest, MCP task
-access, A2A multi-tenant and gRPC task access, and A2A push-config findings use
-stable subject IDs. Other repeated findings use their occurrence at the target.
+access, A2A multi-tenant and gRPC task access, A2A push-config, and Agent Card
+analysis findings use stable subject IDs. Other repeated findings use their
+occurrence at the target.
 Display-title and query-string changes do not affect identity. Adding stable
 keys may cause existing alerts from those rules to appear new once.
 Every SARIF run records its assessed target, including runs with no findings.

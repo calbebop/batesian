@@ -83,6 +83,44 @@ func TestJWSAlgConfExecutor_AlgNone(t *testing.T) {
 	}
 }
 
+func TestJWSAlgConfExecutor_FindingIdentitySurvivesSignatureReorder(t *testing.T) {
+	weak := func(kid, signature string) map[string]interface{} {
+		return map[string]interface{}{
+			"protected": buildProtectedHeader(map[string]interface{}{"alg": "none", "kid": kid}),
+			"signature": signature,
+		}
+	}
+	first := weak("first-key", "c2ln")
+	second := weak("second-key", "c2ln")
+	card := map[string]interface{}{
+		"name": "Test Agent", "signatures": []interface{}{first, second},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, card)
+	}))
+	defer ts.Close()
+
+	exec := a2a.NewJWSAlgConfExecutor(testRuleCtx())
+	before, err := exec.Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(before) != 2 || before[0].FingerprintKey == "" ||
+		before[1].FingerprintKey == "" || before[0].FingerprintKey == before[1].FingerprintKey {
+		t.Fatalf("initial signature identities: %+v, %v", before, err)
+	}
+	card["signatures"] = []interface{}{
+		second,
+		map[string]interface{}{
+			"protected": buildProtectedHeader(map[string]interface{}{"alg": "ES256", "kid": "clean-key"}),
+			"signature": "c2ln",
+		},
+		weak("first-key", "c2lnMg"),
+	}
+	after, err := exec.Execute(t.Context(), ts.URL, testOpts())
+	if err != nil || len(after) != 2 || after[0].FingerprintKey != before[1].FingerprintKey ||
+		after[1].FingerprintKey != before[0].FingerprintKey {
+		t.Fatalf("reorder or resigning changed identity: before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
 func TestJWSAlgConfExecutor_MissingProtectedAlg(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -259,6 +297,11 @@ func TestJWSAlgConfExecutor_OmitsCardMetadataFromFindings(t *testing.T) {
 	for _, marker := range private {
 		if strings.Contains(string(report), marker) {
 			t.Fatalf("card metadata %q appeared in findings", marker)
+		}
+		for _, finding := range findings {
+			if finding.FingerprintKey == "" || strings.Contains(finding.FingerprintKey, marker) {
+				t.Fatalf("card metadata %q appeared in finding identity: %+v", marker, finding)
+			}
 		}
 	}
 	for _, condition := range []string{
