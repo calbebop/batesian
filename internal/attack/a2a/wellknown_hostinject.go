@@ -57,7 +57,7 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 	}
 
 	var findings []attack.Finding
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	cardParsed := false
 	var unobserved []string
 
@@ -106,13 +106,12 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 					"URL to attacker-controlled infrastructure"
 			}
 
-			key := probe.header + strings.Join(reflectedIn, ",")
-			if seen[key] {
+			key := probe.header + "\x00" + strings.Join(reflectedIn, "\x00")
+			previous, exists := seen[key]
+			if exists && (findings[previous].Severity == "high" || severity != "high") {
 				continue
 			}
-			seen[key] = true
-
-			findings = append(findings, attack.Finding{
+			finding := attack.Finding{
 				RuleID:     e.rule.ID,
 				RuleName:   e.rule.Name,
 				Severity:   severity,
@@ -127,9 +126,16 @@ func (e *WellKnownHostInjectExecutor) Execute(ctx context.Context, target string
 				Evidence: fmt.Sprintf(
 					"GET %s%s: HTTP %d\n%s: %s\nReflected in field(s): %v\ncard content omitted",
 					vars.BaseURL, path, resp.StatusCode, probe.header, probe.value, reflectedIn),
-				Remediation: e.rule.Remediation,
-				TargetURL:   endpoint.AppendPath(vars.BaseURL, path),
-			})
+				Remediation:    e.rule.Remediation,
+				TargetURL:      endpoint.AppendPath(vars.BaseURL, path),
+				FingerprintKey: "header:" + probe.header,
+			}
+			if exists {
+				findings[previous] = finding
+			} else {
+				seen[key] = len(findings)
+				findings = append(findings, finding)
+			}
 		}
 	}
 

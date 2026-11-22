@@ -122,9 +122,10 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 				"The cards at %s and %s declare the same name and preferred interface, but only "+
 					"one advertises JWS signatures. Check whether clients can use the unsigned path "+
 					"without verifying a signature.", signedURL, unsignedURL),
-			Evidence:    fmt.Sprintf("signed path: %s\nunsigned path: %s\npreferred interface: matched (values omitted)", signedURL, unsignedURL),
-			Remediation: e.rule.Remediation,
-			TargetURL:   unsignedURL,
+			Evidence:       fmt.Sprintf("signed path: %s\nunsigned path: %s\npreferred interface: matched (values omitted)", signedURL, unsignedURL),
+			Remediation:    e.rule.Remediation,
+			TargetURL:      unsignedURL,
+			FingerprintKey: "canonical:signatures",
 		}}
 	}
 
@@ -143,8 +144,9 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 				"Clients may fail to route requests, and the two cards' preferred endpoints cannot be compared.",
 			Evidence: fmt.Sprintf("primary path missing: %s\nlegacy path missing: %s\ninterface values omitted",
 				missingPreferredFields(primaryEndpoint), missingPreferredFields(legacyEndpoint)),
-			Remediation: e.rule.Remediation,
-			TargetURL:   missingURL,
+			Remediation:    e.rule.Remediation,
+			TargetURL:      missingURL,
+			FingerprintKey: "canonical:missing-endpoint",
 		}}
 	}
 	if primaryEndpoint.comparableTo(legacyEndpoint) && primaryEndpoint.url != legacyEndpoint.url {
@@ -158,9 +160,10 @@ func (e *CardTrustExecutor) checkCanonicalization(primaryURL string, primaryBody
 				"The cards at %s and %s declare different preferred endpoint URLs. A client that selects "+
 					"one path may route or verify against an endpoint the other path does not point to; "+
 					"verify which card is authoritative and make them consistent.", primaryURL, legacyURL),
-			Evidence:    "comparable preferred interfaces: endpoint URLs differ; values omitted",
-			Remediation: e.rule.Remediation,
-			TargetURL:   primaryURL,
+			Evidence:       "comparable preferred interfaces: endpoint URLs differ; values omitted",
+			Remediation:    e.rule.Remediation,
+			TargetURL:      primaryURL,
+			FingerprintKey: "canonical:endpoint-mismatch",
 		}}
 	}
 	return nil
@@ -186,9 +189,10 @@ func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) [
 			Description: "The agent card response carries no Cache-Control header. Intermediaries and " +
 				"clients may heuristically cache this security-critical trust anchor, so a rotated or " +
 				"revoked card can keep being served from cache. Set an explicit revalidation policy.",
-			Evidence:    fmt.Sprintf("GET %s returned no Cache-Control header", cardURL),
-			Remediation: e.rule.Remediation,
-			TargetURL:   cardURL,
+			Evidence:       fmt.Sprintf("GET %s returned no Cache-Control header", cardURL),
+			Remediation:    e.rule.Remediation,
+			TargetURL:      cardURL,
+			FingerprintKey: "cache:policy",
 		}}
 	}
 	// These directives prevent unvalidated reuse of the card.
@@ -235,9 +239,10 @@ func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) [
 				"The agent card is served with %s. Caches can reuse it without "+
 					"contacting the origin while it is fresh, so old keys, routing, or security "+
 					"schemes may remain in use after a change.", policy),
-			Evidence:    evidence,
-			Remediation: e.rule.Remediation,
-			TargetURL:   cardURL,
+			Evidence:       evidence,
+			Remediation:    e.rule.Remediation,
+			TargetURL:      cardURL,
+			FingerprintKey: "cache:policy",
 		}}
 	}
 	if !hasMaxAge && cache.expires == "" && hasUnqualifiedDirective(cc, "immutable") {
@@ -251,9 +256,10 @@ func (e *CardTrustExecutor) checkCache(cardURL string, cache cardCacheHeaders) [
 				"Immutable does not set a freshness lifetime; caches without an applicable explicit " +
 				"lifetime may derive one from Expires or heuristics. " +
 				"Verify how long clients can reuse the card before checking for updates.",
-			Evidence:    fmt.Sprintf("GET %s\nCache-Control: immutable without explicit freshness; header values omitted", cardURL),
-			Remediation: e.rule.Remediation,
-			TargetURL:   cardURL,
+			Evidence:       fmt.Sprintf("GET %s\nCache-Control: immutable without explicit freshness; header values omitted", cardURL),
+			Remediation:    e.rule.Remediation,
+			TargetURL:      cardURL,
+			FingerprintKey: "cache:policy",
 		}}
 	}
 	return nil

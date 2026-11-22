@@ -688,6 +688,25 @@ func TestCardTrust_CacheFindingWithSignatureMismatch(t *testing.T) {
 	}
 }
 
+func TestCardTrust_CacheIdentitySurvivesCanonicalizationChange(t *testing.T) {
+	primary := signedV1Card("https://agent.example/a2a")
+	legacy := signedV1Card("https://other.example/a2a")
+	ts := cardServer(primary, legacy, "public, max-age=7200")
+	defer ts.Close()
+
+	before := runCardTrust(t, ts)
+	if len(before) != 2 || before[0].FingerprintKey != "canonical:endpoint-mismatch" ||
+		before[1].FingerprintKey != "cache:policy" || before[0].TargetURL != before[1].TargetURL {
+		t.Fatalf("expected two distinct findings at the primary path: %+v", before)
+	}
+	legacy["supportedInterfaces"].([]interface{})[0].(map[string]interface{})["url"] = "https://agent.example/a2a"
+	after := runCardTrust(t, ts)
+	if len(after) != 1 || after[0].FingerprintKey != before[1].FingerprintKey ||
+		after[0].TargetURL != before[1].TargetURL {
+		t.Fatalf("cache identity changed after endpoint mismatch was fixed: before=%+v after=%+v", before, after)
+	}
+}
+
 // The documented A2A protected header has no exp claim.
 func TestCardTrust_StandardSignatureNoExpiry(t *testing.T) {
 	card := signedCard("https://agent.example/", nil)

@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -89,9 +90,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				Description: "The agent card advertises supportsAuthenticatedExtendedCard but publishes " +
 					"no JWS signatures. Without signatures, agent cards can be spoofed by DNS hijacking " +
 					"or MITM. Clients have no cryptographic basis for trusting card contents.",
-				Evidence:    fmt.Sprintf("GET %s -> HTTP %d, no signatures field", cardURL, resp.StatusCode),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
+				Evidence:       fmt.Sprintf("GET %s -> HTTP %d, no signatures field", cardURL, resp.StatusCode),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      cardURL,
+				FingerprintKey: "unsigned-extended-card",
 			})
 		}
 		return findings, nil
@@ -107,6 +109,7 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 		alg, _ := sig.protectedHeader["alg"].(string)
 		jku, _ := sig.protectedHeader["jku"].(string)
 		header, signature := sig.header, sig.signature
+		key := func(kind string) string { return signatureFindingKey(kind, sig) }
 
 		// Check 1: alg:none or missing protected alg
 		switch alg {
@@ -120,9 +123,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				Description: "The protected header declares an unsigned JWS algorithm. " +
 					"Clients that require an authenticated card must reject it; a client that " +
 					"accepts unsigned cards could accept a forged card. This check does not test a client.",
-				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: none; protected header omitted", i),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
+				Evidence:       fmt.Sprintf("signatures[%d].protected.alg: none; protected header omitted", i),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      cardURL,
+				FingerprintKey: key("alg:none"),
 			})
 		case "":
 			findings = append(findings, attack.Finding{
@@ -134,9 +138,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				Description: "A2A requires alg in the protected JWS header. This signature " +
 					"does not meet that requirement; missing alg does not show that any client " +
 					"accepts a forged card.",
-				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: missing; protected header omitted", i),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
+				Evidence:       fmt.Sprintf("signatures[%d].protected.alg: missing; protected header omitted", i),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      cardURL,
+				FingerprintKey: key("alg:missing"),
 			})
 		}
 
@@ -152,9 +157,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					"key as the signer. For a public agent card, every verifying client must share the " +
 					"signing secret. A verifier that accepts an untrusted algorithm could also " +
 					"be vulnerable to key confusion.",
-				Evidence:    fmt.Sprintf("signatures[%d].protected.alg: HS-prefixed; protected header omitted", i),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
+				Evidence:       fmt.Sprintf("signatures[%d].protected.alg: HS-prefixed; protected header omitted", i),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      cardURL,
+				FingerprintKey: key("alg:hs"),
 			})
 		}
 
@@ -169,9 +175,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 				Description: "The signature field is empty but alg is not \"none\". This card will " +
 					"fail verification in correct implementations but may silently pass broken ones " +
 					"that skip the signature bytes check.",
-				Evidence:    fmt.Sprintf("signatures[%d]: non-none alg, empty signature; protected header omitted", i),
-				Remediation: e.rule.Remediation,
-				TargetURL:   cardURL,
+				Evidence:       fmt.Sprintf("signatures[%d]: non-none alg, empty signature; protected header omitted", i),
+				Remediation:    e.rule.Remediation,
+				TargetURL:      cardURL,
+				FingerprintKey: key("signature:empty"),
 			})
 		}
 
@@ -193,7 +200,8 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Evidence: fmt.Sprintf("signatures[%d].protected.jku: host differs from agent host; URL omitted", i),
 					Remediation: "Confirm that clients trust this JWKS host and bind its keys to the expected agent. " +
 						"Do not accept arbitrary jku values from untrusted cards.",
-					TargetURL: cardURL,
+					TargetURL:      cardURL,
+					FingerprintKey: key("jku:cross-host"),
 				})
 			}
 			if jkuURL != nil && strings.EqualFold(jkuURL.Scheme, "http") {
@@ -205,9 +213,10 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Title:      fmt.Sprintf("A2A agent card signatures[%d] jku uses plaintext HTTP", i),
 					Description: "The jku URL uses HTTP instead of HTTPS. An attacker with network access " +
 						"can intercept the JWKS fetch and substitute malicious keys.",
-					Evidence:    fmt.Sprintf("signatures[%d].protected.jku: HTTP scheme; URL omitted", i),
-					Remediation: e.rule.Remediation,
-					TargetURL:   cardURL,
+					Evidence:       fmt.Sprintf("signatures[%d].protected.jku: HTTP scheme; URL omitted", i),
+					Remediation:    e.rule.Remediation,
+					TargetURL:      cardURL,
+					FingerprintKey: key("jku:http"),
 				})
 			}
 		}
@@ -227,7 +236,8 @@ func (e *JWSAlgConfExecutor) Execute(ctx context.Context, target string, opts at
 					Evidence: fmt.Sprintf("signatures[%d].header.jku: present outside signature; URL omitted", i),
 					Remediation: "Put jku in the protected header, or ensure clients pin the expected " +
 						"key source and reject untrusted key URLs.",
-					TargetURL: cardURL,
+					TargetURL:      cardURL,
+					FingerprintKey: key("jku:unprotected"),
 				})
 			}
 		}
@@ -244,6 +254,18 @@ type cardSignature struct {
 	protectedHeader map[string]interface{}
 	header          map[string]interface{}
 	signature       string
+}
+
+func signatureFindingKey(kind string, sig cardSignature) string {
+	field := func(values map[string]interface{}, name string) string {
+		value, _ := values[name].(string)
+		return value
+	}
+	metadata := fmt.Sprintf("%q:%q:%q:%q:%q",
+		field(sig.protectedHeader, "alg"), field(sig.protectedHeader, "kid"),
+		field(sig.protectedHeader, "jku"), field(sig.header, "kid"), field(sig.header, "jku"))
+	sum := sha256.Sum256([]byte(metadata))
+	return fmt.Sprintf("%s:%x", kind, sum)
 }
 
 func parseCardSignature(raw interface{}) (cardSignature, bool) {
