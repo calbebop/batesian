@@ -49,6 +49,8 @@ func gateErrorServer(t *testing.T, phase string, status, code int, message strin
 			if phase == "incomplete-initialize" {
 				delete(result, "capabilities")
 			}
+		} else if phase == "incomplete-method" {
+			result = map[string]interface{}{}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
 	}))
@@ -117,5 +119,23 @@ func TestProbeGate_IncompleteInitialize(t *testing.T) {
 	_, verdict, reason := probeForgedAtMethod(context.Background(), client, srv.URL, "tools/list", "forged")
 	if verdict != accessUndetermined || reason == "" {
 		t.Fatalf("incomplete forged handshake produced verdict %v, reason %q", verdict, reason)
+	}
+}
+
+func TestLegacyAuth_IncompleteMethodResult(t *testing.T) {
+	srv := gateErrorServer(t, "incomplete-method", 200, 0, "")
+	defer srv.Close()
+	client := attack.NewUnauthHTTPClient(attack.Options{TimeoutSeconds: 5}, attack.NewVars(srv.URL, ""))
+
+	if gate := probeInitGate(t.Context(), client, srv.URL); gate.gate != gateUnknown {
+		t.Errorf("incomplete anonymous list established gate %v", gate.gate)
+	}
+	_, verdict, reason := probeForgedAtMethod(t.Context(), client, srv.URL, "tools/list", "forged")
+	if verdict != accessUndetermined || reason == "" {
+		t.Errorf("incomplete forged list produced verdict %v, reason %q", verdict, reason)
+	}
+	gate := gateProbe{gate: gateAfterInit, method: "tools/list"}
+	if verdict := crossLegacyBearer(t.Context(), client, srv.URL, gate, "other-resource-token"); verdict != accessUndetermined {
+		t.Errorf("incomplete cross-audience list produced verdict %v", verdict)
 	}
 }

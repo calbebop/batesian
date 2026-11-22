@@ -572,17 +572,21 @@ func ungatedInitServer(t *testing.T, mode string) *httptest.Server {
 			switch mode {
 			case "open":
 				accepted = true
-			case "presence", "anon-notify-503", "forged-notify-rpc-error":
+			case "presence", "malformed-list", "anon-notify-503", "forged-notify-rpc-error":
 				accepted = strings.HasPrefix(authz, "Bearer ")
 			case "validate":
 				accepted = authz == "Bearer good-token"
 			}
 			if accepted {
 				w.WriteHeader(http.StatusOK)
+				result := map[string]interface{}{"tools": []interface{}{}, "private": "server-private-canary"}
+				if mode == "malformed-list" {
+					result = map[string]interface{}{}
+				}
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      req.ID,
-					"result":  map[string]interface{}{"tools": []interface{}{}, "private": "server-private-canary"},
+					"result":  result,
 				})
 				return
 			}
@@ -636,6 +640,15 @@ func TestTokenReplay_UngatedInitPresenceOnlyGateFiresAtMethod(t *testing.T) {
 			!strings.Contains(f.Evidence, "response content omitted") {
 			t.Errorf("token or response content leaked into finding: %+v", f)
 		}
+	}
+}
+
+func TestTokenReplay_UngatedInitMalformedListingIsInconclusive(t *testing.T) {
+	srv := ungatedInitServer(t, "malformed-list")
+	defer srv.Close()
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(context.Background(), srv.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) {
+		t.Fatalf("malformed listing: findings=%+v, err=%v", findings, err)
 	}
 }
 

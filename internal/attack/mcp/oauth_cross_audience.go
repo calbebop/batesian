@@ -202,7 +202,7 @@ func crossLegacyBearer(ctx context.Context, client *attack.HTTPClient, endpoint 
 	methodResp, methodErr := session.postShaping(ctx, client, 10, gate.method, nil, func(h map[string]string) {
 		h["Authorization"] = "Bearer " + token
 	})
-	return classifyAuthAccess(methodResp, methodErr, 10)
+	return classifyLegacyMethodAccess(methodResp, methodErr, 10, gate.method)
 }
 
 func (e *OAuthAudienceExecutor) crossAudienceFinding(endpoint, method string, era Era) attack.Finding {
