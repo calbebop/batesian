@@ -39,7 +39,15 @@ func probeModernAuthGate(ctx context.Context, anon *attack.HTTPClient, ep string
 }
 
 func hasBearerChallenge(resp *attack.Response) bool {
-	return resp != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Headers.Get("WWW-Authenticate"))), "bearer")
+	if resp == nil {
+		return false
+	}
+	for _, challenge := range authChallenges(resp.Headers) {
+		if strings.EqualFold(challenge.scheme, "Bearer") {
+			return true
+		}
+	}
+	return false
 }
 
 func probeModernBearer(ctx context.Context, anon *attack.HTTPClient, ep, method, token string) (*attack.Response, accessVerdict) {
