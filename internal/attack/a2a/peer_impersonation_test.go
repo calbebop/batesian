@@ -614,6 +614,67 @@ func TestPeerImpersonation_IssuerCandidateVerdicts(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_UsesRouteProtectedResourceMetadata(t *testing.T) {
+	const route = "/tenant/a2a"
+	for _, basePath := range []string{"", route} {
+		t.Run("base="+basePath, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case basePath + "/.well-known/agent-card.json":
+					writeJSON(w, map[string]interface{}{
+						"name": "tenant-agent", "version": "1.0", "url": srv.URL + route,
+					})
+					return
+				case "/.well-known/oauth-protected-resource" + route:
+					writeJSON(w, map[string]interface{}{
+						"resource": srv.URL + route, "authorization_servers": []string{testIssuer},
+					})
+					return
+				case "/.well-known/oauth-protected-resource":
+					writeJSON(w, map[string]interface{}{
+						"resource": srv.URL, "authorization_servers": []string{"https://wrong.example.test"},
+					})
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				if request["method"] != "SendMessage" && request["method"] != "message/send" {
+					rpcErr(w, request["id"], -32601, "Method not found")
+					return
+				}
+				parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+				if len(parts) != 3 {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+				var claims struct {
+					Issuer string `json:"iss"`
+				}
+				if err != nil || json.Unmarshal(payload, &claims) != nil || claims.Issuer != testIssuer {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": request["id"],
+					"result": map[string]interface{}{"id": "task-tenant", "status": map[string]interface{}{"state": "completed"}},
+				})
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), srv.URL+basePath, testOpts())
+			if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
+				t.Fatalf("route issuer was missed: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 // TestPeerImpersonation_NotA2AServer verifies that against a server that returns
 // 404 for all requests (no reachable A2A endpoint) the rule reports inconclusive
 // rather than a (misleading) clean result.
