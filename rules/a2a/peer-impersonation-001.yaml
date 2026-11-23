@@ -15,8 +15,12 @@ info:
     A direct Message counts as processing only when it is a distinct agent reply
     with valid parts, not an echo of the sent user Message.
 
+    A rejected token does not establish a clean result if its issuer was guessed
+    from an OAuth2 flow URL or selected from multiple published candidates.
+
   references:
     - https://a2a-protocol.org/v1.0.1/specification/
+    - https://www.rfc-editor.org/rfc/rfc9728.html
     - https://owasp.org/www-project-top-ten/2021/A07_2021-Identification_and_Authentication_Failures
     - https://datatracker.ietf.org/doc/html/rfc7519
     - https://cwe.mitre.org/data/definitions/290.html

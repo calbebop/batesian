@@ -108,8 +108,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 		if !forgedOK && baselineOK {
 			incomplete = append(incomplete, wire+" anonymous request succeeded while the forged token was refused")
 		}
-		if !forgedOK && !claims.discovered() {
-			incomplete = append(incomplete, wire+" no trusted issuer was published for the forged token")
+		if !forgedOK && !claims.issuerReliable {
+			incomplete = append(incomplete, wire+" "+claims.issuerUncertainty)
 		}
 
 		switch {
@@ -321,38 +321,24 @@ func methodAbsent(resp *attack.Response) bool {
 	return ok && code == methodNotFound
 }
 
-// fallbackForgedIssuer is used only when the target publishes no issuer anywhere.
-// A token carrying it proves nothing about signature verification on a server
-// that filters issuers, which is why discovery is attempted first and why a
-// refusal under this fallback is reported as inconclusive.
+// fallbackForgedIssuer is used when no usable issuer candidate is published.
 const fallbackForgedIssuer = "https://legitimate-orchestrator.example.com"
 
-// forgedClaims are the issuer and audience the forged token will carry, and
-// whether they came from the target or had to be invented.
+// forgedClaims tracks whether a refusal can be judged against the chosen issuer.
 type forgedClaims struct {
-	iss    string
-	aud    string
-	source string // where iss came from, for the finding's evidence
+	iss               string
+	aud               string
+	source            string
+	issuerReliable    bool
+	issuerUncertainty string
 }
 
-// discovered reports whether the issuer came from the target rather than being
-// fabricated, which is what makes a refusal meaningful.
-func (c forgedClaims) discovered() bool { return c.iss != fallbackForgedIssuer }
-
-// deriveForgedClaims finds the issuer and audience the target actually trusts.
-//
-// Two sources, in order of authority:
-//  1. RFC 9728 protected-resource metadata, which names the authorization
-//     servers and the canonical resource identifier outright.
-//  2. The agent card's security schemes: an openIdConnect scheme's issuer is its
-//     configuration URL minus the well-known suffix, and an OAuth2 flow's issuer
-//     is the origin of its authorization or token endpoint.
-//
-// The audience falls back to the card's service URL and then to the target,
-// since an audience mismatch confounds the probe the same way an issuer
-// mismatch does.
+// deriveForgedClaims chooses a published issuer or a tentative endpoint-origin guess.
 func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL, target string, card *protoa2a.AgentCard) forgedClaims {
-	out := forgedClaims{iss: fallbackForgedIssuer, aud: target, source: "fabricated (target published no issuer)"}
+	out := forgedClaims{
+		iss: fallbackForgedIssuer, aud: target, source: "fabricated (target published no issuer)",
+		issuerUncertainty: "no trusted issuer was published for the forged token",
+	}
 
 	if card != nil {
 		if u := card.GetServiceURL(); u != "" {
@@ -367,14 +353,28 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 			AuthorizationServers []string `json:"authorization_servers"`
 		}
 		if json.Unmarshal(resp.Body, &meta) == nil {
-			if len(meta.AuthorizationServers) > 0 && meta.AuthorizationServers[0] != "" {
-				out.iss = strings.TrimSuffix(meta.AuthorizationServers[0], "/")
+			selected := ""
+			for _, issuer := range meta.AuthorizationServers {
+				if issuer != "" {
+					selected = issuer
+					break
+				}
+			}
+			if selected != "" {
+				out.iss = selected
 				out.source = "protected-resource metadata (authorization_servers)"
+				out.issuerReliable = len(meta.AuthorizationServers) == 1 && validIssuerIdentifier(out.iss)
+				switch {
+				case len(meta.AuthorizationServers) > 1:
+					out.issuerUncertainty = "multiple authorization-server issuers were published; only one was tested"
+				case !validIssuerIdentifier(out.iss):
+					out.issuerUncertainty = "protected-resource metadata did not provide a valid issuer identifier"
+				}
 			}
 			if meta.Resource != "" {
 				out.aud = meta.Resource
 			}
-			if out.discovered() {
+			if selected != "" {
 				return out
 			}
 		}
@@ -390,33 +390,61 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	var selected string
+	selectedReliable := false
+	candidates := map[string]bool{}
 	for _, name := range names {
-		if iss := issuerFromScheme(card.SecuritySchemes[name]); iss != "" {
-			out.iss = iss
-			out.source = "agent card security scheme"
-			return out
+		iss, reliable := issuerFromScheme(card.SecuritySchemes[name])
+		if iss == "" {
+			continue
+		}
+		candidates[iss] = true
+		if selected == "" || (!selectedReliable && reliable) {
+			selected, selectedReliable = iss, reliable
+		}
+	}
+	if selected != "" {
+		out.iss = selected
+		out.source = "agent card security scheme"
+		out.issuerReliable = selectedReliable && len(candidates) == 1
+		switch {
+		case len(candidates) > 1:
+			out.issuerUncertainty = "multiple candidate issuers were published; only one was tested"
+		case !selectedReliable:
+			out.source = "agent card security scheme (issuer inferred)"
+			out.issuerUncertainty = "the selected security scheme URL is not an issuer identifier"
 		}
 	}
 	return out
 }
 
-// issuerFromScheme extracts an issuer from one declared security scheme, or ""
-// when the scheme carries no issuer (an apiKey or plain bearer scheme does not).
-func issuerFromScheme(s protoa2a.SecurityScheme) string {
+// issuerFromScheme marks flow endpoint origins as guesses, not issuer identifiers.
+func issuerFromScheme(s protoa2a.SecurityScheme) (string, bool) {
 	if s.OpenIDConnect != nil && s.OpenIDConnect.OpenIDConnectURL != "" {
 		u := s.OpenIDConnect.OpenIDConnectURL
-		// An OIDC issuer is its configuration URL without the well-known suffix.
-		u = strings.TrimSuffix(u, "/.well-known/openid-configuration")
-		return strings.TrimSuffix(u, "/")
+		if !validIssuerIdentifier(u) {
+			return "", false
+		}
+		const suffix = "/.well-known/openid-configuration"
+		if strings.HasSuffix(u, suffix) {
+			return strings.TrimSuffix(u, suffix), true
+		}
+		return u, false
 	}
 	if s.OAuth2 != nil {
 		for _, endpoint := range oauthFlowEndpoints(s.OAuth2.Flows) {
 			if origin := urlOrigin(endpoint); origin != "" {
-				return origin
+				return origin, false
 			}
 		}
 	}
-	return ""
+	return "", false
+}
+
+func validIssuerIdentifier(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") &&
+		u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
 }
 
 // oauthFlowEndpoints lists the authorization and token endpoints declared across
@@ -442,8 +470,7 @@ func oauthFlowEndpoints(f protoa2a.OAuthFlows) []string {
 	return out
 }
 
-// urlOrigin reduces an endpoint URL to scheme://host, which is the closest an
-// OAuth2 flow URL gets to naming its issuer.
+// urlOrigin returns a flow endpoint's origin as a tentative issuer candidate.
 func urlOrigin(raw string) string {
 	if raw == "" {
 		return ""
