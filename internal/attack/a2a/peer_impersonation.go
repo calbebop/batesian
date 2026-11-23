@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/calbebop/batesian/internal/attack"
-	"github.com/calbebop/batesian/internal/endpoint"
 	protoa2a "github.com/calbebop/batesian/internal/protocol/a2a"
 )
 
@@ -71,7 +70,7 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 
 	// Step 2: Build the forged JWT using a random signing key, carrying the issuer
 	// and audience the target actually trusts.
-	claims := deriveForgedClaims(ctx, client, vars.BaseURL, target, card)
+	claims := deriveForgedClaims(ctx, client, vars.BaseURL, endpoint, target, card)
 	forgedToken, err := buildForgedJWT(agentName, claims.iss, claims.aud)
 	if err != nil {
 		return nil, fmt.Errorf("building forged JWT: %w", err)
@@ -334,7 +333,7 @@ type forgedClaims struct {
 }
 
 // deriveForgedClaims chooses a published issuer or a tentative endpoint-origin guess.
-func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL, target string, card *protoa2a.AgentCard) forgedClaims {
+func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL, endpointURL, target string, card *protoa2a.AgentCard) forgedClaims {
 	out := forgedClaims{
 		iss: fallbackForgedIssuer, aud: target, source: "fabricated (target published no issuer)",
 		issuerUncertainty: "no trusted issuer was published for the forged token",
@@ -346,8 +345,12 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 		}
 	}
 
-	// Source 1: protected-resource metadata.
-	if resp, err := client.GET(ctx, endpoint.AppendPath(baseURL, "/.well-known/oauth-protected-resource"), nil); err == nil && resp.IsSuccess() {
+	// Prefer metadata for the selected route before the origin-wide fallback.
+	for _, metadataURL := range peerMetadataURLs(baseURL, endpointURL) {
+		resp, err := client.GET(ctx, metadataURL, nil)
+		if err != nil || !resp.IsSuccess() {
+			continue
+		}
 		var meta struct {
 			Resource             string   `json:"resource"`
 			AuthorizationServers []string `json:"authorization_servers"`
@@ -416,6 +419,33 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 		}
 	}
 	return out
+}
+
+func peerMetadataURLs(baseURL, endpointURL string) []string {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return nil
+	}
+	origin := base.Scheme + "://" + base.Host
+	const path = "/.well-known/oauth-protected-resource"
+	urls := make([]string, 0, 3)
+	seen := map[string]bool{}
+	for _, raw := range []string{endpointURL, baseURL} {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+			continue
+		}
+		resourcePath := strings.TrimSuffix(u.EscapedPath(), "/")
+		if resourcePath == "" {
+			continue
+		}
+		metadataURL := origin + path + resourcePath
+		if !seen[metadataURL] {
+			seen[metadataURL] = true
+			urls = append(urls, metadataURL)
+		}
+	}
+	return append(urls, origin+path)
 }
 
 // issuerFromScheme marks flow endpoint origins as guesses, not issuer identifiers.
