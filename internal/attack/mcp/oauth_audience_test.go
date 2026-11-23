@@ -316,23 +316,24 @@ func TestOAuthAudience_AutoDiscovery_FromResourceMetadata(t *testing.T) {
 	// the resource value via discovery (no AudienceClaim provided) and still
 	// produce a finding.
 	mux := http.NewServeMux()
+	var srv *httptest.Server
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"resource":              testExpectedAud,
+			"resource":              srv.URL,
 			"authorization_servers": []string{"https://issuer.acme.com"},
 		})
 	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
 		s, ok := aud.(string)
-		if ok && strings.Contains(s, testExpectedAud) {
+		if ok && strings.Contains(s, srv.URL) {
 			initializeOK(w)
 			return
 		}
 		challenge401(w)
 	})
-	srv := httptest.NewServer(mux)
+	srv = httptest.NewServer(mux)
 	defer srv.Close()
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
@@ -377,8 +378,48 @@ func TestOAuthAudience_AutoDiscovery_PathMountedResource(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_RejectsUnboundResourceMetadata(t *testing.T) {
+	for _, advertised := range []bool{false, true} {
+		name := "well-known"
+		if advertised {
+			name = "challenge"
+		}
+		t.Run(name, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/oauth-protected-resource":
+					if advertised {
+						http.NotFound(w, r)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": srv.URL + "/mcp"})
+				case "/metadata":
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": srv.URL})
+				case "/mcp":
+					if advertised {
+						w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+srv.URL+`/metadata"`)
+					}
+					w.WriteHeader(http.StatusUnauthorized)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "resource identifier does not match") {
+				t.Fatalf("unbound audience metadata was trusted: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.T) {
 	mux := http.NewServeMux()
+	var srv *httptest.Server
 	mux.HandleFunc("/broken-metadata", func(w http.ResponseWriter, r *http.Request) {
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
@@ -392,7 +433,7 @@ func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.
 	})
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": testExpectedAud})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": srv.URL})
 	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
@@ -402,13 +443,13 @@ func TestOAuthAudience_AdvertisedMetadataFailureFallsBackToWellKnown(t *testing.
 			return
 		}
 		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
-		if value, ok := aud.(string); ok && strings.Contains(value, testExpectedAud) {
+		if value, ok := aud.(string); ok && strings.Contains(value, srv.URL) {
 			initializeOK(w)
 			return
 		}
 		challenge401(w)
 	})
-	srv := httptest.NewServer(mux)
+	srv = httptest.NewServer(mux)
 	defer srv.Close()
 
 	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
@@ -716,28 +757,28 @@ func TestOAuthAudience_MethodNotAllowedIsNotARejection(t *testing.T) {
 	}
 }
 
-// audienceServerAdvertising is an audienceServer that also serves RFC 9728
-// resource metadata naming `advertised`, so a test can put the operator's
-// --audience-claim and the server's own audience in disagreement.
-func audienceServerAdvertising(t *testing.T, advertised string, acceptFn func(aud interface{}) bool) *httptest.Server {
+// audienceServerAdvertising serves metadata bound to the fixture's origin.
+func audienceServerAdvertising(t *testing.T, acceptFn func(aud interface{}, advertised string) bool) (*httptest.Server, string) {
 	t.Helper()
 	mux := http.NewServeMux()
+	var srv *httptest.Server
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"resource":              advertised,
+			"resource":              srv.URL,
 			"authorization_servers": []string{"https://issuer.acme.com"},
 		})
 	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		aud := decodeJWTAud(t, r.Header.Get("Authorization"))
-		if acceptFn(aud) {
+		if acceptFn(aud, srv.URL) {
 			initializeOK(w)
 			return
 		}
 		challenge401(w)
 	})
-	return httptest.NewServer(mux)
+	srv = httptest.NewServer(mux)
+	return srv, srv.URL
 }
 
 // Every probe is derived from the expected audience, and RFC 7519 compares the
@@ -747,18 +788,17 @@ func audienceServerAdvertising(t *testing.T, advertised string, acceptFn func(au
 // coverage the scan does not have.
 //
 // This server has the substring bug and would be caught with the right value.
-// Hostname case is the whole difference, which is the realistic mistake: DNS is
-// case-insensitive, audience comparison is not.
+// The scheme differs, so none of the probes names the advertised audience.
 func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
-	const advertised = "https://API.acme.com/mcp"
-	srv := audienceServerAdvertising(t, advertised, func(aud interface{}) bool {
+	srv, advertised := audienceServerAdvertising(t, func(aud interface{}, advertised string) bool {
 		s, ok := aud.(string)
 		return ok && strings.Contains(s, advertised)
 	})
 	defer srv.Close()
+	operatorClaim := strings.Replace(advertised, "http://", "https://", 1)
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
-	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience("https://api.acme.com/mcp"))
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(operatorClaim))
 	if len(findings) != 0 {
 		t.Fatalf("expected no findings from probes built on the wrong audience, got %d", len(findings))
 	}
@@ -766,7 +806,7 @@ func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)
 	}
 	// The operator cannot act on this without both values.
-	for _, want := range []string{"https://api.acme.com/mcp", advertised} {
+	for _, want := range []string{operatorClaim, advertised} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("reason should name %q; got: %v", want, err)
 		}
@@ -777,13 +817,13 @@ func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
 // This one accepts any presented bearer token, which the control probe catches
 // regardless of which audience the traps were built from.
 func TestOAuthAudience_ClaimDisagreesButFindingStillReported(t *testing.T) {
-	srv := audienceServerAdvertising(t, "https://API.acme.com/mcp", func(aud interface{}) bool {
+	srv, advertised := audienceServerAdvertising(t, func(aud interface{}, _ string) bool {
 		return aud != nil // accepts every forged token, audience irrelevant
 	})
 	defer srv.Close()
 
 	exec := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC())
-	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience("https://api.acme.com/mcp"))
+	findings, err := exec.Execute(context.Background(), srv.URL, optsWithAudience(strings.Replace(advertised, "http://", "https://", 1)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -795,8 +835,7 @@ func TestOAuthAudience_ClaimDisagreesButFindingStillReported(t *testing.T) {
 // The premise check must not turn a genuine clean result into not tested. Same
 // server, same advertised audience, and the operator passed exactly that value.
 func TestOAuthAudience_ClaimMatchesAdvertisedStaysClean(t *testing.T) {
-	const advertised = "https://API.acme.com/mcp"
-	srv := audienceServerAdvertising(t, advertised, func(aud interface{}) bool {
+	srv, advertised := audienceServerAdvertising(t, func(aud interface{}, advertised string) bool {
 		s, ok := aud.(string)
 		return ok && s == advertised // strict, exact, case-sensitive
 	})

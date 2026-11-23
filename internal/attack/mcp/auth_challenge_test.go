@@ -71,7 +71,7 @@ func TestAuthChallengesInProbes(t *testing.T) {
 	if !gate.ready || gate.method != "server/discover" {
 		t.Errorf("modern gate = %+v, want challenged discovery", gate)
 	}
-	metadataURL, reached, _ := probeWWWAuthenticateResourceMetadata(t.Context(), client, vars.BaseURL)
+	metadataURL, _, reached, _ := probeWWWAuthenticateResourceMetadata(t.Context(), client, vars.BaseURL)
 	if !reached || metadataURL != srv.URL+"/prm" {
 		t.Errorf("OAuth challenge = %q, reached = %t", metadataURL, reached)
 	}

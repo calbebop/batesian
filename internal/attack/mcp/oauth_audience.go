@@ -334,10 +334,10 @@ func hasUpper(s string) bool {
 // metaClient is unauthenticated because step 2 follows a URL the target chose.
 func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HTTPClient,
 	baseURL string) (audience string, mcpReached bool, observed initObservation, err error) {
-	metaURL, mcpReached, observed := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
+	metaURL, challengedEndpoint, mcpReached, observed := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
 	var incomplete error
 	if metaURL != "" {
-		resource, err := fetchResourceFromMetadata(ctx, metaClient, metaURL, false)
+		resource, err := fetchResourceFromMetadata(ctx, metaClient, baseURL, metaURL, challengedEndpoint, false)
 		if err != nil {
 			incomplete = fmt.Errorf("advertised protected-resource metadata: %w", err)
 		}
@@ -346,7 +346,7 @@ func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HT
 		}
 	}
 	for _, wellKnown := range oauthWellKnownURLs(baseURL, "/.well-known/oauth-protected-resource") {
-		resource, err := fetchResourceFromMetadata(ctx, metaClient, wellKnown, true)
+		resource, err := fetchResourceFromMetadata(ctx, metaClient, baseURL, wellKnown, "", true)
 		if err != nil {
 			incomplete = errors.Join(incomplete, fmt.Errorf("well-known protected-resource metadata: %w", err))
 			continue
@@ -366,7 +366,7 @@ func discoverExpectedAudience(ctx context.Context, client, metaClient *attack.HT
 // all". The first is a clean result for an OAuth-gated rule; the second is a
 // target that was never tested.
 func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HTTPClient,
-	baseURL string) (metadataURL string, mcpReached bool, observed initObservation) {
+	baseURL string) (metadataURL, challengedEndpoint string, mcpReached bool, observed initObservation) {
 	body := json.RawMessage(mcpInitBody)
 	for _, ep := range endpointCandidates(baseURL) {
 		// Use no Authorization header (override any opts.Token) so the server
@@ -382,7 +382,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		// header on 403. We accept any response that carries the header.
 		if u := parseResourceMetadataURL(resp.Headers); u != "" {
 			// A challenge is itself proof the endpoint is live and gated.
-			return u, true, observed
+			return u, ep, true, observed
 		}
 		modern := mcpSession{Endpoint: ep, Era: EraModern}
 		modernResp, modernErr := modern.postShaping(ctx, client, 1, "server/discover", nil, func(headers map[string]string) {
@@ -390,7 +390,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		})
 		if modernErr == nil && modernResp != nil {
 			if u := parseResourceMetadataURL(modernResp.Headers); u != "" {
-				return u, true, observed
+				return u, ep, true, observed
 			}
 			if classifyAccess(modernResp, modernErr, 1) == accessGranted && modernWireAdvertised(modernResp.Body) {
 				for _, method := range modernAuthMethods {
@@ -399,18 +399,18 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 					})
 					if methodErr == nil && methodResp != nil {
 						if u := parseResourceMetadataURL(methodResp.Headers); u != "" {
-							return u, true, observed
+							return u, ep, true, observed
 						}
 					}
 				}
-				return "", true, observed
+				return "", "", true, observed
 			}
 		}
 		// An endpoint that answered the handshake is the server, and it issued no
 		// challenge. The remaining candidates are the same server at paths it does
 		// not serve, so walking them only adds 404s.
 		if isMCPInitialize(resp) {
-			return "", true, observed
+			return "", "", true, observed
 		}
 		// It answered and it was neither a challenge nor a handshake. Record why, so
 		// a rule that ends up reporting nothing can say what it met. This probe is
@@ -418,7 +418,7 @@ func probeWWWAuthenticateResourceMetadata(ctx context.Context, client *attack.HT
 		// request rather than about any credential the operator supplied.
 		observed.observe(classifyInitFailure(ep, false, resp))
 	}
-	return "", false, observed
+	return "", "", false, observed
 }
 
 func parseResourceMetadataURL(headers http.Header) string {
@@ -434,16 +434,9 @@ func parseResourceMetadataURL(headers http.Header) string {
 	return ""
 }
 
-// fetchResourceFromMetadata GETs the metadata document and returns the
-// `resource` field if present and absolute.
-//
-// metaURL may come from the target's own WWW-Authenticate challenge, so it can
-// name any host. Protected-resource metadata is public per RFC 9728 and needs no
-// credential, and the caller therefore passes an unauthenticated client: a target
-// that points resource_metadata at a host it controls must not be handed the
-// operator's bearer token. The transport enforces this as well, so this is
-// defence in depth plus a statement of intent at the call site.
-func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, metaURL string, optional bool) (string, error) {
+// fetchResourceFromMetadata reads public metadata from an authorized origin.
+// It accepts only a resource bound to the well-known URL or challenged endpoint.
+func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, metaURL, challengedEndpoint string, optional bool) (string, error) {
 	resp, err := client.GETOAuth(ctx, metaURL, nil)
 	if err != nil {
 		if errors.Is(err, attack.ErrInconclusive) {
@@ -464,11 +457,10 @@ func fetchResourceFromMetadata(ctx context.Context, client *attack.HTTPClient, m
 	if resource == "" {
 		return "", fmt.Errorf("%w: missing resource identifier", attack.ErrInconclusive)
 	}
-	parsed, err := url.Parse(resource)
-	if err != nil || !parsed.IsAbs() {
-		return "", fmt.Errorf("%w: invalid resource identifier", attack.ErrInconclusive)
+	if !prmMatchesTarget(baseURL, resource, metaURL, challengedEndpoint) {
+		return "", fmt.Errorf("%w: resource identifier does not match the requested resource", attack.ErrInconclusive)
 	}
-	return parsed.String(), nil
+	return resource, nil
 }
 
 // runProbesAgainstEndpoint sends every probe to each candidate endpoint and

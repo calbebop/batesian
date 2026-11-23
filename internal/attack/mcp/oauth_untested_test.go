@@ -23,7 +23,7 @@ func oauthOnlyServer(t *testing.T, dcrStatus int) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"resource":"http://%s/v1/mcp","authorization_servers":["http://%s"]}`, r.Host, r.Host)
+		fmt.Fprintf(w, `{"resource":"http://%s","authorization_servers":["http://%s"]}`, r.Host, r.Host)
 	})
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

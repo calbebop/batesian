@@ -52,10 +52,20 @@ func oauthWellKnownURLs(baseURL, wellKnownPath string) []string {
 		var urls []string
 		for _, candidate := range endpointCandidates(baseURL) {
 			parsed, err := url.Parse(candidate)
-			if err != nil || parsed.EscapedPath() == "" || parsed.EscapedPath() == "/" {
+			if err != nil || parsed.Fragment != "" {
 				continue
 			}
-			metadataURL := origin + wellKnownPath + strings.TrimSuffix(parsed.EscapedPath(), "/")
+			resourcePath := parsed.EscapedPath()
+			if resourcePath == "/" {
+				resourcePath = ""
+			}
+			if resourcePath == "" && parsed.RawQuery == "" {
+				continue
+			}
+			metadataURL := origin + wellKnownPath + resourcePath
+			if parsed.RawQuery != "" {
+				metadataURL += "?" + parsed.RawQuery
+			}
 			if !seen[metadataURL] {
 				seen[metadataURL] = true
 				urls = append(urls, metadataURL)
@@ -86,7 +96,8 @@ func oauthDiscoveryIncomplete(reasons []string) error {
 func discoverOAuthFields(ctx context.Context, client *attack.HTTPClient, baseURL string, fields ...string) (map[string]string, error) {
 	var incomplete []string
 	var resource *attack.Response
-	if advertised, _, _ := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL); advertised != "" {
+	advertised, challengedEndpoint, _, _ := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL)
+	if advertised != "" {
 		resp, err := client.GETOAuthUnauth(ctx, advertised)
 		if err != nil || resp == nil {
 			return nil, fmt.Errorf("%w: advertised protected-resource metadata could not be read", attack.ErrInconclusive)
@@ -107,7 +118,7 @@ func discoverOAuthFields(ctx context.Context, client *attack.HTTPClient, baseURL
 			Resource             string   `json:"resource"`
 			AuthorizationServers []string `json:"authorization_servers"`
 		}
-		if json.Unmarshal(resource.Body, &metadata) != nil || !prmMatchesTarget(baseURL, metadata.Resource, resource.URL) || len(metadata.AuthorizationServers) == 0 {
+		if json.Unmarshal(resource.Body, &metadata) != nil || !prmMatchesTarget(baseURL, metadata.Resource, resource.URL, challengedEndpoint) || len(metadata.AuthorizationServers) == 0 {
 			return nil, fmt.Errorf("%w: protected-resource metadata does not identify this resource and its authorization servers", attack.ErrInconclusive)
 		}
 		for _, issuer := range metadata.AuthorizationServers {
@@ -138,23 +149,20 @@ func discoverOAuthFields(ctx context.Context, client *attack.HTTPClient, baseURL
 	return values, oauthDiscoveryIncomplete(incomplete)
 }
 
-func prmMatchesTarget(targetURL, resourceURL, metadataURL string) bool {
-	target, targetErr := url.Parse(targetURL)
-	resource, resourceErr := url.Parse(resourceURL)
-	metadata, metadataErr := url.Parse(metadataURL)
-	if targetErr != nil || resourceErr != nil || metadataErr != nil || !resource.IsAbs() || resource.Host == "" || resource.User != nil || resource.Fragment != "" {
-		return false
-	}
-	if !strings.EqualFold(target.Scheme, resource.Scheme) || !strings.EqualFold(target.Host, resource.Host) {
-		return false
-	}
-	const prefix = "/.well-known/oauth-protected-resource"
-	if strings.HasPrefix(metadata.Path, prefix) {
-		if metadataPath := strings.TrimPrefix(metadata.Path, prefix); metadataPath != "" && metadataPath != resource.Path {
+// prmMatchesTarget enforces RFC 9728's exact resource binding.
+func prmMatchesTarget(targetURL, resourceURL, metadataURL, challengedEndpoint string) bool {
+	expected := challengedEndpoint
+	if expected == "" {
+		var ok bool
+		expected, ok = wellKnownResourceIdentifier(metadataURL)
+		if !ok {
 			return false
 		}
 	}
-	if target.Path == "" || target.Path == "/" {
+	if resourceURL != expected {
+		return false
+	}
+	if challengedEndpoint != "" || resourceURL == targetURL {
 		return true
 	}
 	for _, candidate := range endpointCandidates(targetURL) {
@@ -163,6 +171,23 @@ func prmMatchesTarget(targetURL, resourceURL, metadataURL string) bool {
 		}
 	}
 	return false
+}
+
+func wellKnownResourceIdentifier(metadataURL string) (string, bool) {
+	u, err := url.Parse(metadataURL)
+	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return "", false
+	}
+	const prefix = "/.well-known/oauth-protected-resource"
+	path := u.EscapedPath()
+	if path != prefix && !strings.HasPrefix(path, prefix+"/") {
+		return "", false
+	}
+	resource := u.Scheme + "://" + u.Host + strings.TrimPrefix(path, prefix)
+	if u.RawQuery != "" {
+		resource += "?" + u.RawQuery
+	}
+	return resource, true
 }
 
 func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer string, checkIssuer bool, fields ...string) (map[string]string, []string, error) {
