@@ -346,8 +346,8 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	}
 
 	// Prefer metadata for the selected route before the origin-wide fallback.
-	for _, metadataURL := range peerMetadataURLs(baseURL, endpointURL) {
-		resp, err := client.GET(ctx, metadataURL, nil)
+	for _, candidate := range peerMetadataURLs(baseURL, endpointURL) {
+		resp, err := client.GET(ctx, candidate.url, nil)
 		if err != nil || !resp.IsSuccess() {
 			continue
 		}
@@ -356,6 +356,10 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 			AuthorizationServers []string `json:"authorization_servers"`
 		}
 		if json.Unmarshal(resp.Body, &meta) == nil {
+			if meta.Resource != candidate.resource {
+				out.issuerUncertainty = "protected-resource metadata did not match its resource identifier"
+				continue
+			}
 			selected := ""
 			for _, issuer := range meta.AuthorizationServers {
 				if issuer != "" {
@@ -366,18 +370,20 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 			if selected != "" {
 				out.iss = selected
 				out.source = "protected-resource metadata (authorization_servers)"
-				out.issuerReliable = len(meta.AuthorizationServers) == 1 && validIssuerIdentifier(out.iss)
+				out.issuerReliable = candidate.appliesToTarget && len(meta.AuthorizationServers) == 1 && validIssuerIdentifier(out.iss)
 				switch {
+				case !candidate.appliesToTarget:
+					out.issuerUncertainty = "origin-wide metadata did not identify the selected resource"
 				case len(meta.AuthorizationServers) > 1:
 					out.issuerUncertainty = "multiple authorization-server issuers were published; only one was tested"
 				case !validIssuerIdentifier(out.iss):
 					out.issuerUncertainty = "protected-resource metadata did not provide a valid issuer identifier"
 				}
 			}
-			if meta.Resource != "" {
+			if candidate.appliesToTarget {
 				out.aud = meta.Resource
 			}
-			if selected != "" {
+			if selected != "" && candidate.appliesToTarget {
 				return out
 			}
 		}
@@ -421,31 +427,46 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	return out
 }
 
-func peerMetadataURLs(baseURL, endpointURL string) []string {
+type peerMetadataCandidate struct {
+	url, resource   string
+	appliesToTarget bool
+}
+
+func peerMetadataURLs(baseURL, endpointURL string) []peerMetadataCandidate {
 	base, err := url.Parse(baseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return nil
 	}
 	origin := base.Scheme + "://" + base.Host
 	const path = "/.well-known/oauth-protected-resource"
-	urls := make([]string, 0, 3)
+	urls := make([]peerMetadataCandidate, 0, 3)
 	seen := map[string]bool{}
 	for _, raw := range []string{endpointURL, baseURL} {
 		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+		if err != nil || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) || u.Fragment != "" {
 			continue
 		}
-		resourcePath := strings.TrimSuffix(u.EscapedPath(), "/")
-		if resourcePath == "" {
+		resourcePath := u.EscapedPath()
+		if resourcePath == "/" {
+			resourcePath = ""
+		}
+		if resourcePath == "" && u.RawQuery == "" {
 			continue
 		}
 		metadataURL := origin + path + resourcePath
+		if u.RawQuery != "" {
+			metadataURL += "?" + u.RawQuery
+		}
 		if !seen[metadataURL] {
 			seen[metadataURL] = true
-			urls = append(urls, metadataURL)
+			urls = append(urls, peerMetadataCandidate{url: metadataURL, resource: raw, appliesToTarget: true})
 		}
 	}
-	return append(urls, origin+path)
+	if !seen[origin+path] {
+		rootTarget := (base.EscapedPath() == "" || base.EscapedPath() == "/") && base.RawQuery == ""
+		urls = append(urls, peerMetadataCandidate{url: origin + path, resource: origin, appliesToTarget: rootTarget})
+	}
+	return urls
 }
 
 // issuerFromScheme marks flow endpoint origins as guesses, not issuer identifiers.
