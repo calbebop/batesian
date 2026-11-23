@@ -549,6 +549,8 @@ func TestPeerImpersonation_IssuerCandidateVerdicts(t *testing.T) {
 			map[string]interface{}{"authorization_servers": []string{"", testIssuer}}, testIssuer, false, true},
 		{"resource issuer trailing slash", map[string]interface{}{"name": "slash-agent", "version": "1.0"},
 			map[string]interface{}{"authorization_servers": []string{testIssuer + "/"}}, testIssuer + "/", false, true},
+		{"mismatched metadata uses card issuer", cardWithIssuer("card-agent"),
+			map[string]interface{}{"resource": "https://other.example.test", "authorization_servers": []string{"https://wrong.example.test"}}, testIssuer, false, true},
 		{"unverified issuer accepted", oauthCard, nil, testIssuer, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -597,6 +599,11 @@ func TestPeerImpersonation_IssuerCandidateVerdicts(t *testing.T) {
 				})
 			}))
 			tc.card["url"] = srv.URL
+			if tc.metadata != nil {
+				if _, ok := tc.metadata["resource"]; !ok {
+					tc.metadata["resource"] = srv.URL
+				}
+			}
 			defer srv.Close()
 
 			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
@@ -609,6 +616,46 @@ func TestPeerImpersonation_IssuerCandidateVerdicts(t *testing.T) {
 			}
 			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "issuer") {
 				t.Fatalf("rejected unverified issuer: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
+func TestPeerImpersonation_RejectsUnboundResourceMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, targetPath string
+		resource         func(string) string
+	}{
+		{"missing resource", "", func(string) string { return "" }},
+		{"different resource", "", func(string) string { return "https://other.example.test" }},
+		{"origin metadata for path target", "/tenant/a2a", func(origin string) string { return origin }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case tc.targetPath + "/.well-known/agent-card.json":
+					writeJSON(w, map[string]interface{}{
+						"name": "secured-agent", "version": "1.0", "url": srv.URL + tc.targetPath,
+					})
+				case "/.well-known/oauth-protected-resource":
+					writeJSON(w, map[string]interface{}{
+						"resource": tc.resource(srv.URL), "authorization_servers": []string{testIssuer},
+					})
+				default:
+					if r.Method == http.MethodPost {
+						w.WriteHeader(http.StatusUnauthorized)
+					} else {
+						http.NotFound(w, r)
+					}
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), srv.URL+tc.targetPath, testOpts())
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "resource") {
+				t.Fatalf("unbound metadata was treated as authoritative: findings=%+v err=%v", findings, err)
 			}
 		})
 	}
