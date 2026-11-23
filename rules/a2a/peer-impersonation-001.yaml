@@ -4,8 +4,9 @@ info:
   author: batesian
   severity: high
   description: |
-    Sends a randomly signed JWT and compares SendMessage with an anonymous
-    baseline. Acceptance of the JWT while anonymous access is denied confirms
+    Sends a randomly signed JWT and compares v1 SendMessage and v0.3 message/send
+    with anonymous requests. The strongest observed result is reported. Acceptance
+    of the JWT while anonymous access is denied confirms
     that this token passed the endpoint's authentication gate. It does not prove
     that the claimed peer identity or any elevated privilege was granted.
 

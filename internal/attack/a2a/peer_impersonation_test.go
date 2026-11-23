@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/calbebop/batesian/internal/attack"
@@ -398,6 +399,63 @@ func TestPeerImpersonation_ProperValidation(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected zero findings on secure server, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestPeerImpersonation_ExaminesBothVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		v1Public     bool
+		legacyPublic bool
+		wantSeverity string
+	}{
+		{"protected v1, legacy bypass", false, false, "high"},
+		{"public v1, legacy bypass", true, false, "high"},
+		{"protected v1, public legacy", false, true, "medium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var legacySends atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, cardWithIssuer("dual-wire-agent"))
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				switch request["method"] {
+				case "SendMessage":
+					if !tc.v1Public {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+				case "message/send":
+					legacySends.Add(1)
+					if !tc.legacyPublic && r.Header.Get("Authorization") == "" {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+				default:
+					rpcErr(w, request["id"], -32601, "Method not found")
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": request["id"],
+					"result": map[string]interface{}{"id": "task-dual", "status": map[string]interface{}{"state": "completed"}},
+				})
+			}))
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), srv.URL, testOpts())
+			if err != nil || len(findings) != 1 || findings[0].Severity != tc.wantSeverity ||
+				!strings.Contains(findings[0].Title, "v0.3 message/send") ||
+				!strings.Contains(findings[0].Evidence, "v0.3 message/send") || legacySends.Load() != 2 {
+				t.Fatalf("legacy result: findings=%+v err=%v legacy sends=%d", findings, err, legacySends.Load())
+			}
+		})
 	}
 }
 
@@ -839,12 +897,8 @@ func TestPeerImpersonation_UsesDistinctMessageIDs(t *testing.T) {
 			if err != nil || len(findings) != 1 {
 				t.Fatalf("findings=%+v err=%v", findings, err)
 			}
-			want := 2
-			if supported == "message/send" {
-				want = 4
-			}
-			if len(messageIDs) != want {
-				t.Fatalf("message IDs = %v, want %d probes", messageIDs, want)
+			if len(messageIDs) != 4 {
+				t.Fatalf("message IDs = %v, want four probes", messageIDs)
 			}
 			seen := make(map[string]bool, len(messageIDs))
 			for _, id := range messageIDs {
@@ -1010,7 +1064,7 @@ func TestPeerImpersonation_AcceptsWrappedV1SendResult(t *testing.T) {
 
 // The forged issuer must be stable when the card declares multiple schemes.
 func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
-	observedIssuers := make(chan string, 30)
+	observedIssuers := make(chan string, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "agent-card.json") {
 			writeJSON(w, map[string]interface{}{
@@ -1063,12 +1117,14 @@ func TestPeerImpersonation_IssuerIsDeterministic(t *testing.T) {
 		if err != nil || len(f) == 0 {
 			t.Fatalf("run %d: expected a finding, got %d findings err=%v", i, len(f), err)
 		}
-		iss := <-observedIssuers
-		if iss != "https://old-idp.example.test" {
-			t.Fatalf("run %d forged an unexpected issuer %q", i, iss)
-		}
-		if strings.Contains(f[0].Evidence, iss) {
-			t.Fatalf("run %d copied the issuer into the finding: %s", i, f[0].Evidence)
+		for range 2 {
+			iss := <-observedIssuers
+			if iss != "https://old-idp.example.test" {
+				t.Fatalf("run %d forged an unexpected issuer %q", i, iss)
+			}
+			if strings.Contains(f[0].Evidence, iss) {
+				t.Fatalf("run %d copied the issuer into the finding: %s", i, f[0].Evidence)
+			}
 		}
 	}
 }
