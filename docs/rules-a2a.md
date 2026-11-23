@@ -321,16 +321,19 @@ index and observed condition without copying protected headers or key URLs.
 **Forged JWT Acceptance** | Severity: High / Medium | CWE-290
 
 Forges an HS256 JWT signed with a random key the server cannot know, claiming to
-be a trusted peer agent (`sub`, `iss`, `role`, `aud`), and submits it. The result
-is compared against an anonymous baseline. A **confirmed** finding is reported
-when the random-key token succeeds but the anonymous request is rejected. This
-shows that the token passed the endpoint's gate, not which claim was accepted or
-whether peer-specific privileges were granted. If both requests succeed, the
-rule reports anonymous access as an **indicator** because public access may be
-intentional. A direct `Message` counts as processing only when it has an agent
-role, valid parts, and a message ID distinct from the sent Message.
+be a trusted peer agent (`sub`, `iss`, `role`, `aud`), and submits it. The rule
+compares forged-token and anonymous requests on both v1 `SendMessage` and v0.3
+`message/send`, then reports the stronger observed result. A **confirmed**
+finding is reported when the random-key token succeeds but the anonymous
+request is rejected. This shows that the token passed the endpoint's gate,
+not which claim was accepted or whether peer-specific privileges were granted.
+If both requests succeed, the rule reports anonymous access as an **indicator**
+because public access may be intentional. A direct `Message` counts as
+processing only with an agent role, valid parts, and a message ID distinct from
+the sent Message.
 Findings record the issuer source, wire, and HTTP outcomes without copying the
-card-derived claim values, forged JWT, or send reply.
+card-derived claim values, forged JWT, or send reply. Incomplete comparisons
+remain visible even when another version yields a finding.
 
 ---
 

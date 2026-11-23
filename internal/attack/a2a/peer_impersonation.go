@@ -77,14 +77,12 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 		return nil, fmt.Errorf("building forged JWT: %w", err)
 	}
 
-	// Steps 3 and 4: on each revision the agent might speak, send the forged probe
-	// and the unauthenticated baseline, and keep the first pair where the send
-	// method exists. The baseline uses unauthClient so opts.Token is not injected.
-	forgedResp, baselineResp, wire, forgedOK, baselineOK, incomplete, ok := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
+	// Compare both supported send methods; one version may enforce a different gate.
+	pairs, incomplete := e.probeWires(ctx, client, unauthClient, endpoint, forgedToken, vars.RandID)
 	if cardReadReason != "" {
 		incomplete = append(incomplete, "Agent Card prerequisite: "+cardReadReason)
 	}
-	if !ok {
+	if len(pairs) == 0 {
 		if len(incomplete) > 0 {
 			return nil, fmt.Errorf("%w: peer assessment incomplete: %s", attack.ErrInconclusive,
 				strings.Join(incomplete, "; "))
@@ -94,72 +92,80 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 			attack.ErrInconclusive, endpoint)
 	}
 
-	forgedDenied := peerAuthDenied(forgedResp)
-	baselineDenied := peerAuthDenied(baselineResp)
-
-	if forgedOK && !baselineOK && !baselineDenied {
-		incomplete = append(incomplete, wire+" anonymous baseline did not establish an authentication rejection")
-	}
-	if !forgedOK && !forgedDenied {
-		incomplete = append(incomplete, wire+" forged token response did not establish an authentication rejection")
-	}
-	if !forgedOK && baselineOK {
-		incomplete = append(incomplete, wire+" anonymous request succeeded while the forged token was refused")
-	}
-	if !forgedOK && !claims.discovered() {
-		incomplete = append(incomplete, "no trusted issuer was published for the forged token")
-	}
-	findingObserved := forgedOK && (baselineOK || baselineDenied)
-	if len(incomplete) > 0 && !findingObserved {
-		return nil, fmt.Errorf("%w: peer assessment incomplete: %s", attack.ErrInconclusive,
-			strings.Join(incomplete, "; "))
-	}
-
 	var findings []attack.Finding
+	for _, pair := range pairs {
+		forgedResp, baselineResp := pair.forged, pair.baseline
+		wire, forgedOK, baselineOK := pair.wire, pair.forgedOK, pair.baselineOK
+		forgedDenied := peerAuthDenied(forgedResp)
+		baselineDenied := peerAuthDenied(baselineResp)
 
-	switch {
-	case forgedOK && baselineDenied:
-		findings = append(findings, attack.Finding{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "high",
-			Confidence: attack.ConfirmedExploit,
-			Title:      "A2A SendMessage accepted a randomly signed JWT but rejected anonymous access",
-			Description: fmt.Sprintf(
-				"A randomly signed HS256 JWT was accepted (HTTP %d), while "+
-					"the same request without a token was rejected (HTTP %d). This demonstrates "+
-					"that this token passed the endpoint's authentication gate. It does not establish "+
-					"which claim was honored or that peer-specific privileges were granted.",
-				forgedResp.StatusCode, baselineResp.StatusCode),
-			Evidence: fmt.Sprintf(
-				"token: randomly signed HS256 JWT (value omitted)\nissuer source: %s\nissuer and audience values omitted\n"+
+		if forgedOK && !baselineOK && !baselineDenied {
+			incomplete = append(incomplete, wire+" anonymous baseline did not establish an authentication rejection")
+		}
+		if !forgedOK && !forgedDenied {
+			incomplete = append(incomplete, wire+" forged token response did not establish an authentication rejection")
+		}
+		if !forgedOK && baselineOK {
+			incomplete = append(incomplete, wire+" anonymous request succeeded while the forged token was refused")
+		}
+		if !forgedOK && !claims.discovered() {
+			incomplete = append(incomplete, wire+" no trusted issuer was published for the forged token")
+		}
+
+		switch {
+		case forgedOK && baselineDenied:
+			findings = append(findings, attack.Finding{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "high",
+				Confidence: attack.ConfirmedExploit,
+				Title:      fmt.Sprintf("A2A %s accepted a randomly signed JWT but rejected anonymous access", wire),
+				Description: fmt.Sprintf(
+					"A randomly signed HS256 JWT was accepted (HTTP %d), while "+
+						"the same request without a token was rejected (HTTP %d). This demonstrates "+
+						"that this token passed the endpoint's authentication gate. It does not establish "+
+						"which claim was honored or that peer-specific privileges were granted.",
+					forgedResp.StatusCode, baselineResp.StatusCode),
+				Evidence: fmt.Sprintf(
+					"token: randomly signed HS256 JWT (value omitted)\nissuer source: %s\nissuer and audience values omitted\n"+
+						"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
+					claims.source, wire,
+					forgedResp.StatusCode, baselineResp.StatusCode),
+				Remediation: e.rule.Remediation,
+				TargetURL:   endpoint,
+			})
+
+		case forgedOK && baselineOK:
+			findings = append(findings, attack.Finding{
+				RuleID:     e.rule.ID,
+				RuleName:   e.rule.Name,
+				Severity:   "medium",
+				Confidence: attack.RiskIndicator,
+				Title:      fmt.Sprintf("A2A %s accepted an anonymous request", wire),
+				Description: fmt.Sprintf(
+					"Both a randomly signed JWT request (HTTP %d) and an anonymous request "+
+						"(HTTP %d) were accepted. This endpoint permits anonymous send "+
+						"requests; whether that violates policy depends on the deployment. No "+
+						"peer identity or elevated privilege was verified.",
+					forgedResp.StatusCode, baselineResp.StatusCode),
+				Evidence: fmt.Sprintf(
 					"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
-				claims.source, wire,
-				forgedResp.StatusCode, baselineResp.StatusCode),
-			Remediation: e.rule.Remediation,
-			TargetURL:   endpoint,
-		})
+					wire, forgedResp.StatusCode, baselineResp.StatusCode),
+				Remediation: e.rule.Remediation,
+				TargetURL:   endpoint,
+			})
+		}
+	}
 
-	case forgedOK && baselineOK:
-		findings = append(findings, attack.Finding{
-			RuleID:     e.rule.ID,
-			RuleName:   e.rule.Name,
-			Severity:   "medium",
-			Confidence: attack.RiskIndicator,
-			Title:      "A2A SendMessage accepted an anonymous request",
-			Description: fmt.Sprintf(
-				"Both a randomly signed JWT request (HTTP %d) and an anonymous request "+
-					"(HTTP %d) were accepted. This endpoint permits anonymous SendMessage "+
-					"requests; whether that violates policy depends on the deployment. No "+
-					"peer identity or elevated privilege was verified.",
-				forgedResp.StatusCode, baselineResp.StatusCode),
-			Evidence: fmt.Sprintf(
-				"wire: %s\nForged response: HTTP %d\nBaseline response: HTTP %d\nreply content omitted",
-				wire, forgedResp.StatusCode, baselineResp.StatusCode),
-			Remediation: e.rule.Remediation,
-			TargetURL:   endpoint,
-		})
-
+	if len(findings) > 1 {
+		best := 0
+		for i := range findings {
+			if findings[i].Severity == "high" {
+				best = i
+				break
+			}
+		}
+		findings = []attack.Finding{findings[best]}
 	}
 
 	if cardReadReason != "" {
@@ -228,10 +234,17 @@ func (w impersonationWire) request(requestID, messageID string) map[string]inter
 	return jsonRPCCall(requestID, w.method, params)
 }
 
+type peerProbePair struct {
+	forged, baseline     *attack.Response
+	wire                 string
+	forgedOK, baselineOK bool
+}
+
 // probeWires skips unsupported methods and records unobserved comparisons.
 func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unauthClient *attack.HTTPClient,
-	endpoint, forgedToken, randID string) (forged, baseline *attack.Response, wire string,
-	forgedOK, baselineOK bool, incomplete []string, ok bool) {
+	endpoint, forgedToken, randID string) ([]peerProbePair, []string) {
+	var pairs []peerProbePair
+	var incomplete []string
 	for i, w := range impersonationWires() {
 		requestID := fmt.Sprintf("batesian-peer-%s-%d", randID, i)
 		forgedHeaders := map[string]string{"Authorization": "Bearer " + forgedToken}
@@ -277,9 +290,9 @@ func (e *PeerImpersonationExecutor) probeWires(ctx context.Context, client, unau
 			incomplete = append(incomplete, w.name+" anonymous response did not establish a send result or authentication rejection")
 			continue
 		}
-		return fResp, bResp, w.name, forgedProcessed, baselineProcessed, incomplete, true
+		pairs = append(pairs, peerProbePair{fResp, bResp, w.name, forgedProcessed, baselineProcessed})
 	}
-	return nil, nil, "", false, false, incomplete, false
+	return pairs, incomplete
 }
 
 func peerReplyCorrelated(resp *attack.Response, requestID string) bool {
