@@ -511,6 +511,109 @@ func TestPeerImpersonation_NoPublishedIssuerIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_IssuerCandidateVerdicts(t *testing.T) {
+	oauthCard := map[string]interface{}{
+		"name": "oauth-agent", "version": "1.0",
+		"securitySchemes": map[string]interface{}{
+			"oauth": map[string]interface{}{
+				"type": "oauth2",
+				"flows": map[string]interface{}{
+					"clientCredentials": map[string]interface{}{
+						"tokenUrl": testIssuer + "/oauth/token", "scopes": map[string]interface{}{},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range []struct {
+		name          string
+		card          map[string]interface{}
+		metadata      map[string]interface{}
+		trustedIssuer string
+		acceptAny     bool
+		wantHigh      bool
+	}{
+		{"OAuth flow origin", oauthCard, nil, testIssuer, false, false},
+		{"multiple resource issuers", map[string]interface{}{"name": "multi-agent", "version": "1.0"},
+			map[string]interface{}{"authorization_servers": []string{"https://other.example.test", testIssuer}}, testIssuer, false, false},
+		{"multiple card issuers", map[string]interface{}{
+			"name": "multi-agent", "version": "1.0",
+			"securitySchemes": map[string]interface{}{
+				"a": map[string]interface{}{"type": "openIdConnect", "openIdConnectUrl": "https://other.example.test/.well-known/openid-configuration"},
+				"b": map[string]interface{}{"type": "openIdConnect", "openIdConnectUrl": testIssuer + "/.well-known/openid-configuration"},
+			},
+		}, nil, testIssuer, false, false},
+		{"malformed resource issuer", map[string]interface{}{"name": "bad-agent", "version": "1.0"},
+			map[string]interface{}{"authorization_servers": []string{"not-an-issuer"}}, testIssuer, false, false},
+		{"empty first resource issuer", map[string]interface{}{"name": "empty-agent", "version": "1.0"},
+			map[string]interface{}{"authorization_servers": []string{"", testIssuer}}, testIssuer, false, true},
+		{"resource issuer trailing slash", map[string]interface{}{"name": "slash-agent", "version": "1.0"},
+			map[string]interface{}{"authorization_servers": []string{testIssuer + "/"}}, testIssuer + "/", false, true},
+		{"unverified issuer accepted", oauthCard, nil, testIssuer, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "agent-card.json") {
+					writeJSON(w, tc.card)
+					return
+				}
+				if r.URL.Path == "/.well-known/oauth-protected-resource" {
+					if tc.metadata == nil {
+						http.NotFound(w, r)
+					} else {
+						writeJSON(w, tc.metadata)
+					}
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.NotFound(w, r)
+					return
+				}
+				request := readBody(r)
+				if request["method"] != "SendMessage" && request["method"] != "message/send" {
+					rpcErr(w, request["id"], -32601, "Method not found")
+					return
+				}
+				parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+				if len(parts) != 3 {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+				if err != nil {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				var claims struct {
+					Issuer string `json:"iss"`
+				}
+				if json.Unmarshal(payload, &claims) != nil || (!tc.acceptAny && claims.Issuer != tc.trustedIssuer) {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				writeJSON(w, map[string]interface{}{
+					"jsonrpc": "2.0", "id": request["id"],
+					"result": map[string]interface{}{"id": "task-issuer", "status": map[string]interface{}{"state": "completed"}},
+				})
+			}))
+			tc.card["url"] = srv.URL
+			defer srv.Close()
+
+			findings, err := a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(
+				t.Context(), srv.URL, testOpts())
+			if tc.wantHigh {
+				if err != nil || len(findings) != 1 || findings[0].Severity != "high" {
+					t.Fatalf("accepted random signature: findings=%+v err=%v", findings, err)
+				}
+				return
+			}
+			if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || !strings.Contains(err.Error(), "issuer") {
+				t.Fatalf("rejected unverified issuer: findings=%+v err=%v", findings, err)
+			}
+		})
+	}
+}
+
 // TestPeerImpersonation_NotA2AServer verifies that against a server that returns
 // 404 for all requests (no reachable A2A endpoint) the rule reports inconclusive
 // rather than a (misleading) clean result.

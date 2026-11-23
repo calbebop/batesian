@@ -335,6 +335,12 @@ Findings record the issuer source, wire, and HTTP outcomes without copying the
 card-derived claim values, forged JWT, or send reply. Incomplete comparisons
 remain visible even when another version yields a finding.
 
+A rejection is inconclusive when the issuer came only from an OAuth2 flow URL,
+when the card or protected-resource metadata lists multiple candidate issuers,
+or when the published issuer is malformed. A token endpoint's origin is not an
+issuer identifier. The probe preserves the exact issuer from RFC 9728 metadata,
+including any trailing slash.
+
 ---
 
 ### a2a-artifact-tamper-001
