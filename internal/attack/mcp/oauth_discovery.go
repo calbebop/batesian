@@ -36,6 +36,10 @@ func readOAuthMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, 
 			incomplete = append(incomplete, metadataURL+" returned invalid JSON")
 			continue
 		}
+		if path == "/.well-known/oauth-protected-resource" && !prmMatchesTarget(baseURL, resp.JSONField("resource"), resp.URL, "") {
+			incomplete = append(incomplete, "protected-resource metadata resource does not match the target")
+			continue
+		}
 		return resp, ""
 	}
 	return nil, strings.Join(incomplete, "; ")
