@@ -57,6 +57,7 @@ func TestHTTPClient_ScopesTokenToTargetOrigin(t *testing.T) {
 		{"scheme downgrade", "http://example.com/metadata", false},
 		{"different port", "https://example.com:8443/metadata", false},
 		{"different host", "https://other.example.com/metadata", false},
+		{"invalid destination", "https:///metadata", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,6 +65,33 @@ func TestHTTPClient_ScopesTokenToTargetOrigin(t *testing.T) {
 				t.Errorf("PresentsCredential(%q) = %v, want %v", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestHTTPClient_UnknownTargetOriginWithholdsToken(t *testing.T) {
+	c := attack.NewHTTPClient(attack.Options{Token: "operator-token"}, attack.NewVars("invalid-target", ""))
+	if c.PresentsCredential("https://example.com/mcp") {
+		t.Fatal("client with no target origin must not send the scan token")
+	}
+}
+
+func TestHTTPClient_RejectsURLCredentialsBeforeSending(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer srv.Close()
+
+	c := attack.NewUnauthHTTPClient(attack.Options{}, attack.NewVars(srv.URL, ""))
+	for _, target := range []string{
+		strings.Replace(srv.URL, "://", "://user:secret@", 1) + "/mcp",
+		srv.URL + "/mcp#fragment",
+	} {
+		_, err := c.GET(context.Background(), target, nil)
+		if err == nil || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("GET(%q) error = %v", target, err)
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("rejected URLs made %d requests", hits)
 	}
 }
 

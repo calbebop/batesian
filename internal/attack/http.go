@@ -90,15 +90,14 @@ func augmentRequest(ctx context.Context, method, requestURL string, headers map[
 // plaintext HTTP on the same host.
 //
 // Target-controlled discovery URLs must not receive ambient credentials off-origin.
-// The transport enforces this for every call site; an explicit Authorization header
-// still expresses caller intent. An unknown target origin preserves token delivery.
+// An explicit Authorization header still expresses caller intent.
 func (c *HTTPClient) tokenAllowedFor(rawURL string) bool {
 	if c.targetOrigin == "" {
-		return true
+		return false
 	}
 	origin := originOf(rawURL)
 	if origin == "" {
-		return true
+		return false
 	}
 	return origin == c.targetOrigin
 }
@@ -473,6 +472,9 @@ func (c *HTTPClient) doWithSSE(ctx context.Context, method, url string, body io.
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("building %s %s: %w", method, url, err)
+	}
+	if req.URL.User != nil || strings.Contains(url, "#") {
+		return nil, errors.New("request URL must not contain userinfo or a fragment")
 	}
 	req.Header.Set("User-Agent", "batesian/"+Version+" (https://github.com/calbebop/batesian)")
 	// MCP streamable HTTP requires text/event-stream in Accept; A2A servers ignore it.
