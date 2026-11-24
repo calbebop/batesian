@@ -116,6 +116,7 @@ batesian scan --target https://mcp.example.com
 ```
 
 `BATESIAN_TOKEN` works with both `scan` and `probe`. A non-empty `--token` overrides it. `scan` checks the token in `batesian.yaml` before the environment; `probe` does not load YAML config.
+Target URLs may include a path or query, but cannot include userinfo or a fragment. Supply bearer credentials through `BATESIAN_TOKEN` or `--token`.
 
 ### OAuth client credentials
 

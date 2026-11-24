@@ -92,10 +92,13 @@ func WithSkipTLSVerify() ClientOption {
 func NewClient(baseURL string, opts ...ClientOption) (*Client, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target URL %q: %w", baseURL, err)
+		return nil, errors.New("invalid target URL syntax")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("target URL must use http or https scheme, got %q", u.Scheme)
+	}
+	if u.Opaque != "" || u.Hostname() == "" || u.User != nil || strings.Contains(baseURL, "#") {
+		return nil, errors.New("target URL must have a host and no userinfo or fragment")
 	}
 	c := &Client{
 		http: &http.Client{

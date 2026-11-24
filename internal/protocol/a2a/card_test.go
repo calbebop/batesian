@@ -934,6 +934,9 @@ func TestNewClient_InvalidURL(t *testing.T) {
 	}{
 		{"https://agent.example.com", false},
 		{"http://localhost:8080", false},
+		{"https://user:secret@agent.example.com", true},
+		{"https://agent.example.com/#fragment", true},
+		{"https://agent.example.com/#", true},
 		{"not-a-url", true},
 		{"ftp://example.com", true},
 		{"", true},

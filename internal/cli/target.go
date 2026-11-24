@@ -24,6 +24,12 @@ func validateTargetURL(raw string) error {
 	if u.Hostname() == "" {
 		return errors.New("invalid target URL: missing host")
 	}
+	if u.User != nil {
+		return errors.New("invalid target URL: userinfo is not supported")
+	}
+	if strings.Contains(raw, "#") {
+		return errors.New("invalid target URL: fragments are not supported")
+	}
 	return nil
 }
 

@@ -13,6 +13,18 @@ import (
 	"testing"
 )
 
+func TestNewClient_RejectsURLCredentials(t *testing.T) {
+	for _, target := range []string{
+		"https://user:secret@example.com/mcp",
+		"https://example.com/mcp#fragment",
+		"https://example.com/mcp#",
+	} {
+		if _, err := NewClient(target); err == nil || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("NewClient(%q) error = %v", target, err)
+		}
+	}
+}
+
 // TestWithSkipTLSVerify_TakesEffect confirms the security-relevant skip-TLS
 // option actually enables InsecureSkipVerify on a normally-constructed client.
 func TestWithSkipTLSVerify_TakesEffect(t *testing.T) {
