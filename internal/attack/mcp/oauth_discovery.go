@@ -28,7 +28,7 @@ func readOAuthMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, 
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 			continue
 		}
-		if !resp.IsSuccess() {
+		if resp.StatusCode != http.StatusOK {
 			incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d", metadataURL, resp.StatusCode))
 			continue
 		}
@@ -106,7 +106,7 @@ func discoverOAuthFields(ctx context.Context, client *attack.HTTPClient, baseURL
 		if err != nil || resp == nil {
 			return nil, fmt.Errorf("%w: advertised protected-resource metadata could not be read", attack.ErrInconclusive)
 		}
-		if !resp.IsSuccess() || !resp.IsJSON() {
+		if resp.StatusCode != http.StatusOK || !resp.IsJSON() {
 			return nil, fmt.Errorf("%w: advertised protected-resource metadata returned HTTP %d or invalid JSON", attack.ErrInconclusive, resp.StatusCode)
 		}
 		resource = resp
@@ -209,7 +209,7 @@ func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer
 			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 				continue
 			}
-			if !resp.IsSuccess() || !resp.IsJSON() {
+			if resp.StatusCode != http.StatusOK || !resp.IsJSON() {
 				incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d or invalid JSON", metadataURL, resp.StatusCode))
 				continue
 			}

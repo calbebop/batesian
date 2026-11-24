@@ -277,29 +277,78 @@ func TestOAuthDiscovery_UnboundResourceDoesNotReachRegistration(t *testing.T) {
 	}
 }
 
-func TestOAuthDiscovery_UsesRootAfterUnboundPathResource(t *testing.T) {
-	var registrations atomic.Int32
+func TestOAuthDiscovery_UsesRootAfterInvalidPathResource(t *testing.T) {
+	for _, tc := range []struct {
+		name, resourcePath, issuerPath string
+		status                         int
+	}{
+		{"unbound", "", "", http.StatusOK},
+		{"non-OK", "/mcp", "/wrong", http.StatusCreated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var registrations atomic.Int32
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/.well-known/oauth-protected-resource/mcp":
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"resource": srv.URL + tc.resourcePath, "authorization_servers": []string{srv.URL + tc.issuerPath},
+					})
+				case "/.well-known/oauth-protected-resource":
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"resource": srv.URL, "authorization_servers": []string{srv.URL},
+					})
+				case "/.well-known/oauth-authorization-server":
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"issuer": srv.URL, "registration_endpoint": srv.URL + "/register",
+						"authorization_endpoint": srv.URL + "/authorize",
+					})
+				case "/register":
+					registrations.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri"}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL, testOpts())
+			if len(findings) != 0 || err != nil || registrations.Load() != 1 {
+				t.Fatalf("valid root resource was not used: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
+			}
+		})
+	}
+}
+
+func TestOAuthDiscovery_UsesOIDCAfterNonOKIssuerMetadata(t *testing.T) {
+	var registrations, wrongRegistrations atomic.Int32
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/.well-known/oauth-protected-resource/mcp":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"resource": srv.URL, "authorization_servers": []string{srv.URL},
-			})
-		case "/.well-known/oauth-protected-resource":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"resource": srv.URL, "authorization_servers": []string{srv.URL},
-			})
 		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL, "registration_endpoint": srv.URL + "/wrong",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/.well-known/openid-configuration":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"issuer": srv.URL, "registration_endpoint": srv.URL + "/register",
 				"authorization_endpoint": srv.URL + "/authorize",
 			})
-		case "/register":
-			registrations.Add(1)
+		case "/register", "/wrong":
+			if r.URL.Path == "/register" {
+				registrations.Add(1)
+			} else {
+				wrongRegistrations.Add(1)
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri"}`))
 		default:
@@ -309,7 +358,43 @@ func TestOAuthDiscovery_UsesRootAfterUnboundPathResource(t *testing.T) {
 	defer srv.Close()
 
 	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL, testOpts())
-	if len(findings) != 0 || err != nil || registrations.Load() != 1 {
-		t.Fatalf("valid root resource was not used: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
+	if len(findings) != 0 || err != nil || registrations.Load() != 1 || wrongRegistrations.Load() != 0 {
+		t.Fatalf("invalid issuer metadata was used: findings=%+v registrations=%d wrong=%d err=%v",
+			findings, registrations.Load(), wrongRegistrations.Load(), err)
+	}
+}
+
+func TestOAuthDiscovery_RejectsNonOKChallengeMetadata(t *testing.T) {
+	var registrations atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+srv.URL+`/prm"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/prm":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource": srv.URL + "/mcp", "authorization_servers": []string{srv.URL},
+			})
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL, "registration_endpoint": srv.URL + "/register",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/register":
+			registrations.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL, testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || registrations.Load() != 0 {
+		t.Fatalf("non-200 challenge metadata was used: findings=%+v registrations=%d err=%v",
+			findings, registrations.Load(), err)
 	}
 }
