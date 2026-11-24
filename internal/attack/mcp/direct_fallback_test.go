@@ -164,6 +164,17 @@ func TestDirectModernFallback_ExplicitEndpointStaysNarrow(t *testing.T) {
 	}
 }
 
+func TestDirectModernFallback_PreservesExplicitTrailingSlash(t *testing.T) {
+	ts := directFallbackServer("tools/list", "modern")
+	defer ts.Close()
+	target := ts.URL + "/mcp/"
+	findings, err := mcpattack.NewToolsUnauthExecutor(attack.RuleContext{ID: "mcp-tools-unauth-001"}).
+		Execute(t.Context(), target, testOpts())
+	if err != nil || len(findings) != 1 || findings[0].TargetURL != target {
+		t.Fatalf("explicit trailing-slash target was not probed first: findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestPublicCatalogFindingOutputs(t *testing.T) {
 	ts := directFallbackServer("tools/list", "modern")
 	defer ts.Close()

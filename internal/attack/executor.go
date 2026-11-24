@@ -220,7 +220,7 @@ type Vars struct {
 // NewVars creates a Vars instance for the given target, pre-populating RandID.
 func NewVars(baseURL, oobListener string) Vars {
 	return Vars{
-		BaseURL:     strings.TrimRight(baseURL, "/"),
+		BaseURL:     baseURL,
 		OOBListener: oobListener,
 		RandID:      randomID(),
 	}
@@ -228,7 +228,7 @@ func NewVars(baseURL, oobListener string) Vars {
 
 // Expand replaces {{BaseURL}}, {{OOBListener}}, and {{RandID}} in s.
 func (v Vars) Expand(s string) string {
-	s = strings.ReplaceAll(s, "{{BaseURL}}", v.BaseURL)
+	s = strings.ReplaceAll(s, "{{BaseURL}}", strings.TrimRight(v.BaseURL, "/"))
 	s = strings.ReplaceAll(s, "{{OOBListener}}", v.OOBListener)
 	s = strings.ReplaceAll(s, "{{RandID}}", v.RandID)
 	return s

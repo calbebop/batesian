@@ -12,31 +12,17 @@ import (
 	"strings"
 )
 
-// Candidates returns the URLs to try under baseURL, in probe order.
-//
-// Each entry in paths is appended to the target, which is how a bare origin is
-// searched: https://host yields https://host/mcp, https://host/ and so on.
-//
-// A target that already names a path is a different case. An operator scanning
-// an MCP server almost always has its published URL to hand, and that URL
-// usually carries the path the handler is mounted at (https://host/mcp is the
-// convention). Appending to that reaches https://host/mcp/mcp and friends but
-// never https://host/mcp itself, so nothing answers and every rule reports that
-// it could not find a testable endpoint. The target the operator actually named
-// is therefore probed first, ahead of the conventional paths.
-//
-// Only the appended forms are tried for a bare origin, exactly as before: with
-// no path to preserve there is nothing to put first, so probe order for the
-// common case is unchanged.
-//
-// One trailing slash is trimmed from baseURL first, so https://host/mcp/ is
-// treated as https://host/mcp rather than producing https://host/mcp//mcp.
+// Candidates tries an explicit path first, then its slash-trimmed form and
+// conventional child paths. Bare origins use only the conventional paths.
 func Candidates(baseURL string, paths []string) []string {
 	base := AppendPath(baseURL, "")
 
-	out := make([]string, 0, len(paths)+1)
+	out := make([]string, 0, len(paths)+2)
 	if hasPath(base) {
-		out = append(out, base)
+		out = append(out, baseURL)
+		if base != baseURL {
+			out = append(out, base)
+		}
 	}
 	for _, p := range paths {
 		out = append(out, appendPath(base, p, false))

@@ -71,6 +71,41 @@ func TestTryDiscover_RejectsUnrelatedOrIncompleteReplies(t *testing.T) {
 	}
 }
 
+func TestConnectPrefersExplicitTrailingSlash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" && r.URL.Path != "/mcp/" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			ID     interface{} `json:"id"`
+			Method string      `json:"method"`
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Method != "server/discover" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": request.ID,
+			"result": map[string]interface{}{
+				"resultType": "complete", "supportedVersions": []string{modernVersion},
+				"capabilities": map[string]interface{}{},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL + "/mcp/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.Connect(t.Context())
+	if err != nil || session.Endpoint != srv.URL+"/mcp/" {
+		t.Fatalf("explicit trailing-slash route was not selected: session=%+v err=%v", session, err)
+	}
+}
+
 func TestListResult_RejectsModernProtocolErrors(t *testing.T) {
 	for _, body := range []string{
 		`{"jsonrpc":"2.0","id":10,"error":{"code":-32601,"message":"not found"}}`,

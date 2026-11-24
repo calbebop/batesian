@@ -44,15 +44,14 @@ func TestCandidates(t *testing.T) {
 			},
 		},
 		{
-			// A trailing slash is the same target, and previously produced a
-			// doubled separator (http://host/mcp//mcp) that servers 404.
+			// Preserve the explicit route before trying its trimmed form.
 			name:  "trailing slash on a path target",
 			base:  "http://127.0.0.1:3181/mcp/",
 			paths: mcpPaths,
 			want: []string{
+				"http://127.0.0.1:3181/mcp/",
 				"http://127.0.0.1:3181/mcp",
 				"http://127.0.0.1:3181/mcp/mcp",
-				"http://127.0.0.1:3181/mcp/",
 				"http://127.0.0.1:3181/mcp/api",
 				"http://127.0.0.1:3181/mcp/rpc",
 			},
@@ -62,6 +61,7 @@ func TestCandidates(t *testing.T) {
 			base:  "https://example.com/base//",
 			paths: []string{"/child"},
 			want: []string{
+				"https://example.com/base//",
 				"https://example.com/base/",
 				"https://example.com/base//child",
 			},
@@ -91,9 +91,9 @@ func TestCandidates(t *testing.T) {
 			base:  "https://mcp.example.com/services/mcp/?tenant=one",
 			paths: []string{"/mcp", "/"},
 			want: []string{
+				"https://mcp.example.com/services/mcp/?tenant=one",
 				"https://mcp.example.com/services/mcp?tenant=one",
 				"https://mcp.example.com/services/mcp/mcp?tenant=one",
-				"https://mcp.example.com/services/mcp/?tenant=one",
 			},
 		},
 		{
