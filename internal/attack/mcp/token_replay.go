@@ -310,7 +310,7 @@ var oauthWellKnownPaths = []string{
 
 // oauthMetadataPresent checks a challenge or discovery document for an OAuth surface.
 func oauthMetadataPresent(ctx context.Context, client *attack.HTTPClient, baseURL string) (bool, error) {
-	if advertised, _, _ := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL); advertised != "" {
+	if advertised, _, _, _ := probeWWWAuthenticateResourceMetadata(ctx, client, baseURL); advertised != "" {
 		return true, nil
 	}
 	var incomplete []string

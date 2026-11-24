@@ -37,7 +37,7 @@ func modernAuthServerWithResults(t *testing.T, accept func(string) bool, openDis
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"issuer": srv.URL, "token_endpoint": srv.URL + "/token"})
 			return
 		case "/metadata":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": testExpectedAud})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"resource": srv.URL + "/mcp"})
 			return
 		case "/mcp":
 		default:
@@ -235,7 +235,7 @@ func TestOAuthAudience_ModernOnlySubstringTrap(t *testing.T) {
 func TestOAuthAudience_ModernOnlySecure(t *testing.T) {
 	srv := modernAuthServer(t, func(string) bool { return false })
 	defer srv.Close()
-	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(testExpectedAud))
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, optsWithAudience(srv.URL+"/mcp"))
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("secure modern audience: findings=%d, err=%v", len(findings), err)
 	}
@@ -254,11 +254,13 @@ func TestOAuthAudience_ModernUnrelatedSuccessIsInconclusive(t *testing.T) {
 }
 
 func TestOAuthAudience_ModernChallengeDiscovery(t *testing.T) {
+	var expected string
 	srv := modernAuthServer(t, func(auth string) bool {
 		value, _ := decodeJWTAud(t, auth).(string)
-		return strings.Contains(value, testExpectedAud)
+		return strings.Contains(value, expected)
 	})
 	defer srv.Close()
+	expected = srv.URL + "/mcp"
 	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, testOpts())
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("modern challenge discovery: findings=%d, err=%v", len(findings), err)
@@ -266,11 +268,13 @@ func TestOAuthAudience_ModernChallengeDiscovery(t *testing.T) {
 }
 
 func TestOAuthAudience_ModernListingChallengeDiscovery(t *testing.T) {
+	var expected string
 	srv := modernAuthServerWithDiscovery(t, func(auth string) bool {
 		value, _ := decodeJWTAud(t, auth).(string)
-		return strings.Contains(value, testExpectedAud)
+		return strings.Contains(value, expected)
 	}, true)
 	defer srv.Close()
+	expected = srv.URL + "/mcp"
 	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(context.Background(), srv.URL, testOpts())
 	if err != nil || len(findings) != 1 {
 		t.Fatalf("modern listing challenge: findings=%d, err=%v", len(findings), err)

@@ -37,7 +37,6 @@ func crossAudienceTokens() (string, string) {
 }
 
 func TestCrossAudienceModern(t *testing.T) {
-	targetToken, otherToken := crossAudienceTokens()
 	for _, tc := range []struct {
 		name        string
 		acceptOther bool
@@ -47,12 +46,17 @@ func TestCrossAudienceModern(t *testing.T) {
 		{name: "rejected other audience", acceptOther: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var targetToken, otherToken string
 			srv := modernAuthServer(t, func(auth string) bool {
 				return auth == "Bearer "+targetToken || (tc.acceptOther && auth == "Bearer "+otherToken)
 			})
 			defer srv.Close()
+			targetToken = crossAudienceToken(srv.URL+"/mcp", "https://issuer.example", time.Now().Add(time.Hour).Unix())
+			otherToken = crossAudienceToken("https://other.example/resource", "https://issuer.example", time.Now().Add(time.Hour).Unix())
+			opts := crossAudienceOpts(targetToken, otherToken)
+			opts.AudienceClaim = srv.URL + "/mcp"
 			findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
-				context.Background(), srv.URL+"/mcp", crossAudienceOpts(targetToken, otherToken))
+				context.Background(), srv.URL+"/mcp", opts)
 			if tc.wantFinding {
 				if len(findings) != 1 || findings[0].Confidence != attack.RiskIndicator ||
 					!strings.Contains(findings[0].Evidence, "server/discover") {
