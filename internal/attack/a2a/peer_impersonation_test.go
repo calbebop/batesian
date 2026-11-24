@@ -722,6 +722,37 @@ func TestPeerImpersonation_UsesRouteProtectedResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestPeerImpersonation_MetadataOmitsScanToken(t *testing.T) {
+	var metadataReads, credentialedReads atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-protected-resource/a2a" {
+			metadataReads.Add(1)
+			if r.Header.Get("Authorization") != "" {
+				credentialedReads.Add(1)
+			}
+			writeJSON(w, map[string]interface{}{
+				"resource": srv.URL + "/a2a", "authorization_servers": []string{testIssuer},
+			})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/a2a" {
+			http.NotFound(w, r)
+			return
+		}
+		request := readBody(r)
+		rpcErr(w, request["id"], -32001, "Task not found")
+	}))
+	defer srv.Close()
+
+	opts := testOpts()
+	opts.Token = "operator-token"
+	_, _ = a2aattack.NewPeerImpersonationExecutor(peerImpersonationRC()).Execute(t.Context(), srv.URL+"/a2a", opts)
+	if metadataReads.Load() == 0 || credentialedReads.Load() != 0 {
+		t.Fatalf("public metadata reads=%d with credentials=%d", metadataReads.Load(), credentialedReads.Load())
+	}
+}
+
 // TestPeerImpersonation_NotA2AServer verifies that against a server that returns
 // 404 for all requests (no reachable A2A endpoint) the rule reports inconclusive
 // rather than a (misleading) clean result.

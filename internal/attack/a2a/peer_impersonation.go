@@ -68,9 +68,8 @@ func (e *PeerImpersonationExecutor) Execute(ctx context.Context, target string, 
 		}
 	}
 
-	// Step 2: Build the forged JWT using a random signing key, carrying the issuer
-	// and audience the target actually trusts.
-	claims := deriveForgedClaims(ctx, client, vars.BaseURL, endpoint, target, card)
+	// Forge a JWT with the best available issuer and audience claims.
+	claims := deriveForgedClaims(ctx, unauthClient, vars.BaseURL, endpoint, target, card)
 	forgedToken, err := buildForgedJWT(agentName, claims.iss, claims.aud)
 	if err != nil {
 		return nil, fmt.Errorf("building forged JWT: %w", err)
@@ -348,7 +347,7 @@ func deriveForgedClaims(ctx context.Context, client *attack.HTTPClient, baseURL,
 	// Prefer metadata for the selected route before the origin-wide fallback.
 	for _, candidate := range peerMetadataURLs(baseURL, endpointURL) {
 		resp, err := client.GET(ctx, candidate.url, nil)
-		if err != nil || !resp.IsSuccess() {
+		if err != nil || resp.StatusCode != http.StatusOK {
 			continue
 		}
 		var meta struct {
