@@ -323,10 +323,15 @@ func tokenServerWithDiscovery(t *testing.T, discoveryPath string) *httptest.Serv
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case discoveryPath:
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"issuer":         base,
-				"token_endpoint": base + "/token",
-			})
+			if discoveryPath == "/.well-known/oauth-protected-resource" {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"resource": base, "authorization_servers": []string{base},
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"issuer": base, "token_endpoint": base + "/token",
+				})
+			}
 		case "/mcp":
 			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 				w.WriteHeader(http.StatusOK)
@@ -375,11 +380,14 @@ func TestTokenReplay_AlternateDiscoveryPaths(t *testing.T) {
 
 func TestTokenReplay_PathMountedResourceMetadata(t *testing.T) {
 	var forged atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource/mcp":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"resource":"https://example.test/mcp","authorization_servers":["https://issuer.example"]}`))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource": srv.URL + "/mcp", "authorization_servers": []string{srv.URL},
+			})
 		case "/mcp":
 			if r.Header.Get("Authorization") != "" {
 				forged.Add(1)
@@ -395,6 +403,31 @@ func TestTokenReplay_PathMountedResourceMetadata(t *testing.T) {
 	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
 	if err != nil || len(findings) != 0 || forged.Load() == 0 {
 		t.Fatalf("path metadata did not enable token probes: findings=%+v forged=%d err=%v", findings, forged.Load(), err)
+	}
+}
+
+func TestTokenReplay_UnboundResourceMetadataIsIncomplete(t *testing.T) {
+	var forged atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"resource":"https://other.example/mcp"}`))
+		case "/mcp":
+			if r.Header.Get("Authorization") != "" {
+				forged.Add(1)
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewTokenReplayExecutor(tokenReplayRC()).Execute(t.Context(), srv.URL+"/mcp", testOpts())
+	if len(findings) != 0 || !errors.Is(err, attack.ErrInconclusive) || forged.Load() != 0 {
+		t.Fatalf("unbound metadata enabled token probes: findings=%+v forged=%d err=%v", findings, forged.Load(), err)
 	}
 }
 

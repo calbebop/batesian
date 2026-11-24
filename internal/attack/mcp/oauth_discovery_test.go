@@ -276,3 +276,40 @@ func TestOAuthDiscovery_UnboundResourceDoesNotReachRegistration(t *testing.T) {
 			findings, registrations.Load(), err)
 	}
 }
+
+func TestOAuthDiscovery_UsesRootAfterUnboundPathResource(t *testing.T) {
+	var registrations atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource": srv.URL, "authorization_servers": []string{srv.URL},
+			})
+		case "/.well-known/oauth-protected-resource":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"resource": srv.URL, "authorization_servers": []string{srv.URL},
+			})
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": srv.URL, "registration_endpoint": srv.URL + "/register",
+				"authorization_endpoint": srv.URL + "/authorize",
+			})
+		case "/register":
+			registrations.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	findings, err := mcpattack.NewConfusedDeputyExecutor(confusedDeputyRC()).Execute(t.Context(), srv.URL, testOpts())
+	if len(findings) != 0 || err != nil || registrations.Load() != 1 {
+		t.Fatalf("valid root resource was not used: findings=%+v registrations=%d err=%v", findings, registrations.Load(), err)
+	}
+}
