@@ -28,10 +28,13 @@ func TestProtectedResourceMetadataBinding(t *testing.T) {
 }
 
 func TestOAuthWellKnownURLsRetainResourceQuery(t *testing.T) {
-	const target = "https://resource.example.test/mcp?tenant=one"
-	urls := oauthWellKnownURLs(target, "/.well-known/oauth-protected-resource")
-	const want = "https://resource.example.test/.well-known/oauth-protected-resource/mcp?tenant=one"
-	if len(urls) == 0 || urls[0] != want {
-		t.Fatalf("first metadata URL = %q, want %q", urls, want)
+	for _, tc := range []struct{ target, want string }{
+		{"https://resource.example.test/mcp?tenant=one", "https://resource.example.test/.well-known/oauth-protected-resource/mcp?tenant=one"},
+		{"https://resource.example.test/mcp/?tenant=one", "https://resource.example.test/.well-known/oauth-protected-resource/mcp/?tenant=one"},
+	} {
+		urls := oauthWellKnownURLs(tc.target, "/.well-known/oauth-protected-resource")
+		if len(urls) == 0 || urls[0] != tc.want {
+			t.Errorf("first metadata URL for %q = %q, want %q", tc.target, urls, tc.want)
+		}
 	}
 }

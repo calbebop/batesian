@@ -513,6 +513,23 @@ func TestResolveA2AEndpoint_TargetNamesTheEndpointPath(t *testing.T) {
 	}
 }
 
+func TestResolveA2AEndpoint_PreservesExplicitTrailingSlash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || (r.URL.Path != "/a2a/jsonrpc" && r.URL.Path != "/a2a/jsonrpc/") {
+			http.NotFound(w, r)
+			return
+		}
+		writeTaskNotFound(w, r)
+	}))
+	defer srv.Close()
+
+	target := srv.URL + "/a2a/jsonrpc/"
+	ep, ok := resolveA2AEndpoint(t.Context(), newClient(target), target)
+	if !ok || ep != target {
+		t.Fatalf("explicit trailing-slash route was not selected: endpoint=%q ok=%t", ep, ok)
+	}
+}
+
 // jsonRPCServer answers every POST with the given body, whatever the path. It
 // stands in for a JSON-RPC service that is not an A2A agent.
 func jsonRPCServer(reply func(method string, id json.RawMessage) string) *httptest.Server {
