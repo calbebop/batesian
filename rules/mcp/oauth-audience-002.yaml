@@ -11,7 +11,7 @@ info:
     logic itself is correctly implemented when the operator's real audience
     value is known or discoverable.
 
-    A negative control plus three trap probes are constructed from the
+    A negative control plus up to four trap probes are constructed from the
     operator-supplied (or RFC 9728 auto-discovered) expected audience and
     submitted as forged HS256 JWTs:
 
@@ -29,10 +29,10 @@ info:
     - `aud-substring-trap`   - wraps the expected value in a clearly-different
       string (e.g., `<expected>.canary-batesian-mismatch.invalid`). Catches
       validators that use `strings.Contains` / `HasPrefix` / `HasSuffix`.
-    - `aud-case-canonicalization-trap` - submits the expected value lowercased
-      (or with default-port toggled when already lowercase). Catches validators
-      that lowercase or URL-canonicalize before comparing, contrary to RFC 7519's
-      strict StringOrURI compare semantics.
+    - `aud-case-canonicalization-trap` - changes only letter case. Skipped when
+      the expected audience has no ASCII letters.
+    - `aud-default-port-trap` - toggles the scheme's default port for HTTP(S)
+      audiences. Skipped when a nondefault port is present.
     - `aud-array-canary-only` - submits `aud` as a JSON array of mismatched
       canaries. Catches validators that only inspect string-form `aud` and skip
       the array-shape branch entirely.
