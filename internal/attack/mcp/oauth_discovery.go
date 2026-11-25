@@ -196,9 +196,10 @@ func wellKnownResourceIdentifier(metadataURL string) (string, bool) {
 
 func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer string, checkIssuer bool, fields ...string) (map[string]string, []string, error) {
 	var incomplete []string
+	locationIssuer := strings.TrimSuffix(issuer, "/")
 	for _, path := range oauthServerMetadataPaths {
 		for _, metadataURL := range oauthWellKnownURLs(issuer, path) {
-			if checkIssuer && metadataIssuerForURL(metadataURL, path) != issuer {
+			if checkIssuer && metadataIssuerForURL(metadataURL, path) != locationIssuer {
 				continue
 			}
 			resp, err := client.GETOAuthUnauth(ctx, metadataURL)
@@ -217,7 +218,10 @@ func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer
 			if !checkIssuer {
 				expectedIssuer = metadataIssuerForURL(metadataURL, path)
 			}
-			if expectedIssuer == "" || resp.JSONField("issuer") != expectedIssuer {
+			observedIssuer := resp.JSONField("issuer")
+			trailingSlashIssuer := !checkIssuer && strings.HasSuffix(issuer, "/") &&
+				expectedIssuer == locationIssuer && observedIssuer == issuer
+			if expectedIssuer == "" || (observedIssuer != expectedIssuer && !trailingSlashIssuer) {
 				incomplete = append(incomplete, metadataURL+" issuer does not match the expected authorization server")
 				continue
 			}
