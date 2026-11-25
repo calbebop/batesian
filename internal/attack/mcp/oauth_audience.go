@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -214,25 +214,15 @@ func runModernAudienceProbes(ctx context.Context, anon *attack.HTTPClient, baseU
 	return "", nil, nil
 }
 
-// buildProbes constructs the v1 probe set from the operator's expected audience.
-//
-// The substring trap appends a clearly-different invalid-TLD canary so any
-// validator using strings.Contains/HasPrefix/HasSuffix accepts the wrapped
-// value. The case-canonicalization trap toggles case (or default-port presence
-// when the value is already lowercase). The array probe submits two canaries
-// in JSON-array form so validators that branch on the claim shape and skip
-// the array path are exposed.
+// buildProbes constructs audience mismatches and an unrelated control.
 func buildProbes(expected string) []audienceProbe {
 	substringTrap := expected + canaryDomain
-
-	caseTrap := caseCanonicalizationVariant(expected)
-
 	arrayCanaries := []string{
 		"https://canary-batesian-a" + canaryDomain,
 		"https://canary-batesian-b" + canaryDomain,
 	}
 
-	return []audienceProbe{
+	probes := []audienceProbe{
 		{
 			name:        "aud-control-unrelated",
 			audClaim:    "https://batesian-control" + canaryDomain,
@@ -249,68 +239,84 @@ func buildProbes(expected string) []audienceProbe {
 			audClaim:    substringTrap,
 			titleSuffix: "accepted JWT whose aud is a substring-wrapped mismatch",
 			descSuffix: "The server accepted a bearer token whose `aud` claim wraps the " +
-				"expected audience inside a clearly-different value (`" + substringTrap + "`). " +
+				"expected audience inside a clearly different value. " +
 				"This is consistent with a validator that uses `Contains` / `HasPrefix` / " +
 				"`HasSuffix` instead of the strict StringOrURI compare required by RFC 7519 section 4.1.3.",
 		},
-		{
+	}
+	if caseTrap := caseCanonicalizationVariant(expected); caseTrap != "" {
+		probes = append(probes, audienceProbe{
 			name:        "aud-case-canonicalization-trap",
 			audClaim:    caseTrap,
-			titleSuffix: "accepted JWT whose aud differs only in case or default-port presence",
-			descSuffix: "The server accepted a bearer token whose `aud` claim is the expected " +
-				"audience with case folding or default-port canonicalization applied (`" + caseTrap + "`). " +
-				"RFC 7519 audience comparison must be exact and case-sensitive; canonicalization " +
-				"performed by the validator inflates the set of accepted values.",
-		},
-		{
-			name:        "aud-array-canary-only",
-			audClaim:    arrayCanaries,
-			titleSuffix: "accepted JWT whose aud is an array of mismatched canaries",
-			descSuffix: "The server accepted a bearer token whose `aud` claim is a JSON array " +
-				"containing only canaries that do not match the expected audience. This is " +
-				"consistent with a validator that inspects only string-form `aud` and treats " +
-				"array-shape claims as pre-validated.",
-		},
+			titleSuffix: "accepted JWT whose aud differs only in case",
+			descSuffix: "The server accepted a bearer token whose `aud` differs from the expected " +
+				"audience only in letter case. RFC 7519 requires exact, case-sensitive comparison; " +
+				"this is consistent with case folding by the validator.",
+		})
 	}
+	if portTrap := defaultPortVariant(expected); portTrap != "" {
+		probes = append(probes, audienceProbe{
+			name:        "aud-default-port-trap",
+			audClaim:    portTrap,
+			titleSuffix: "accepted JWT whose aud differs only by default-port presence",
+			descSuffix: "The server accepted a bearer token whose `aud` differs from the expected " +
+				"audience only by the presence of the scheme's default port. RFC 7519 requires " +
+				"exact comparison; this is consistent with URL canonicalization by the validator.",
+		})
+	}
+	return append(probes, audienceProbe{
+		name:        "aud-array-canary-only",
+		audClaim:    arrayCanaries,
+		titleSuffix: "accepted JWT whose aud is an array of mismatched canaries",
+		descSuffix: "The server accepted a bearer token whose `aud` claim is a JSON array " +
+			"containing only canaries that do not match the expected audience. This is " +
+			"consistent with a validator that inspects only string-form `aud` and treats " +
+			"array-shape claims as pre-validated.",
+	})
 }
 
-// caseCanonicalizationVariant returns a value that differs from `expected`
-// only in case or default-port presence. RFC 7519 requires strict comparison,
-// so a server that accepts the variant is mishandling the claim.
+// caseCanonicalizationVariant changes only ASCII letter case.
 func caseCanonicalizationVariant(expected string) string {
 	if hasUpper(expected) {
 		return strings.ToLower(expected)
 	}
-	// Already lowercase: toggle default-port presence to provoke
-	// canonicalizing URL parsers.
-	if strings.HasPrefix(expected, "https://") && !defaultPortRE.MatchString(expected) {
-		return injectDefaultPort(expected, "https", "443")
+	for i := 0; i < len(expected); i++ {
+		if expected[i] >= 'a' && expected[i] <= 'z' {
+			return expected[:i] + strings.ToUpper(expected[i:i+1]) + expected[i+1:]
+		}
 	}
-	if strings.HasPrefix(expected, "http://") && !defaultPortRE.MatchString(expected) {
-		return injectDefaultPort(expected, "http", "80")
-	}
-	// Last resort: append uppercase suffix; still differs only by case.
-	return expected + "/X"
+	return ""
 }
 
-// defaultPortRE matches a host:port suffix anywhere in the URL authority.
-// We use it to detect whether a default port has already been embedded.
-var defaultPortRE = regexp.MustCompile(`://[^/]+:\d+`)
-
-// injectDefaultPort places :port immediately after the host, producing a
-// URL that canonicalizes back to `expected` per RFC 3986 section 3.2.3 if a server
-// runs the value through a URL parser before comparing.
-func injectDefaultPort(expected, scheme, port string) string {
-	prefix := scheme + "://"
-	rest := strings.TrimPrefix(expected, prefix)
-	slash := strings.Index(rest, "/")
-	host := rest
-	tail := ""
-	if slash >= 0 {
-		host = rest[:slash]
-		tail = rest[slash:]
+// defaultPortVariant toggles only the scheme's default port in a HTTP(S) URI.
+func defaultPortVariant(expected string) string {
+	u, err := url.Parse(expected)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return ""
 	}
-	return prefix + host + ":" + port + tail
+	port := ""
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		port = "80"
+	case "https":
+		port = "443"
+	default:
+		return ""
+	}
+	switch u.Port() {
+	case "":
+		u.Host = net.JoinHostPort(u.Hostname(), port)
+	case port:
+		host := u.Hostname()
+		if strings.Contains(host, ":") {
+			u.Host = "[" + host + "]"
+		} else {
+			u.Host = host
+		}
+	default:
+		return ""
+	}
+	return u.String()
 }
 
 func hasUpper(s string) bool {

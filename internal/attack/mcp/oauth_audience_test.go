@@ -146,6 +146,52 @@ func TestOAuthAudience_VulnerableServer_CaseFold(t *testing.T) {
 	}
 }
 
+func TestOAuthAudience_DefaultPortProbePreservesQuery(t *testing.T) {
+	const expected = "https://api.example.com?tenant=private"
+	const variant = "https://api.example.com:443?tenant=private"
+	srv := newAudienceServer(t, func(aud interface{}) bool { return aud == variant })
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, optsWithAudience(expected))
+	if err != nil || len(findings) != 1 ||
+		!strings.Contains(findings[0].Evidence, "aud-default-port-trap") {
+		t.Fatalf("default-port probe missed: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestOAuthAudience_QuerySuffixIsNotDefaultPort(t *testing.T) {
+	const expected = "https://api.example.com?tenant=private"
+	const wrongVariant = "https://api.example.com?tenant=private:443"
+	srv := newAudienceServer(t, func(aud interface{}) bool { return aud == wrongVariant })
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, optsWithAudience(expected))
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("query mutation misattributed to default-port matching: findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestOAuthAudience_FindingOmitsAudienceValue(t *testing.T) {
+	const marker = "private-audience-marker"
+	const expected = "https://api.example.com/mcp?tenant=" + marker
+	srv := newAudienceServer(t, func(aud interface{}) bool {
+		s, ok := aud.(string)
+		return ok && strings.Contains(s, expected)
+	})
+	defer srv.Close()
+
+	findings, err := mcpattack.NewOAuthAudienceExecutor(oauthAudienceRC()).Execute(
+		context.Background(), srv.URL, optsWithAudience(expected))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("expected a substring finding: findings=%+v err=%v", findings, err)
+	}
+	if strings.Contains(fmt.Sprint(findings), marker) {
+		t.Fatalf("finding disclosed the audience marker: %+v", findings[0])
+	}
+}
+
 func TestOAuthAudience_VulnerableServer_ArrayBranchSkip(t *testing.T) {
 	srv := newAudienceServer(t, func(aud interface{}) bool {
 		// Validator only handles string-form aud; array-form is treated as
@@ -783,7 +829,7 @@ func audienceServerAdvertising(t *testing.T, acceptFn func(aud interface{}, adve
 
 // Every probe is derived from the expected audience, and RFC 7519 compares the
 // claim exactly, so a --audience-claim that does not byte-match what the server
-// uses turns all four probes into plain mismatches. The server refuses them
+// uses turns every derived probe into a plain mismatch. The server refuses them
 // whether or not its matching logic is sound, and reporting that as clean claims
 // coverage the scan does not have.
 //

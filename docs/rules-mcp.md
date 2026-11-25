@@ -242,19 +242,22 @@ handshake is reported as **not tested**.
 
 Every probe is derived from that expected value, and RFC 7519 section 4.1.3
 compares the `aud` claim exactly, so a `--audience-claim` that does not byte-match
-what the server uses makes all four probes plain mismatches: the server refuses
+what the server uses makes all derived probes plain mismatches: the server refuses
 them whether or not its matching logic is sound. Before reporting clean on an
 operator-supplied value, the rule therefore checks it against the audience the
 server advertises and reports **not tested** when the two disagree, naming both.
 A finding is never withheld for a disagreement. Hostname case is the likeliest way
 to hit this, since DNS is case-insensitive and audience comparison is not.
 
-It submits a **negative control** plus three trap probes as forged HS256 JWTs:
+It submits a **negative control** plus up to four trap probes as forged HS256 JWTs:
 
 - `aud-control-unrelated` - isolates the audience logic from blanket signature
   failures.
 - `aud-substring-trap` - catches `Contains` / `HasPrefix` / `HasSuffix` matchers.
-- `aud-case-canonicalization-trap` - catches lowercase/URL-canonicalizing matchers.
+- `aud-case-canonicalization-trap` - catches case-folding matchers when the
+  audience contains ASCII letters.
+- `aud-default-port-trap` - catches default-port canonicalization for HTTP(S)
+  audiences without a nondefault port.
 - `aud-array-canary-only` - catches validators that skip the array-shape branch.
 
 Every probe rides an MCP `initialize` request, and plenty of servers leave
