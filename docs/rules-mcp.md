@@ -245,7 +245,9 @@ compares the `aud` claim exactly, so a `--audience-claim` that does not byte-mat
 what the server uses makes all derived probes plain mismatches: the server refuses
 them whether or not its matching logic is sound. Before reporting clean on an
 operator-supplied value, the rule therefore checks it against the audience the
-server advertises and reports **not tested** when the two disagree, naming both.
+server advertises and reports **not tested** when the two disagree. The reason
+omits both audience values; rerun without `--audience-claim` to use the
+advertised value.
 A finding is never withheld for a disagreement. Hostname case is the likeliest way
 to hit this, since DNS is case-insensitive and audience comparison is not.
 
