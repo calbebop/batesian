@@ -36,8 +36,8 @@ is a difference the gate catches:
                                   the drift check fires; clean silent. The split
                                   keeps drift from firing where content was the
                                   defect, and vice versa (#229).
-  mcp_vulnerable_version_*        affected and intermediate releases fire;
-                                  2026.11.18 and unknown identities stay silent.
+  mcp_vulnerable_version_*        affected, intermediate, and recent releases fire;
+                                  2026.11.27 and unknown identities stay silent.
 
 Run by .github/workflows/validation.yml.
 """
@@ -426,6 +426,7 @@ def vulnerable_version():
     ok_all = True
     rid = "mcp-vulnerable-version-001"
     for posture, expect_fire in [("vulnerable", True), ("intermediate", True),
+                                 ("recent", True),
                                  ("patched", False), ("unknown", False)]:
         p, l = start("mcp_vulnerable_version_server.py", 7809, posture)
         try:

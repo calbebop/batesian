@@ -6,8 +6,9 @@ Deliberately vulnerable MCP test server for validating:
 
 Postures:
   vulnerable (default) - mcp-git 2026.10.19; fires.
-  intermediate         - mcp-git 2026.11.11; fires for November 18 advisories.
-  patched              - mcp-git 2026.11.18; silent.
+  intermediate         - mcp-git 2026.11.11; fires.
+  recent               - mcp-git 2026.11.18; fires for November 27 advisories.
+  patched              - mcp-git 2026.11.27; silent.
   unknown              - unrelated identity; silent.
 
 The server serves nothing beyond initialize - this rule reads identity only,
@@ -16,6 +17,7 @@ so there is no other surface to exercise.
 Validate against it:
   python testdata/mcp_vulnerable_version_server.py vulnerable  # fires
   python testdata/mcp_vulnerable_version_server.py intermediate  # fires
+  python testdata/mcp_vulnerable_version_server.py recent      # fires
   python testdata/mcp_vulnerable_version_server.py patched     # silent
   python testdata/mcp_vulnerable_version_server.py unknown     # silent
 
@@ -35,7 +37,8 @@ PORT = 7809
 SERVER_INFO = {
     "vulnerable": {"name": "mcp-git", "version": "2026.10.19"},
     "intermediate": {"name": "mcp-git", "version": "2026.11.11"},
-    "patched": {"name": "mcp-git", "version": "2026.11.18"},
+    "recent": {"name": "mcp-git", "version": "2026.11.18"},
+    "patched": {"name": "mcp-git", "version": "2026.11.27"},
     "unknown": {"name": "acme-custom-mcp", "version": "1.0.0"},
 }
 

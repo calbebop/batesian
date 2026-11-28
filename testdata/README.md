@@ -501,13 +501,14 @@ was added or changed. `clean` is factual, unique and stable. Nothing beyond
 ```sh
 python testdata/mcp_vulnerable_version_server.py vulnerable  # medium indicator
 python testdata/mcp_vulnerable_version_server.py intermediate  # medium indicator
+python testdata/mcp_vulnerable_version_server.py recent        # medium indicator
 python testdata/mcp_vulnerable_version_server.py patched     # silent
 python testdata/mcp_vulnerable_version_server.py unknown     # silent
 batesian scan --target http://127.0.0.1:7809 --rule-ids mcp-vulnerable-version-001 -v
 ```
 
-The four postures differ only in `serverInfo`: two affected `mcp-git` versions,
-the fixed 2026.11.18 release, and an unrelated identity. The patched and
+The five postures differ only in `serverInfo`: three affected `mcp-git` versions,
+the fixed 2026.11.27 release, and an unrelated identity. The patched and
 unknown postures pin the upper range boundary and exact identity match. Only
 `initialize` is served; the rule reads identity and nothing else.
 
