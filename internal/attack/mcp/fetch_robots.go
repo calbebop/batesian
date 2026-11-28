@@ -60,11 +60,15 @@ func checkFetchRobotsCanary(ctx context.Context, opts attack.Options, probe *att
 	if strings.TrimSpace(policy) != "User-agent: *\nDisallow: "+probe.PrivatePath {
 		return "robots.txt must contain only the wildcard user-agent and exact canary disallow"
 	}
-	for _, path := range []string{probe.PrivatePath, "/" + probe.PrivatePath} {
+	paths := []string{probe.PrivatePath}
+	for _, alternate := range attack.FetchRobotsAlternates(probe) {
+		paths = append(paths, alternate.Path)
+	}
+	for _, path := range paths {
 		resp, err := client.GET(ctx, probe.Origin+path, nil)
 		if err != nil || resp == nil || resp.StatusCode != 200 || len(resp.Body) > 4096 ||
 			strings.TrimSpace(string(resp.Body)) != probe.PrivateMarker {
-			return "canonical and alternate canary paths must both serve the exact marker"
+			return "canonical and selected alternate canary paths must serve the exact marker"
 		}
 	}
 	return ""
@@ -109,22 +113,31 @@ func (e *FetchRobotsExecutor) probeSession(ctx context.Context, client *attack.H
 	}
 	candidate := traversalCandidate{tool: fetchRobotsTool, param: "url", schema: selected.InputSchema}
 	canonical := probe.Origin + probe.PrivatePath
-	alternate := probe.Origin + "/" + probe.PrivatePath
 	control, reason, _, toolError := callPathTool(ctx, client, session, 20, candidate, canonical)
 	if reason != "" || !toolError || !robotsDenied(control) || strings.Contains(control, probe.PrivateMarker) {
 		return nil, false, "canonical path was not explicitly denied by robots policy"
 	}
-	result, reason, _, alternateError := callPathTool(ctx, client, session, 21, candidate, alternate)
-	if reason != "" {
-		return nil, false, "alternate path response was unavailable"
+	var matched, incomplete []string
+	for i, alternate := range attack.FetchRobotsAlternates(probe) {
+		result, reason, _, alternateError := callPathTool(ctx, client, session, 21+i, candidate, probe.Origin+alternate.Path)
+		switch {
+		case reason != "":
+			incomplete = append(incomplete, alternate.Variant)
+		case !alternateError && strings.Contains(result, probe.PrivateMarker):
+			matched = append(matched, alternate.Variant)
+		case alternateError && robotsDenied(result) && !strings.Contains(result, probe.PrivateMarker):
+		default:
+			incomplete = append(incomplete, alternate.Variant)
+		}
 	}
-	if !alternateError && strings.Contains(result, probe.PrivateMarker) {
-		return []attack.Finding{e.finding(session.Endpoint)}, true, ""
+	var findings []attack.Finding
+	if len(matched) != 0 {
+		findings = []attack.Finding{e.finding(session.Endpoint, matched)}
 	}
-	if alternateError && robotsDenied(result) && !strings.Contains(result, probe.PrivateMarker) {
-		return nil, true, ""
+	if len(incomplete) != 0 {
+		return findings, false, "alternate path responses were inconclusive: " + strings.Join(incomplete, ", ")
 	}
-	return nil, false, "alternate path response did not establish access or robots denial"
+	return findings, true, ""
 }
 
 func robotsDenied(text string) bool {
@@ -133,12 +146,12 @@ func robotsDenied(text string) bool {
 		(strings.Contains(lower, "not allowed") || strings.Contains(lower, "disallow") || strings.Contains(lower, "blocked"))
 }
 
-func (e *FetchRobotsExecutor) finding(endpoint string) attack.Finding {
+func (e *FetchRobotsExecutor) finding(endpoint string, variants []string) attack.Finding {
 	return attack.Finding{
 		RuleID: e.rule.ID, RuleName: e.rule.Name, Severity: "low", Confidence: attack.RiskIndicator,
 		Title:       "MCP Fetch served a path its robots policy denied",
 		Description: "The approved Fetch tool denied the canonical canary path under robots.txt but returned the same controlled content through an alternate spelling. This indicates a robots path comparison gap, not an authentication or private-network bypass.",
-		Evidence:    "endpoint: " + endpoint + "\nowned canary origin: verified\ncanonical path: robots denial\nalternate path: exact marker returned\norigin, paths, marker, and response text omitted",
+		Evidence:    "endpoint: " + endpoint + "\nowned canary origin: verified\ncanonical path: robots denial\nalternate variants: " + strings.Join(variants, ", ") + "\nalternate path: exact marker returned\norigin, paths, marker, and response text omitted",
 		Remediation: e.rule.Remediation, TargetURL: endpoint,
 	}
 }

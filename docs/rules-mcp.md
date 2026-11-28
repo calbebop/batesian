@@ -1475,7 +1475,8 @@ scans do not attempt them. The 2.4.0 filesystem follow-on indicator applies only
 to Windows, which server metadata cannot establish. The Git advisories require
 an untrusted repository; Batesian does not invoke Git tools. The fetch
 advisories need controlled network or origin fixtures. The opt-in robots probe
-does not test the backslash and path-parameter variants in GHSA-g7v6-hfx3-8rv6.
+tests selected backslash and path-parameter variants only when the owned origin
+serves the same canary through each path.
 The Everything NAT64 issue needs a route through a NAT64 translator; the version
 check does not establish one. Git releases through 2026.11.18 retained a Windows
 junction limitation in `--repository` confinement.
@@ -1550,8 +1551,8 @@ authorize each task-related request independently.
 **Fetch Robots Path Canonicalization** | Severity: Low | indicator | CWE-41
 
 This check is opt-in. Host a disposable, text-only canary on an origin you own.
-It must serve the same 16-character-or-longer marker at both
-`/batesian-canary` and `//batesian-canary`, and serve only these two lines at
+By default, it must serve the same 16-character-or-longer marker at
+`/batesian-canary` and `//batesian-canary`. Serve only these two lines at
 `/robots.txt`:
 
 ```text
@@ -1571,16 +1572,34 @@ mcp_fetch_robots_probe:
   private_marker: batesian-canary-marker-2026
 ```
 
+To test the newer path spellings, set `variants` to one or more of
+`double_slash`, `backslash`, `encoded_backslash`, and `path_parameter`. An
+explicit list replaces the default double-slash selection. For example:
+
+```yaml
+  variants: [backslash, encoded_backslash, path_parameter]
+```
+
+For the sample private path, these variants request
+`/batesian-probe\..\batesian-canary`,
+`/batesian-probe%5c..%5cbatesian-canary`, and
+`/batesian-probe/..;/batesian-canary`, respectively. Select only spellings
+that your origin resolves to the canonical canary. Batesian checks every
+selected URL directly for the exact marker before calling the target tool.
+An unavailable variant makes the probe not tested.
+
 Run `batesian scan --rule-ids mcp-fetch-robots-001 --mcp-invoke-tool fetch`
 with that config. The scanner first checks the origin directly without target
 credentials or redirects. It then calls only a listed `fetch` tool declared
-read-only, using the two configured URLs. A finding requires an explicit
-robots-policy denial for the canonical path and the exact marker returned for
-the double-slash path. A second denial is clean; unrelated tool errors,
-unavailable canaries, and partial responses are not tested. Results omit the
-origin, paths, marker, and response text.
+read-only, using the canonical URL and selected alternate URLs. A finding
+requires an explicit robots-policy denial for the canonical path and the exact
+marker returned through an alternate path. A second denial is clean; unrelated
+tool errors, unavailable canaries, and partial responses are not tested.
+Results name matched variants but omit the origin, paths, marker, and response
+text.
 
-This tests the [published robots path advisory](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f9hh-cmx9-2f23),
+This tests the [double-slash advisory](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f9hh-cmx9-2f23)
+and selected variants from the [follow-on advisory](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-g7v6-hfx3-8rv6),
 not authentication or private-address filtering. The tool annotation is a
 server claim, so approve only a Fetch deployment you trust. The probe sends
 ordinary GET requests to the owned origin and remains disabled without its

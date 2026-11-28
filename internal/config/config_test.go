@@ -442,6 +442,9 @@ func TestLoad_MCPFetchRobotsProbe(t *testing.T) {
 		valid      bool
 	}{
 		{"valid", valid, true},
+		{"selected variants", valid + "  variants: [backslash, encoded_backslash, path_parameter]\n", true},
+		{"unknown variant", valid + "  variants: [slash]\n", false},
+		{"duplicate variant", valid + "  variants: [backslash, backslash]\n", false},
 		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1), false},
 		{"origin path", strings.Replace(valid, "https://canary.example.com", "https://canary.example.com/path", 1), false},
 		{"origin userinfo", strings.Replace(valid, "https://canary.example.com", "https://user@canary.example.com", 1), false},
