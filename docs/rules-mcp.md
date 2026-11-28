@@ -199,6 +199,7 @@ wire is usable, the rule reports that it could not test.
 | `mcp-filesystem-suffix-001` | [Filesystem Trailing-Character Boundary](#mcp-filesystem-suffix-001) | Medium | indicator | CWE-436 |
 | `mcp-filesystem-symlink-001` | [Filesystem Symlink Metadata Exposure](#mcp-filesystem-symlink-001) | Low | indicator | CWE-200 |
 | `mcp-fetch-robots-001` | [Fetch Robots Path Canonicalization](#mcp-fetch-robots-001) | Low | indicator | CWE-41 |
+| `mcp-fetch-robots-redirect-001` | [Fetch Robots Redirect Enforcement](#mcp-fetch-robots-redirect-001) | Low | indicator | CWE-693 |
 | `mcp-scope-confusion-001` | [Tool Scope Confusion](#mcp-scope-confusion-001) | High | confirmed / indicator | CWE-285 |
 | `mcp-shadow-surface-001` | [Shadow MCP Surface on an Adjacent Port](#mcp-shadow-surface-001) | High / Medium / Low | confirmed / indicator | CWE-488 |
 | `mcp-tool-poisoning-001` | [Tool Manifest Integrity (Poisoning)](#mcp-tool-poisoning-001) | Medium | indicator | CWE-74 |
@@ -1477,6 +1478,7 @@ an untrusted repository; Batesian does not invoke Git tools. The fetch
 advisories need controlled network or origin fixtures. The opt-in robots probe
 tests selected backslash and path-parameter variants only when the owned origin
 serves the same canary through each path.
+The separate redirect probe tests robots enforcement on a same-origin redirect.
 The Everything NAT64 issue needs a route through a NAT64 translator; the version
 check does not establish one. Git releases through 2026.11.18 retained a Windows
 junction limitation in `--repository` confinement.
@@ -1605,3 +1607,41 @@ server claim, so approve only a Fetch deployment you trust. The probe sends
 ordinary GET requests to the owned origin and remains disabled without its
 target-bound config and exact tool approval. The reference Fetch server runs
 over stdio by default; Batesian needs the tool exposed on a supported HTTP wire.
+
+---
+
+### mcp-fetch-robots-redirect-001
+
+**Fetch Robots Redirect Enforcement** | Severity: Low | indicator | CWE-693
+
+This check is opt-in. Host a disposable canary on an origin you own. Serve
+`/robots.txt` with only `User-agent: *` and `Disallow: /batesian-canary` on
+separate lines. Serve a text marker at `/batesian-canary`, and return HTTP 302
+from `/batesian-entry` with `Location: /batesian-canary`. The redirect response
+must not contain the marker. Use HTTPS unless the origin is loopback. Both
+Batesian and the target Fetch server must be able to reach the origin.
+
+```yaml
+target: https://mcp.example.com/mcp
+mcp_fetch_robots_redirect_probe:
+  origin: https://canary.example.com
+  private_path: /batesian-canary
+  private_marker: batesian-canary-marker-2026
+  redirect_path: /batesian-entry
+```
+
+Run `batesian scan --rule-ids mcp-fetch-robots-redirect-001 --mcp-invoke-tool fetch`
+with that config. Batesian checks the robots policy, marker, and redirect
+directly without target credentials or following the redirect. It then calls
+only a listed `fetch` tool declared read-only. A finding requires an explicit
+robots denial for the private URL and the marker returned through the redirect.
+A denial for the redirect is clean only when it identifies the private URL;
+other errors are not tested. Findings omit the origin, paths, marker, and
+response text.
+
+This tests the [Fetch redirect advisory](https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2)
+on an owned, same-origin fixture. It does not test cross-origin redirects,
+authentication, or private-address filtering. Tool annotations are server
+claims, so approve only a Fetch deployment you trust. The reference Fetch
+server runs over stdio by default; Batesian needs it exposed on a supported
+HTTP wire.

@@ -443,6 +443,23 @@ func TestScanFetchRobotsProbeRejectsDifferentTarget(t *testing.T) {
 	}
 }
 
+func TestScanFetchRobotsRedirectProbeRejectsDifferentTarget(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "batesian.yaml")
+	content := "target: https://mcp.example.com\nmcp_fetch_robots_redirect_probe:\n  origin: https://canary.example.com\n  private_path: /batesian-canary\n  private_marker: batesian-canary-marker-2026\n  redirect_path: /batesian-entry\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if scanCmd.Flags().Lookup("target") == nil {
+		scanCmd.Flags().AddFlagSet(rootCmd.PersistentFlags())
+	}
+	setScanFlag(t, "config", configPath)
+	setScanFlag(t, "target", "https://other.example.com")
+	if err := runScan(scanCmd, nil); err == nil || !strings.Contains(err.Error(),
+		"mcp_fetch_robots_redirect_probe cannot be used with a different --target") {
+		t.Fatalf("error = %v, want redirect probe target mismatch", err)
+	}
+}
+
 func TestScanFilesystemSuffixProbeDryRunDoesNotCallTool(t *testing.T) {
 	previousContext := scanCmd.Context()
 	scanCmd.SetContext(context.Background())

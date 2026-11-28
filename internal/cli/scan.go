@@ -161,6 +161,9 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if cfg.MCPFetchRobotsProbe != nil && target != cfg.Target {
 		return errors.New("mcp_fetch_robots_probe cannot be used with a different --target")
 	}
+	if cfg.MCPFetchRobotsRedirectProbe != nil && target != cfg.Target {
+		return errors.New("mcp_fetch_robots_redirect_probe cannot be used with a different --target")
+	}
 	if cfg.MCPCrossAudienceToken != "" && target != cfg.Target {
 		return errors.New("mcp_cross_audience_token cannot be used with a different --target")
 	}
@@ -328,6 +331,13 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 			Variants: p.Variants,
 		}
 	}
+	var fetchRobotsRedirectProbe *attackpkg.MCPFetchRobotsRedirectProbe
+	if p := cfg.MCPFetchRobotsRedirectProbe; p != nil {
+		fetchRobotsRedirectProbe = &attackpkg.MCPFetchRobotsRedirectProbe{
+			Origin: p.Origin, PrivatePath: p.PrivatePath,
+			PrivateMarker: p.PrivateMarker, RedirectPath: p.RedirectPath,
+		}
+	}
 	var a2aBatchProbe *attackpkg.A2ABatchProbe
 	if p := cfg.A2ABatchProbe; p != nil {
 		a2aBatchProbe = &attackpkg.A2ABatchProbe{TaskID: p.TaskID, PrivateMarker: p.PrivateMarker}
@@ -405,25 +415,26 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	}
 
 	opts := attackpkg.Options{
-		OOBListenerURL:            oobURL,
-		Token:                     token,
-		TimeoutSeconds:            timeoutSecs,
-		SkipTLS:                   skipTLS,
-		Proxy:                     proxy,
-		A2AGRPCTarget:             a2aGRPCTarget,
-		A2ABatchProbe:             a2aBatchProbe,
-		OAuthOrigins:              oauthOrigins,
-		MCPScopeTools:             mcpScopeTools,
-		MCPInvokeTools:            mcpInvokeTools,
-		MCPSubscriptionProbe:      subscriptionProbe,
-		MCPFilesystemSuffixProbe:  filesystemSuffixProbe,
-		MCPFilesystemSymlinkProbe: filesystemSymlinkProbe,
-		MCPFetchRobotsProbe:       fetchRobotsProbe,
-		Verbose:                   verbose,
-		AudienceClaim:             audienceClaim,
-		MCPCrossAudienceToken:     crossAudienceToken,
-		Principals:                principals,
-		ExpectedDenials:           expectedDenials,
+		OOBListenerURL:              oobURL,
+		Token:                       token,
+		TimeoutSeconds:              timeoutSecs,
+		SkipTLS:                     skipTLS,
+		Proxy:                       proxy,
+		A2AGRPCTarget:               a2aGRPCTarget,
+		A2ABatchProbe:               a2aBatchProbe,
+		OAuthOrigins:                oauthOrigins,
+		MCPScopeTools:               mcpScopeTools,
+		MCPInvokeTools:              mcpInvokeTools,
+		MCPSubscriptionProbe:        subscriptionProbe,
+		MCPFilesystemSuffixProbe:    filesystemSuffixProbe,
+		MCPFilesystemSymlinkProbe:   filesystemSymlinkProbe,
+		MCPFetchRobotsProbe:         fetchRobotsProbe,
+		MCPFetchRobotsRedirectProbe: fetchRobotsRedirectProbe,
+		Verbose:                     verbose,
+		AudienceClaim:               audienceClaim,
+		MCPCrossAudienceToken:       crossAudienceToken,
+		Principals:                  principals,
+		ExpectedDenials:             expectedDenials,
 	}
 
 	var recorder *attackpkg.Recorder

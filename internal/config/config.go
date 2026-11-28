@@ -83,6 +83,9 @@ type Config struct {
 	// MCPFetchRobotsProbe tests a robots policy on an owned canary origin.
 	MCPFetchRobotsProbe *MCPFetchRobotsProbeConfig `yaml:"mcp_fetch_robots_probe"`
 
+	// MCPFetchRobotsRedirectProbe tests robots enforcement after a canary redirect.
+	MCPFetchRobotsRedirectProbe *MCPFetchRobotsRedirectProbeConfig `yaml:"mcp_fetch_robots_redirect_probe"`
+
 	// RuleIDs is an explicit list of rule IDs to run.
 	RuleIDs []string `yaml:"rule_ids"`
 
@@ -172,6 +175,13 @@ type MCPFetchRobotsProbeConfig struct {
 	PrivatePath   string   `yaml:"private_path"`
 	PrivateMarker string   `yaml:"private_marker"`
 	Variants      []string `yaml:"variants"`
+}
+
+type MCPFetchRobotsRedirectProbeConfig struct {
+	Origin        string `yaml:"origin"`
+	PrivatePath   string `yaml:"private_path"`
+	PrivateMarker string `yaml:"private_marker"`
+	RedirectPath  string `yaml:"redirect_path"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -360,6 +370,14 @@ func (c *Config) validate(path string) error {
 			Variants: probe.Variants,
 		}) {
 			return fmt.Errorf("config %s: mcp_fetch_robots_probe requires a target, an HTTPS or loopback HTTP origin without a path, a /batesian-* canary path, a 16..128 character marker, and unique supported variants", path)
+		}
+	}
+	if probe := c.MCPFetchRobotsRedirectProbe; probe != nil {
+		if strings.TrimSpace(c.Target) == "" || !attack.ValidMCPFetchRobotsRedirectProbe(&attack.MCPFetchRobotsRedirectProbe{
+			Origin: probe.Origin, PrivatePath: probe.PrivatePath,
+			PrivateMarker: probe.PrivateMarker, RedirectPath: probe.RedirectPath,
+		}) {
+			return fmt.Errorf("config %s: mcp_fetch_robots_redirect_probe requires a target, an HTTPS or loopback HTTP origin without a path, a /batesian-* private path and marker, and a distinct /batesian-* redirect path outside the disallow", path)
 		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}
