@@ -15,6 +15,22 @@ type MCPFetchRobotsProbe struct {
 	Variants      []string
 }
 
+type MCPFetchRobotsRedirectProbe struct {
+	Origin        string
+	PrivatePath   string
+	PrivateMarker string
+	RedirectPath  string
+}
+
+func ValidMCPFetchRobotsRedirectProbe(p *MCPFetchRobotsRedirectProbe) bool {
+	return p != nil &&
+		ValidMCPFetchRobotsProbe(&MCPFetchRobotsProbe{
+			Origin: p.Origin, PrivatePath: p.PrivatePath, PrivateMarker: p.PrivateMarker,
+		}) &&
+		fetchCanaryPath.MatchString(p.RedirectPath) &&
+		!strings.HasPrefix(p.RedirectPath, p.PrivatePath)
+}
+
 type MCPFetchRobotsAlternate struct {
 	Variant string
 	Path    string

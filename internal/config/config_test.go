@@ -469,6 +469,36 @@ func TestLoad_MCPFetchRobotsProbe(t *testing.T) {
 	}
 }
 
+func TestLoad_MCPFetchRobotsRedirectProbe(t *testing.T) {
+	const valid = "target: https://mcp.example.com\nmcp_fetch_robots_redirect_probe:\n  origin: https://canary.example.com\n  private_path: /batesian-canary\n  private_marker: batesian-canary-marker-2026\n  redirect_path: /batesian-entry\n"
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", valid, true},
+		{"missing target", strings.Replace(valid, "target: https://mcp.example.com\n", "", 1), false},
+		{"remote plaintext", strings.Replace(valid, "https://canary.example.com", "http://canary.example.com", 1), false},
+		{"private redirect", strings.Replace(valid, "/batesian-entry", "/batesian-canary", 1), false},
+		{"disallowed prefix", strings.Replace(valid, "/batesian-entry", "/batesian-canary-entry", 1), false},
+		{"redirect URL", strings.Replace(valid, "/batesian-entry", "https://other.example.com", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "batesian.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tc.valid {
+				if err != nil || cfg.MCPFetchRobotsRedirectProbe.RedirectPath != "/batesian-entry" {
+					t.Fatalf("config=%+v err=%v", cfg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "mcp_fetch_robots_redirect_probe") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_MCPFilesystemSymlinkProbe(t *testing.T) {
 	const valid = "target: https://mcp.example.com\nmcp_filesystem_symlink_probe:\n  allowed_directory: /srv/disposable\n  link_name: outside-link\n  outside_path: /srv/outside/fixture.bin\n  outside_size_bytes: 1536\n"
 	configPath := filepath.Join(t.TempDir(), "batesian.yaml")

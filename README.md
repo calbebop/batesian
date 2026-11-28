@@ -269,6 +269,7 @@ to loopback. Other A2A rules use JSON-RPC or HTTP+JSON; see the
 - The [filesystem symlink check](docs/rules-mcp.md#mcp-filesystem-symlink-001) requires a target-bound `mcp_filesystem_symlink_probe` with an operator-prepared link and outside file. It calls only approved metadata tools and never reads file contents.
 - The [MCP subscription check](docs/rules-mcp.md#mcp-subscription-scope-001) runs only with a target-bound `mcp_subscription_probe` in the config. It calls the specified update tool once, so use a disposable resource and arguments.
 - The [Fetch robots check](docs/rules-mcp.md#mcp-fetch-robots-001) requires a target-bound `mcp_fetch_robots_probe`, an owned canary origin, and explicit approval of the read-only `fetch` tool.
+- The [Fetch redirect check](docs/rules-mcp.md#mcp-fetch-robots-redirect-001) uses a separate target-bound canary to test whether `fetch` checks robots policy after a same-origin redirect.
 - The [MCP cross-audience check](docs/rules-mcp.md#mcp-oauth-audience-002) needs a working target JWT and a target-bound `mcp_cross_audience_token` issued for another resource. It uses read-only requests and reports accepted other-resource tokens as indicators.
 - The [MCP session-principal check](docs/rules-mcp.md#mcp-session-principal-001) requires two bearer-token principals and a target-bound `mcp.sessions.use` expected denial. It compares read-only listings across stateful sessions and closes both sessions afterward.
 - JSON and SARIF may contain URLs, response snippets, and evidence. Treat them as sensitive security artifacts.

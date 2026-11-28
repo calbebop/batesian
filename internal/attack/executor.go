@@ -83,6 +83,9 @@ type Options struct {
 	// MCPFetchRobotsProbe scopes an approved Fetch canary check.
 	MCPFetchRobotsProbe *MCPFetchRobotsProbe
 
+	// MCPFetchRobotsRedirectProbe scopes an approved redirect canary check.
+	MCPFetchRobotsRedirectProbe *MCPFetchRobotsRedirectProbe
+
 	// Verbose enables debug logging.
 	Verbose bool
 

@@ -51,14 +51,9 @@ func (e *FetchRobotsExecutor) Execute(ctx context.Context, target string, opts a
 }
 
 func checkFetchRobotsCanary(ctx context.Context, opts attack.Options, probe *attack.MCPFetchRobotsProbe) string {
-	client := attack.NewUnauthHTTPClient(opts, attack.NewVars(probe.Origin, ""))
-	robots, err := client.GET(ctx, probe.Origin+"/robots.txt", nil)
-	if err != nil || robots == nil || robots.StatusCode != 200 || len(robots.Body) > 4096 {
-		return "robots.txt could not be verified"
-	}
-	policy := strings.ReplaceAll(string(robots.Body), "\r\n", "\n")
-	if strings.TrimSpace(policy) != "User-agent: *\nDisallow: "+probe.PrivatePath {
-		return "robots.txt must contain only the wildcard user-agent and exact canary disallow"
+	client, reason := checkFetchRobotsPolicy(ctx, opts, probe.Origin, probe.PrivatePath)
+	if reason != "" {
+		return reason
 	}
 	paths := []string{probe.PrivatePath}
 	for _, alternate := range attack.FetchRobotsAlternates(probe) {
@@ -74,44 +69,25 @@ func checkFetchRobotsCanary(ctx context.Context, opts attack.Options, probe *att
 	return ""
 }
 
+func checkFetchRobotsPolicy(ctx context.Context, opts attack.Options, origin, privatePath string) (*attack.HTTPClient, string) {
+	client := attack.NewUnauthHTTPClient(opts, attack.NewVars(origin, ""))
+	robots, err := client.GET(ctx, origin+"/robots.txt", nil)
+	if err != nil || robots == nil || robots.StatusCode != 200 || len(robots.Body) > 4096 {
+		return nil, "robots.txt could not be verified"
+	}
+	policy := strings.ReplaceAll(string(robots.Body), "\r\n", "\n")
+	if strings.TrimSpace(policy) != "User-agent: *\nDisallow: "+privatePath {
+		return nil, "robots.txt must contain only the wildcard user-agent and exact canary disallow"
+	}
+	return client, ""
+}
+
 func (e *FetchRobotsExecutor) probeSession(ctx context.Context, client *attack.HTTPClient,
 	session mcpSession, probe *attack.MCPFetchRobotsProbe) ([]attack.Finding, bool, string) {
-	if !session.ServerSupports("tools") {
-		return nil, false, "tools are not advertised"
+	candidate, reason := fetchRobotsCandidate(ctx, client, session)
+	if reason != "" {
+		return nil, false, reason
 	}
-	listed, ok := listToolPages(ctx, client, session, 3)
-	if !ok {
-		return nil, false, "tool listing was unavailable or incomplete"
-	}
-	var selected *traversalTool
-	for _, raw := range listed {
-		var tool traversalTool
-		if json.Unmarshal(raw, &tool) != nil || tool.Name == "" {
-			return nil, false, "tool listing was malformed"
-		}
-		if tool.Name == fetchRobotsTool {
-			if selected != nil {
-				return nil, false, "fetch appeared more than once"
-			}
-			selected = &tool
-		}
-	}
-	if selected == nil || selected.Annotations == nil ||
-		!declaresReadOnlyTool(selected.Annotations.ReadOnlyHint, selected.Annotations.DestructiveHint) {
-		return nil, false, "fetch was absent or not declared read-only"
-	}
-	required := requiredParams(selected.InputSchema)
-	props, _ := selected.InputSchema["properties"].(map[string]interface{})
-	urlSpec, _ := props["url"].(map[string]interface{})
-	if len(required) != 1 || !required["url"] || urlSpec["type"] != "string" {
-		return nil, false, "fetch did not have a URL-only required input"
-	}
-	if session.Era == EraModern {
-		if _, err := toolParamHeaders(selected.InputSchema, nil); err != nil {
-			return nil, false, "fetch parameter headers were invalid"
-		}
-	}
-	candidate := traversalCandidate{tool: fetchRobotsTool, param: "url", schema: selected.InputSchema}
 	canonical := probe.Origin + probe.PrivatePath
 	control, reason, _, toolError := callPathTool(ctx, client, session, 20, candidate, canonical)
 	if reason != "" || !toolError || !robotsDenied(control) || strings.Contains(control, probe.PrivateMarker) {
@@ -138,6 +114,45 @@ func (e *FetchRobotsExecutor) probeSession(ctx context.Context, client *attack.H
 		return findings, false, "alternate path responses were inconclusive: " + strings.Join(incomplete, ", ")
 	}
 	return findings, true, ""
+}
+
+func fetchRobotsCandidate(ctx context.Context, client *attack.HTTPClient, session mcpSession) (traversalCandidate, string) {
+	if !session.ServerSupports("tools") {
+		return traversalCandidate{}, "tools are not advertised"
+	}
+	listed, ok := listToolPages(ctx, client, session, 3)
+	if !ok {
+		return traversalCandidate{}, "tool listing was unavailable or incomplete"
+	}
+	var selected *traversalTool
+	for _, raw := range listed {
+		var tool traversalTool
+		if json.Unmarshal(raw, &tool) != nil || tool.Name == "" {
+			return traversalCandidate{}, "tool listing was malformed"
+		}
+		if tool.Name == fetchRobotsTool {
+			if selected != nil {
+				return traversalCandidate{}, "fetch appeared more than once"
+			}
+			selected = &tool
+		}
+	}
+	if selected == nil || selected.Annotations == nil ||
+		!declaresReadOnlyTool(selected.Annotations.ReadOnlyHint, selected.Annotations.DestructiveHint) {
+		return traversalCandidate{}, "fetch was absent or not declared read-only"
+	}
+	required := requiredParams(selected.InputSchema)
+	props, _ := selected.InputSchema["properties"].(map[string]interface{})
+	urlSpec, _ := props["url"].(map[string]interface{})
+	if len(required) != 1 || !required["url"] || urlSpec["type"] != "string" {
+		return traversalCandidate{}, "fetch did not have a URL-only required input"
+	}
+	if session.Era == EraModern {
+		if _, err := toolParamHeaders(selected.InputSchema, nil); err != nil {
+			return traversalCandidate{}, "fetch parameter headers were invalid"
+		}
+	}
+	return traversalCandidate{tool: fetchRobotsTool, param: "url", schema: selected.InputSchema}, ""
 }
 
 func robotsDenied(text string) bool {

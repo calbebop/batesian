@@ -1,0 +1,32 @@
+id: mcp-fetch-robots-redirect-001
+info:
+  name: MCP Fetch Robots Redirect Enforcement
+  author: batesian
+  severity: low
+  description: |
+    Uses an operator-owned canary origin with an exact robots.txt disallow.
+    The scanner verifies an allowed path redirects to a disallowed path that
+    serves a marker, then calls an explicitly approved, read-only fetch tool.
+    A finding requires a robots denial for direct access and the marker
+    returned through the redirect. Other errors are not tested.
+
+  references:
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2
+    - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
+    - https://cwe.mitre.org/data/definitions/693.html
+
+  tags:
+    - mcp
+    - fetch
+    - robots
+    - redirect
+    - cwe-693
+
+attack:
+  protocol: mcp
+  type: mcp-fetch-robots-redirect
+
+remediation: |
+  Check robots policy for each redirect destination before fetching it.
+  Upgrade affected mcp-server-fetch deployments to 2026.10.24 or later.
+  Treat robots.txt as crawler policy, not access control.
