@@ -89,6 +89,45 @@ var vvTable = []vvAdvisory{
 		refs:  "GHSA-pm7p-vphh-2cg7", fixed: "2026.11.18", pkg: "mcp-server-git",
 	},
 	{
+		key: "mcp-git", affected: ">=2026.11.18 <2026.11.27", severity: "medium",
+		title: "reference git server post-write repository confinement gap",
+		refs:  "GHSA-9vjp-x34c-xg6v", fixed: "2026.11.27", pkg: "mcp-server-git",
+		note: "The merge include execution path was fixed in 2026.11.18; this range covers the remaining post-write repository check.",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.27", severity: "medium",
+		title: "reference git server Git LFS configuration command execution",
+		refs:  "GHSA-6663-fm5v-gqm5", fixed: "2026.11.27", pkg: "mcp-server-git",
+		note: "This path requires Git LFS and an untrusted repository configuration.",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.27", severity: "medium",
+		title: "reference git server configured root retargeting",
+		refs:  "GHSA-3whj-m8jj-x97q", fixed: "2026.11.27", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.11.4 <2026.11.27", severity: "medium",
+		title: "reference git server remote credential disclosure",
+		refs:  "GHSA-wvv2-676g-r57j", fixed: "2026.11.27", pkg: "mcp-server-git",
+		note: "The disclosed credential must be supplied by the host's Git configuration.",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.27", severity: "medium",
+		title: "reference git server repository path environment disclosure",
+		refs:  "GHSA-f33v-89w7-f9vc", fixed: "2026.11.27", pkg: "mcp-server-git",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.10.10 <2026.11.27", severity: "low",
+		title: "reference git server alternate object store race",
+		refs:  "GHSA-5pwg-5xfw-x322", fixed: "2026.11.27", pkg: "mcp-server-git",
+		note: "This race requires a concurrent actor that can rewrite the repository's alternates file.",
+	},
+	{
+		key: "mcp-git", affected: ">=2026.11.4 <2026.11.27", severity: "low",
+		title: "reference git server merge overwrites ignored files",
+		refs:  "GHSA-qf89-h82f-h5r5", fixed: "2026.11.27", pkg: "mcp-server-git",
+	},
+	{
 		key: "serena", affected: "<1.5.2", severity: "high",
 		title: "Serena dashboard memory poisoning to RCE via DNS rebinding",
 		refs:  "CVE-2026-49471",
@@ -136,6 +175,20 @@ var vvTable = []vvAdvisory{
 		refs:  "GHSA-rq2p-q7c4-6g27", fixed: "2.4.0", pkg: "@modelcontextprotocol/server-filesystem",
 	},
 	{
+		key:      "secure-filesystem-server",
+		affected: ">=2.4.0 <2.4.1", severity: "low",
+		title: "reference filesystem server Windows directory listing race",
+		refs:  "GHSA-rq2p-q7c4-6g27", fixed: "2.4.1", pkg: "@modelcontextprotocol/server-filesystem",
+		note: "Version 2.4.0 has this remaining gap only on Windows; verify the server host OS.",
+	},
+	{
+		key:      "memory-server",
+		affected: ">=1.0.0 <2.2.2", severity: "low",
+		title: "reference memory server temporary file permission race",
+		refs:  "GHSA-48j5-hj63-c82c", fixed: "2.2.2", pkg: "@modelcontextprotocol/server-memory",
+		note: "This requires Linux and a local actor with write access to the shared graph directory.",
+	},
+	{
 		key:      "mcp-servers/everything",
 		affected: ">=1.0.0 <2.3.1 || >=2026.1.14 <=2026.8.31", severity: "low",
 		title: "reference everything server NAT64 SSRF guard gap",
@@ -170,6 +223,13 @@ var vvTable = []vvAdvisory{
 		affected: ">=2026.10.10 <2026.11.11", severity: "low",
 		title: "reference fetch server robots path canonicalization bypass",
 		refs:  "GHSA-f9hh-cmx9-2f23", fixed: "2026.11.11", pkg: "mcp-server-fetch",
+	},
+	{
+		key:      "mcp-fetch",
+		affected: ">=2026.10.10 <2026.11.27", severity: "low",
+		title: "reference fetch server robots path separator bypass",
+		refs:  "GHSA-g7v6-hfx3-8rv6", fixed: "2026.11.27", pkg: "mcp-server-fetch",
+		note: "This requires an origin that treats backslashes as separators or discards semicolon path parameters.",
 	},
 }
 
@@ -231,6 +291,7 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 
 	var findings []attack.Finding
 	var unverifiableRefs []string
+	seenRefs := make(map[string]bool)
 	var matchedName string
 	for _, adv := range vvTable {
 		if !strings.EqualFold(name, adv.key) {
@@ -238,7 +299,10 @@ func (e *VulnerableVersionExecutor) matchAdvisories(endpoint, name, version stri
 		}
 		if parsed == nil {
 			matchedName = adv.key
-			unverifiableRefs = append(unverifiableRefs, adv.refs)
+			if !seenRefs[adv.refs] {
+				unverifiableRefs = append(unverifiableRefs, adv.refs)
+				seenRefs[adv.refs] = true
+			}
 			continue
 		}
 		inRange, valid := vvMatchesAffected(parsed, adv.affected)

@@ -34,6 +34,20 @@ info:
                                     (GHSA-9vjp-x34c-xg6v; fixed in 2026.11.18)
       - mcp-git >=2026.10.10 <2026.11.18
                                     (GHSA-pm7p-vphh-2cg7; fixed in 2026.11.18)
+      - mcp-git >=2026.11.18 <2026.11.27
+                                    (GHSA-9vjp-x34c-xg6v post-write gap; fixed in 2026.11.27)
+      - mcp-git >=2026.10.10 <2026.11.27
+                                    (GHSA-6663-fm5v-gqm5; fixed in 2026.11.27)
+      - mcp-git >=2026.10.10 <2026.11.27
+                                    (GHSA-3whj-m8jj-x97q; fixed in 2026.11.27)
+      - mcp-git >=2026.11.4 <2026.11.27
+                                    (GHSA-wvv2-676g-r57j; fixed in 2026.11.27)
+      - mcp-git >=2026.10.10 <2026.11.27
+                                    (GHSA-f33v-89w7-f9vc; fixed in 2026.11.27)
+      - mcp-git >=2026.10.10 <2026.11.27
+                                    (GHSA-5pwg-5xfw-x322; fixed in 2026.11.27)
+      - mcp-git >=2026.11.4 <2026.11.27
+                                    (GHSA-qf89-h82f-h5r5; fixed in 2026.11.27)
       - serena <1.5.2               (CVE-2026-49471)
       - secure-filesystem-server >=1.0.0 <2.0.1
                                     (GHSA-7rgq-gccq-qphx; fixed in 2.0.1)
@@ -49,6 +63,10 @@ info:
                                     (GHSA-7m4x-rv66-mxhh; fixed in 2.3.0)
       - secure-filesystem-server >=1.0.0 <2.4.0
                                     (GHSA-rq2p-q7c4-6g27; fixed in 2.4.0)
+      - secure-filesystem-server >=2.4.0 <2.4.1 on Windows
+                                    (GHSA-rq2p-q7c4-6g27 follow-on; fixed in 2.4.1)
+      - memory-server >=1.0.0 <2.2.2
+                                    (GHSA-48j5-hj63-c82c; fixed in 2.2.2)
       - mcp-servers/everything >=1.0.0 <2.3.1 or
         >=2026.1.14 <=2026.8.31 (GHSA-38j4-j742-j7r3; fixed in 2.3.1)
       - mcp-fetch >=2026.10.10 <=2026.10.19
@@ -61,6 +79,8 @@ info:
                                     (GHSA-3rxj-6jhw-qfv7; fixed in 2026.11.11)
       - mcp-fetch >=2026.10.10 <2026.11.11
                                     (GHSA-f9hh-cmx9-2f23; fixed in 2026.11.11)
+      - mcp-fetch >=2026.10.10 <2026.11.27
+                                    (GHSA-g7v6-hfx3-8rv6; fixed in 2026.11.27)
 
     Every finding is an INDICATOR. The version is self-reported and trivially
     spoofed, and matching a range does not prove the vulnerable code path is
@@ -97,17 +117,25 @@ info:
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-87qg-cmw8-jc5m
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-9vjp-x34c-xg6v
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-pm7p-vphh-2cg7
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-6663-fm5v-gqm5
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3whj-m8jj-x97q
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-wvv2-676g-r57j
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f33v-89w7-f9vc
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-5pwg-5xfw-x322
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-qf89-h82f-h5r5
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-4gxg-m5jx-9j57
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-53mr-w429-c597
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-p9cv-8g75-4xcg
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-7m4x-rv66-mxhh
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-rq2p-q7c4-6g27
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-48j5-hj63-c82c
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-38j4-j742-j7r3
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-v38p-wf49-hx2j
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3jqg-r5pp-rmp2
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-66qx-2266-pmj6
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-3rxj-6jhw-qfv7
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f9hh-cmx9-2f23
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-g7v6-hfx3-8rv6
     - https://cwe.mitre.org/data/definitions/1104.html
 
   tags:
