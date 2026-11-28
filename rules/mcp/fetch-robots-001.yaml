@@ -5,13 +5,16 @@ info:
   severity: low
   description: |
     Uses an operator-owned canary origin with an exact robots.txt disallow.
-    The scanner verifies that the canonical and double-slash paths serve the
-    same marker, then calls an explicitly approved, read-only fetch tool.
+    The scanner verifies that the canonical path and selected alternate paths
+    serve the same marker, then calls an explicitly approved, read-only fetch tool.
+    Double slash is the default. Backslash, encoded backslash, and path-parameter
+    variants require explicit selection and a compatible canary origin.
     A finding requires a robots denial for the canonical path and the marker
     returned through the alternate path. Other errors are not tested.
 
   references:
     - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-f9hh-cmx9-2f23
+    - https://github.com/modelcontextprotocol/servers/security/advisories/GHSA-g7v6-hfx3-8rv6
     - https://modelcontextprotocol.io/specification/2026-07-28/server/tools
     - https://cwe.mitre.org/data/definitions/41.html
 
@@ -28,4 +31,5 @@ attack:
 remediation: |
   Check robots policy against both the request path and the origin-resolved
   path before fetching. Upgrade affected mcp-server-fetch deployments to
-  2026.11.11 or later. Treat robots.txt as crawler policy, not access control.
+  2026.11.27 or later for backslash and path-parameter handling. Treat
+  robots.txt as crawler policy, not access control.

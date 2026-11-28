@@ -325,6 +325,7 @@ func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	if p := cfg.MCPFetchRobotsProbe; p != nil {
 		fetchRobotsProbe = &attackpkg.MCPFetchRobotsProbe{
 			Origin: p.Origin, PrivatePath: p.PrivatePath, PrivateMarker: p.PrivateMarker,
+			Variants: p.Variants,
 		}
 	}
 	var a2aBatchProbe *attackpkg.A2ABatchProbe

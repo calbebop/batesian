@@ -168,9 +168,10 @@ type MCPFilesystemSymlinkProbeConfig struct {
 }
 
 type MCPFetchRobotsProbeConfig struct {
-	Origin        string `yaml:"origin"`
-	PrivatePath   string `yaml:"private_path"`
-	PrivateMarker string `yaml:"private_marker"`
+	Origin        string   `yaml:"origin"`
+	PrivatePath   string   `yaml:"private_path"`
+	PrivateMarker string   `yaml:"private_marker"`
+	Variants      []string `yaml:"variants"`
 }
 
 // Load reads path or discovers a config in the current directory and its parents.
@@ -356,8 +357,9 @@ func (c *Config) validate(path string) error {
 	if probe := c.MCPFetchRobotsProbe; probe != nil {
 		if strings.TrimSpace(c.Target) == "" || !attack.ValidMCPFetchRobotsProbe(&attack.MCPFetchRobotsProbe{
 			Origin: probe.Origin, PrivatePath: probe.PrivatePath, PrivateMarker: probe.PrivateMarker,
+			Variants: probe.Variants,
 		}) {
-			return fmt.Errorf("config %s: mcp_fetch_robots_probe requires a target, an HTTPS or loopback HTTP origin without a path, a /batesian-* canary path, and a 16..128 character marker", path)
+			return fmt.Errorf("config %s: mcp_fetch_robots_probe requires a target, an HTTPS or loopback HTTP origin without a path, a /batesian-* canary path, a 16..128 character marker, and unique supported variants", path)
 		}
 	}
 	seenDenials := map[ExpectedDenialConfig]bool{}
