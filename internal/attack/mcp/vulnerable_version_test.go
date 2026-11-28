@@ -61,8 +61,8 @@ func TestVV_VulnerableGitFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 6 {
-		t.Fatalf("expected 6 findings, got %d: %+v", len(findings), findings)
+	if len(findings) != 10 {
+		t.Fatalf("expected 10 findings, got %d: %+v", len(findings), findings)
 	}
 	f := findings[0]
 	if f.Severity != "medium" || f.Confidence != attack.RiskIndicator {
@@ -79,7 +79,7 @@ func TestVV_VulnerableGitFires(t *testing.T) {
 
 // TestVV_PatchedSilent: same product at the patched version.
 func TestVV_PatchedSilent(t *testing.T) {
-	ts := vvServer("mcp-git", "2026.11.18")
+	ts := vvServer("mcp-git", "2026.11.27")
 	defer ts.Close()
 
 	findings, err := runVV(t, ts)
@@ -140,7 +140,7 @@ func TestVV_Boundaries(t *testing.T) {
 	}{
 		{"serena at bound excluded", "serena", "1.5.2", 0},
 		{"serena just below fires", "serena", "1.5.1", 1},
-		{"git at lower bound fires", "mcp-git", "2026.10.10", 6},
+		{"git at lower bound fires", "mcp-git", "2026.10.10", 10},
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
@@ -188,7 +188,7 @@ func TestVV_OmitsReportedVersionSuffix(t *testing.T) {
 		name, product, version, want string
 		count                        int
 	}{
-		{"build suffix", "mcp-git", "2026.10.19+" + private, "2026.10.19", 6},
+		{"build suffix", "mcp-git", "2026.10.19+" + private, "2026.10.19", 10},
 		{"prerelease suffix", "serena", "1.5.2-rc." + private, "1.5.2 (prerelease)", 1},
 		{"unparseable", "serena", private, "unparseable", 1},
 	} {
@@ -234,19 +234,29 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 		{"secure-filesystem-server", "2.3.0-rc.1", []string{"GHSA-p9cv-8g75-4xcg", "GHSA-7m4x-rv66-mxhh", "GHSA-rq2p-q7c4-6g27"}},
 		{"secure-filesystem-server", "2.3.0", []string{"GHSA-rq2p-q7c4-6g27"}},
 		{"secure-filesystem-server", "2.4.0-rc.1", []string{"GHSA-rq2p-q7c4-6g27"}},
-		{"secure-filesystem-server", "2.4.0", nil},
+		{"secure-filesystem-server", "2.4.0", []string{"GHSA-rq2p-q7c4-6g27"}},
+		{"secure-filesystem-server", "2.4.1-rc.1", []string{"GHSA-rq2p-q7c4-6g27"}},
+		{"secure-filesystem-server", "2.4.1", nil},
+		{"memory-server", "0.9.0", nil},
+		{"memory-server", "1.0.0", []string{"GHSA-48j5-hj63-c82c"}},
+		{"memory-server", "2.2.1", []string{"GHSA-48j5-hj63-c82c"}},
+		{"memory-server", "2.2.2-rc.1", []string{"GHSA-48j5-hj63-c82c"}},
+		{"memory-server", "2.2.2", nil},
+		{"custom-memory-server", "2.2.1", nil},
 		{"proxy-secure-filesystem-server", "2.0.0", nil},
 		{"mcp-git", "2026.10.9", nil},
-		{"mcp-git", "2026.10.10", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.10.19", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7"}},
-		{"MCP-GIT", "2026.10.19", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.10.28-rc.1", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.10.28", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.11.4", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.11.11-rc.1", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.11.11", []string{"GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.11.18-rc.1", []string{"GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7"}},
-		{"mcp-git", "2026.11.18", nil},
+		{"mcp-git", "2026.10.10", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322"}},
+		{"mcp-git", "2026.10.19", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322"}},
+		{"MCP-GIT", "2026.10.19", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322"}},
+		{"mcp-git", "2026.10.28-rc.1", []string{"GHSA-w766-5x43-whvw", "GHSA-6hqx-gqrx-c5r2", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322"}},
+		{"mcp-git", "2026.10.28", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-87qg-cmw8-jc5m", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322"}},
+		{"mcp-git", "2026.11.4", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.11-rc.1", []string{"GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.11", []string{"GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.18-rc.1", []string{"GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.18", []string{"GHSA-9vjp-x34c-xg6v", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.27-rc.1", []string{"GHSA-9vjp-x34c-xg6v", "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5"}},
+		{"mcp-git", "2026.11.27", nil},
 		{"custom-mcp-git", "2026.10.19", nil},
 		{"mcp-servers/everything", "0.9.0", nil},
 		{"mcp-servers/everything", "1.0.0", []string{"GHSA-38j4-j742-j7r3"}},
@@ -261,12 +271,15 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 		{"mcp-fetch", "0.6.0", nil},
 		{"mcp-fetch", "0.6.1", nil},
 		{"mcp-fetch", "2026.10.9", nil},
-		{"mcp-fetch", "2026.10.10", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6", "GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23"}},
-		{"mcp-fetch", "2026.10.19", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6", "GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23"}},
-		{"mcp-fetch", "2026.10.20", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23"}},
-		{"mcp-fetch", "2026.10.24", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23"}},
-		{"mcp-fetch", "2026.11.11-rc.1", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23"}},
-		{"mcp-fetch", "2026.11.11", nil},
+		{"mcp-fetch", "2026.10.10", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6", "GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23", "GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.10.19", []string{"GHSA-v38p-wf49-hx2j", "GHSA-3jqg-r5pp-rmp2", "GHSA-66qx-2266-pmj6", "GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23", "GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.10.20", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23", "GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.10.24", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23", "GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.11.11-rc.1", []string{"GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23", "GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.11.11", []string{"GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.11.18", []string{"GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.11.27-rc.1", []string{"GHSA-g7v6-hfx3-8rv6"}},
+		{"mcp-fetch", "2026.11.27", nil},
 		{"custom-mcp-fetch", "2026.10.19", nil},
 	}
 	for _, tc := range cases {
@@ -289,12 +302,22 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 						fixed = "2.3.0"
 					case "GHSA-rq2p-q7c4-6g27":
 						fixed = "2.4.0"
+						if tc.version == "2.4.0" || tc.version == "2.4.1-rc.1" {
+							fixed = "2.4.1"
+						}
+					case "GHSA-48j5-hj63-c82c":
+						fixed = "2.2.2"
 					case "GHSA-38j4-j742-j7r3":
 						fixed = "2.3.1"
 					case "GHSA-6hqx-gqrx-c5r2", "GHSA-q74p-4wrc-q7w6", "GHSA-3rxj-6jhw-qfv7", "GHSA-f9hh-cmx9-2f23":
 						fixed = "2026.11.11"
 					case "GHSA-r2q8-f657-4r56", "GHSA-8wv7-r664-7594", "GHSA-h2g3-rwxm-xfm3", "GHSA-87qg-cmw8-jc5m", "GHSA-9vjp-x34c-xg6v", "GHSA-pm7p-vphh-2cg7":
 						fixed = "2026.11.18"
+						if ref == "GHSA-9vjp-x34c-xg6v" && (tc.version == "2026.11.18" || tc.version == "2026.11.27-rc.1") {
+							fixed = "2026.11.27"
+						}
+					case "GHSA-6663-fm5v-gqm5", "GHSA-3whj-m8jj-x97q", "GHSA-wvv2-676g-r57j", "GHSA-f33v-89w7-f9vc", "GHSA-5pwg-5xfw-x322", "GHSA-qf89-h82f-h5r5", "GHSA-g7v6-hfx3-8rv6":
+						fixed = "2026.11.27"
 					default:
 						if tc.name == "secure-filesystem-server" {
 							fixed = "2.0.1"
@@ -307,7 +330,9 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 						ref == "GHSA-hhwq-wxfx-cj7g" || ref == "GHSA-53mr-w429-c597" ||
 						ref == "GHSA-p9cv-8g75-4xcg" || ref == "GHSA-7m4x-rv66-mxhh" ||
 						ref == "GHSA-3rxj-6jhw-qfv7" || ref == "GHSA-f9hh-cmx9-2f23" ||
-						ref == "GHSA-rq2p-q7c4-6g27" || ref == "GHSA-38j4-j742-j7r3" {
+						ref == "GHSA-rq2p-q7c4-6g27" || ref == "GHSA-38j4-j742-j7r3" ||
+						ref == "GHSA-48j5-hj63-c82c" || ref == "GHSA-5pwg-5xfw-x322" ||
+						ref == "GHSA-qf89-h82f-h5r5" || ref == "GHSA-g7v6-hfx3-8rv6" {
 						severity = "low"
 					}
 					if findings[i].Severity != severity || !strings.Contains(findings[i].Remediation, fixed) {
@@ -315,6 +340,9 @@ func TestVV_ReferenceServerAdvisoryRanges(t *testing.T) {
 					}
 					if ref == "GHSA-q74p-4wrc-q7w6" && !strings.Contains(findings[i].Remediation, "Windows") {
 						t.Fatalf("confinement finding omits the Windows limitation: %+v", findings[i])
+					}
+					if ref == "GHSA-rq2p-q7c4-6g27" && fixed == "2.4.1" && !strings.Contains(findings[i].Remediation, "only on Windows") {
+						t.Fatalf("filesystem follow-on finding omits its Windows condition: %+v", findings[i])
 					}
 				}
 			}
@@ -338,7 +366,7 @@ func TestVV_UnparseableGitVersionReportsOnce(t *testing.T) {
 	defer ts.Close()
 	findings, err := runVV(t, ts)
 	if err != nil || len(findings) != 1 || findings[0].Severity != "low" ||
-		strings.Count(findings[0].Evidence, "GHSA-") != 9 ||
+		strings.Count(findings[0].Evidence, "GHSA-") != 15 ||
 		!strings.Contains(findings[0].Evidence, "GHSA-9vjp-x34c-xg6v") {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
@@ -453,7 +481,7 @@ func TestVV_UsesSuppliedTokenForReadOnlyInventory(t *testing.T) {
 			defer ts.Close()
 			exec := mcp.NewVulnerableVersionExecutor(vvRC())
 			findings, err := exec.Execute(t.Context(), ts.URL, attack.Options{TimeoutSeconds: 5, Token: "inventory-token"})
-			if err != nil || len(findings) != 6 {
+			if err != nil || len(findings) != 10 {
 				t.Fatalf("authenticated inventory: findings=%+v err=%v", findings, err)
 			}
 			for _, finding := range findings {
