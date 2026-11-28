@@ -851,11 +851,14 @@ func TestOAuthAudience_ClaimDisagreesWithAdvertisedIsNotTested(t *testing.T) {
 	if !errors.Is(err, attack.ErrInconclusive) {
 		t.Fatalf("expected ErrInconclusive, got %v", err)
 	}
-	// The operator cannot act on this without both values.
-	for _, want := range []string{operatorClaim, advertised} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("reason should name %q; got: %v", want, err)
+	for _, value := range []string{operatorClaim, advertised} {
+		if strings.Contains(err.Error(), value) {
+			t.Errorf("reason disclosed audience %q: %v", value, err)
 		}
+	}
+	if !strings.Contains(err.Error(), "--audience-claim differs") ||
+		!strings.Contains(err.Error(), "rerun without --audience-claim") {
+		t.Errorf("reason should explain the mismatch without exposing values: %v", err)
 	}
 }
 

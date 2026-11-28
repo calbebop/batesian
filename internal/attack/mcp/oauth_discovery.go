@@ -20,20 +20,21 @@ var oauthServerMetadataPaths = []string{
 func readOAuthMetadata(ctx context.Context, client *attack.HTTPClient, baseURL, path string) (*attack.Response, string) {
 	var incomplete []string
 	for _, metadataURL := range oauthWellKnownURLs(baseURL, path) {
+		displayURL := attack.RedactURL(metadataURL)
 		resp, err := client.GETOAuthUnauth(ctx, metadataURL)
 		if err != nil || resp == nil {
-			incomplete = append(incomplete, metadataURL+" did not answer")
+			incomplete = append(incomplete, displayURL+" did not answer")
 			continue
 		}
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d", metadataURL, resp.StatusCode))
+			incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d", displayURL, resp.StatusCode))
 			continue
 		}
 		if !resp.IsJSON() {
-			incomplete = append(incomplete, metadataURL+" returned invalid JSON")
+			incomplete = append(incomplete, displayURL+" returned invalid JSON")
 			continue
 		}
 		if path == "/.well-known/oauth-protected-resource" && !prmMatchesTarget(baseURL, resp.JSONField("resource"), resp.URL, "") {
@@ -199,19 +200,20 @@ func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer
 	locationIssuer := strings.TrimSuffix(issuer, "/")
 	for _, path := range oauthServerMetadataPaths {
 		for _, metadataURL := range oauthWellKnownURLs(issuer, path) {
+			displayURL := attack.RedactURL(metadataURL)
 			if checkIssuer && metadataIssuerForURL(metadataURL, path) != locationIssuer {
 				continue
 			}
 			resp, err := client.GETOAuthUnauth(ctx, metadataURL)
 			if err != nil || resp == nil {
-				incomplete = append(incomplete, metadataURL+" did not answer")
+				incomplete = append(incomplete, displayURL+" did not answer")
 				continue
 			}
 			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 				continue
 			}
 			if resp.StatusCode != http.StatusOK || !resp.IsJSON() {
-				incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d or invalid JSON", metadataURL, resp.StatusCode))
+				incomplete = append(incomplete, fmt.Sprintf("%s returned HTTP %d or invalid JSON", displayURL, resp.StatusCode))
 				continue
 			}
 			expectedIssuer := issuer
@@ -222,7 +224,7 @@ func discoverIssuerFields(ctx context.Context, client *attack.HTTPClient, issuer
 			trailingSlashIssuer := !checkIssuer && strings.HasSuffix(issuer, "/") &&
 				expectedIssuer == locationIssuer && observedIssuer == issuer
 			if expectedIssuer == "" || (observedIssuer != expectedIssuer && !trailingSlashIssuer) {
-				incomplete = append(incomplete, metadataURL+" issuer does not match the expected authorization server")
+				incomplete = append(incomplete, displayURL+" issuer does not match the expected authorization server")
 				continue
 			}
 			values := make(map[string]string, len(fields))

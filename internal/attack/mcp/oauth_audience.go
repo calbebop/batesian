@@ -160,22 +160,16 @@ func (e *OAuthAudienceExecutor) executeForged(ctx context.Context, target string
 	// scan that found something needs no premise check, and a disagreement is not
 	// a reason to withhold a finding the server demonstrated.
 	if operatorSupplied {
-		judgedEndpoint := endpoint
-		if judgedEndpoint == "" {
-			judgedEndpoint = modernEndpoint
-		}
 		advertised, _, _, err := discoverExpectedAudience(ctx, client,
 			attack.NewUnauthHTTPClient(opts, vars), vars.BaseURL)
 		if err != nil {
 			return nil, err
 		}
 		if advertised != "" && advertised != expected {
-			return nil, fmt.Errorf("%w: the probes were built from the --audience-claim value %q, "+
-				"but %s advertises %q as its resource audience; RFC 7519 section 4.1.3 compares the "+
-				"aud claim exactly, so every probe was a plain mismatch this server refuses whether "+
-				"or not its audience matching is sound; rerun with the advertised value, or with no "+
-				"--audience-claim to use it automatically",
-				attack.ErrInconclusive, expected, judgedEndpoint, advertised)
+			return nil, fmt.Errorf("%w: --audience-claim differs from the advertised resource audience; "+
+				"RFC 7519 section 4.1.3 compares aud exactly, so these probes cannot establish a clean result; "+
+				"rerun without --audience-claim to use the advertised value",
+				attack.ErrInconclusive)
 		}
 	}
 	return nil, nil

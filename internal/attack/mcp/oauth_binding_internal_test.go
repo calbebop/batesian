@@ -50,6 +50,26 @@ func TestOAuthWellKnownURLsRetainResourceQuery(t *testing.T) {
 	}
 }
 
+func TestReadOAuthMetadataRedactsQueryInReason(t *testing.T) {
+	const secret = "metadata-query-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	target := srv.URL + "/mcp?access_token=" + secret
+	client := attack.NewUnauthHTTPClient(attack.Options{}, attack.NewVars(target, ""))
+	metadata, reason := readOAuthMetadata(t.Context(), client, target, "/.well-known/oauth-protected-resource")
+	if metadata != nil || !strings.Contains(reason, "?REDACTED returned HTTP 503") ||
+		strings.Contains(reason, secret) {
+		t.Fatalf("metadata=%v reason=%q", metadata, reason)
+	}
+}
+
 func TestDiscoverOAuthFields_TrailingSlashIssuer(t *testing.T) {
 	for _, suffix := range []string{"/issuer/", "/"} {
 		for _, wrongClaim := range []bool{false, true} {
